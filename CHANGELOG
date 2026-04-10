@@ -1,0 +1,24 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+***
+
+## [0.1.0] - 2026-04-10
+
+### Added
+- `main.py` — CLI entry point using `--prompt` argument to query the database in natural language
+- `config.py` — secure configuration module that loads all credentials from `.env`
+- `.env.example` — environment variable template for Ollama and SQL Server settings
+- `requirements.txt` — project dependencies
+- `.gitignore` — excludes `.env` and generated files from version control
+- `README.md` — setup, usage, configuration, and troubleshooting guide
+
+### Architecture
+- Gemma 3 (via Ollama) as the local LLM backend — no API key required
+- LangChain `create_sql_agent` with `ZERO_SHOT_REACT_DESCRIPTION` agent type
+- SQL Server connectivity via `mssql+pyodbc` and SQLAlchemy
+- Support for both SQL Server Authentication and Windows Authentication
+- All credentials isolated in `.env` — zero hardcoded values in source code
