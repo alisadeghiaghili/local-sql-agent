@@ -1,60 +1,46 @@
 # -*- coding: utf-8 -*-
-"""
-Local SQL Agent — Gemma 3 (Ollama) + SQL Server + LangChain
+"""LangChain SQL Agent — Gemma 3 (Ollama) + SQL Server.
 
-Usage (from repo root):
+Usage (from repo root)::
+
     python -m agents.main --prompt "How many albums are in the database?"
 """
 
-def warn(*args, **kwargs):
-    pass
+from __future__ import annotations
 
-import warnings
-warnings.warn = warn
-warnings.filterwarnings("ignore")
-
-import sys
 import argparse
 import logging
+import sys
 
-sys.path.insert(0, __import__('os').path.dirname(__import__('os').path.dirname(__file__)))
-from config import get_ollama_config, get_sqlserver_uri
+from sql_agent.config import Settings, load_env_file
 
 from langchain_ollama import ChatOllama
 from langchain.agents import AgentType
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def build_llm() -> ChatOllama:
-    """Build ChatOllama instance from environment config."""
-    cfg = get_ollama_config()
+def build_llm(cfg: Settings) -> ChatOllama:
     llm = ChatOllama(
-        model=cfg["model"],
-        base_url=cfg["base_url"],
-        temperature=cfg["temperature"],
-        top_p=cfg["top_p"],
+        model=cfg.ollama_model,
+        base_url=cfg.ollama_base_url,
+        temperature=cfg.ollama_temperature,
+        top_p=cfg.ollama_top_p,
     )
-    logger.info(f"LLM loaded: {cfg['model']} @ {cfg['base_url']}")
+    logger.info("LLM loaded: %s @ %s", cfg.ollama_model, cfg.ollama_base_url)
     return llm
 
 
-def build_db() -> SQLDatabase:
-    """Build SQLDatabase instance from environment config."""
-    uri = get_sqlserver_uri()
-    db  = SQLDatabase.from_uri(uri)
+def build_db(cfg: Settings) -> SQLDatabase:
+    db = SQLDatabase.from_uri(cfg.sqlserver_uri())
     logger.info("SQL Server connection established")
     return db
 
 
 def build_agent(llm: ChatOllama, db: SQLDatabase):
-    """Build LangChain SQL agent executor."""
     agent = create_sql_agent(
         llm=llm,
         db=db,
@@ -67,47 +53,39 @@ def build_agent(llm: ChatOllama, db: SQLDatabase):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Ask natural language questions about your SQL Server database."
-    )
-    parser.add_argument("--prompt", type=str, help="The question to send to the SQL agent")
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="Ask natural language questions about your SQL Server database.")
+    p.add_argument("--prompt", type=str, help="The question to send to the SQL agent")
+    return p.parse_args()
 
 
-def main():
+def main() -> None:
+    load_env_file()
+    cfg  = Settings()
+    cfg.validate()
     args = parse_args()
 
     if not args.prompt:
-        print("Please provide a prompt using --prompt argument")
-        print('Example: python -m agents.main --prompt "How many albums are in the database?"')
+        print('Usage: python -m agents.main --prompt "your question"')
         sys.exit(1)
 
     try:
-        logger.info("Initializing Local SQL Agent (Gemma 3 + SQL Server)...")
-        llm   = build_llm()
-        db    = build_db()
+        logger.info("Initializing Local SQL Agent...")
+        llm   = build_llm(cfg)
+        db    = build_db(cfg)
         agent = build_agent(llm, db)
 
-        logger.info(f"Query: {args.prompt}")
+        logger.info("Query: %s", args.prompt)
         result = agent.invoke(args.prompt)
 
         print("\n" + "=" * 60)
         print("Answer:", result)
         print("=" * 60 + "\n")
 
-    except ValueError as e:
-        logger.error(f"Configuration error: {e}")
-        logger.error("Steps to fix:")
-        logger.error("  1. Install Ollama — https://ollama.com")
-        logger.error("  2. Run: ollama pull gemma3:12b")
-        logger.error("  3. Copy .env.example to .env and fill in your values")
-        logger.error('  4. Run: python -m agents.main --prompt "your question"')
-        sys.exit(1)
     except KeyboardInterrupt:
         print("\n⚠️  Cancelled by user")
         sys.exit(1)
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error("Fatal error: %s", exc, exc_info=True)
         sys.exit(1)
 
 
