@@ -1,6 +1,11 @@
 .env
+exports/
 __pycache__/
 *.pyc
 *.pyo
-logs/
+logs/*.jsonl
 *.db
+.venv/
+dist/
+build/
+*.egg-info/

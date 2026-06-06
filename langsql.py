@@ -1,3 +1,3 @@
-# Moved to runners/langsql.py
-# Run: python -m runners.langsql
-raise SystemExit("Moved → python -m runners.langsql")
+# This file has been removed in prompt-accurated branch.
+# Entry point is now: app.py
+raise SystemExit("Please run: python app.py")
