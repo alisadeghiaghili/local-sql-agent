@@ -34,7 +34,8 @@ def generate_sql(question: str, system_prompt: str) -> str:
         When Ollama is unreachable after all retries.
     """
     selected_tables = retrieve_tables(question)
-    schema_context  = build_schema_context(selected_tables)
+    # lru_cache on build_schema_context requires a tuple, not a list
+    schema_context  = build_schema_context(tuple(selected_tables))
 
     full_prompt = (
         f"{system_prompt}\n\n"

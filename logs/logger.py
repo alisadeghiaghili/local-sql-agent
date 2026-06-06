@@ -20,20 +20,29 @@ _write_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
+# Expose settings at module level so tests can patch "logs.logger.settings"
+settings = cfg.settings
 
-def _log_file() -> str:
-    """Return the log file path, resolved at call-time from ``cfg.settings``.
+# Module-level path variable so tests can patch "logs.logger._LOG_FILE"
+# Initialised to empty string; _resolve_log_file() always wins at runtime.
+_LOG_FILE: str = ""
 
-    Evaluated lazily so that ``override_settings(log_dir=...)`` in tests
-    takes effect without reloading the module.
+
+def _resolve_log_file() -> str:
+    """Return the effective log file path.
+
+    Prefers the module-level ``_LOG_FILE`` override (used by tests) when it
+    is non-empty; otherwise falls back to ``settings.log_dir``.
     """
-    return os.path.join(cfg.settings.log_dir, "query_log.jsonl")
+    if _LOG_FILE:
+        return _LOG_FILE
+    return os.path.join(settings.log_dir, "query_log.jsonl")
 
 
 def save_log(log: QueryLog) -> None:
     """Append *log* as a single JSON line to the audit log file."""
-    log_file = _log_file()
-    os.makedirs(cfg.settings.log_dir, exist_ok=True)
+    log_file = _resolve_log_file()
+    os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
     line = json.dumps(log.as_dict(), ensure_ascii=False) + "\n"
     try:
         with _write_lock:

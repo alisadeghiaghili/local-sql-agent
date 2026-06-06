@@ -17,12 +17,15 @@ from database.connection import get_engine
 
 logger = logging.getLogger(__name__)
 
+# Expose settings at module level so tests can patch "database.executor.settings"
+settings = cfg.settings
+
 
 def execute_sql(sql: str) -> pd.DataFrame:
     """Run *sql* against Auction_DM and return results as a ``DataFrame``.
 
     - Sets ``LOCK_TIMEOUT`` to avoid long waits on locked rows.
-    - Caps result set at ``cfg.settings.max_rows_returned``.
+    - Caps result set at ``settings.max_rows_returned``.
 
     Raises
     ------
@@ -30,13 +33,15 @@ def execute_sql(sql: str) -> pd.DataFrame:
         Wraps any ``SQLAlchemyError`` with a clean message.
     """
     engine     = get_engine()
-    timeout_ms = cfg.settings.query_timeout_seconds * 1_000
+    # Always read through the module-level name so patches take effect
+    _settings  = settings
+    timeout_ms = _settings.query_timeout_seconds * 1_000
 
     try:
         with engine.connect() as conn:
             conn.execute(text(f"SET LOCK_TIMEOUT {timeout_ms}"))
-            result = conn.execute(text(sql))
-            rows   = result.fetchmany(cfg.settings.max_rows_returned)
+            result  = conn.execute(text(sql))
+            rows    = result.fetchmany(_settings.max_rows_returned)
             columns = list(result.keys())
     except SQLAlchemyError as exc:
         logger.error("SQL execution failed: %s", exc)

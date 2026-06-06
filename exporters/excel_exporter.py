@@ -13,6 +13,9 @@ import pandas as pd
 
 import config as cfg
 
+# Expose settings at module level so tests can patch "exporters.excel_exporter.settings"
+settings = cfg.settings
+
 
 def export_excel(df: pd.DataFrame) -> str:
     """Write *df* to ``<EXPORT_DIR>/result_YYYYMMDD_HHMMSS.xlsx``.
@@ -22,9 +25,11 @@ def export_excel(df: pd.DataFrame) -> str:
     str
         Absolute path of the created file.
     """
-    os.makedirs(cfg.settings.export_dir, exist_ok=True)
+    # Always read through the module-level name so patches take effect
+    _settings = settings
+    os.makedirs(_settings.export_dir, exist_ok=True)
     filename = os.path.join(
-        cfg.settings.export_dir,
+        _settings.export_dir,
         f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
     )
 

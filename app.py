@@ -12,6 +12,7 @@ Environment::
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 from datetime import datetime
@@ -72,6 +73,12 @@ def _enforce_rate_limit() -> None:
 _SEP = "=" * 60
 
 
+def _round_half_up(value: float, decimals: int) -> float:
+    """Round *value* to *decimals* places using half-up (not banker's) rounding."""
+    multiplier = 10 ** decimals
+    return math.floor(value * multiplier + 0.5) / multiplier
+
+
 def _make_log(
     question: str,
     sql: str,
@@ -89,7 +96,7 @@ def _make_log(
         status=status,          # type: ignore[arg-type]
         excel_file=excel_file,
         row_count=row_count,
-        execution_time_seconds=round(elapsed, 3),
+        execution_time_seconds=_round_half_up(elapsed, 3),
         error_message=error,
     )
 
