@@ -35,6 +35,9 @@ _SELECT_START_RE = re.compile(r"(SELECT|WITH)\b", re.IGNORECASE)
 _TOP_DISTINCT_RE = re.compile(
     r"SELECT\s+TOP\s+(\d+)\s+DISTINCT", re.IGNORECASE
 )
+# Matches a trailing " LIMIT n" with optional surrounding whitespace /
+# semicolons so it can be stripped without leaving a dangling space.
+_LIMIT_STRIP_RE  = re.compile(r"\s*\bLIMIT\s+\d+\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +50,14 @@ def clean_sql(raw: str) -> str:
     Steps applied in order:
     1. Strip markdown code fences.
     2. Extract the first SELECT / CTE block (drops preamble prose).
-    3. Convert LIMIT n  →  TOP n.
+    3. Convert ``LIMIT n`` → ``TOP n``.
+
+       - If the query has **no** TOP yet: inject ``TOP n`` right after
+         the first SELECT keyword and strip the ``LIMIT n`` clause.
+       - If the query **already** has TOP: the ``LIMIT n`` clause is
+         redundant.  Strip it cleanly (including surrounding whitespace)
+         so the SQL remains valid.
+
     4. Fix ``SELECT TOP n DISTINCT``  →  ``SELECT DISTINCT TOP n``.
 
     Raises
@@ -68,14 +78,22 @@ def clean_sql(raw: str) -> str:
         raise ValueError(f"No SELECT / CTE found in model response: {sql[:200]!r}")
     sql = sql[start.start():].strip()
 
-    # 3. LIMIT n → TOP n  (must appear before SELECT)
-    def _limit_to_top(m: re.Match) -> str:          # noqa: ANN001
-        n = m.group(1)
-        if not _TOP_RE.search(sql):
-            return f"TOP {n}"
-        return ""   # already has TOP — just drop LIMIT
-
-    sql = _LIMIT_RE.sub(_limit_to_top, sql)
+    # 3. LIMIT n → TOP n
+    #
+    # Evaluate _TOP_RE *before* any substitution so the decision is based
+    # on the original query, not on a partially-rewritten one.
+    if _LIMIT_RE.search(sql):
+        if _TOP_RE.search(sql):
+            # Already has TOP — just strip LIMIT cleanly (no double row-cap).
+            sql = _LIMIT_STRIP_RE.sub("", sql)
+        else:
+            # No TOP yet — inject it after SELECT and remove LIMIT.
+            limit_n = _LIMIT_RE.search(sql).group(1)   # type: ignore[union-attr]
+            sql = _LIMIT_STRIP_RE.sub("", sql)
+            sql = re.sub(
+                r"\bSELECT\b", f"SELECT TOP {limit_n}",
+                sql, count=1, flags=re.IGNORECASE,
+            )
 
     # 4. SELECT TOP n DISTINCT  →  SELECT DISTINCT TOP n
     sql = _TOP_DISTINCT_RE.sub(
@@ -124,7 +142,6 @@ def ensure_top(sql: str, n: int = 100) -> str:
     """
     if _TOP_RE.search(sql):
         return sql
-    # Insert after first SELECT keyword
     return re.sub(
         r"\bSELECT\b", f"SELECT TOP {n}", sql, count=1, flags=re.IGNORECASE
     )

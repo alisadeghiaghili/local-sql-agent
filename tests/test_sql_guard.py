@@ -42,6 +42,30 @@ class TestCleanSql:
         assert "LIMIT" not in result.upper()
         assert "TOP 50" in result.upper()
 
+    def test_limit_to_top_produces_valid_sql(self):
+        """Converted SQL must end cleanly — no trailing space or empty token."""
+        raw = "SELECT Name FROM [dbo].[T] LIMIT 50"
+        result = clean_sql(raw)
+        assert result == result.strip()
+        assert not result.endswith(" ")
+
+    def test_limit_dropped_when_top_already_present(self):
+        """Bug fix: when TOP exists, LIMIT must be stripped cleanly."""
+        raw = "SELECT TOP 10 Name FROM [dbo].[T] LIMIT 10"
+        result = clean_sql(raw)
+        assert "LIMIT" not in result.upper()
+        assert "TOP 10" in result.upper()
+        # The column list must still be intact
+        assert "Name" in result
+        assert "[dbo].[T]" in result
+
+    def test_limit_dropped_preserves_where_clause(self):
+        raw = "SELECT Name FROM [dbo].[T] WHERE Active=1 LIMIT 20"
+        result = clean_sql(raw)
+        assert "LIMIT" not in result.upper()
+        assert "WHERE Active=1" in result
+        assert "TOP 20" in result.upper()
+
     def test_fixes_top_distinct_order(self):
         raw = "SELECT TOP 10 DISTINCT [Name] FROM [dbo].[T]"
         result = clean_sql(raw)
@@ -67,10 +91,6 @@ class TestValidateSql:
     def test_valid_cte_query(self):
         validate_sql("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte")
 
-    # --- queries that don't start with SELECT/WITH are caught by the
-    #     first guard ("Only SELECT / CTE queries are allowed").
-    #     We just assert that a ValueError is raised, not the exact message.
-
     def test_blocks_delete(self):
         with pytest.raises(ValueError):
             validate_sql("DELETE FROM [dbo].[Users]")
@@ -91,9 +111,6 @@ class TestValidateSql:
         with pytest.raises(ValueError):
             validate_sql("EXEC sp_helptext 'myProc'")
 
-    # --- forbidden keywords embedded inside a SELECT are caught by the
-    #     keyword scan; message includes the keyword name.
-
     def test_blocks_delete_embedded_in_select(self):
         with pytest.raises(ValueError, match="DELETE"):
             validate_sql("SELECT * FROM t WHERE DELETE FROM t")
@@ -105,8 +122,6 @@ class TestValidateSql:
     def test_blocks_update_embedded_in_select(self):
         with pytest.raises(ValueError, match="UPDATE"):
             validate_sql("SELECT * FROM t; UPDATE t SET x=1")
-
-    # --- system catalogue checks
 
     def test_blocks_information_schema(self):
         with pytest.raises(ValueError, match="INFORMATION_SCHEMA"):
@@ -146,3 +161,28 @@ class TestEnsureTop:
         sql    = "SELECT TOP 5 Name FROM [dbo].[T]"
         result = ensure_top(ensure_top(sql, 20), 20)
         assert result.upper().count("TOP") == 1
+
+
+# ---------------------------------------------------------------------------
+# dispose_engine
+# ---------------------------------------------------------------------------
+
+class TestDisposeEngine:
+    def test_dispose_when_cache_empty_does_not_raise(self):
+        """dispose_engine() must be safe to call before get_engine()."""
+        from database.connection import dispose_engine, get_engine
+        get_engine.cache_clear()   # ensure clean state
+        dispose_engine()           # should not raise
+
+    def test_dispose_clears_cache(self):
+        from unittest.mock import patch, MagicMock
+        from database.connection import dispose_engine, get_engine
+
+        mock_engine = MagicMock()
+        with patch("database.connection.create_engine", return_value=mock_engine):
+            get_engine.cache_clear()
+            get_engine()                          # populate cache
+            assert get_engine.cache_info().currsize == 1
+            dispose_engine()
+            assert get_engine.cache_info().currsize == 0
+            mock_engine.dispose.assert_called_once()
