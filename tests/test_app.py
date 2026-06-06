@@ -52,7 +52,7 @@ class TestMakeLog:
         assert log.status                == "SUCCESS"
         assert log.excel_file            == "/tmp/x.xlsx"
         assert log.row_count             == 5
-        assert log.execution_time_seconds == 1.235   # rounded to 3 dp
+        assert log.execution_time_seconds == 1.235   # rounded half-up to 3 dp
         assert log.error_message         is None
 
     def test_elapsed_rounded_to_3dp(self):
@@ -165,12 +165,10 @@ class TestEnforceRateLimit:
     def test_waits_when_called_too_quickly(self, capsys):
         """Simulate two calls 0.5 s apart — expect sleep(≈1.5)."""
         self._reset()
-        # First call at t=1000 — sets _last_query_time
         with patch("app.time.monotonic", return_value=1_000.0), \
              patch("app.time.sleep"):
             app._enforce_rate_limit()
 
-        # Second call at t=1000.5 — only 0.5 s elapsed, need 2 s
         sleep_calls: list[float] = []
         with patch("app.time.monotonic", return_value=1_000.5), \
              patch("app.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
@@ -235,11 +233,7 @@ class TestLoadSystemPrompt:
 # ===========================================================================
 
 class TestMainRepl:
-    """Feed synthetic input lines and assert on stdout + side-effects.
-
-    All external calls (generate_sql, execute_sql, export_excel, save_log)
-    are mocked.  _enforce_rate_limit is also mocked to avoid sleep() calls.
-    """
+    """Feed synthetic input lines and assert on stdout + side-effects."""
 
     def _run_main(
         self,
@@ -250,14 +244,22 @@ class TestMainRepl:
         df_columns: list[str] = None,
         generate_side_effect=None,
     ):
-        """Run main() with mocked I/O and return (stdout, mock objects)."""
+        """Run main() with mocked I/O and return (stdout, mock_save)."""
         df_rows    = df_rows    or [("Alice",)]
         df_columns = df_columns or ["Name"]
         mock_df    = pd.DataFrame(df_rows, columns=df_columns)
 
-        input_iter = iter(input_lines)
+        # Each question needs 2 perf_counter calls (start + end).
+        # Count non-exit lines that will actually run a query.
+        n_questions = sum(
+            1 for l in input_lines
+            if l and l.lower() not in ("exit", "quit")
+        )
+        perf_values = []
+        for _ in range(n_questions):
+            perf_values += [0.0, 1.5]
 
-        with patch("builtins.input", side_effect=input_iter), \
+        with patch("builtins.input", side_effect=iter(input_lines)), \
              patch.object(app, "_load_system_prompt", return_value="SYS"), \
              patch.object(app, "_enforce_rate_limit"), \
              patch("app.generate_sql",
@@ -266,8 +268,7 @@ class TestMainRepl:
              patch("app.execute_sql",   return_value=mock_df), \
              patch("app.export_excel",  return_value="/tmp/result.xlsx"), \
              patch("app.save_log") as mock_save, \
-             patch("app.time.perf_counter", side_effect=[0.0, 1.5]):
-            from io import StringIO
+             patch("app.time.perf_counter", side_effect=perf_values):
             import sys
             captured = StringIO()
             old_stdout = sys.stdout
@@ -427,7 +428,6 @@ class TestMainRepl:
              patch("app.save_log") as mock_save, \
              patch("app.time.perf_counter",
                    side_effect=[0.0, 1.0, 0.0, 1.0]):
-            from io import StringIO
             import sys
             buf = StringIO()
             sys.stdout, old = buf, sys.stdout
