@@ -19,6 +19,7 @@ Ask questions in Persian or English — get SQL Server queries and Excel exports
 - [Security](#security)
 - [Logging](#logging)
 - [Testing](#testing)
+- [Maintenance — Synonym Gaps](#maintenance--synonym-gaps)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -28,10 +29,11 @@ Ask questions in Persian or English — get SQL Server queries and Excel exports
 - **Bilingual** — accepts questions in Persian (Farsi) and English
 - **Local LLM** — powered by [Ollama](https://ollama.com); no data leaves your network
 - **SQL Server** — generates T-SQL with bracket notation, TOP, CTEs, ROW_NUMBER()
-- **Smart schema injection** — keyword + bigram retriever selects only relevant tables per question
+- **Smart schema injection** — TF-IDF + synonym expansion retriever selects only relevant tables per question; handles temporal terms (`بهار`, `فصل`, `quarterly`) and domain aliases automatically
 - **SQL guard** — blocks all DML/DDL, system catalogues, and LIMIT clauses before execution
 - **Excel export** — every result saved to a timestamped `.xlsx` with auto-fitted columns
-- **Structured logging** — every query logged to `logs/query_log.jsonl` (JSONL format)
+- **Structured logging** — every query logged to `logs/query_log.jsonl` (thread-safe, JSONL format)
+- **Rate-limit** — 2-second inter-query debounce prevents accidental rapid-fire LLM calls
 - **Zero dependencies beyond pip** — no vector DB, no embeddings server
 
 ---
@@ -43,18 +45,19 @@ User Question
      │
      ▼
 ┌─────────────────────────────────────────┐
-│              app.py  (REPL)             │
+│              app.py  (REPL)             │  ← rate-limit debounce
 └──────────────┬──────────────────────────┘
                │
      ┌─────────▼──────────┐
      │  llm/ollama_client │  ← Retry + back-off
      └─────────┬──────────┘
                │  build prompt
-     ┌─────────▼──────────────────────┐
-     │  schema/retriever              │  ← Keyword + bigram match
-     │  schema/schema_registry        │  ← Cached context builder
-     │  prompts/system_prompt.md      │
-     └─────────┬──────────────────────┘
+     ┌─────────▼──────────────────────────┐
+     │  schema/retriever                  │  ← TF-IDF + synonym expansion
+     │  schema/synonyms                   │  ← 100+ Persian/English mappings
+     │  schema/schema_registry            │  ← Cached context builder
+     │  prompts/system_prompt.md          │
+     └─────────┬──────────────────────────┘
                │  raw LLM response
      ┌─────────▼──────────┐
      │ security/sql_guard │  ← clean_sql() + validate_sql()
@@ -64,9 +67,9 @@ User Question
      │ database/executor  │  ← SQLAlchemy + LOCK_TIMEOUT
      └─────────┬──────────┘
                │  DataFrame
-     ┌─────────▼──────────┐   ┌──────────────────┐
-     │ exporters/excel    │   │ logs/logger       │
-     └────────────────────┘   └──────────────────┘
+     ┌─────────▼──────────┐   ┌──────────────────────┐
+     │ exporters/excel    │   │ logs/logger           │  ← threading.Lock
+     └────────────────────┘   └──────────────────────┘
 ```
 
 ---
@@ -75,16 +78,16 @@ User Question
 
 ```
 local-sql-agent/
-├── app.py                    # Entry point — interactive REPL
-├── config.py                 # Settings dataclass (env-var driven)
-├── requirements.txt          # Python dependencies
-├── .env.example              # Environment variable template
+├── app.py                    # Entry point — interactive REPL (+ rate-limit)
+├── config.py                 # Settings dataclass + override_settings() for tests
+├── requirements.txt
+├── .env.example
 ├── .gitignore
 ├── README.md
 ├── CHANGELOG.md
 │
 ├── database/
-│   ├── connection.py         # SQLAlchemy engine factory (cached)
+│   ├── connection.py         # SQLAlchemy engine factory (cached, safe dispose)
 │   └── executor.py           # SQL execution + row-cap + error wrapping
 │
 ├── exporters/
@@ -94,7 +97,7 @@ local-sql-agent/
 │   └── ollama_client.py      # Ollama HTTP client (retry + back-off)
 │
 ├── logs/
-│   ├── logger.py             # Append to query_log.jsonl
+│   ├── logger.py             # Thread-safe append to query_log.jsonl
 │   └── query_log.py          # QueryLog dataclass
 │
 ├── prompts/
@@ -107,18 +110,28 @@ local-sql-agent/
 │   ├── table_schemas.py      # Column definitions per table
 │   ├── relationships.py      # FK relationships injected into prompt
 │   ├── business_rules.py     # Domain-specific SQL rules
-│   ├── retriever.py          # Keyword + bigram table selector
+│   ├── synonyms.py           # Persian/English synonym map (100+ entries)
+│   ├── retriever.py          # TF-IDF + synonym expansion table selector
 │   └── schema_registry.py    # Builds + caches schema context string
+│
+├── scripts/
+│   ├── create_db.py          # Generate sample.db for local testing
+│   └── analyze_misses.py     # Detect synonym gaps from query logs
 │
 ├── security/
 │   └── sql_guard.py          # clean_sql() + validate_sql() + ensure_top()
 │
-├── scripts/
-│   └── create_db.py          # Generate sample.db for local testing
-│
 └── tests/
-    ├── test_config.py        # Settings dataclass tests
-    └── test_sql_guard.py     # SQL guard tests (clean, validate, ensure_top)
+    ├── test_config.py        # Settings + override_settings() + thread-safety
+    ├── test_sql_guard.py     # clean_sql, validate_sql, ensure_top, dispose_engine
+    ├── test_logger.py        # Thread-safe concurrent write test
+    ├── test_retriever.py     # TF-IDF scoring + synonym expansion
+    ├── test_executor.py
+    ├── test_excel_exporter.py
+    ├── test_ollama_client.py
+    ├── test_query_log.py
+    ├── test_schema_registry.py
+    └── test_analyze_misses.py
 ```
 
 ---
@@ -194,7 +207,22 @@ mssql+pyodbc://@server/Auction_DM?driver=ODBC+Driver+17+for+SQL+Server&trusted_c
 
 ### 1. Table Retrieval
 
-The `schema/retriever.py` module scores each of the 29 registered tables by matching **unigrams and bigrams** from the question against each table's Persian/English description. Only the top-6 most relevant tables are included in the prompt — keeping token count low and accuracy high.
+`schema/retriever.py` uses a **three-layer pipeline** to select the most relevant tables:
+
+1. **Synonym expansion** (`schema/synonyms.py`) — 100+ Persian/English mappings expand the question before scoring. `بهار` → `فصل تاریخ`, `حجم` → `معامله قرارداد`, etc.
+2. **TF-IDF scoring** — each token is weighted by inverse document frequency across all table descriptions. Rare domain terms score higher than common words like `معامله`.
+3. **Always-include rules** — temporal signals (`بهار`, `تابستان`, `quarterly`, `دوره`) always include `Date`; ring/hall signals always include `Ring`. No scoring required.
+
+Only the top-N most relevant tables are included in the prompt, keeping token count low and accuracy high.
+
+**Example:** `«بیشترین حجم معامله در تالار پتروشیمی در فصل بهار»`
+
+| Token | Expansion | Table selected |
+|---|---|---|
+| `بهار` | → `فصل، تاریخ` | **Date** ✅ |
+| `حجم` | → `معامله، قرارداد` | **Contract** ✅ |
+| `تالار` | direct | **Ring** ✅ |
+| `پتروشیمی` | → `تالار، رینگ` | **Ring** ✅ (reinforced) |
 
 ### 2. Prompt Construction
 
@@ -208,7 +236,7 @@ For each query, the prompt is assembled from:
 
 The raw LLM output passes through `security/sql_guard.py`:
 
-1. **`clean_sql()`** — strips markdown fences, drops prose preamble, converts `LIMIT n` → `TOP n`, fixes `SELECT TOP n DISTINCT` → `SELECT DISTINCT TOP n`
+1. **`clean_sql()`** — strips markdown fences, drops prose preamble, converts `LIMIT n` → `TOP n` (with correct handling when `TOP` already exists), fixes `SELECT TOP n DISTINCT` → `SELECT DISTINCT TOP n`
 2. **`validate_sql()`** — rejects DELETE / UPDATE / INSERT / DROP / ALTER / TRUNCATE / MERGE / EXEC / XP_ / SP_ / INFORMATION_SCHEMA / SYS. / LIMIT
 
 ### 4. Execution
@@ -221,7 +249,7 @@ The raw LLM output passes through `security/sql_guard.py`:
 ### 5. Export & Logging
 
 - Results saved to `exports/result_YYYYMMDD_HHMMSS.xlsx` with auto-fitted column widths
-- Every query (success, error, out-of-scope) appended to `logs/query_log.jsonl`
+- Every query (success, error, out-of-scope) appended to `logs/query_log.jsonl` — writes are serialised with a `threading.Lock` so concurrent callers never interleave JSON lines
 
 ---
 
@@ -278,6 +306,8 @@ Every query is appended to `logs/query_log.jsonl` as a single JSON line:
 
 **Status values:** `SUCCESS` | `ERROR` | `OUT_OF_SCOPE`
 
+Writes are protected by a `threading.Lock` — safe for concurrent access in future web deployments.
+
 ---
 
 ## Testing
@@ -289,8 +319,67 @@ pytest tests/ -v
 
 | Test file | What it covers |
 |---|---|
-| `tests/test_config.py` | `Settings` dataclass — validation, defaults, placeholder detection |
-| `tests/test_sql_guard.py` | `clean_sql()`, `validate_sql()`, `ensure_top()` — 20 test cases |
+| `test_config.py` | `Settings` defaults, validation, `override_settings()` context manager, restore-on-exception |
+| `test_sql_guard.py` | `clean_sql()` (LIMIT→TOP, TOP+LIMIT edge case, markdown strips), `validate_sql()`, `ensure_top()`, `dispose_engine()` |
+| `test_logger.py` | Sequential and concurrent (20 threads) write correctness |
+| `test_retriever.py` | TF-IDF scoring, synonym expansion, always-include rules |
+| `test_executor.py` | Row cap, timeout, error wrapping |
+| `test_excel_exporter.py` | File creation, column widths |
+| `test_ollama_client.py` | Retry logic, response parsing |
+| `test_query_log.py` | `as_dict()` serialisation |
+| `test_schema_registry.py` | Context string building |
+| `test_analyze_misses.py` | SQL table extraction, candidate token filtering, miss detection |
+
+### Testing with patched settings
+
+Use `override_settings()` instead of manipulating `lru_cache` directly:
+
+```python
+from config import override_settings
+
+def test_row_cap():
+    with override_settings(max_rows_returned=5) as s:
+        assert s.max_rows_returned == 5
+    # original settings restored automatically
+```
+
+---
+
+## Maintenance — Synonym Gaps
+
+As real queries accumulate, some questions will cause the retriever to miss tables.
+Run the analyser periodically to detect gaps and get actionable fix suggestions:
+
+```bash
+# Analyse default log + print report
+python scripts/analyze_misses.py
+
+# Save JSON report
+python scripts/analyze_misses.py --out logs/gaps.json
+
+# Only show tables missed 2+ times
+python scripts/analyze_misses.py --min-misses 2
+
+# Dry-run (no file output)
+python scripts/analyze_misses.py --dry-run
+```
+
+**Sample output:**
+
+```
+================================================================
+ Synonym Gap Report
+================================================================
+ Total miss events : 3
+
+  │ Table : Date  (missed 3x)
+  │ Suggested synonym candidates (add to schema/synonyms.py):
+  │   'نوروزی'                →  ["date"]   # freq=2
+  │   'بودجه‌ای'              →  ["date"]   # freq=1
+================================================================
+```
+
+Copy the suggested lines directly into `schema/synonyms.py` and re-run the tests.
 
 ---
 
@@ -304,3 +393,4 @@ pytest tests/ -v
 | `Forbidden keyword` | Model generated a write query — try rephrasing or check system prompt |
 | Empty results | Data may not exist for the requested period; try without date filters |
 | Excel not saved | Check `EXPORT_DIR` has write permission |
+| Retriever misses a table | Run `python scripts/analyze_misses.py` and add suggested synonyms |
