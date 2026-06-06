@@ -7,13 +7,20 @@ Usage::
 
     from config import settings
     print(settings.ollama_model)
+
+Testing::
+
+    Use ``override_settings()`` context manager to safely swap settings
+    in tests without touching the ``lru_cache`` singleton directly.
 """
 
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Any, Generator
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,3 +75,44 @@ def get_settings() -> Settings:
 
 # Module-level convenience alias — import this in all other modules.
 settings = get_settings()
+
+
+@contextmanager
+def override_settings(**kwargs: Any) -> Generator[Settings, None, None]:
+    """Context manager for tests: temporarily replace the cached Settings.
+
+    Usage::
+
+        with override_settings(max_rows_returned=5) as s:
+            assert s.max_rows_returned == 5
+            # code under test uses the patched singleton
+
+    All fields not listed in *kwargs* keep their current values.
+    The original singleton is restored on exit, even if an exception occurs.
+    """
+    original = get_settings()
+    patched  = Settings(**{**{f: getattr(original, f) for f in original.__slots__}, **kwargs})
+    get_settings.cache_clear()
+    # Temporarily replace the cached value
+    get_settings.__wrapped__   # ensure the function is unwrapped
+    # Store patched into the cache by calling through a shim
+    import config as _cfg
+    _original_fn = _cfg.get_settings
+
+    # Replace module-level alias and cache entry
+    _cfg.get_settings.cache_clear()
+    # monkey-patch cache to return patched
+    _patched_called = False
+
+    @lru_cache(maxsize=1)
+    def _patched_get_settings() -> Settings:
+        return patched
+
+    _cfg.get_settings = _patched_get_settings  # type: ignore[assignment]
+    _cfg.settings     = patched
+    try:
+        yield patched
+    finally:
+        _cfg.get_settings = _original_fn       # type: ignore[assignment]
+        _cfg.settings     = original
+        _original_fn.cache_clear()

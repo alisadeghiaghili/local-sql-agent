@@ -48,6 +48,31 @@ def _load_system_prompt() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Rate-limit / debounce
+# ---------------------------------------------------------------------------
+# Minimum seconds that must elapse between two consecutive queries.
+# Prevents accidental rapid-fire calls to Ollama + SQL Server.
+_MIN_INTERVAL_SECONDS: float = 2.0
+_last_query_time: float = 0.0
+
+
+def _enforce_rate_limit() -> None:
+    """Block until the minimum inter-query interval has elapsed.
+
+    Prints a short countdown so the user knows they need to wait.
+    The 2-second window is intentionally short for a REPL but still
+    prevents accidental double-submissions and protects the LLM endpoint.
+    """
+    global _last_query_time
+    elapsed = time.monotonic() - _last_query_time
+    remaining = _MIN_INTERVAL_SECONDS - elapsed
+    if remaining > 0:
+        print(f"\u23f3  Please wait {remaining:.1f}s before the next query...")
+        time.sleep(remaining)
+    _last_query_time = time.monotonic()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -114,7 +139,7 @@ def main() -> None:
 
     while True:
         try:
-            question = input("\n❓ Question: ").strip()
+            question = input("\n\u2753 Question: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n\nBye.")
             break
@@ -122,6 +147,8 @@ def main() -> None:
         if not question or question.lower() in ("exit", "quit"):
             print("Bye.")
             break
+
+        _enforce_rate_limit()
 
         sql    = ""
         start  = time.perf_counter()
@@ -135,8 +162,8 @@ def main() -> None:
             elapsed = time.perf_counter() - start
 
             excel_file = export_excel(df)
-            print(f"\n📁 Excel saved: {excel_file}")
-            print(f"⏱  Elapsed    : {elapsed:.2f}s")
+            print(f"\n\U0001f4c1 Excel saved: {excel_file}")
+            print(f"\u23f1  Elapsed    : {elapsed:.2f}s")
 
             _print_results(df)
 
@@ -152,21 +179,21 @@ def main() -> None:
             msg     = str(exc)
             if msg == "OUT_OF_SCOPE":
                 save_log(_make_log(question, "", "OUT_OF_SCOPE", error=msg, elapsed=elapsed))
-                print("\n⚠️  This system only answers Auction database analytics questions.")
+                print("\n\u26a0\ufe0f  This system only answers Auction database analytics questions.")
             else:
                 save_log(_make_log(question, sql, "ERROR", error=msg, elapsed=elapsed))
-                print(f"\n❌ Validation error: {msg}")
+                print(f"\n\u274c Validation error: {msg}")
 
         except RuntimeError as exc:
             elapsed = time.perf_counter() - start
             save_log(_make_log(question, sql, "ERROR", error=str(exc), elapsed=elapsed))
-            print(f"\n❌ Runtime error: {exc}")
+            print(f"\n\u274c Runtime error: {exc}")
 
         except Exception as exc:           # noqa: BLE001
             elapsed = time.perf_counter() - start
             save_log(_make_log(question, sql, "ERROR", error=str(exc), elapsed=elapsed))
             logger.exception("Unexpected error")
-            print(f"\n❌ Unexpected error: {exc}")
+            print(f"\n\u274c Unexpected error: {exc}")
 
 
 if __name__ == "__main__":
