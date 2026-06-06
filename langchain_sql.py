@@ -1,3 +1,3 @@
-# Moved to agents/langchain_sql.py
-# Run: python -m agents.langchain_sql --prompt '...'
-raise SystemExit("Moved → python -m agents.langchain_sql --prompt '...'")
+# This file has been removed in prompt-accurated branch.
+# Entry point is now: app.py
+raise SystemExit("Please run: python app.py")
