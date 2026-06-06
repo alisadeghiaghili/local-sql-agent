@@ -3,7 +3,8 @@
 Secure Configuration Module for Local SQL Agent (Gemma 3 via Ollama + SQL Server).
 
 Usage:
-    from config import get_ollama_config, get_sqlserver_uri
+    from config import get_ollama_config, get_sqlserver_uri, load_env_file
+    load_env_file()
 """
 
 import os
@@ -50,10 +51,11 @@ def get_ollama_config() -> dict:
     """
     Read Ollama config from environment.
 
-    Required:
+    Required env vars:
         OLLAMA_MODEL    : e.g. gemma3:12b
-    Optional:
-        OLLAMA_BASE_URL    : default http://localhost:11434
+        OLLAMA_BASE_URL : e.g. http://localhost:11434
+
+    Optional env vars:
         OLLAMA_TEMPERATURE : default 0.2
         OLLAMA_TOP_P       : default 0.95
     """
@@ -77,17 +79,18 @@ def get_ollama_config() -> dict:
 
 def get_sqlserver_uri() -> str:
     """
-    Build SQL Server URI from environment variables.
+    Build SQL Server connection URI from environment variables.
 
-    Required:
+    Required env vars:
         DB_SERVER   : server hostname or IP
         DB_NAME     : database name
         DB_USER     : SQL Server username
         DB_PASSWORD : SQL Server password
-    Optional:
-        DB_PORT               : default 1433
-        DB_DRIVER             : default ODBC Driver 17 for SQL Server
-        DB_TRUSTED_CONNECTION : set to yes for Windows Auth
+
+    Optional env vars:
+        DB_PORT   : default 1433
+        DB_DRIVER : default ODBC Driver 17 for SQL Server
+        DB_TRUSTED_CONNECTION : set to 'yes' to use Windows Auth (no password needed)
     """
     server   = os.getenv("DB_SERVER")
     database = os.getenv("DB_NAME")
@@ -102,7 +105,7 @@ def get_sqlserver_uri() -> str:
     if not database: missing.append("DB_NAME")
     if not user:     missing.append("DB_USER")
     if not password and trusted != "yes":
-        missing.append("DB_PASSWORD  (or set DB_TRUSTED_CONNECTION=yes)")
+        missing.append("DB_PASSWORD (or set DB_TRUSTED_CONNECTION=yes)")
 
     if missing:
         raise ValueError(
@@ -147,8 +150,8 @@ def print_config_status() -> None:
         print(f"  {var}: {val or '✗ Not set'}")
 
     print("\nSQL Server:")
-    for var in ["DB_SERVER", "DB_PORT", "DB_NAME", "DB_USER",
-                "DB_DRIVER", "DB_TRUSTED_CONNECTION", "DB_PASSWORD"]:
+    for var in ["DB_SERVER", "DB_PORT", "DB_NAME", "DB_USER", "DB_DRIVER",
+                "DB_TRUSTED_CONNECTION", "DB_PASSWORD"]:
         val = os.getenv(var)
         if val and "PASSWORD" in var:
             print(f"  {var}: {'*' * min(len(val), 8)}")
@@ -158,7 +161,6 @@ def print_config_status() -> None:
     print("\n" + "=" * 60 + "\n")
 
 
-# Auto-load .env when module is imported
 load_env_file()
 
 
@@ -167,7 +169,7 @@ if __name__ == "__main__":
     try:
         print_config_status()
         cfg = get_ollama_config()
-        print(f"✓ Ollama: model={cfg['model']}, url={cfg['base_url']}")
+        print(f"✓ Ollama config: model={cfg['model']}, url={cfg['base_url']}")
         uri = get_sqlserver_uri()
         print("✓ SQL Server URI built successfully")
     except ValueError as e:
