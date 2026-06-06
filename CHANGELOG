@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ***
 
+## [0.2.0] - 2026-06-06
+
+### Added
+- `langchain-sql.py` — advanced SQL Server NLQ agent with full SQL validation pipeline:
+  - `extract_sql()`: multi-strategy SQL extractor (fenced block, first-SELECT, fallback)
+  - `normalize_table_references()`: auto-corrects 2-part refs to 3-part `[DB].[Schema].[Table]`
+  - `validate_sql()`: blocks dangerous keywords, enforces SELECT-only, checks allowed tables
+  - Configurable `ALLOWED_TABLES` list for access control
+  - Global connection cache for LLM, engine, and database objects
+- `langsql.py` — Auction DB NLQ engine using raw Ollama HTTP API (no LangChain agent):
+  - `repair_sql()`: auto-fixes LIMIT→TOP and DISTINCT/TOP ordering
+  - Interactive REPL loop with retry logic (3 attempts on Ollama timeout)
+  - Returns results as pandas DataFrame with lock timeout set
+- `nlq_with_sqlite.py` — SQLite backend variant for local testing without SQL Server
+- `prompt_based_nlq.py` — prompt-driven SQL Server agent using `config.py` credentials
+- `simple_nlq.py` — minimal single-question SQL Server agent for quick smoke tests
+- `create_db.py` — script to generate a sample SQLite database (customers + orders tables)
+- `sample.db` — prebuilt SQLite sample database for immediate local testing
+
+### Changed
+- `config.py`: improved docstrings; `OLLAMA_BASE_URL` now documented as optional with default `http://localhost:11434`; `get_ollama_config()` usage example updated
+
+***
+
 ## [0.1.0] - 2026-04-10
 
 ### Added
