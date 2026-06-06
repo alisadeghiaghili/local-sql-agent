@@ -2,30 +2,79 @@ import os
 import re
 import requests
 import pandas as pd
+from urllib.parse import quote_plus
 from sqlalchemy import create_engine, text
+
 
 # =========================================================
 # CONFIG
+# No hardcoded fallbacks for sensitive values.
+# Copy .env.example to .env and fill in your values.
 # =========================================================
 
-OLLAMA_URL = "http://ai.ime.co.ir/ollama/api/generate"
-OLLAMA_MODEL = "gpt-oss:20b"
+OLLAMA_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") + "/api/generate"
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
 
-DB_CONNECTION_URL = (
-    "mssql+pyodbc://bahmanabadi.m@172.16.3.18:1433/AuctionNlq"
-    "?driver=ODBC+Driver+17+for+SQL+Server"
-    "&trusted_connection=yes"
-)
+DB_SERVER  = os.getenv("DB_SERVER")
+DB_NAME    = os.getenv("DB_NAME")
+DB_USER    = os.getenv("DB_USER")
+DB_PORT    = os.getenv("DB_PORT", "1433")
+DB_DRIVER  = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+DB_TRUSTED = os.getenv("DB_TRUSTED_CONNECTION", "").lower()
+DB_PASS    = os.getenv("DB_PASSWORD", "")
 
-# =========================================================
-# DATABASE CONNECTION
-# =========================================================
 
-engine = create_engine(
-    DB_CONNECTION_URL,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-)
+def _validate_env() -> None:
+    """Raise ValueError if any required environment variable is missing."""
+    required = [
+        ("OLLAMA_MODEL", OLLAMA_MODEL),
+        ("DB_SERVER",    DB_SERVER),
+        ("DB_NAME",      DB_NAME),
+        ("DB_USER",      DB_USER),
+    ]
+    if DB_TRUSTED != "yes":
+        required.append(("DB_PASSWORD", DB_PASS))
+
+    missing = [name for name, val in required if not val]
+    if missing:
+        raise ValueError(
+            f"❌ Missing required environment variables: {', '.join(missing)}\n"
+            f"Copy .env.example to .env and fill in your values."
+        )
+
+
+def _build_connection_url() -> str:
+    """Build SQL Server connection URL from environment variables."""
+    driver_enc = quote_plus(DB_DRIVER)
+    user_enc   = quote_plus(DB_USER)
+
+    if DB_TRUSTED == "yes":
+        return (
+            f"mssql+pyodbc://{user_enc}@{DB_SERVER}:{DB_PORT}/{DB_NAME}"
+            f"?driver={driver_enc}&trusted_connection=yes"
+        )
+    pass_enc = quote_plus(DB_PASS)
+    return (
+        f"mssql+pyodbc://{user_enc}:{pass_enc}"
+        f"@{DB_SERVER}:{DB_PORT}/{DB_NAME}"
+        f"?driver={driver_enc}"
+    )
+
+
+# Engine is built lazily after env validation
+_engine = None
+
+
+def _get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(
+            _build_connection_url(),
+            pool_pre_ping=True,
+            pool_recycle=3600,
+        )
+    return _engine
+
 
 # =========================================================
 # SYSTEM PROMPT
@@ -234,6 +283,7 @@ FORBIDDEN_KEYWORDS = [
     "MERGE",
 ]
 
+
 def validate_sql(sql: str):
 
     sql_upper = sql.upper().strip()
@@ -246,23 +296,10 @@ def validate_sql(sql: str):
             "Only SELECT or CTE-based SELECT statements are allowed"
         )
 
-    forbidden = [
-        "DELETE",
-        "UPDATE",
-        "DROP",
-        "ALTER",
-        "INSERT",
-        "TRUNCATE",
-        "EXEC",
-        "MERGE",
-    ]
-
-    for keyword in forbidden:
-
+    for keyword in FORBIDDEN_KEYWORDS:
         if keyword in sql_upper:
-            raise Exception(
-                f"Forbidden SQL detected: {keyword}"
-            )
+            raise Exception(f"Forbidden SQL detected: {keyword}")
+
 
 def repair_sql(sql: str) -> str:
 
@@ -273,23 +310,11 @@ def repair_sql(sql: str) -> str:
         flags=re.IGNORECASE
     )
 
-    limit_match = re.search(
-        r"LIMIT\s+(\d+)",
-        sql,
-        re.IGNORECASE
-    )
+    limit_match = re.search(r"LIMIT\s+(\d+)", sql, re.IGNORECASE)
 
     if limit_match:
-
         limit_value = limit_match.group(1)
-
-        sql = re.sub(
-            r"LIMIT\s+\d+",
-            "",
-            sql,
-            flags=re.IGNORECASE
-        )
-
+        sql = re.sub(r"LIMIT\s+\d+", "", sql, flags=re.IGNORECASE)
         sql = re.sub(
             r"SELECT",
             f"SELECT TOP {limit_value}",
@@ -299,6 +324,7 @@ def repair_sql(sql: str) -> str:
         )
 
     return sql.strip()
+
 
 # =========================================================
 # OLLAMA REQUEST
@@ -316,7 +342,6 @@ SQL:
 """
 
     for _ in range(3):
-
         response = requests.post(
             OLLAMA_URL,
             json={
@@ -327,54 +352,34 @@ SQL:
             },
             timeout=60,
         )
-
         if response.status_code == 200:
             break
-
     else:
         raise Exception("Ollama unavailable after 3 retries")
 
     print("\nSTATUS CODE:", response.status_code)
 
     data = response.json()
-
     raw_response = data.get("response", "").strip()
 
     print("\nRAW MODEL RESPONSE:")
     print(raw_response)
 
     sql = raw_response
-
-    sql = re.sub(
-        r"```sql",
-        "",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    sql = re.sub(
-        r"```",
-        "",
-        sql
-    )
-
+    sql = re.sub(r"```sql", "", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"```", "", sql)
     sql = sql.strip()
 
     upper_sql = sql.upper()
 
     if upper_sql.startswith("WITH"):
         pass
-
     elif "SELECT" in upper_sql:
         sql = sql[upper_sql.find("SELECT"):]
-
     else:
-        raise Exception(
-            "No SELECT statement found in model response"
-        )
+        raise Exception("No SELECT statement found in model response")
 
     sql = repair_sql(sql)
-
     validate_sql(sql)
 
     print("\nFINAL SQL SENT TO SQL SERVER:")
@@ -382,29 +387,28 @@ SQL:
 
     return sql
 
+
 # =========================================================
 # EXECUTE SQL
 # =========================================================
 
 def execute_sql(sql: str):
 
-    with engine.connect() as conn:
-
+    with _get_engine().connect() as conn:
         conn.execute(text("SET LOCK_TIMEOUT 30000"))
-
-        result = conn.execute(text(sql))
-
-        rows = result.fetchall()
-
+        result  = conn.execute(text(sql))
+        rows    = result.fetchall()
         columns = result.keys()
-
         return pd.DataFrame(rows, columns=columns)
+
 
 # =========================================================
 # MAIN LOOP
 # =========================================================
 
 def main():
+
+    _validate_env()
 
     print("=" * 60)
     print("Auction NLQ Engine Started")
@@ -418,13 +422,11 @@ def main():
             break
 
         try:
-
             sql = generate_sql(question)
 
             print("\n" + "=" * 60)
             print("GENERATED SQL")
             print("=" * 60)
-
             print(sql)
 
             df = execute_sql(sql)
@@ -437,16 +439,14 @@ def main():
                 print("No data found")
             else:
                 print(df.head(20).to_string(index=False))
-
                 print(f"\nReturned Rows: {len(df)}")
 
         except Exception as e:
-
             print("\n" + "=" * 60)
             print("ERROR")
             print("=" * 60)
-
             print(str(e))
+
 
 # =========================================================
 # ENTRY
