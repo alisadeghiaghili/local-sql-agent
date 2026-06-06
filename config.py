@@ -5,13 +5,17 @@ Copy .env.example → .env and fill in real values.
 
 Usage::
 
-    from config import settings
-    print(settings.ollama_model)
+    import config as cfg
+    print(cfg.settings.ollama_model)
 
 Testing::
 
-    Use ``override_settings()`` context manager to safely swap settings
-    in tests without touching the ``lru_cache`` singleton directly.
+    Use ``override_settings()`` to safely replace the singleton in tests.
+    Because every consumer accesses ``cfg.settings`` at call-time (not at
+    import-time), the patch is visible to ALL modules immediately.
+
+        with override_settings(max_rows_returned=5):
+            ...  # every cfg.settings access sees the patched value
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Generator
+
+import config as _self   # forward reference for override_settings patch target
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,46 +79,39 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Module-level convenience alias — import this in all other modules.
-settings = get_settings()
+# Module-level singleton — ALL modules must access settings as ``cfg.settings``
+# (i.e. ``import config as cfg``) so that override_settings() patches are
+# visible at call-time rather than being captured at import-time.
+settings: Settings = get_settings()
 
 
 @contextmanager
 def override_settings(**kwargs: Any) -> Generator[Settings, None, None]:
-    """Context manager for tests: temporarily replace the cached Settings.
+    """Context manager for tests: temporarily replace ``cfg.settings``.
+
+    Because all consumers read ``cfg.settings`` lazily (not via a local
+    ``from config import settings`` binding), every module sees the new
+    value for the lifetime of the ``with`` block.
+
+    The original singleton is restored on exit, even on exception.
 
     Usage::
 
+        import config as cfg
+        from config import override_settings
+
         with override_settings(max_rows_returned=5) as s:
             assert s.max_rows_returned == 5
-            # code under test uses the patched singleton
-
-    All fields not listed in *kwargs* keep their current values.
-    The original singleton is restored on exit, even if an exception occurs.
+            assert cfg.settings.max_rows_returned == 5
     """
-    original = get_settings()
-    patched  = Settings(**{**{f: getattr(original, f) for f in original.__slots__}, **kwargs})
-    get_settings.cache_clear()
-    # Temporarily replace the cached value
-    get_settings.__wrapped__   # ensure the function is unwrapped
-    # Store patched into the cache by calling through a shim
-    import config as _cfg
-    _original_fn = _cfg.get_settings
-
-    # Replace module-level alias and cache entry
-    _cfg.get_settings.cache_clear()
-    # monkey-patch cache to return patched
-    _patched_called = False
-
-    @lru_cache(maxsize=1)
-    def _patched_get_settings() -> Settings:
-        return patched
-
-    _cfg.get_settings = _patched_get_settings  # type: ignore[assignment]
-    _cfg.settings     = patched
+    import config as _cfg  # always the real module object
+    original = _cfg.settings
+    patched  = Settings(**{
+        **{f: getattr(original, f) for f in original.__slots__},
+        **kwargs,
+    })
+    _cfg.settings = patched
     try:
         yield patched
     finally:
-        _cfg.get_settings = _original_fn       # type: ignore[assignment]
-        _cfg.settings     = original
-        _original_fn.cache_clear()
+        _cfg.settings = original
