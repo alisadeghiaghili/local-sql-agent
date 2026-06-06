@@ -1,6 +1,6 @@
 [build-system]
 requires      = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name        = "sql-agent"
@@ -25,12 +25,13 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
 ]
 
 [project.scripts]
-sql-agent          = "runners.nlq:main"
+sql-agent           = "runners.nlq:main"
 sql-agent-langchain = "agents.langchain_sql:main"
-sql-agent-sqlite   = "agents.nlq_with_sqlite:main"
+sql-agent-sqlite    = "agents.nlq_with_sqlite:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

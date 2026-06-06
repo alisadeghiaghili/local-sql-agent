@@ -1,0 +1,27 @@
+# Ruff configuration
+# Docs: https://docs.astral.sh/ruff/
+
+target-version = "py39"
+line-length    = 120
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function call in default argument
+    "UP007",  # Use X | Y for type hints (not available in py39)
+    "UP006",  # Use type instead of Type (not available in py39)
+]
+
+[lint.per-file-ignores]
+"src/sql_agent/__init__.py" = ["F401"]  # re-exports are intentional
+"tests/*"                   = ["F401"]  # test imports may be unused
+"**/stub_*.py"              = ["F401"]
+"agents/langchain_sql.py"   = ["E402"]  # import after code (re module in nested func)

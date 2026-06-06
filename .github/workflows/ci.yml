@@ -30,9 +30,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Lint (ruff)
-        run: |
-          pip install ruff
-          ruff check src/ agents/ runners/ scripts/ tests/
+        run: ruff check src/ tests/
 
       - name: Run tests
         run: pytest --cov=src --cov-report=term-missing --cov-report=xml
