@@ -37,13 +37,7 @@ jobs:
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.12'
-        run: >
-          pytest tests/ -v
-          --cov=.
-          --cov-omit=tests/*
-          --cov-omit=scripts/*
-          --cov-report=term-missing
-          --cov-report=xml
+        run: pytest tests/ --cov --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
