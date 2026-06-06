@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ***
 
+## [0.3.0] - 2026-06-06
+
+### Added
+- `src/sql_agent/` — new core library package (replaces scattered duplicates):
+  - `config.py` — `Settings` dataclass; no import side-effects; `from_env()` factory; backwards-compat helpers re-exported
+  - `db.py` — `get_engine()` (LRU-cached per URI) and `execute_sql()` shared by all entry-points
+  - `llm.py` — `call_ollama()` with exponential back-off retry (replaces duplicated `requests.post` blocks)
+  - `validator.py` — `clean_sql()`, `validate_sql()`, `ensure_top()` (single source of truth)
+  - `prompts.py` — canonical `SYSTEM_PROMPTS` dict (`simple` / `prompt` / `full`)
+- `tests/test_validator.py` — 27 unit tests for `clean_sql`, `validate_sql`, `ensure_top`
+- `tests/test_config.py` — unit tests for `Settings` validation and URI building
+- `pyproject.toml` — proper package definition with `[project.scripts]` console entry-points
+- `python-dotenv` added as dependency (falls back to manual parser if not installed)
+- `SQLITE_DB_PATH` env var added to `.env.example`
+
+### Changed
+- `agents/main.py`, `agents/langchain_sql.py`, `agents/nlq_with_sqlite.py` — all now import from `sql_agent.*`; no more `sys.path` hacks
+- `runners/nlq.py`, `runners/langsql.py` — duplicate `_call_ollama`, `_validate_env`, `_get_engine` replaced by `sql_agent.*` imports
+- `requirements.txt` — all packages now have minimum version pins
+- `config.py` (root) — converted to backwards-compat shim; real logic in `src/sql_agent/config.py`
+- `README.md` — updated project structure, new usage examples, test instructions, updated How It Works diagram
+
+### Fixed
+- `config.py` used to call `load_env_file()` as a module-level side-effect on every import — now opt-in via `Settings.from_env()` or explicit `load_env_file()`
+- `agents/main.py` used `sys.path.insert` hack to reach root `config.py` — removed
+
+***
+
 ## [0.2.0] - 2026-06-06
 
 ### Added
