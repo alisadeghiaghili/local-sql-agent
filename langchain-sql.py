@@ -25,14 +25,35 @@ logger = logging.getLogger(__name__)
 
 # =========================================================
 # Environment Variables
+# No hardcoded fallbacks for sensitive values.
+# Copy .env.example to .env and fill in your values.
 # =========================================================
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ai.ime.co.ir/ollama")
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL",    "gemma-4-E2B:2b")
-DB_USER         = os.getenv("DB_USER",         "*****")
-DB_PASS         = os.getenv("DB_PASS",         "*************")
-DB_HOST         = os.getenv("DB_HOST",         "172.16.1.119")
-DB_PORT         = os.getenv("DB_PORT",         "1433")
-DB_NAME         = os.getenv("DB_NAME",         "BI")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL")
+DB_USER         = os.getenv("DB_USER")
+DB_PASS         = os.getenv("DB_PASSWORD")
+DB_HOST         = os.getenv("DB_SERVER")
+DB_PORT         = os.getenv("DB_PORT", "1433")
+DB_NAME         = os.getenv("DB_NAME")
+
+
+def _validate_env() -> None:
+    """Raise ValueError if any required environment variable is missing."""
+    missing = [
+        name for name, val in [
+            ("OLLAMA_MODEL", OLLAMA_MODEL),
+            ("DB_USER",      DB_USER),
+            ("DB_PASSWORD",  DB_PASS),
+            ("DB_SERVER",    DB_HOST),
+            ("DB_NAME",      DB_NAME),
+        ]
+        if not val
+    ]
+    if missing:
+        raise ValueError(
+            f"❌ Missing required environment variables: {', '.join(missing)}\n"
+            f"Copy .env.example to .env and fill in your values."
+        )
 
 
 # =========================================================
@@ -164,7 +185,7 @@ SELECT TOP 100 [Description] FROM [BI].[App].[Users] WHERE [username] = 'aghazad
 
 
 # =========================================================
-# Build LLM (no stop tokens - called directly)
+# Build LLM
 # =========================================================
 def build_llm():
     global _llm
@@ -191,8 +212,9 @@ def build_engine():
     if _engine is not None:
         return _engine
     logger.info("Creating SQLAlchemy engine...")
+    from urllib.parse import quote_plus
     uri = (
-        f"mssql+pyodbc://{DB_USER}:{DB_PASS}"
+        f"mssql+pyodbc://{quote_plus(DB_USER)}:{quote_plus(DB_PASS)}"
         f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
         f"?driver=ODBC+Driver+17+for+SQL+Server"
     )
@@ -210,7 +232,7 @@ def build_engine():
 
 
 # =========================================================
-# Build DB (used only for schema introspection if needed)
+# Build DB
 # =========================================================
 def build_db():
     global _db
@@ -489,6 +511,8 @@ def parse_args():
 # Main
 # =========================================================
 def main():
+    _validate_env()
+
     args = parse_args()
 
     try:
