@@ -11,7 +11,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from config import settings
+import config as cfg
 
 
 def export_excel(df: pd.DataFrame) -> str:
@@ -22,9 +22,9 @@ def export_excel(df: pd.DataFrame) -> str:
     str
         Absolute path of the created file.
     """
-    os.makedirs(settings.export_dir, exist_ok=True)
+    os.makedirs(cfg.settings.export_dir, exist_ok=True)
     filename = os.path.join(
-        settings.export_dir,
+        cfg.settings.export_dir,
         f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
     )
 

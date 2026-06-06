@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from config import settings
+import config as cfg
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
 from llm.ollama_client import generate_sql
@@ -50,21 +50,14 @@ def _load_system_prompt() -> str:
 # ---------------------------------------------------------------------------
 # Rate-limit / debounce
 # ---------------------------------------------------------------------------
-# Minimum seconds that must elapse between two consecutive queries.
-# Prevents accidental rapid-fire calls to Ollama + SQL Server.
 _MIN_INTERVAL_SECONDS: float = 2.0
 _last_query_time: float = 0.0
 
 
 def _enforce_rate_limit() -> None:
-    """Block until the minimum inter-query interval has elapsed.
-
-    Prints a short countdown so the user knows they need to wait.
-    The 2-second window is intentionally short for a REPL but still
-    prevents accidental double-submissions and protects the LLM endpoint.
-    """
+    """Block until the minimum inter-query interval has elapsed."""
     global _last_query_time
-    elapsed = time.monotonic() - _last_query_time
+    elapsed   = time.monotonic() - _last_query_time
     remaining = _MIN_INTERVAL_SECONDS - elapsed
     if remaining > 0:
         print(f"\u23f3  Please wait {remaining:.1f}s before the next query...")
@@ -92,7 +85,7 @@ def _make_log(
         timestamp=datetime.now(),
         question=question,
         generated_sql=sql,
-        model_name=settings.ollama_model,
+        model_name=cfg.settings.ollama_model,
         status=status,          # type: ignore[arg-type]
         excel_file=excel_file,
         row_count=row_count,
@@ -130,8 +123,8 @@ def main() -> None:
 
     print(_SEP)
     print(" Auction NLQ Engine")
-    print(f" Model : {settings.ollama_model}")
-    print(f" DB    : {settings.db_connection_url.split('@')[-1].split('?')[0]}")
+    print(f" Model : {cfg.settings.ollama_model}")
+    print(f" DB    : {cfg.settings.db_connection_url.split('@')[-1].split('?')[0]}")
     print(_SEP)
     print(" Type your question in Persian or English.")
     print(" Commands: exit | quit | Ctrl+C")

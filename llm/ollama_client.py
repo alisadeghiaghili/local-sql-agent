@@ -11,7 +11,7 @@ from typing import Any
 
 import requests
 
-from config import settings
+import config as cfg
 from schema.retriever import retrieve_tables
 from schema.schema_registry import build_schema_context
 from security.sql_guard import clean_sql
@@ -25,18 +25,6 @@ _BACKOFF_BASE: int = 2
 
 def generate_sql(question: str, system_prompt: str) -> str:
     """Send *question* to Ollama and return a cleaned SQL string.
-
-    Parameters
-    ----------
-    question:
-        Natural-language question from the user.
-    system_prompt:
-        Full system prompt (loaded once at startup).
-
-    Returns
-    -------
-    str
-        A clean, validated SQL string ready for execution.
 
     Raises
     ------
@@ -55,7 +43,7 @@ def generate_sql(question: str, system_prompt: str) -> str:
     )
 
     payload: dict[str, Any] = {
-        "model":  settings.ollama_model,
+        "model":  cfg.settings.ollama_model,
         "prompt": full_prompt,
         "stream": False,
     }
@@ -65,7 +53,7 @@ def generate_sql(question: str, system_prompt: str) -> str:
     for attempt in range(1, _RETRIES + 1):
         try:
             resp = requests.post(
-                settings.ollama_url,
+                cfg.settings.ollama_url,
                 json=payload,
                 timeout=_TIMEOUT,
             )

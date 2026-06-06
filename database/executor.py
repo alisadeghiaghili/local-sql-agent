@@ -12,7 +12,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from config import settings
+import config as cfg
 from database.connection import get_engine
 
 logger = logging.getLogger(__name__)
@@ -22,21 +22,21 @@ def execute_sql(sql: str) -> pd.DataFrame:
     """Run *sql* against Auction_DM and return results as a ``DataFrame``.
 
     - Sets ``LOCK_TIMEOUT`` to avoid long waits on locked rows.
-    - Caps result set at ``settings.max_rows_returned``.
+    - Caps result set at ``cfg.settings.max_rows_returned``.
 
     Raises
     ------
     RuntimeError
         Wraps any ``SQLAlchemyError`` with a clean message.
     """
-    engine = get_engine()
-    timeout_ms = settings.query_timeout_seconds * 1_000
+    engine     = get_engine()
+    timeout_ms = cfg.settings.query_timeout_seconds * 1_000
 
     try:
         with engine.connect() as conn:
             conn.execute(text(f"SET LOCK_TIMEOUT {timeout_ms}"))
             result = conn.execute(text(sql))
-            rows = result.fetchmany(settings.max_rows_returned)
+            rows   = result.fetchmany(cfg.settings.max_rows_returned)
             columns = list(result.keys())
     except SQLAlchemyError as exc:
         logger.error("SQL execution failed: %s", exc)
