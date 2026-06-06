@@ -1,16 +1,23 @@
-"""Auction NLQ Engine — Entry Point.
+"""Auction NLQ Engine — interactive REPL entry point.
 
 Usage::
 
     python app.py
+
+Environment::
+
+    Copy .env.example → .env and fill in your values before running.
 """
 
 from __future__ import annotations
 
+import logging
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
-from config import OLLAMA_MODEL
+from config import settings
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
 from llm.ollama_client import generate_sql
@@ -18,8 +25,33 @@ from logs.logger import save_log
 from logs.query_log import QueryLog
 from security.sql_guard import validate_sql
 
-with open("prompts/system_prompt.md", encoding="utf-8") as _f:
-    SYSTEM_PROMPT = _f.read()
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stderr)],
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# System prompt — loaded once at startup
+# ---------------------------------------------------------------------------
+_PROMPT_PATH = Path("prompts/system_prompt.md")
+
+def _load_system_prompt() -> str:
+    if not _PROMPT_PATH.exists():
+        logger.error("System prompt not found: %s", _PROMPT_PATH)
+        sys.exit(1)
+    return _PROMPT_PATH.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_SEP = "=" * 60
 
 
 def _make_log(
@@ -35,47 +67,78 @@ def _make_log(
         timestamp=datetime.now(),
         question=question,
         generated_sql=sql,
-        model_name=OLLAMA_MODEL,
+        model_name=settings.ollama_model,
+        status=status,          # type: ignore[arg-type]
         excel_file=excel_file,
         row_count=row_count,
         execution_time_seconds=round(elapsed, 3),
-        status=status,
         error_message=error,
     )
 
 
+def _print_sql(sql: str) -> None:
+    print(f"\n{_SEP}")
+    print("GENERATED SQL")
+    print(_SEP)
+    print(sql)
+
+
+def _print_results(df) -> None:
+    print(f"\n{_SEP}")
+    print("QUERY RESULT")
+    print(_SEP)
+    if df.empty:
+        print("No data found.")
+    else:
+        print(df.head(20).to_string(index=False))
+        if len(df) > 20:
+            print(f"  ... {len(df) - 20} more rows not shown")
+        print(f"\nTotal rows returned: {len(df):,}")
+
+
+# ---------------------------------------------------------------------------
+# Main REPL
+# ---------------------------------------------------------------------------
+
 def main() -> None:
-    print("=" * 60)
-    print("Auction NLQ Engine")
-    print("=" * 60)
+    system_prompt = _load_system_prompt()
+
+    print(_SEP)
+    print(" Auction NLQ Engine")
+    print(f" Model : {settings.ollama_model}")
+    print(f" DB    : {settings.db_connection_url.split('@')[-1].split('?')[0]}")
+    print(_SEP)
+    print(" Type your question in Persian or English.")
+    print(" Commands: exit | quit | Ctrl+C")
+    print(_SEP)
 
     while True:
         try:
-            question = input("\nQuestion: ").strip()
+            question = input("\n❓ Question: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye.")
+            print("\n\nBye.")
             break
 
-        if question.lower() in ("exit", "quit", ""):
+        if not question or question.lower() in ("exit", "quit"):
+            print("Bye.")
             break
 
-        sql = ""
-        start = time.time()
+        sql    = ""
+        start  = time.perf_counter()
 
         try:
-            sql = generate_sql(question, SYSTEM_PROMPT)
+            sql = generate_sql(question, system_prompt)
             validate_sql(sql)
-
-            print("\n" + "=" * 60)
-            print("GENERATED SQL")
-            print("=" * 60)
-            print(sql)
+            _print_sql(sql)
 
             df      = execute_sql(sql)
-            elapsed = time.time() - start
+            elapsed = time.perf_counter() - start
 
             excel_file = export_excel(df)
-            print(f"\nExcel Saved: {excel_file}")
+            print(f"\n📁 Excel saved: {excel_file}")
+            print(f"⏱  Elapsed    : {elapsed:.2f}s")
+
+            _print_results(df)
 
             save_log(_make_log(
                 question, sql, "SUCCESS",
@@ -84,26 +147,26 @@ def main() -> None:
                 elapsed=elapsed,
             ))
 
-            print("\n" + "=" * 60)
-            print("QUERY RESULT")
-            print("=" * 60)
-            if df.empty:
-                print("No data found")
-            else:
-                print(df.head(20).to_string(index=False))
-                print(f"\nReturned Rows: {len(df)}")
-
         except ValueError as exc:
-            if str(exc) == "OUT_OF_SCOPE":
-                save_log(_make_log(question, "", "OUT_OF_SCOPE", error="OUT_OF_SCOPE"))
-                print("\nThis system only supports Auction database analytics questions.")
+            elapsed = time.perf_counter() - start
+            msg     = str(exc)
+            if msg == "OUT_OF_SCOPE":
+                save_log(_make_log(question, "", "OUT_OF_SCOPE", error=msg, elapsed=elapsed))
+                print("\n⚠️  This system only answers Auction database analytics questions.")
             else:
-                save_log(_make_log(question, sql, "ERROR", error=str(exc)))
-                print(f"\nERROR: {exc}")
+                save_log(_make_log(question, sql, "ERROR", error=msg, elapsed=elapsed))
+                print(f"\n❌ Validation error: {msg}")
 
-        except Exception as exc:  # noqa: BLE001
-            save_log(_make_log(question, sql, "ERROR", error=str(exc)))
-            print(f"\nERROR: {exc}")
+        except RuntimeError as exc:
+            elapsed = time.perf_counter() - start
+            save_log(_make_log(question, sql, "ERROR", error=str(exc), elapsed=elapsed))
+            print(f"\n❌ Runtime error: {exc}")
+
+        except Exception as exc:           # noqa: BLE001
+            elapsed = time.perf_counter() - start
+            save_log(_make_log(question, sql, "ERROR", error=str(exc), elapsed=elapsed))
+            logger.exception("Unexpected error")
+            print(f"\n❌ Unexpected error: {exc}")
 
 
 if __name__ == "__main__":

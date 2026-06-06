@@ -1,28 +1,99 @@
-"""SQL validation layer — blocks destructive and out-of-scope queries."""
+"""SQL safety layer.
+
+Three public functions:
+
+``clean_sql(raw)``
+    Strip LLM artefacts (markdown fences, preamble text, LIMIT → TOP)
+    and return bare SQL.  Raises ``ValueError`` if no SELECT is found.
+
+``validate_sql(sql)``
+    Block destructive / out-of-scope queries.  Raises ``ValueError``
+    with a human-readable reason.
+
+``ensure_top(sql, n)``
+    Inject ``TOP n`` when the query has no row-limit clause.
+"""
 
 from __future__ import annotations
 
 import re
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 _FORBIDDEN: tuple[str, ...] = (
     "DELETE ", "UPDATE ", "INSERT ", "DROP ",
     "ALTER ", "TRUNCATE ", "MERGE ", "EXEC ",
+    "EXECUTE ", "XP_", "SP_",
+)
+
+_LIMIT_RE        = re.compile(r"\bLIMIT\s+(\d+)", re.IGNORECASE)
+_TOP_RE          = re.compile(r"\bTOP\s+\d+", re.IGNORECASE)
+_FENCE_RE        = re.compile(r"```(?:sql)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_SELECT_START_RE = re.compile(r"(SELECT|WITH)\b", re.IGNORECASE)
+_TOP_DISTINCT_RE = re.compile(
+    r"SELECT\s+TOP\s+(\d+)\s+DISTINCT", re.IGNORECASE
 )
 
 
-def validate_sql(sql: str) -> None:
-    """Raise ``ValueError`` if *sql* is not a safe, read-only query.
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-    Rules
-    -----
-    - Must start with SELECT or WITH (CTE).
-    - Must not contain any forbidden DML/DDL keyword.
-    - Must not reference system tables (INFORMATION_SCHEMA, SYS.).
+def clean_sql(raw: str) -> str:
+    """Strip LLM artefacts and return bare SQL.
+
+    Steps applied in order:
+    1. Strip markdown code fences.
+    2. Extract the first SELECT / CTE block (drops preamble prose).
+    3. Convert LIMIT n  →  TOP n.
+    4. Fix ``SELECT TOP n DISTINCT``  →  ``SELECT DISTINCT TOP n``.
 
     Raises
     ------
     ValueError
-        With a human-readable message describing what was blocked.
+        If *raw* is empty or contains no SELECT statement.
+    """
+    if not raw or not raw.strip():
+        raise ValueError("Received empty SQL from model")
+
+    # 1. unwrap markdown fence
+    fence_match = _FENCE_RE.search(raw)
+    sql = fence_match.group(1) if fence_match else raw
+
+    # 2. find first SELECT / WITH
+    start = _SELECT_START_RE.search(sql)
+    if not start:
+        raise ValueError(f"No SELECT / CTE found in model response: {sql[:200]!r}")
+    sql = sql[start.start():].strip()
+
+    # 3. LIMIT n → TOP n  (must appear before SELECT)
+    def _limit_to_top(m: re.Match) -> str:          # noqa: ANN001
+        n = m.group(1)
+        if not _TOP_RE.search(sql):
+            return f"TOP {n}"
+        return ""   # already has TOP — just drop LIMIT
+
+    sql = _LIMIT_RE.sub(_limit_to_top, sql)
+
+    # 4. SELECT TOP n DISTINCT  →  SELECT DISTINCT TOP n
+    sql = _TOP_DISTINCT_RE.sub(
+        lambda m: f"SELECT DISTINCT TOP {m.group(1)}", sql
+    )
+
+    return sql.strip()
+
+
+def validate_sql(sql: str) -> None:
+    """Raise ``ValueError`` if *sql* is not a safe, read-only SELECT query.
+
+    Rules
+    -----
+    - Must start with SELECT or WITH.
+    - Must not contain forbidden DML/DDL keywords.
+    - Must not reference system catalogues (INFORMATION_SCHEMA, SYS.).
+    - Must not use LIMIT (SQL Server doesn't support it).
     """
     if not sql or not sql.strip():
         raise ValueError("Empty SQL")
@@ -34,10 +105,26 @@ def validate_sql(sql: str) -> None:
 
     for kw in _FORBIDDEN:
         if kw in upper:
-            raise ValueError(f"Forbidden keyword: {kw.strip()}")
+            raise ValueError(f"Forbidden keyword detected: {kw.strip()}")
 
     if "INFORMATION_SCHEMA" in upper:
-        raise ValueError("System tables are forbidden: INFORMATION_SCHEMA")
+        raise ValueError("System catalogue forbidden: INFORMATION_SCHEMA")
 
     if re.search(r"\bSYS\.", upper):
-        raise ValueError("System tables are forbidden: SYS.")
+        raise ValueError("System catalogue forbidden: SYS.")
+
+    if _LIMIT_RE.search(sql):
+        raise ValueError("LIMIT is not valid T-SQL — use TOP instead")
+
+
+def ensure_top(sql: str, n: int = 100) -> str:
+    """Return *sql* with ``TOP n`` injected if no row-limit clause exists.
+
+    Leaves queries that already have TOP untouched.
+    """
+    if _TOP_RE.search(sql):
+        return sql
+    # Insert after first SELECT keyword
+    return re.sub(
+        r"\bSELECT\b", f"SELECT TOP {n}", sql, count=1, flags=re.IGNORECASE
+    )
