@@ -70,11 +70,18 @@ _SQL_TABLE_RE = re.compile(
 )
 
 # Stop-words: tiny words that are never useful as synonym candidates.
-_STOP = frozenset(
-    "در از به و یا ا با برای بر تا که این آن ها های می نه هم همه چه چند چیست کدام
-     the a an in on at of to is are was were be been for and or not
-     how many which what when where who whose".split()
+# Split across multiple string literals to avoid long-line SyntaxError on
+# Python 3.12+ (which bans implicit line continuation inside a string).
+_STOP_FA = (
+    "\u062f\u0631 \u0627\u0632 \u0628\u0647 \u0648 \u06cc\u0627 \u0627 \u0628\u0627 \u0628\u0631\u0627\u06cc \u0628\u0631 \u062a\u0627 \u06a9\u0647"
+    " \u0627\u06cc\u0646 \u0622\u0646 \u0647\u0627 \u0647\u0627\u06cc \u0645\u06cc \u0646\u0647 \u0647\u0645 \u0647\u0645\u0647 \u0686\u0647 \u0686\u0646\u062f"
+    " \u0686\u06cc\u0633\u062a \u06a9\u062f\u0627\u0645"
 )
+_STOP_EN = (
+    "the a an in on at of to is are was were be been"
+    " for and or not how many which what when where who whose"
+)
+_STOP: frozenset[str] = frozenset(_STOP_FA.split() + _STOP_EN.split())
 
 # Build a flat set of all tokens already in descriptions (no need to suggest them).
 _DESCRIPTION_TOKENS: frozenset[str] = frozenset(
@@ -215,17 +222,20 @@ def _print_report(report: dict, min_misses: int) -> None:
     for entry in report["tables_ranked_by_miss_count"]:
         if entry["miss_count"] < min_misses:
             continue
-        print(f"  │ Table : {entry['table']}  (missed {entry['miss_count']}x)")
+        print(f"  \u2502 Table : {entry['table']}  (missed {entry['miss_count']}x)")
         if entry["top_candidates"]:
-            print("  │ Suggested synonym candidates (add to schema/synonyms.py):")
+            print("  \u2502 Suggested synonym candidates (add to schema/synonyms.py):")
             for c in entry["top_candidates"]:
-                print(f"  │   {c['token']!r:30s}  →  [\"{entry['table'].lower()}\"]   # freq={c['freq']}")
+                print(
+                    f"  \u2502   {c['token']!r:30s}"
+                    f"  \u2192  [\"{entry['table'].lower()}\"]   # freq={c['freq']}"
+                )
         else:
-            print("  │ No new candidate tokens found (already in descriptions/synonyms)")
-        print("  │")
+            print("  \u2502 No new candidate tokens found (already in descriptions/synonyms)")
+        print("  \u2502")
 
     if report["total_miss_events"] == 0:
-        print("  ✔ No misses detected — synonym coverage looks complete!")
+        print("  \u2714 No misses detected \u2014 synonym coverage looks complete!")
     print(sep)
 
 
