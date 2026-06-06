@@ -67,21 +67,46 @@ class TestValidateSql:
     def test_valid_cte_query(self):
         validate_sql("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte")
 
+    # --- queries that don't start with SELECT/WITH are caught by the
+    #     first guard ("Only SELECT / CTE queries are allowed").
+    #     We just assert that a ValueError is raised, not the exact message.
+
     def test_blocks_delete(self):
-        with pytest.raises(ValueError, match="DELETE"):
+        with pytest.raises(ValueError):
             validate_sql("DELETE FROM [dbo].[Users]")
 
     def test_blocks_drop(self):
-        with pytest.raises(ValueError, match="DROP"):
+        with pytest.raises(ValueError):
             validate_sql("DROP TABLE [dbo].[Users]")
 
     def test_blocks_update(self):
-        with pytest.raises(ValueError, match="UPDATE"):
+        with pytest.raises(ValueError):
             validate_sql("UPDATE [dbo].[Users] SET Name = 'x'")
 
     def test_blocks_insert(self):
         with pytest.raises(ValueError):
             validate_sql("INSERT INTO [dbo].[T] VALUES (1)")
+
+    def test_blocks_non_select(self):
+        with pytest.raises(ValueError):
+            validate_sql("EXEC sp_helptext 'myProc'")
+
+    # --- forbidden keywords embedded inside a SELECT are caught by the
+    #     keyword scan; message includes the keyword name.
+
+    def test_blocks_delete_embedded_in_select(self):
+        with pytest.raises(ValueError, match="DELETE"):
+            validate_sql("SELECT * FROM t WHERE DELETE FROM t")
+
+    def test_blocks_drop_embedded_in_select(self):
+        with pytest.raises(ValueError, match="DROP"):
+            validate_sql("SELECT * FROM t; DROP TABLE t")
+
+    def test_blocks_update_embedded_in_select(self):
+        with pytest.raises(ValueError, match="UPDATE"):
+            validate_sql("SELECT * FROM t; UPDATE t SET x=1")
+
+    # --- system catalogue checks
 
     def test_blocks_information_schema(self):
         with pytest.raises(ValueError, match="INFORMATION_SCHEMA"):
@@ -94,10 +119,6 @@ class TestValidateSql:
     def test_blocks_limit(self):
         with pytest.raises(ValueError, match="LIMIT"):
             validate_sql("SELECT Name FROM [dbo].[T] LIMIT 10")
-
-    def test_blocks_non_select(self):
-        with pytest.raises(ValueError):
-            validate_sql("EXEC sp_helptext 'myProc'")
 
 
 # ---------------------------------------------------------------------------
