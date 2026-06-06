@@ -1,3 +1,4 @@
-# Moved to agents/main.py
-# Run: python -m agents.main --prompt '...'
-raise SystemExit("Moved → python -m agents.main --prompt '...'")
+# This file has been removed in prompt-accurated branch.
+# Entry point is now: app.py
+# Run: python app.py
+raise SystemExit("Please run: python app.py")

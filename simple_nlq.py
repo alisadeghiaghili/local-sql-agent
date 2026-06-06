@@ -1,3 +1,3 @@
-# Moved to runners/nlq.py
-# Run: python -m runners.nlq --prompt '...' --mode simple
-raise SystemExit("Moved → python -m runners.nlq --prompt '...' --mode simple")
+# This file has been removed in prompt-accurated branch.
+# Entry point is now: app.py
+raise SystemExit("Please run: python app.py")

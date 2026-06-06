@@ -1,20 +1,32 @@
-"""Backwards-compatibility shim.
+"""Runtime configuration — all values read from environment or .env.
 
-All imports from the old root-level config.py continue to work::
-
-    from config import get_ollama_config, get_sqlserver_uri, load_env_file
-
-Real implementation lives in src/sql_agent/config.py.
+Never hardcode credentials here. Copy .env.example → .env and fill in.
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+from __future__ import annotations
 
-from sql_agent.config import (   # noqa: F401  re-export
-    Settings,
-    load_env_file,
-    get_ollama_config,
-    get_sqlserver_uri,
-    print_config_status,
+import os
+
+# ---------------------------------------------------------------------------
+# Ollama
+# ---------------------------------------------------------------------------
+OLLAMA_URL: str = os.getenv(
+    "OLLAMA_URL",
+    "http://localhost:11434/api/generate",
 )
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+DB_CONNECTION_URL: str = os.getenv(
+    "DB_CONNECTION_URL",
+    "mssql+pyodbc://sa@localhost:1433/Auction_DM"
+    "?driver=ODBC+Driver+17+for+SQL+Server",
+)
+
+# ---------------------------------------------------------------------------
+# Limits
+# ---------------------------------------------------------------------------
+QUERY_TIMEOUT_SECONDS: int = int(os.getenv("QUERY_TIMEOUT_SECONDS", "60"))
+MAX_ROWS_RETURNED: int     = int(os.getenv("MAX_ROWS_RETURNED", "1000"))
