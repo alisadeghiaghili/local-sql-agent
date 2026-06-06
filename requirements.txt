@@ -3,3 +3,5 @@ langchain-ollama
 langchain-community
 pyodbc
 sqlalchemy
+pandas
+requests
