@@ -15,15 +15,18 @@ _BIGRAM_MULTIPLIER: float = 1.5
 
 
 def _normalise(text: str) -> str:
-    """NFC-normalise and strip Zero-Width Non-Joiners."""
+    """NFC-normalise and strip Zero-Width Non-Joiners so substring checks work."""
     return unicodedata.normalize("NFC", text).replace("\u200c", "")
 
 
+# Substring signals — checked against the ZWNJ-stripped, lowercased expanded question.
+# Adding both "دوره" and "دورهای" covers the inflected form even without ZWNJ stripping.
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
         "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
         "بهار", "تابستان", "پاییز", "زمستان",
-        "دوره", "سالیانه", "ماهانه", "هفتگی", "روزانه",
+        "دوره", "دورهای", "دوره‌ای",
+        "سالیانه", "ماهانه", "هفتگی", "روزانه",
         "date", "year", "month", "season", "week",
         "spring", "summer", "autumn", "winter",
         "quarterly", "monthly", "yearly", "annual", "period",
@@ -80,13 +83,11 @@ def _score_table(
     d_tokens  = _tokenize(description)
     d_bigrams = _ngrams(d_tokens, 2)
     d_len     = len(d_tokens) or 1
-
     tf: dict[str, float] = {}
     for t in d_tokens:
         tf[t] = tf.get(t, 0) + 1.0 / d_len
     for bg in d_bigrams:
         tf[bg] = tf.get(bg, 0) + _BIGRAM_MULTIPLIER / d_len
-
     score = 0.0
     for term in set(q_tokens):
         if term in tf and term in idf:
@@ -100,7 +101,9 @@ def _score_table(
 def retrieve_tables(question: str) -> list[str]:
     """Return up to _TOP_N table names most relevant to *question*."""
     expanded   = _expand(question)
-    expanded_n = _normalise(expanded).lower()
+    # Normalise twice: once raw, once ZWNJ-stripped — check both
+    expanded_n   = _normalise(expanded).lower()
+    expanded_raw = expanded.lower()
     q_tokens   = _tokenize(expanded)
     q_bigrams  = _ngrams(q_tokens, 2)
     idf        = _build_idf()
@@ -113,7 +116,8 @@ def retrieve_tables(question: str) -> list[str]:
 
     for table_name, signals in _ALWAYS_INCLUDE.items():
         if table_name not in scores:
-            if any(_normalise(sig).lower() in expanded_n for sig in signals):
+            sig_n = [_normalise(s).lower() for s in signals]
+            if any(s in expanded_n or s in expanded_raw for s in sig_n):
                 scores[table_name] = _MIN_SCORE
 
     if not scores:

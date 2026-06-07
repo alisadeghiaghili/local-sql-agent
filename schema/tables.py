@@ -48,7 +48,7 @@ TABLES: dict[str, dict] = {
     },
     "Bank": {
         "table": "[Auction_Dim].[Bank]",
-        "description": "بانک \nشعبه \nBank \nBranch",
+        "description": "بانک معاملات مالی سیستم بانکی \nFinancial Institution \nBanking System",
     },
     "Carrier": {
         "table": "[Auction_Dim].[Carrier]",

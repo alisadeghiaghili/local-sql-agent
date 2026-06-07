@@ -69,9 +69,7 @@ Out-of-scope topics:
 - Weather, news, religion, medical, legal questions
 - Any topic unrelated to the Auction database
 
-If the question is out of scope, return EXACTLY the sentinel value:
-
-    OUT_OF_SCOPE
+If the question is out of scope, return EXACTLY the sentinel value OUT_OF_SCOPE.
 
 Do not generate SQL. Do not explain. Do not answer. Return only OUT_OF_SCOPE.
 
