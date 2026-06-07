@@ -71,17 +71,17 @@ Out-of-scope topics:
 
 If the question is out of scope, return EXACTLY the sentinel value:
 
-    out_of_scope
+    OUT_OF_SCOPE
 
-Do not generate SQL. Do not explain. Do not answer. Return only out_of_scope.
+Do not generate SQL. Do not explain. Do not answer. Return only OUT_OF_SCOPE.
 
 Examples:
 
     Question: Who is the president of Iran?
-    Response: out_of_scope
+    Response: OUT_OF_SCOPE
 
     Question: What is Python?
-    Response: out_of_scope
+    Response: OUT_OF_SCOPE
 
     Question: How many contracts exist?
     Response:
