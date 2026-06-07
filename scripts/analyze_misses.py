@@ -63,15 +63,13 @@ from schema.tables import TABLES
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Matches [Schema].[TableName] or bare TableName in FROM / JOIN clauses.
+# Matches [Schema].[TableName] — extracts TableName from bracket notation.
 _SQL_TABLE_RE = re.compile(
-    r"(?:FROM|JOIN)\s+(?:\[?\w+\]?\.){0,2}\[?(\w+)\]?",
+    r"(?:FROM|JOIN)\s+(?:\[?\w+\]?\.)*\[?(\w+)\]?",
     re.IGNORECASE,
 )
 
 # Stop-words: tiny words that are never useful as synonym candidates.
-# Split across multiple string literals to avoid long-line SyntaxError on
-# Python 3.12+ (which bans implicit line continuation inside a string).
 _STOP_FA = (
     "\u062f\u0631 \u0627\u0632 \u0628\u0647 \u0648 \u06cc\u0627 \u0627 \u0628\u0627 \u0628\u0631\u0627\u06cc \u0628\u0631 \u062a\u0627 \u06a9\u0647"
     " \u0627\u06cc\u0646 \u0622\u0646 \u0647\u0627 \u0647\u0627\u06cc \u0645\u06cc \u0646\u0647 \u0647\u0645 \u0647\u0645\u0647 \u0686\u0647 \u0686\u0646\u062f"
@@ -102,15 +100,24 @@ class Miss(NamedTuple):
 
 
 def _tables_in_sql(sql: str) -> set[str]:
-    """Return logical table names referenced in *sql* (best-effort)."""
+    """Return table names referenced in *sql*.
+
+    For known tables (present in TABLES), the canonical name is returned.
+    For unknown tables, the raw extracted name is returned as-is so that
+    misses against tables not yet registered are still detectable.
+    """
     found: set[str] = set()
     for m in _SQL_TABLE_RE.finditer(sql):
         name = m.group(1)
-        # Check against known logical names (case-insensitive)
+        matched = False
         for table_name in TABLES:
             if table_name.lower() == name.lower():
                 found.add(table_name)
+                matched = True
                 break
+        if not matched and name:
+            # Unknown table — include raw name so it shows up as a miss
+            found.add(name)
     return found
 
 
@@ -173,9 +180,7 @@ def analyse(log_path: Path) -> list[Miss]:
 
 def _build_report(misses: list[Miss]) -> dict:
     """Aggregate misses into a structured report dict."""
-    # Per-table miss count
     table_miss_count: Counter[str] = Counter()
-    # Per-table: which candidate tokens appeared most often
     table_candidates: dict[str, Counter[str]] = defaultdict(Counter)
 
     for m in misses:
@@ -186,9 +191,9 @@ def _build_report(misses: list[Miss]) -> dict:
 
     tables_ranked = [
         {
-            "table":             table,
-            "miss_count":        count,
-            "top_candidates":    [
+            "table":          table,
+            "miss_count":     count,
+            "top_candidates": [
                 {"token": tok, "freq": freq}
                 for tok, freq in table_candidates[table].most_common(10)
             ],
@@ -197,7 +202,7 @@ def _build_report(misses: list[Miss]) -> dict:
     ]
 
     return {
-        "total_success_entries_analysed": sum(1 for _ in misses) + 0,  # set in caller
+        "total_success_entries_analysed": sum(1 for _ in misses) + 0,
         "total_miss_events":              len(misses),
         "tables_ranked_by_miss_count":    tables_ranked,
         "all_misses": [
@@ -222,20 +227,20 @@ def _print_report(report: dict, min_misses: int) -> None:
     for entry in report["tables_ranked_by_miss_count"]:
         if entry["miss_count"] < min_misses:
             continue
-        print(f"  \u2502 Table : {entry['table']}  (missed {entry['miss_count']}x)")
+        print(f"  │ Table : {entry['table']}  (missed {entry['miss_count']}x)")
         if entry["top_candidates"]:
-            print("  \u2502 Suggested synonym candidates (add to schema/synonyms.py):")
+            print("  │ Suggested synonym candidates (add to schema/synonyms.py):")
             for c in entry["top_candidates"]:
                 print(
-                    f"  \u2502   {c['token']!r:30s}"
-                    f"  \u2192  [\"{entry['table'].lower()}\"]   # freq={c['freq']}"
+                    f"  │   {c['token']!r:30s}"
+                    f"  →  [\"{entry['table'].lower()}\"]   # freq={c['freq']}"
                 )
         else:
-            print("  \u2502 No new candidate tokens found (already in descriptions/synonyms)")
-        print("  \u2502")
+            print("  │ No new candidate tokens found (already in descriptions/synonyms)")
+        print("  │")
 
     if report["total_miss_events"] == 0:
-        print("  \u2714 No misses detected \u2014 synonym coverage looks complete!")
+        print("  ✔ No misses detected — synonym coverage looks complete!")
     print(sep)
 
 
@@ -248,36 +253,16 @@ def _parse_args() -> argparse.Namespace:
         description="Detect synonym gaps from query_log.jsonl",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument(
-        "--log",
-        default="logs/query_log.jsonl",
-        metavar="PATH",
-        help="Path to the JSONL query log (default: logs/query_log.jsonl)",
-    )
-    p.add_argument(
-        "--out",
-        default=None,
-        metavar="PATH",
-        help="Write JSON report to this path (optional)",
-    )
-    p.add_argument(
-        "--min-misses",
-        type=int,
-        default=1,
-        metavar="N",
-        help="Only show tables missed >= N times (default: 1)",
-    )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print report but do not write any output file",
-    )
+    p.add_argument("--log", default="logs/query_log.jsonl", metavar="PATH")
+    p.add_argument("--out", default=None, metavar="PATH")
+    p.add_argument("--min-misses", type=int, default=1, metavar="N")
+    p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
 
 def main() -> None:
-    args      = _parse_args()
-    log_path  = Path(args.log)
+    args     = _parse_args()
+    log_path = Path(args.log)
 
     print(f"Analysing: {log_path.resolve()}")
     misses = analyse(log_path)
