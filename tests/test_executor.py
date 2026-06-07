@@ -71,16 +71,17 @@ class TestExecuteSql:
         with patch("database.executor.get_engine", return_value=engine):
             execute_sql("SELECT 1")
         conn = engine.connect.return_value.__enter__.return_value
-        first_call_arg = str(conn.execute.call_args_list[0])
-        assert "LOCK_TIMEOUT" in first_call_arg
+        # .text is the string attribute on a SQLAlchemy TextClause
+        first_clause = conn.execute.call_args_list[0].args[0]
+        assert "LOCK_TIMEOUT" in first_clause.text
 
     def test_respects_max_rows_setting(self):
         engine = _make_engine_mock([], ["x"])
-        with patch("database.executor.get_engine", return_value=engine), \
-             patch("database.executor.settings") as mock_settings:
-            mock_settings.query_timeout_seconds = 60
-            mock_settings.max_rows_returned = 42
-            execute_sql("SELECT 1")
+        import config as cfg
+        from config import override_settings
+        with patch("database.executor.get_engine", return_value=engine):
+            with override_settings(query_timeout_seconds=60, max_rows_returned=42):
+                execute_sql("SELECT 1")
         conn = engine.connect.return_value.__enter__.return_value
         result = conn.execute.return_value
         result.fetchmany.assert_called_once_with(42)

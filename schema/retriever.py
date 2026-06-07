@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import math
 from functools import lru_cache
-from typing import Optional
 
 from schema.synonyms import SYNONYMS
 from schema.tables import TABLES
@@ -35,13 +34,12 @@ _BIGRAM_MULTIPLIER: float = 1.5
 # ---------------------------------------------------------------------------
 # Always-include signals
 # ---------------------------------------------------------------------------
-# If ANY of these tokens appear in the (expanded) question, the paired table
-# is force-added to the result set (even if its TF-IDF score is zero).
+# Substring match (case-insensitive) so "دوره‌ای" matches signal "دوره"
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
         "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
         "بهار", "تابستان", "پاییز", "زمستان",
-        "دوره", "سالیانه", "ماهانه", "هفتگی", "روزانه",
+        "دوره", "دوره‌ای", "دوره ای", "سالیانه", "ماهانه", "هفتگی", "روزانه",
         "date", "year", "month", "season", "week",
         "spring", "summer", "autumn", "winter",
         "quarterly", "monthly", "yearly", "annual", "period",
@@ -105,13 +103,17 @@ def _expand(question: str) -> str:
 # Scoring
 # ---------------------------------------------------------------------------
 
-def _score_table(q_tokens: list[str], q_bigrams: list[str], idf: dict[str, float], description: str) -> float:
+def _score_table(
+    q_tokens: list[str],
+    q_bigrams: list[str],
+    idf: dict[str, float],
+    description: str,
+) -> float:
     """Return a TF-IDF-based relevance score for one table."""
     d_tokens  = _tokenize(description)
     d_bigrams = _ngrams(d_tokens, 2)
     d_len     = len(d_tokens) or 1
 
-    # term frequency in description (normalised)
     tf: dict[str, float] = {}
     for t in d_tokens:
         tf[t] = tf.get(t, 0) + 1.0 / d_len
@@ -140,10 +142,12 @@ def retrieve_tables(question: str) -> list[str]:
     --------
     1. Synonym-expand the question.
     2. Score every table with TF-IDF (unigrams + bigrams).
-    3. Inject always-include tables when domain signals are present.
+    3. Inject always-include tables when domain signals appear as substrings
+       (case-insensitive) in the expanded question.
     4. Return top-N by score; fall back to all tables when nothing matches.
     """
     expanded   = _expand(question)
+    expanded_l = expanded.lower()
     q_tokens   = _tokenize(expanded)
     q_bigrams  = _ngrams(q_tokens, 2)
     idf        = _build_idf()
@@ -154,15 +158,14 @@ def retrieve_tables(question: str) -> list[str]:
         if s >= _MIN_SCORE:
             scores[table_name] = s
 
-    # --- always-include injection ---
+    # Substring match so "دوره‌ای" (with ZWNJ) still triggers "دوره"
     for table_name, signals in _ALWAYS_INCLUDE.items():
         if table_name not in scores:
-            if any(sig in expanded.lower() for sig in signals):
-                # inject at a low score so it appears after genuine matches
+            if any(sig.lower() in expanded_l for sig in signals):
                 scores[table_name] = _MIN_SCORE
 
     if not scores:
-        return list(TABLES.keys())   # fallback: nothing matched
+        return list(TABLES.keys())
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [name for name, _ in ranked[:_TOP_N]]
