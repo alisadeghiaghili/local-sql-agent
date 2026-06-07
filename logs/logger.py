@@ -20,6 +20,10 @@ _write_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
+# Exposed so tests can patch "logs.logger.settings".
+# _log_file() always reads cfg.settings directly for lazy override support.
+settings = cfg.settings
+
 # Module-level path variable so tests can patch "logs.logger._LOG_FILE"
 _LOG_FILE: str = ""
 
@@ -27,9 +31,9 @@ _LOG_FILE: str = ""
 def _log_file() -> str:
     """Return the effective log file path.
 
-    Prefers the module-level ``_LOG_FILE`` override (used by tests) when it
-    is non-empty; otherwise falls back to ``cfg.settings.log_dir`` (read
-    lazily so that ``override_settings()`` patches are visible).
+    When ``_LOG_FILE`` is non-empty (patched by tests) that value is used;
+    otherwise reads ``cfg.settings.log_dir`` lazily so that
+    ``override_settings()`` patches are visible at call-time.
     """
     if _LOG_FILE:
         return _LOG_FILE

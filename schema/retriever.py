@@ -22,6 +22,7 @@ This module has **zero external dependencies** and runs in microseconds.
 from __future__ import annotations
 
 import math
+import unicodedata
 from functools import lru_cache
 
 from schema.synonyms import SYNONYMS
@@ -31,15 +32,25 @@ _TOP_N: int = 6
 _MIN_SCORE: float = 0.01
 _BIGRAM_MULTIPLIER: float = 1.5
 
+
+# ---------------------------------------------------------------------------
+# Unicode normalisation helper
+# ---------------------------------------------------------------------------
+
+def _normalise(text: str) -> str:
+    """NFC-normalise and strip Zero-Width Non-Joiners so substring checks work."""
+    return unicodedata.normalize("NFC", text).replace("\u200c", "")
+
+
 # ---------------------------------------------------------------------------
 # Always-include signals
 # ---------------------------------------------------------------------------
-# Substring match (case-insensitive) so "دوره‌ای" matches signal "دوره"
+# Substring match after normalisation so "دوره‌ای" / "دورهای" both match "دوره"
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
         "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
         "بهار", "تابستان", "پاییز", "زمستان",
-        "دوره", "دوره‌ای", "دوره ای", "سالیانه", "ماهانه", "هفتگی", "روزانه",
+        "دوره", "سالیانه", "ماهانه", "هفتگی", "روزانه",
         "date", "year", "month", "season", "week",
         "spring", "summer", "autumn", "winter",
         "quarterly", "monthly", "yearly", "annual", "period",
@@ -60,7 +71,7 @@ _ALWAYS_INCLUDE: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 def _tokenize(text: str) -> list[str]:
-    return text.lower().split()
+    return _normalise(text).lower().split()
 
 
 def _ngrams(tokens: list[str], n: int) -> list[str]:
@@ -80,7 +91,7 @@ def _build_idf() -> dict[str, float]:
             doc_freq[term] = doc_freq.get(term, 0) + 1
 
     return {
-        term: math.log((N + 1) / (df + 1)) + 1.0   # smoothed IDF
+        term: math.log((N + 1) / (df + 1)) + 1.0
         for term, df in doc_freq.items()
     }
 
@@ -142,12 +153,12 @@ def retrieve_tables(question: str) -> list[str]:
     --------
     1. Synonym-expand the question.
     2. Score every table with TF-IDF (unigrams + bigrams).
-    3. Inject always-include tables when domain signals appear as substrings
-       (case-insensitive) in the expanded question.
+    3. Inject always-include tables when domain signals appear as
+       substrings in the Unicode-normalised expanded question.
     4. Return top-N by score; fall back to all tables when nothing matches.
     """
     expanded   = _expand(question)
-    expanded_l = expanded.lower()
+    expanded_n = _normalise(expanded).lower()
     q_tokens   = _tokenize(expanded)
     q_bigrams  = _ngrams(q_tokens, 2)
     idf        = _build_idf()
@@ -158,10 +169,9 @@ def retrieve_tables(question: str) -> list[str]:
         if s >= _MIN_SCORE:
             scores[table_name] = s
 
-    # Substring match so "دوره‌ای" (with ZWNJ) still triggers "دوره"
     for table_name, signals in _ALWAYS_INCLUDE.items():
         if table_name not in scores:
-            if any(sig.lower() in expanded_l for sig in signals):
+            if any(_normalise(sig).lower() in expanded_n for sig in signals):
                 scores[table_name] = _MIN_SCORE
 
     if not scores:
