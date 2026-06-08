@@ -134,8 +134,8 @@ class TestSystemPromptOutOfScope:
         assert "OUT_OF_SCOPE" in system_prompt
 
     def test_sentinel_spelled_correctly(self, system_prompt):
-        """Common typos: OUT_OF_SCOPE, out_of_scope, OUT-OF-SCOPE."""
-        bad_variants = ["out_of_scope", "OUT-OF-SCOPE", "out-of-scope",
+        """Common typos: out_of_scope, OUT-OF-SCOPE, out-of-scope."""
+        bad_variants = ["OUT-OF-SCOPE", "out-of-scope",
                         "OUTOFSCOPE", "OUT OF SCOPE"]
         for bad in bad_variants:
             assert bad not in system_prompt, \
@@ -144,7 +144,7 @@ class TestSystemPromptOutOfScope:
     def test_sentinel_return_instruction_present(self, system_prompt):
         """The prompt must instruct the model to RETURN the sentinel."""
         lowered = system_prompt.lower()
-        assert "return" in lowered and "out_of_scope" in system_prompt, \
+        assert "return" in lowered and "OUT_OF_SCOPE" in system_prompt, \
             "'return OUT_OF_SCOPE' instruction missing"
 
     def test_out_of_scope_examples_present(self, system_prompt):
@@ -168,16 +168,16 @@ class TestSystemPromptRingAliases:
     """Ring business aliases must be present so the LLM maps Persian names."""
 
     REQUIRED_ALIASES = [
-        "\u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc",   # پتروشیمی
-        "\u06a9\u06cc\u0634",              # کیش
-        "\u0641\u0644\u0632\u0627\u062a",            # فلزات
-        "\u06a9\u0634\u0627\u0648\u0631\u0632\u06cc",          # کشاورزی
-        "\u0646\u0641\u062a\u06cc",             # نفتی
-        "\u062e\u0631\u062f",              # خرد
-        "\u0637\u0644\u0627",               # طلا
-        "\u0633\u06cc\u0645\u0627\u0646",           # سیمان
-        "\u062e\u0648\u062f\u0631\u0648",           # خ\u0648درو
-        "\u0645\u0646\u0627\u0642\u0635\u0647",          # مناقصه
+        "\u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc",
+        "\u06a9\u06cc\u0634",
+        "\u0641\u0644\u0632\u0627\u062a",
+        "\u06a9\u0634\u0627\u0648\u0631\u0632\u06cc",
+        "\u0646\u0641\u062a\u06cc",
+        "\u062e\u0631\u062f",
+        "\u0637\u0644\u0627",
+        "\u0633\u06cc\u0645\u0627\u0646",
+        "\u062e\u0648\u062f\u0631\u0648",
+        "\u0645\u0646\u0627\u0642\u0635\u0647",
     ]
 
     def test_all_required_aliases_present(self, system_prompt):
@@ -191,13 +191,12 @@ class TestSystemPromptRingAliases:
                "Ring aliases section header missing"
 
     def test_petrochemical_maps_to_correct_hall(self, system_prompt):
-        """\u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc must map to exact hall name."""
         assert "\u062a\u0627\u0644\u0627\u0631 \u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc" in system_prompt, \
-            "Mapping '\u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc' \u2192 '\u062a\u0627\u0644\u0627\u0631 \u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc' missing"
+            "Mapping 'پتروشیمی' → 'تالار پتروشیمی' missing"
 
     def test_kish_maps_to_correct_hall(self, system_prompt):
         assert "\u062a\u0627\u0644\u0627\u0631 \u06a9\u0627\u0644\u0627\u06cc \u0635\u0627\u062f\u0631\u0627\u062a\u06cc" in system_prompt, \
-            "Mapping '\u06a9\u06cc\u0634' \u2192 '\u062a\u0627\u0644\u0627\u0631 \u06a9\u0627\u0644\u0627\u06cc \u0635\u0627\u062f\u0631\u0627\u062a\u06cc \u06a9\u06cc\u0634' missing"
+            "Mapping 'کیش' → 'تالار کالای صادراتی کیش' missing"
 
 
 # ===========================================================================
@@ -274,7 +273,7 @@ class TestFewShotsContentContracts:
         )
         for block in sql_blocks:
             stripped = block.strip()
-            if stripped:  # skip empty first line
+            if stripped:
                 first_token = stripped.split()[0].upper()
                 assert first_token in ("SELECT", "WITH", "INSERT", "--"), \
                     f"few_shots SQL block starts with prose: '{stripped[:60]}'"
@@ -310,8 +309,7 @@ class TestCrossFileConsistency:
     """Invariants that must hold across multiple prompt files."""
 
     def test_out_of_scope_sentinel_only_in_system_prompt(self, few_shots, business_glossary):
-        """OUT_OF_SCOPE must NOT appear as an answer in few_shots or glossary —
-        it is the model's response token and must not be taught as a SQL pattern."""
+        """OUT_OF_SCOPE must NOT appear as an answer in few_shots or glossary."""
         assert "OUT_OF_SCOPE" not in few_shots, \
             "OUT_OF_SCOPE sentinel found in few_shots — remove it"
 

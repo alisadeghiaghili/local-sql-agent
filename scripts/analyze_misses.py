@@ -23,9 +23,9 @@ _SQL_TABLE_RE = re.compile(
 )
 
 _STOP_FA = (
-    "\u062f\u0631 \u0627\u0632 \u0628\u0647 \u0648 \u06cc\u0627 \u0627 \u0628\u0627 \u0628\u0631\u0627\u06cc \u0628\u0631 \u062a\u0627 \u06a9\u0647"
-    " \u0627\u06cc\u0646 \u0622\u0646 \u0647\u0627 \u0647\u0627\u06cc \u0645\u06cc \u0646\u0647 \u0647\u0645 \u0647\u0645\u0647 \u0686\u0647 \u0686\u0646\u062f"
-    " \u0686\u06cc\u0633\u062a \u06a9\u062f\u0627\u0645"
+    "در از به و یا ا با برای بر تا که"
+    " این آن ها های می نه هم همه چه چند"
+    " چیست کدام"
 )
 _STOP_EN = (
     "the a an in on at of to is are was were be been"
@@ -50,14 +50,18 @@ class Miss(NamedTuple):
 
 
 def _tables_in_sql(sql: str) -> set[str]:
-    """Return logical table names referenced in *sql* that exist in TABLES."""
+    """Return table names referenced in *sql* via FROM/JOIN clauses.
+
+    Unlike the previous version, this no longer filters by TABLES — it returns
+    every name matched by the regex so that the analyser can detect tables that
+    the retriever missed *even when those tables exist in the schema registry*.
+    The caller (analyse) is responsible for deciding what counts as a miss.
+    """
     found: set[str] = set()
     for m in _SQL_TABLE_RE.finditer(sql):
         name = m.group(1)
-        for table_name in TABLES:
-            if table_name.lower() == name.lower():
-                found.add(table_name)
-                break
+        if name:  # skip empty captures
+            found.add(name)
     return found
 
 
@@ -87,7 +91,7 @@ def analyse(log_path: Path) -> list[Miss]:
             try:
                 entry = json.loads(raw)
             except json.JSONDecodeError as exc:
-                print(f"[warn] line {lineno}: invalid JSON \u2014 {exc}", file=sys.stderr)
+                print(f"[warn] line {lineno}: invalid JSON — {exc}", file=sys.stderr)
                 continue
 
             if entry.get("status") != "SUCCESS":
@@ -155,16 +159,16 @@ def _print_report(report: dict, min_misses: int) -> None:
     for entry in report["tables_ranked_by_miss_count"]:
         if entry["miss_count"] < min_misses:
             continue
-        print(f"  \u2502 Table : {entry['table']}  (missed {entry['miss_count']}x)")
+        print(f"  │ Table : {entry['table']}  (missed {entry['miss_count']}x)")
         if entry["top_candidates"]:
-            print("  \u2502 Suggested synonym candidates:")
+            print("  │ Suggested synonym candidates:")
             for c in entry["top_candidates"]:
-                print(f"  \u2502   {c['token']!r:30s}  \u2192  freq={c['freq']}")
+                print(f"  │   {c['token']!r:30s}  →  freq={c['freq']}")
         else:
-            print("  \u2502 No new candidate tokens found")
-        print("  \u2502")
+            print("  │ No new candidate tokens found")
+        print("  │")
     if report["total_miss_events"] == 0:
-        print("  \u2714 No misses detected \u2014 synonym coverage looks complete!")
+        print("  ✔ No misses detected — synonym coverage looks complete!")
     print(sep)
 
 

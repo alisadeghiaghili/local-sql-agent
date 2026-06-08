@@ -20,7 +20,6 @@ def _normalise(text: str) -> str:
 
 
 # Substring signals — checked against the ZWNJ-stripped, lowercased expanded question.
-# Adding both "دوره" and "دورهای" covers the inflected form even without ZWNJ stripping.
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
         "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
@@ -100,13 +99,12 @@ def _score_table(
 
 def retrieve_tables(question: str) -> list[str]:
     """Return up to _TOP_N table names most relevant to *question*."""
-    expanded   = _expand(question)
-    # Normalise twice: once raw, once ZWNJ-stripped — check both
+    expanded     = _expand(question)
     expanded_n   = _normalise(expanded).lower()
     expanded_raw = expanded.lower()
-    q_tokens   = _tokenize(expanded)
-    q_bigrams  = _ngrams(q_tokens, 2)
-    idf        = _build_idf()
+    q_tokens     = _tokenize(expanded)
+    q_bigrams    = _ngrams(q_tokens, 2)
+    idf          = _build_idf()
 
     scores: dict[str, float] = {}
     for table_name, info in TABLES.items():
@@ -114,10 +112,12 @@ def retrieve_tables(question: str) -> list[str]:
         if s >= _MIN_SCORE:
             scores[table_name] = s
 
+    # Always-include: force-add tables whose signals appear in the question,
+    # regardless of whether TF-IDF already picked them up.
     for table_name, signals in _ALWAYS_INCLUDE.items():
-        if table_name not in scores:
-            sig_n = [_normalise(s).lower() for s in signals]
-            if any(s in expanded_n or s in expanded_raw for s in sig_n):
+        sig_n = [_normalise(s).lower() for s in signals]
+        if any(s in expanded_n or s in expanded_raw for s in sig_n):
+            if table_name not in scores:
                 scores[table_name] = _MIN_SCORE
 
     if not scores:
