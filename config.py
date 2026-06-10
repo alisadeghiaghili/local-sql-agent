@@ -35,7 +35,7 @@ class Settings:
 
     ollama_url: str = field(
         default_factory=lambda: os.getenv(
-            "OLLAMA_URL", "http://localhost:11434/api/generate"
+            "OLLAMA_URL", "http://ai.ime.co.ir/ollama/api/generate"
         )
     )
     ollama_model: str = field(
@@ -44,8 +44,8 @@ class Settings:
     db_connection_url: str = field(
         default_factory=lambda: os.getenv(
             "DB_CONNECTION_URL",
-            "mssql+pyodbc://sa@localhost:1433/Auction_DM"
-            "?driver=ODBC+Driver+17+for+SQL+Server",
+            "mssql+pyodbc://bahmanabadi.m@172.16.1.119:1433/Auction_DM"
+            "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
         )
     )
     query_timeout_seconds: int = field(
