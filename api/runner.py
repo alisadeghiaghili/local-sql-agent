@@ -3,6 +3,16 @@
 All raw exceptions from sub-layers are caught here and re-raised as
 typed NLQError subclasses so ``api/errors.py`` handlers emit the correct
 HTTP status code.
+
+Query result cache
+------------------
+Successful ``result`` and ``full`` mode responses are stored in
+``api.query_cache.query_cache`` (LRU + TTL, thread-safe).  The cache is
+**skipped** for:
+
+* ``mode='sql'`` — generation-only; always hit the LLM for freshness.
+* ``interpret=True`` — interpretation may change; treat as uncacheable.
+* Any request that raises an exception.
 """
 
 from __future__ import annotations
@@ -27,6 +37,7 @@ from api.errors import (
     QueryTimeoutError,
 )
 from api.models import QueryResponse
+from api.query_cache import query_cache
 from llm.sql_agent import SQLAgent
 
 logger = logging.getLogger(__name__)
@@ -54,12 +65,23 @@ def run_query(
     mode: Literal["sql", "result", "full"] = "full",
     interpret: bool = False,
 ) -> QueryResponse:
-    """Full pipeline with typed error translation.
+    """Full pipeline with typed error translation and query-result caching.
+
+    Cache is consulted/populated only for mode='result'|'full' with
+    interpret=False.  sql-only and interpreted requests always bypass it.
 
     Raises only :class:`~api.errors.NLQError` subclasses.
     """
+    # ── cache lookup (result / full, no interpret) ────────────────────────
+    use_cache = (mode in ("result", "full")) and not interpret
+    if use_cache:
+        cached = query_cache.get(question, mode)
+        if cached is not None:
+            logger.debug("Cache HIT  question=%.60s mode=%s", question, mode)
+            return cached
+        logger.debug("Cache MISS question=%.60s mode=%s", question, mode)
 
-    # --- sql-only mode: generate without executing ---
+    # ── sql-only mode: generate without executing ─────────────────────────
     if mode == "sql":
         sql = _safe_generate_sql_only(question, system_prompt)
         return QueryResponse(
@@ -68,7 +90,7 @@ def run_query(
             model=_agent._backend.name,
         )
 
-    # --- result / full mode ---
+    # ── result / full mode ────────────────────────────────────────────────
     df, result = _safe_run(question, system_prompt)
     rows: list[dict] = df.to_dict(orient="records")
 
@@ -76,7 +98,7 @@ def run_query(
     if interpret and mode in ("result", "full"):
         interpretation = _interpret(question, rows)
 
-    return QueryResponse(
+    response = QueryResponse(
         question=question,
         sql=result.sql if mode == "full" else None,
         result=rows,
@@ -85,6 +107,13 @@ def run_query(
         correction_attempts=result.attempt,
         model=_agent._backend.name,
     )
+
+    # ── cache store ───────────────────────────────────────────────────────
+    if use_cache:
+        query_cache.set(question, mode, response)
+        logger.debug("Cache SET  question=%.60s mode=%s", question, mode)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +195,6 @@ def _safe_run(question: str, system_prompt: str):
 
     except RuntimeError as exc:
         msg = str(exc)
-        # Distinguish LLM unreachable from DB errors
         if "Ollama" in msg or "unreachable" in msg.lower():
             raise ModelUnavailableError(msg)
         if "LOCK_TIMEOUT" in msg or "lock timeout" in msg.lower():

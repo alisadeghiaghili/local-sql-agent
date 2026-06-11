@@ -26,8 +26,6 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Generator
 
-import config as _self   # forward reference for override_settings patch target
-
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -60,6 +58,16 @@ class Settings:
     export_dir: str = field(
         default_factory=lambda: os.getenv("EXPORT_DIR", "exports")
     )
+    # ── query result cache ────────────────────────────────────────────────
+    cache_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("CACHE_TTL_SECONDS", "300"))
+    )
+    """How long (seconds) a cached query result stays valid.  0 = disabled."""
+
+    cache_max_size: int = field(
+        default_factory=lambda: int(os.getenv("CACHE_MAX_SIZE", "256"))
+    )
+    """Maximum number of distinct (question, mode) pairs to keep in memory."""
 
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder."""
