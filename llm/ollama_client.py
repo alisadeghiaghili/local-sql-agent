@@ -1,5 +1,13 @@
 """Ollama HTTP client — generates SQL from a natural language question.
 
+Pipeline
+--------
+    question
+        → ContextRetriever   (entities, facts, relationships, rules, examples, filters)
+        → PromptBuilder      (assembles structured prompt)
+        → Ollama HTTP API    (LLM inference)
+        → clean_sql          (security sanitisation)
+
 Retries on transient network errors with exponential back-off.
 """
 
@@ -12,8 +20,8 @@ from typing import Any
 import requests
 
 import config as cfg
-from schema.retriever import retrieve_tables
-from schema.schema_registry import build_schema_context
+from retrieval.context_retriever import ContextRetriever
+from prompt_engine.builder import PromptBuilder
 from security.sql_guard import clean_sql
 
 logger = logging.getLogger(__name__)
@@ -26,6 +34,13 @@ _BACKOFF_BASE: int = 2
 def generate_sql(question: str, system_prompt: str) -> str:
     """Send *question* to Ollama and return a cleaned SQL string.
 
+    Parameters
+    ----------
+    question:
+        Natural-language question in Persian or English.
+    system_prompt:
+        Raw content of prompts/system_prompt.md, loaded once at startup.
+
     Raises
     ------
     ValueError("OUT_OF_SCOPE")
@@ -33,14 +48,12 @@ def generate_sql(question: str, system_prompt: str) -> str:
     RuntimeError
         When Ollama is unreachable after all retries.
     """
-    selected_tables = retrieve_tables(question)
-    # lru_cache on build_schema_context requires a tuple, not a list
-    schema_context  = build_schema_context(tuple(selected_tables))
+    context = ContextRetriever.retrieve(question)
 
-    full_prompt = (
-        f"{system_prompt}\n\n"
-        f"{schema_context}\n\n"
-        f"Question:\n{question}\n\nSQL:\n"
+    full_prompt = PromptBuilder.build(
+        question=question,
+        system_prompt=system_prompt,
+        context=context,
     )
 
     payload: dict[str, Any] = {

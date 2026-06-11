@@ -1,47 +1,40 @@
-"""Core domain models shared across the entire application."""
-
-from __future__ import annotations
-
 from dataclasses import dataclass, field
-from typing import Any
+from typing import List, Dict
 
 
 @dataclass
 class RetrievalContext:
-    """All context retrieved for a single user question.
-
-    Produced by ``ContextRetriever.retrieve()`` and consumed by
-    ``PromptBuilder.build()``.
+    """
+    Holds all retrieved context for a single user question.
+    Built by ContextRetriever and consumed by PromptBuilder.
     """
 
-    entities: list[str] = field(default_factory=list)
-    """Dimension table names matched from the question (e.g. ['Customer', 'Ring'])."""
+    # Dimension tables detected (e.g. Customer, Broker, Symbol)
+    entities: List[str] = field(default_factory=list)
 
-    facts: list[str] = field(default_factory=list)
-    """Fact table names matched from the question (e.g. ['CustomerContract'])."""
+    # Fact tables detected (e.g. Contract, Offer, Order)
+    facts: List[str] = field(default_factory=list)
 
-    dimensions: list[str] = field(default_factory=list)
-    """Alias for entities — kept separate so PromptBuilder can distinguish."""
+    # Alias for entities — kept separate for future use
+    dimensions: List[str] = field(default_factory=list)
 
-    relationships: list[str] = field(default_factory=list)
-    """JOIN condition strings relevant to the selected tables."""
+    # Relevant JOIN clauses
+    relationships: List[str] = field(default_factory=list)
 
-    business_rules: list[str] = field(default_factory=list)
-    """Business rule paragraphs relevant to the question."""
+    # Matched business rules (plain text)
+    business_rules: List[str] = field(default_factory=list)
 
-    examples: list[dict[str, Any]] = field(default_factory=list)
-    """Few-shot SQL examples selected by ExampleRetriever."""
+    # Few-shot SQL examples: [{"question": ..., "sql": ...}]
+    examples: List[Dict[str, str]] = field(default_factory=list)
 
-    filters: dict[str, Any] = field(default_factory=dict)
-    """Concrete filter values extracted from the question (e.g. {'Ring': 'تالار پتروشیمی', 'PersianYear': 1403})."""
+    # Extracted filter values: {"Ring": "تالار پتروشیمی", ...}
+    filters: Dict[str, str] = field(default_factory=dict)
 
     @property
-    def selected_tables(self) -> list[str]:
-        """Union of entity and fact tables — de-duplicated, order preserved."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for t in self.entities + self.facts:
-            if t not in seen:
-                seen.add(t)
-                result.append(t)
-        return result
+    def selected_tables(self) -> List[str]:
+        """Union of dimension and fact tables."""
+        return list(set(self.entities + self.facts))
+
+    def is_empty(self) -> bool:
+        """Returns True if no useful context was retrieved."""
+        return not (self.entities or self.facts)
