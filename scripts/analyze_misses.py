@@ -38,11 +38,14 @@ _STOP: frozenset[str] = frozenset(
     " می‌شود می‌کند می‌دهد می‌شد می‌کرد بر اساس نسبت به طور".split()
 )
 
-# Pre-compute the union of all tokens already covered by descriptions + synonyms
+# Pre-compute the union of all tokens already covered by descriptions + synonyms.
+# We extract tokens from BOTH the Persian and English parts of each description
+# so that a Persian word like مشتری (which appears in the Customer description
+# as "بایر / customer master data") is recognised as already-known.
 _KNOWN_TOKENS: frozenset[str] = frozenset(
     token
     for text in (*TABLES.values(), *SYNONYMS.keys())
-    for token in re.split(r"[\s،,;/\-]+", text)
+    for token in re.split(r"[\s\u060c,;/\-\u2014\u2013—]+", text)
     if len(token) > 1
 )
 
@@ -91,7 +94,7 @@ def _candidate_tokens(question: str) -> list[str]:
     - Persian stop-words
     - Tokens already present in ``TABLES`` descriptions or ``SYNONYMS`` keys
     """
-    tokens = re.split(r"[\s،,;/\-]+", question.strip())
+    tokens = re.split(r"[\s\u060c,;/\-]+", question.strip())
     result: list[str] = []
     for tok in tokens:
         tok = tok.strip()
@@ -111,6 +114,9 @@ def analyse(log_path: Path) -> list[Miss]:
     Only ``SUCCESS`` entries are inspected. An entry is a miss if the SQL it
     produced references at least one table that ``retrieve_tables`` would *not*
     have surfaced for the same question.
+
+    Uses ``fallback=False`` so that questions with no vocabulary match do **not**
+    silently return every table — those are the most important misses to surface.
     """
     if not log_path.exists():
         return []
@@ -136,7 +142,9 @@ def analyse(log_path: Path) -> list[Miss]:
             if not tables_in_sql:
                 continue
 
-            retrieved = set(retrieve_tables(question))
+            # fallback=False: an unrecognised question returns [] instead of
+            # every table, so genuine vocabulary gaps are detected as misses.
+            retrieved = set(retrieve_tables(question, fallback=False))
             missing   = sorted(tables_in_sql - retrieved)
             if not missing:
                 continue
@@ -205,15 +213,9 @@ def main() -> None:
     print("-" * 60)
     for entry in report["tables_ranked_by_miss_count"]:
         print(f"  Table : {entry['table']}  (missed {entry['miss_count']}x)")
-        if entry["top_candidates"]:
-            cands = ", ".join(
-                f"{c['token']}({c['frequency']})" for c in entry["top_candidates"]
-            )
-            print(f"  Tokens: {cands}")
-        print()
-
+        for cand in entry["top_candidates"]:
+            print(f"    candidate token: {cand['token']!r}  (freq={cand['frequency']})")
     print("-" * 60)
-    print("Add the tokens above to knowledge/aliases.py → SYNONYMS to fix these misses.")
 
 
 if __name__ == "__main__":
