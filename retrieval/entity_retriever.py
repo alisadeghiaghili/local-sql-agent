@@ -1,25 +1,40 @@
+"""Entity (dimension table) retriever.
+
+Strategy (two-tier):
+1. Alias match  — fast, exact substring match against knowledge.entities.ENTITIES.
+2. TF-IDF fallback — if alias match returns nothing, delegate to the
+   TF-IDF engine in schema.retriever and keep only dimension tables.
+"""
+
+from __future__ import annotations
+
 from knowledge.entities import ENTITIES
+from schema.retriever import retrieve_tables
+
+# Fact tables we must NOT return from this retriever.
+_FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
 
 
 class EntityRetriever:
 
     @staticmethod
-    def retrieve(question: str):
+    def retrieve(question: str) -> list[str]:
 
-        question = question.lower()
+        q = question.lower()
 
-        results = []
-
+        results: list[str] = []
         for entity_name, entity_info in ENTITIES.items():
-
-            aliases = entity_info["aliases"]
-
-            for alias in aliases:
-
-                if alias.lower() in question:
-
+            for alias in entity_info["aliases"]:
+                if alias.lower() in q:
                     results.append(entity_name)
-
                     break
 
-        return list(set(results))
+        if results:
+            return list(set(results))
+
+        # TF-IDF fallback — strip fact tables, keep dimensions only
+        tfidf_tables = retrieve_tables(question)
+        return [
+            t for t in tfidf_tables
+            if t not in _FACT_TABLES
+        ]

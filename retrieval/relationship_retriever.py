@@ -1,26 +1,28 @@
-from schema.relationships import RELATIONSHIPS
+"""Relationship retriever.
+
+Reads JOIN definitions from schema_data.relationships (canonical source)
+and returns only the JOIN clauses relevant to the selected tables.
+"""
+
+from __future__ import annotations
+
+from schema_data.relationships import RELATIONSHIPS
 
 
 class RelationshipRetriever:
 
     @staticmethod
-    def retrieve(selected_tables):
+    def retrieve(selected_tables: list[str]) -> list[str]:
 
-        selected_tables = set(selected_tables)
-
-        results = []
+        selected = set(selected_tables)
+        results: list[str] = []
 
         for name, join_sql in RELATIONSHIPS.items():
+            parts = name.split(" -> ")
+            left  = parts[0].split(".")[0]
+            right = parts[1].split(".")[0]
 
-            left = name.split(" -> ")[0].split(".")[0]
-
-            right = name.split(" -> ")[1].split(".")[0]
-
-            if (
-                left in selected_tables
-                and right in selected_tables
-            ):
-
+            if left in selected and right in selected:
                 results.append(join_sql)
 
         return results
