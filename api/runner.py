@@ -1,7 +1,8 @@
-"""Core request handler — wires SQLAgent, executor, and interpreter together.
+"""Core request handler — wires SQLAgent, executor, and interpreter.
 
-Kept separate from ``server.py`` so it can be called from both the
-FastAPI app and the CLI (``app.py``) without importing FastAPI.
+All raw exceptions from sub-layers are caught here and re-raised as
+typed NLQError subclasses so ``api/errors.py`` handlers emit the correct
+HTTP status code.
 """
 
 from __future__ import annotations
@@ -9,17 +10,31 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+import requests as _requests
+from sqlalchemy.exc import OperationalError, TimeoutError as SATimeout
+
 import config as cfg
-from llm.sql_agent import SQLAgent
+from api.errors import (
+    OutOfScopeError,
+    ForbiddenSQLError,
+    InjectionAttemptError,
+    InvalidSQLResponseError,
+    EmptySQLResponseError,
+    ModelUnavailableError,
+    ModelTimeoutError,
+    QueryExecutionError,
+    DatabaseConnectionError,
+    QueryTimeoutError,
+)
 from api.models import QueryResponse
+from llm.sql_agent import SQLAgent
 
 logger = logging.getLogger(__name__)
 
-# Module-level agent (shared across requests; stateless)
 _agent = SQLAgent()
 
 _INTERPRET_TEMPLATE = """
-You are a helpful data analyst. The user asked the following question:
+You are a helpful data analyst. The user asked:
 
 {question}
 
@@ -28,7 +43,7 @@ The database returned these results (up to 20 rows shown):
 {rows}
 
 Write a concise one-paragraph summary in the same language as the question.
-Do not repeat column names literally — describe the findings in plain language.
+Do not repeat column names literally — describe findings in plain language.
 If the result is empty, say so clearly.
 """
 
@@ -39,39 +54,22 @@ def run_query(
     mode: Literal["sql", "result", "full"] = "full",
     interpret: bool = False,
 ) -> QueryResponse:
-    """Run the full pipeline and return a :class:`QueryResponse`.
+    """Full pipeline with typed error translation.
 
-    Raises
-    ------
-    ValueError("OUT_OF_SCOPE") | ValueError | RuntimeError
-        Propagated from SQLAgent / executor for the caller to handle.
+    Raises only :class:`~api.errors.NLQError` subclasses.
     """
 
-    # --- sql-only mode: skip execution entirely ---
+    # --- sql-only mode: generate without executing ---
     if mode == "sql":
-        from llm.base import SQLGenerationResult
-        from retrieval.context_retriever import ContextRetriever
-        from prompt_engine.builder import PromptBuilder
-        from security.sql_guard import clean_sql, validate_sql
-
-        context = ContextRetriever.retrieve(question)
-        prompt = PromptBuilder.build(
-            question=question,
-            system_prompt=system_prompt,
-            context=context,
-        )
-        raw = _agent._backend.generate(prompt)
-        sql = clean_sql(raw)
-        validate_sql(sql)
+        sql = _safe_generate_sql_only(question, system_prompt)
         return QueryResponse(
             question=question,
             sql=sql,
             model=_agent._backend.name,
         )
 
-    # --- result / full mode: generate + execute (with self-correction) ---
-    df, result = _agent.run(question, system_prompt)
-
+    # --- result / full mode ---
+    df, result = _safe_run(question, system_prompt)
     rows: list[dict] = df.to_dict(orient="records")
 
     interpretation: str | None = None
@@ -89,20 +87,109 @@ def run_query(
     )
 
 
-def _interpret(question: str, rows: list[dict]) -> str:
-    """Ask the LLM to summarise the result in plain language."""
-    # Show at most 20 rows to keep the prompt short
-    preview = rows[:20]
-    rows_text = "\n".join(str(r) for r in preview)
-    if not rows_text:
-        rows_text = "(empty result set)"
+# ---------------------------------------------------------------------------
+# Private helpers — exception translation
+# ---------------------------------------------------------------------------
 
-    prompt = _INTERPRET_TEMPLATE.format(
-        question=question,
-        rows=rows_text,
+def _safe_generate_sql_only(question: str, system_prompt: str) -> str:
+    from retrieval.context_retriever import ContextRetriever
+    from prompt_engine.builder import PromptBuilder
+    from security.sql_guard import clean_sql, validate_sql
+
+    context = ContextRetriever.retrieve(question)
+    prompt = PromptBuilder.build(
+        question=question, system_prompt=system_prompt, context=context
     )
+    try:
+        raw = _agent._backend.generate(prompt)
+    except ValueError as exc:
+        if str(exc) == "OUT_OF_SCOPE":
+            raise OutOfScopeError("This question is outside the Auction domain.")
+        raise
+    except _requests.Timeout as exc:
+        raise ModelTimeoutError(
+            "The LLM took too long to respond. Please try again.",
+            detail=str(exc),
+        )
+    except _requests.ConnectionError as exc:
+        raise ModelUnavailableError(
+            "Cannot reach the LLM backend. Is Ollama running?",
+            detail=str(exc),
+        )
+    except RuntimeError as exc:
+        raise ModelUnavailableError(str(exc))
+
+    if not raw or not raw.strip():
+        raise EmptySQLResponseError("LLM returned an empty response.")
+
+    try:
+        sql = clean_sql(raw)
+        validate_sql(sql)
+    except ValueError as exc:
+        msg = str(exc)
+        if "Forbidden keyword" in msg:
+            raise ForbiddenSQLError(msg)
+        raise InvalidSQLResponseError(
+            f"LLM response could not be parsed into valid SQL: {msg}",
+            detail=raw[:500],
+        )
+
+    return sql
+
+
+def _safe_run(question: str, system_prompt: str):
+    """Run SQLAgent and translate every exception to a typed NLQError."""
+    try:
+        return _agent.run(question, system_prompt)
+
+    except ValueError as exc:
+        msg = str(exc)
+        if msg == "OUT_OF_SCOPE":
+            raise OutOfScopeError("This question is outside the Auction domain.")
+        if "Forbidden keyword" in msg:
+            raise ForbiddenSQLError(msg)
+        raise InvalidSQLResponseError(
+            f"LLM response could not be parsed into valid SQL: {msg}"
+        )
+
+    except _requests.Timeout as exc:
+        raise ModelTimeoutError(
+            "The LLM took too long to respond. Please try again.",
+            detail=str(exc),
+        )
+
+    except _requests.ConnectionError as exc:
+        raise ModelUnavailableError(
+            "Cannot reach the LLM backend. Is Ollama running?",
+            detail=str(exc),
+        )
+
+    except RuntimeError as exc:
+        msg = str(exc)
+        # Distinguish LLM unreachable from DB errors
+        if "Ollama" in msg or "unreachable" in msg.lower():
+            raise ModelUnavailableError(msg)
+        if "LOCK_TIMEOUT" in msg or "lock timeout" in msg.lower():
+            raise QueryTimeoutError(
+                "Query timed out waiting for database lock.",
+                detail=msg,
+            )
+        if "Cannot connect" in msg or "connection" in msg.lower():
+            raise DatabaseConnectionError(
+                "Cannot connect to the database.",
+                detail=msg,
+            )
+        raise QueryExecutionError(
+            f"Database returned an error: {msg}",
+            detail=msg,
+        )
+
+
+def _interpret(question: str, rows: list[dict]) -> str:
+    preview_text = "\n".join(str(r) for r in rows[:20]) or "(empty result set)"
+    prompt = _INTERPRET_TEMPLATE.format(question=question, rows=preview_text)
     try:
         return _agent._backend.generate(prompt).strip()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Interpretation failed: %s", exc)
+        logger.warning("Interpretation failed (non-fatal): %s", exc)
         return ""
