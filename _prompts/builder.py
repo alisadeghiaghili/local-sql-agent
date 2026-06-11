@@ -1,8 +1,8 @@
-from schema.registry import (
+from _schema.registry import (
     SchemaRegistry
 )
 
-from prompts.templates import (
+from _prompts.templates import (
     PROMPT_TEMPLATE
 )
 

@@ -1,6 +1,6 @@
-from schema.tables import TABLES
-from schema.columns import COLUMNS
-from schema.relationships import RELATIONSHIPS
+from _schema.tables import TABLES
+from _schema.columns import COLUMNS
+from _schema.relationships import RELATIONSHIPS
 
 
 class SchemaRegistry:
