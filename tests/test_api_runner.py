@@ -39,6 +39,20 @@ SIMPLE_DF  = pd.DataFrame({"TradeId": [1], "Price": [100]})
 
 
 @pytest.fixture(autouse=True)
+def _clear_cache():
+    """Isolate every test: wipe the shared cache singleton before and after.
+
+    Without this, a successful run_query() in an earlier test populates the
+    cache so that a later test gets a cache-hit instead of calling _agent.run,
+    causing correction_attempts / side_effect assertions to fail.
+    """
+    from api.query_cache import query_cache
+    query_cache.clear()
+    yield
+    query_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def patch_agent():
     """Replace the module-level _agent in runner with a fresh mock."""
     mock_agent = MagicMock()

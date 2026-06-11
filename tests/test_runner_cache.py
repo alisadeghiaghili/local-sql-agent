@@ -46,6 +46,7 @@ def _good_result(attempt: int = 1):
 def _clear_cache():
     """Guarantee a clean cache before and after every test."""
     from api.query_cache import query_cache
+    query_cache.reconfigure(ttl_seconds=300, max_size=256)
     query_cache.clear()
     yield
     query_cache.clear()
@@ -215,7 +216,7 @@ class TestReconfigure:
         query_cache.set("سوال", "full", r)
         assert query_cache.get("سوال", "full") is r  # sanity check
 
-        # Disable cache
+        # Disable cache — reconfigure must also clear stale entries
         query_cache.reconfigure(ttl_seconds=0, max_size=256)
         assert query_cache.get("سوال", "full") is None
 
@@ -230,7 +231,7 @@ class TestReconfigure:
         query_cache.set("سوال", "full", r)
         query_cache.reconfigure(ttl_seconds=60, max_size=256)
 
-        # After reconfigure the store is cleared
+        # reconfigure() must have cleared the store
         assert query_cache.stats()["size"] == 0
 
 
@@ -242,6 +243,10 @@ class TestHttpIntegration:
     """End-to-end through FastAPI TestClient → runner → cache.
 
     The SQLAgent is fully mocked so no Ollama or DB required.
+
+    NOTE: The FastAPI application object lives in ``api.server``, NOT in
+    ``app.py``.  ``app.py`` is the interactive CLI entry-point (REPL) and
+    does NOT export a ``app`` symbol.
     """
 
     @pytest.fixture()
@@ -249,12 +254,14 @@ class TestHttpIntegration:
         """Build a fresh TestClient with cache enabled (TTL 300s)."""
         from fastapi.testclient import TestClient
         from api.query_cache import query_cache
+        import api.server as server_module
 
         query_cache.reconfigure(ttl_seconds=300, max_size=256)
         mock_agent.run.return_value = _good_result()
+        server_module._system_prompt = "stub system prompt"
 
-        from app import app  # import after patching to pick up mock
-        return TestClient(app)
+        # api.server.app is the FastAPI instance — app.py is the CLI REPL
+        return TestClient(server_module.app, raise_server_exceptions=False)
 
     def test_second_http_request_does_not_call_agent_again(self, client, mock_agent):
         payload = {"question": "چند معامله امروز؟", "mode": "full"}
@@ -286,7 +293,6 @@ class TestHttpIntegration:
     def test_error_response_not_served_from_cache(self, client, mock_agent):
         """A failed request must not poison the cache for the same question."""
         from api.query_cache import query_cache
-        from api.errors import QueryExecutionError
 
         mock_agent.run.side_effect = RuntimeError("DB down")
         client.post("/query", json={"question": "سوال", "mode": "full"})
