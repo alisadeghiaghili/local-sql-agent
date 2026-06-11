@@ -3,31 +3,12 @@
 All external dependencies (LLM backend, DB executor) are replaced by
 injected mocks — no Ollama or SQL Server required.
 
-Contracts under test
---------------------
-POST /query
-  mode='sql'    → returns sql, no result
-  mode='result' → returns result, no sql
-  mode='full'   → returns both sql and result
-  interpret=True→ adds interpretation field
-  OUT_OF_SCOPE  → 422
-  ForbiddenSQL  → 400
-  ModelTimeout  → 504
-  ModelUnavail  → 503
-  QueryTimeout  → 504
-  Overload      → 503
-  question too short → 422
-  question too long  → 422
-  missing question   → 422
-  correction_attempts echoed in response
-  elapsed_seconds > 0
-  model echoed in response
-
-GET /health
-  all ok → {status: ok, ollama: true, database: true}
-  ollama down → {status: degraded}
-  db down → {status: degraded}
-  both down → {status: down}
+Key fixture design
+------------------
+- lifespan is bypassed via monkeypatching _system_prompt before app import
+- run_query is patched at its definition site: api.runner.run_query
+- The endpoint in server.py calls run_query imported from api.runner,
+  so patching api.runner.run_query intercepts all calls correctly.
 """
 
 from __future__ import annotations
@@ -36,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.errors import (
@@ -49,27 +31,13 @@ from api.errors import (
 from api.models import HealthResponse
 
 SIMPLE_SQL = "SELECT TOP 10 * FROM [Auction_Dim].[Customer]"
-SIMPLE_DF = pd.DataFrame({"Id": [1, 2], "Name": ["علی", "سارا"]})
-VALID_Q = "لیست مشتریان"
+SIMPLE_DF  = pd.DataFrame({"Id": [1, 2], "Name": ["علی", "سارا"]})
+VALID_Q    = "لیست مشتریان"
 
 
 # ---------------------------------------------------------------------------
-# Fixture: app with mocked runner
+# Helpers
 # ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def app_and_client():
-    """Returns (app, TestClient, mock_run_query) with runner patched."""
-    # Import here so patching happens before app is built
-    import api.server as server_module
-    # Ensure system prompt is loaded
-    server_module._system_prompt = "system prompt stub"
-
-    with patch("api.runner.run_query") as mock_run:
-        from api.server import app
-        client = TestClient(app, raise_server_exceptions=False)
-        yield app, client, mock_run
-
 
 def _ok_response(**overrides):
     from api.models import QueryResponse
@@ -80,11 +48,36 @@ def _ok_response(**overrides):
         interpretation=None,
         row_count=2,
         correction_attempts=1,
-        elapsed_seconds=0.0,
+        elapsed_seconds=0.1,
         model="ollama:llama3",
     )
     defaults.update(overrides)
     return QueryResponse(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# Fixture
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def app_and_client():
+    """App with lifespan skipped and run_query fully mocked.
+
+    Patches
+    -------
+    - api.server._system_prompt  → stub string (skips file-system load)
+    - api.runner.run_query       → MagicMock (controls every response)
+    """
+    import api.server as server_module
+    import api.runner as runner_module
+
+    # Pre-set the module-level prompt so lifespan startup doesn’t fail
+    server_module._system_prompt = "stub system prompt"
+
+    with patch.object(runner_module, "run_query") as mock_run:
+        # Build a *new* TestClient without triggering lifespan events
+        client = TestClient(server_module.app, raise_server_exceptions=False)
+        yield server_module.app, client, mock_run
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +114,7 @@ class TestQueryModes:
 
     def test_interpret_true_adds_interpretation(self, app_and_client):
         _, client, mock_run = app_and_client
-        mock_run.return_value = _ok_response(interpretation="در ماه گذشته دو مشتری ثبت شد.”")
+        mock_run.return_value = _ok_response(interpretation="در ماه گذشته دو مشتری ثبت شد.")
         resp = client.post("/query", json={"question": VALID_Q, "mode": "full", "interpret": True})
         assert resp.status_code == 200
         assert resp.json()["interpretation"] is not None
@@ -130,18 +123,21 @@ class TestQueryModes:
         _, client, mock_run = app_and_client
         mock_run.return_value = _ok_response(correction_attempts=2)
         resp = client.post("/query", json={"question": VALID_Q})
+        assert resp.status_code == 200
         assert resp.json()["correction_attempts"] == 2
 
     def test_elapsed_seconds_present(self, app_and_client):
         _, client, mock_run = app_and_client
         mock_run.return_value = _ok_response()
         resp = client.post("/query", json={"question": VALID_Q})
+        assert resp.status_code == 200
         assert resp.json()["elapsed_seconds"] >= 0
 
     def test_model_name_echoed(self, app_and_client):
         _, client, mock_run = app_and_client
         mock_run.return_value = _ok_response(model="ollama:codellama")
         resp = client.post("/query", json={"question": VALID_Q})
+        assert resp.status_code == 200
         assert resp.json()["model"] == "ollama:codellama"
 
 
@@ -194,23 +190,22 @@ class TestQueryErrors:
 # ---------------------------------------------------------------------------
 
 class TestHealth:
-    def _make_health_client(self, ollama_ok: bool, db_ok: bool) -> TestClient:
-        from api.server import app
-        with patch("api.health.check_health") as mock_health:
-            mock_health.return_value = HealthResponse(
-                status="ok" if (ollama_ok and db_ok)
-                       else "degraded" if (ollama_ok or db_ok)
-                       else "down",
-                ollama=ollama_ok,
-                database=db_ok,
-                model="llama3",
-            )
-            client = TestClient(app, raise_server_exceptions=False)
-            resp = client.get("/health")
-        return resp
+    def _make_health_resp(self, ollama_ok: bool, db_ok: bool) -> object:
+        import api.server as server_module
+        server_module._system_prompt = "stub"
+        status = "ok" if (ollama_ok and db_ok) else "degraded" if (ollama_ok or db_ok) else "down"
+        health_resp = HealthResponse(
+            status=status,
+            ollama=ollama_ok,
+            database=db_ok,
+            model="llama3",
+        )
+        with patch("api.health.check_health", return_value=health_resp):
+            client = TestClient(server_module.app, raise_server_exceptions=False)
+            return client.get("/health")
 
     def test_all_ok(self):
-        resp = self._make_health_client(True, True)
+        resp = self._make_health_resp(True, True)
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
@@ -218,22 +213,20 @@ class TestHealth:
         assert body["database"] is True
 
     def test_ollama_down_degraded(self):
-        resp = self._make_health_client(False, True)
+        resp = self._make_health_resp(False, True)
         assert resp.json()["status"] == "degraded"
         assert resp.json()["ollama"] is False
 
     def test_db_down_degraded(self):
-        resp = self._make_health_client(True, False)
+        resp = self._make_health_resp(True, False)
         assert resp.json()["status"] == "degraded"
         assert resp.json()["database"] is False
 
     def test_both_down(self):
-        resp = self._make_health_client(False, False)
+        resp = self._make_health_resp(False, False)
         assert resp.json()["status"] == "down"
 
     def test_health_never_blocked_by_overload(self, app_and_client):
-        """Health must return 200 even when concurrency limit is hit."""
         _, client, _ = app_and_client
-        # Even if we call health many times it should never 503
         for _ in range(20):
             assert client.get("/health").status_code == 200
