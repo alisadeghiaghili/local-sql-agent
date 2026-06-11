@@ -46,3 +46,8 @@ def execute_sql(sql: str) -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=columns)
     logger.debug("Query returned %d rows, %d columns", len(df), len(df.columns))
     return df
+
+
+# Backward-compatible alias used by tests that monkeypatch
+# ``database.executor.execute_query``
+execute_query = execute_sql
