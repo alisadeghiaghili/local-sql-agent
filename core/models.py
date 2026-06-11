@@ -1,37 +1,40 @@
-"""Core domain models shared across retrieval and prompt layers."""
-
-from __future__ import annotations
-
 from dataclasses import dataclass, field
-from typing import Any
+from typing import List, Dict
 
 
 @dataclass
 class RetrievalContext:
-    """Aggregated retrieval result passed from ContextRetriever to PromptBuilder.
-
-    Attributes
-    ----------
-    entities:
-        Table names matched via entity/alias lookup (e.g. 'Customer', 'Broker').
-    facts:
-        Table names matched via TF-IDF fact scoring (e.g. 'Contract', 'Offer').
-    dimensions:
-        Dimension tables relevant to the question (subset of entities).
-    relationships:
-        Human-readable JOIN relationship strings for the selected tables.
-    business_rules:
-        Domain business rules relevant to the question.
-    examples:
-        Few-shot SQL examples, each a dict with 'question', 'sql', 'tags' keys.
-    filters:
-        Detected filter values, e.g. {'Ring': 'تالار پتروشیمی', 'PersianYear': 1402}.
+    """
+    Holds all retrieved context for a single user question.
+    Built by ContextRetriever and consumed by PromptBuilder.
     """
 
-    entities: list[str] = field(default_factory=list)
-    facts: list[str] = field(default_factory=list)
-    dimensions: list[str] = field(default_factory=list)
-    relationships: list[str] = field(default_factory=list)
-    business_rules: list[str] = field(default_factory=list)
-    examples: list[dict[str, Any]] = field(default_factory=list)
-    filters: dict[str, Any] = field(default_factory=dict)
+    # Dimension tables detected (e.g. Customer, Broker, Symbol)
+    entities: List[str] = field(default_factory=list)
+
+    # Fact tables detected (e.g. Contract, Offer, Order)
+    facts: List[str] = field(default_factory=list)
+
+    # Alias for entities — kept separate for future use
+    dimensions: List[str] = field(default_factory=list)
+
+    # Relevant JOIN clauses
+    relationships: List[str] = field(default_factory=list)
+
+    # Matched business rules (plain text)
+    business_rules: List[str] = field(default_factory=list)
+
+    # Few-shot SQL examples: [{"question": ..., "sql": ...}]
+    examples: List[Dict[str, str]] = field(default_factory=list)
+
+    # Extracted filter values: {"Ring": "تالار پتروشیمی", ...}
+    filters: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def selected_tables(self) -> List[str]:
+        """Union of dimension and fact tables."""
+        return list(set(self.entities + self.facts))
+
+    def is_empty(self) -> bool:
+        """Returns True if no useful context was retrieved."""
+        return not (self.entities or self.facts)
