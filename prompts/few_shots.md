@@ -34,7 +34,7 @@ Show distinct Persian month names.
 SQL:
 SELECT DISTINCT
     d.PersianMonthName
-FROM [general_Dim].[Date] d
+FROM [General_Dim].[Date] d
 
 
 Question:

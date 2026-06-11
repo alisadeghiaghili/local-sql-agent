@@ -19,25 +19,33 @@ def _normalise(text: str) -> str:
     return unicodedata.normalize("NFC", text).replace("\u200c", "")
 
 
-# Substring signals — checked against the ZWNJ-stripped, lowercased expanded question.
+# Substring/token signals — checked against the ZWNJ-stripped, lowercased expanded question.
+# Each value is a list of strings; a signal matches if it appears as a substring
+# OR as an exact token in the normalised question.
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
-        "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
-        "بهار", "تابستان", "پاییز", "زمستان",
-        "دوره", "دورهای", "دوره‌ای",
-        "سالیانه", "ماهانه", "هفتگی", "روزانه",
+        "\u062a\u0627\u0631\u06cc\u062e", "\u0633\u0627\u0644", "\u0645\u0627\u0647", "\u0641\u0635\u0644", "\u0647\u0641\u062a\u0647", "\u0631\u0648\u0632",
+        "\u0628\u0647\u0627\u0631", "\u062a\u0627\u0628\u0633\u062a\u0627\u0646", "\u067e\u0627\u06cc\u06cc\u0632", "\u0632\u0645\u0633\u062a\u0627\u0646",
+        "\u062f\u0648\u0631\u0647", "\u062f\u0648\u0631\u0647\u0627\u06cc", "\u062f\u0648\u0631\u0647\u0627\u06cc\u06cc",
+        "\u0633\u0627\u0644\u06cc\u0627\u0646\u0647", "\u0645\u0627\u0647\u0627\u0646\u0647", "\u0647\u0641\u062a\u06af\u06cc", "\u0631\u0648\u0632\u0627\u0646\u0647",
         "date", "year", "month", "season", "week",
         "spring", "summer", "autumn", "winter",
         "quarterly", "monthly", "yearly", "annual", "period",
     ],
     "Contract": [
-        "معامله", "قرارداد", "حجم", "ارزش",
+        "\u0645\u0639\u0627\u0645\u0644\u0647", "\u0642\u0631\u0627\u0631\u062f\u0627\u062f", "\u062d\u062c\u0645", "\u0627\u0631\u0632\u0634",
         "trade", "contract", "deal", "volume", "value",
     ],
     "CustomerContract": [
-        "خرید", "خریدار", "مشتری", "خرید مشتری",
+        "\u062e\u0631\u06cc\u062f", "\u062e\u0631\u06cc\u062f\u0627\u0631", "\u0645\u0634\u062a\u0631\u06cc", "\u062e\u0631\u06cc\u062f \u0645\u0634\u062a\u0631\u06cc",
         "purchase", "buyer", "customer purchase",
     ],
+}
+
+# Pre-normalise all signals once at import time for fast lookup
+_ALWAYS_INCLUDE_NORMALISED: dict[str, list[str]] = {
+    table: [_normalise(s).lower() for s in signals]
+    for table, signals in _ALWAYS_INCLUDE.items()
 }
 
 
@@ -97,14 +105,21 @@ def _score_table(
     return score
 
 
-def retrieve_tables(question: str) -> list[str]:
-    """Return up to _TOP_N table names most relevant to *question*."""
-    expanded     = _expand(question)
-    expanded_n   = _normalise(expanded).lower()
-    expanded_raw = expanded.lower()
-    q_tokens     = _tokenize(expanded)
-    q_bigrams    = _ngrams(q_tokens, 2)
-    idf          = _build_idf()
+def retrieve_tables(question: str, fallback: bool = True) -> list[str]:
+    """Return up to _TOP_N table names most relevant to *question*.
+
+    Parameters
+    ----------
+    fallback:
+        When True (default) and no table scores above _MIN_SCORE, return
+        all tables.  Set to False to return an empty list instead, which
+        is useful when callers need to distinguish “no match” from “all”.
+    """
+    expanded   = _expand(question)
+    q_tokens   = _tokenize(expanded)
+    q_token_set = set(q_tokens)
+    q_bigrams  = _ngrams(q_tokens, 2)
+    idf        = _build_idf()
 
     scores: dict[str, float] = {}
     for table_name, info in TABLES.items():
@@ -112,16 +127,20 @@ def retrieve_tables(question: str) -> list[str]:
         if s >= _MIN_SCORE:
             scores[table_name] = s
 
-    # Always-include: force-add tables whose signals appear in the question,
-    # regardless of whether TF-IDF already picked them up.
-    for table_name, signals in _ALWAYS_INCLUDE.items():
-        sig_n = [_normalise(s).lower() for s in signals]
-        if any(s in expanded_n or s in expanded_raw for s in sig_n):
-            if table_name not in scores:
-                scores[table_name] = _MIN_SCORE
+    # Always-include: match signal as substring OR as exact token
+    for table_name, signals in _ALWAYS_INCLUDE_NORMALISED.items():
+        for sig in signals:
+            sig_tokens = sig.split()
+            # substring match (covers multi-word signals like 'خرید مشتری')
+            token_match = all(t in q_token_set for t in sig_tokens)
+            substr_match = sig in " ".join(q_tokens)
+            if token_match or substr_match:
+                if table_name not in scores:
+                    scores[table_name] = _MIN_SCORE
+                break
 
     if not scores:
-        return list(TABLES.keys())
+        return list(TABLES.keys()) if fallback else []
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [name for name, _ in ranked[:_TOP_N]]
