@@ -146,10 +146,17 @@ class QueryCache:
             }
 
     def reconfigure(self, ttl_seconds: int, max_size: int) -> None:
-        """Hot-reload config (e.g. after ``override_settings`` in tests)."""
+        """Hot-reload config and wipe stale entries.
+
+        Clearing the store is mandatory: entries stored under the old TTL
+        carry an ``expires_at`` timestamp that is meaningless under a new
+        TTL.  Keeping them would allow expired data to be served (if the
+        new TTL is longer) or hide a test-isolation bug (if shorter).
+        """
         with self._lock:
             self._ttl = ttl_seconds
             self._max_size = max_size
+            self._store.clear()   # ← key fix: wipe stale entries
 
 
 # ---------------------------------------------------------------------------
