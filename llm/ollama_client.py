@@ -1,26 +1,43 @@
-"""Backward-compatible shim — delegates to SQLAgent + OllamaBackend.
+"""Backward-compatible shim — delegates to OllamaBackend for SQL generation only.
 
-Existing callers (app.py) that import ``generate_sql`` continue to work
-unchanged.  New code should use ``SQLAgent`` directly.
+``generate_sql`` is a *generation-only* helper: it produces the SQL string
+but does **not** execute it against the database.  Callers that need both
+generation and execution should use ``SQLAgent.run()`` directly.
+
+Existing callers (tests, app.py) that import ``generate_sql`` continue to
+work unchanged.
 """
 
 from __future__ import annotations
 
+from retrieval.context_retriever import ContextRetriever
+from prompt_engine.builder import PromptBuilder
+from security.sql_guard import clean_sql, validate_sql
 from llm.ollama_backend import OllamaBackend
-from llm.sql_agent import SQLAgent
 
-_agent = SQLAgent(backend=OllamaBackend())
+_backend = OllamaBackend()
 
 
 def generate_sql(question: str, system_prompt: str) -> str:
-    """Legacy entry point — returns only the SQL string.
+    """Generate SQL for *question* using the Ollama backend.
+
+    This function only calls the LLM — it does **not** execute the
+    generated SQL against any database.
 
     Raises
     ------
     ValueError("OUT_OF_SCOPE")
-        Passed through from the model.
+        Passed through from the model sentinel.
     RuntimeError
-        When execution fails after all self-correction attempts.
+        When the Ollama endpoint is unreachable after all retries.
     """
-    df, result = _agent.run(question, system_prompt)
-    return result.sql
+    context = ContextRetriever.retrieve(question)
+    prompt = PromptBuilder.build(
+        question=question,
+        system_prompt=system_prompt,
+        context=context,
+    )
+    raw = _backend.generate(prompt)
+    sql = clean_sql(raw)
+    validate_sql(sql)
+    return sql
