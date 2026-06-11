@@ -13,14 +13,14 @@ Local SQL Agent converts natural language questions (Persian or English) into pr
 User question (Persian / English)
     ↓
  ContextRetriever
-    ├─ EntityRetriever    (dimension tables via alias matching + TF-IDF fallback)
-    ├─ FactRetriever      (fact tables via keyword patterns + TF-IDF fallback)
-    ├─ RelationshipRetriever  (relevant JOIN clauses)
-    ├─ RuleRetriever      (domain business rules)
-    ├─ ExampleRetriever   (tag-scored few-shot examples)
-    └─ ValueRetriever     (ring aliases, Persian year extraction)
+    ├─ EntityRetriever       → dimension tables  (alias match → TF-IDF fallback)
+    ├─ FactRetriever         → fact tables       (keyword match → TF-IDF fallback)
+    ├─ RelationshipRetriever → JOIN clauses for selected tables
+    ├─ RuleRetriever         → domain business rules (injected verbatim)
+    ├─ ExampleRetriever      → few-shot SQL examples (tag-overlap scoring)
+    └─ ValueRetriever        → concrete filters (ring canonical name, Persian year)
     ↓
- PromptBuilder  →  structured context-aware prompt
+ PromptBuilder  →  structured, context-aware prompt
     ↓
  Ollama (local LLM)  →  raw SQL
     ↓
@@ -38,13 +38,14 @@ User question (Persian / English)
 | **100% local** | Ollama + SQL Server on-premise. Zero external API calls. |
 | **Bilingual** | Persian (Farsi) and English questions handled natively. |
 | **Modular retrieval** | 6 independent retrievers — easy to extend per domain. |
-| **Few-shot learning** | Tag-scored example selector injects relevant SQL patterns. |
-| **Business rule injection** | Domain rules injected per question topic. |
-| **SQL security guard** | Blocks DDL, DML, and dangerous patterns before execution. |
-| **Retry with back-off** | Automatic retry on Ollama transient failures. |
+| **Two-tier retrieval** | Fast alias/pattern matching first; TF-IDF bigram engine as fallback. |
+| **Few-shot learning** | Tag-scored example selector injects the most relevant SQL patterns. |
+| **Business rule injection** | Domain rules injected per question topic at prompt-build time. |
+| **SQL security guard** | Blocks DDL, DML, injection patterns, and converts LIMIT→TOP. |
+| **Retry with back-off** | Automatic exponential retry on Ollama transient failures. |
 | **Structured exports** | Excel, CSV, JSON output with timestamped filenames. |
-| **Thread-safe logging** | Rotating file logger, configurable via environment. |
-| **Test suite** | Unit + integration tests with `override_settings` fixture. |
+| **Thread-safe logging** | Rotating file logger, configurable via environment variables. |
+| **Test suite** | 130 unit + integration tests, CI via GitHub Actions. |
 
 ---
 
@@ -52,41 +53,45 @@ User question (Persian / English)
 
 ```
 local-sql-agent/
-├── config.py                  # Settings singleton (env-based, testable)
-├── main.py                    # CLI entry point
+├── config.py                      # Typed Settings singleton (env-based, frozen)
+├── app.py                         # Interactive CLI entry point (REPL)
 ├── core/
-│   └── models.py              # RetrievalContext dataclass
-├── knowledge/
-│   ├── aliases.py             # Canonical ring/hall aliases
-│   ├── business_rules.py      # Domain business rules (per topic)
-│   ├── entities.py            # Dimension entity catalog with aliases
-│   ├── examples.py            # Tagged few-shot SQL examples
-│   └── metrics.py             # Metric definitions and expressions
-├── retrieval/
-│   ├── context_retriever.py   # Orchestrator — calls all sub-retrievers
-│   ├── entity_retriever.py    # Dimension table detection
-│   ├── fact_retriever.py      # Fact table detection
-│   ├── relationship_retriever.py  # JOIN clause selection
-│   ├── rule_retriever.py      # Business rule injection
-│   ├── value_retriever.py     # Filter value extraction (ring, year)
-│   └── example_retriever.py   # Tag-scored few-shot selection
-├── schema_data/
-│   ├── registry.py            # SchemaRegistry — builds schema context string
-│   ├── columns.py             # Column-level schema with FK annotations
-│   ├── tables.py              # Table descriptions
-│   └── relationships.py       # JOIN relationship map
-├── schema/
-│   └── retriever.py           # TF-IDF table retriever (fallback engine)
+│   └── models.py                  # RetrievalContext — frozen dataclass shared by all layers
+├── knowledge/                     # Domain knowledge base (edit to extend the domain)
+│   ├── aliases.py                 # RING_ALIASES (hall → surface forms) + SYNONYMS (TF-IDF expansion)
+│   ├── business_rules.py          # Business rules per topic key
+│   ├── entities.py                # Dimension entity catalog with Persian/English aliases
+│   ├── examples.py                # Tagged few-shot SQL examples (question + sql + tags)
+│   └── metrics.py                 # Metric definitions and computed expressions
+├── retrieval/                     # Modular retrieval pipeline
+│   ├── context_retriever.py       # Orchestrator — runs all sub-retrievers, returns RetrievalContext
+│   ├── entity_retriever.py        # Dimension table detection (alias → TF-IDF fallback)
+│   ├── fact_retriever.py          # Fact table detection (pattern → TF-IDF fallback)
+│   ├── relationship_retriever.py  # JOIN clause selection from schema_data.relationships
+│   ├── rule_retriever.py          # Business rule injection by keyword
+│   ├── value_retriever.py         # Filter extraction (ring canonical name, Persian year)
+│   └── example_retriever.py       # Tag-scored few-shot selection (top-3 by overlap)
+├── schema_data/                   # Schema definitions (single source of truth)
+│   ├── registry.py                # SchemaRegistry.build_schema_context() — LRU-cached
+│   ├── columns.py                 # Column-level schema with FK annotations
+│   ├── tables.py                  # Table descriptions (used by TF-IDF engine)
+│   ├── relationships.py           # FK relationship map (JOIN SQL per edge)
+│   └── retriever.py               # TF-IDF bigram retriever — fallback for all sub-retrievers
 ├── prompt_engine/
-│   ├── builder.py             # PromptBuilder — assembles final prompt
-│   └── templates.py           # PROMPT_TEMPLATE — structured sections
+│   ├── builder.py                 # PromptBuilder.build() — assembles final structured prompt
+│   └── templates.py               # PROMPT_TEMPLATE with labelled sections
 ├── llm/
-│   └── ollama_client.py       # Ollama HTTP client with retry logic
+│   └── ollama_client.py           # Ollama HTTP client (retry + back-off, calls ContextRetriever)
 ├── security/
-│   └── sql_guard.py           # SQL sanitisation and injection prevention
-├── exporters/             # Excel / CSV / JSON export modules
-├── logs/                  # Rotating log files (auto-created)
-└── tests/                 # Unit and integration tests
+│   └── sql_guard.py               # SQL sanitisation: clean_sql, validate_sql, ensure_top
+├── database/
+│   ├── connection.py              # SQLAlchemy engine (singleton + dispose helper)
+│   └── executor.py                # Query execution with timeout and row cap
+├── exporters/                     # Excel / CSV / JSON export modules
+├── logs/                          # Rotating log files (auto-created at runtime)
+├── scripts/
+│   └── analyze_misses.py          # Offline miss-analysis tool for retrieval diagnostics
+└── tests/                         # 130 unit + integration tests
 ```
 
 ---
@@ -123,7 +128,7 @@ DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/YourDB?driver=ODBC+Driver+17+f
 ### 4. Run
 
 ```bash
-python main.py
+python app.py
 ```
 
 ---
@@ -135,16 +140,18 @@ python main.py
 | `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `llama3` | Model name (e.g. `llama3`, `mistral`, `codellama`) |
 | `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
-| `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time |
-| `MAX_ROWS_RETURNED` | `1000` | Row cap for all queries |
-| `LOG_DIR` | `logs` | Log file directory |
-| `EXPORT_DIR` | `exports` | Export file directory |
+| `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time (seconds) |
+| `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
+| `LOG_DIR` | `logs` | Log file directory (auto-created) |
+| `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
 
 ---
 
 ## Extending the Domain
 
-**Add new entities** — edit `knowledge/entities.py`:
+All domain knowledge lives in `knowledge/`. No code changes required for most extensions.
+
+**Add new dimension entities** — `knowledge/entities.py`:
 ```python
 "NewEntity": {
     "aliases": ["اسم فارسی", "english alias"],
@@ -152,21 +159,23 @@ python main.py
 }
 ```
 
-**Add new examples** — edit `knowledge/examples.py`:
+**Add new few-shot examples** — `knowledge/examples.py`:
 ```python
 {
     "tags": ["customer", "top", "value"],
-    "question": "Top customers by value",
-    "sql": "SELECT TOP 10 ..."
+    "question": "Top customers by purchase value",
+    "sql": "SELECT TOP 10 CustomerName, SUM(Value) AS TotalValue FROM ..."
 }
 ```
 
-**Add new business rules** — edit `knowledge/business_rules.py`:
+**Add new business rules** — `knowledge/business_rules.py`:
 ```python
-"new_topic": "Your rule text here"
+"new_topic": "Your domain rule injected verbatim into the prompt."
 ```
 
-**Add new tables to schema** — edit `schema_data/columns.py`, `schema_data/tables.py`, `schema_data/relationships.py`.
+**Add new synonym expansions** — `knowledge/aliases.py` → `SYNONYMS` dict.
+
+**Add new tables** — update `schema_data/columns.py`, `schema_data/tables.py`, `schema_data/relationships.py`.
 
 ---
 
@@ -176,14 +185,18 @@ python main.py
 pytest tests/ -v
 ```
 
+Tests run automatically on every push via GitHub Actions (Python 3.13, `pytest-cov`).
+
 ---
 
 ## Security
 
 - All generated SQL passes through `security/sql_guard.py` before execution
 - DDL statements (`DROP`, `ALTER`, `CREATE`, `TRUNCATE`) are blocked
-- DML statements (`INSERT`, `UPDATE`, `DELETE`) are blocked  
+- DML statements (`INSERT`, `UPDATE`, `DELETE`) are blocked
 - Stacked query injection patterns are detected and rejected
+- Dangerous stored procedure calls (`EXECUTE`, `XP_`, `SP_`) are blocked
+- `LIMIT` is converted to `TOP n` for SQL Server compatibility (never executed raw)
 - `MAX_ROWS_RETURNED` enforces a hard cap on all result sets
 - Credentials are **never** hardcoded — environment variables only
 
