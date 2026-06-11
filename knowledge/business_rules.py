@@ -42,24 +42,10 @@ BUSINESS_RULES = {
 
     "broker": """
     کارگزار = Broker
-    شرکت کارگزاری = Broker
-
-    Broker analysis must use Auction_Dim.Broker.
-
-    IMPORTANT:
-
-    When user asks about کارگزار خریدار / Buyer Broker:
-      Use: BuyerBroker_ID
-      Join: Fact.BuyerBroker_ID = Broker.ID
-
-    When user asks about کارگزار فروشنده / Seller Broker:
-      Use: SellerBroker_ID
-      Join: Fact.SellerBroker_ID = Broker.ID
-
     Buyer broker means BuyerBroker_ID.
     Seller broker means SellerBroker_ID.
-    Never use generic Broker_ID when the question explicitly mentions
-    کارگزار خریدار or کارگزار فروشنده.
+    Broker performance must be calculated using BuyerBroker_ID or SellerBroker_ID.
+    Never use generic Broker_ID when question explicitly mentions buyer or seller broker.
     """,
 
     "symbol": """
