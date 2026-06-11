@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -142,42 +142,70 @@ class TestQueryCacheStats:
 
 
 class TestQueryCacheRunnerIntegration:
-    """Smoke-test: cache is consulted/populated by run_query."""
+    """Smoke-test: cache is consulted/populated by run_query.
 
-    def test_second_call_hits_cache(self, monkeypatch):
-        """run_query called twice with same question+mode → LLM called only once."""
-        import api.runner as runner_module
+    Strategy
+    --------
+    1. Pre-populate the module-level ``query_cache`` singleton with a
+       known ``QueryResponse``.
+    2. Patch ``api.runner._agent`` so any accidental fall-through to the
+       real Ollama backend raises immediately (no network required).
+    3. Call ``run_query`` with the same (question, mode) key.
+    4. Assert the returned object is the exact cached instance and that
+       ``_agent.run`` was never called.
+
+    This proves run_query() consults the cache before touching the LLM,
+    without coupling the test to reconfigure() semantics.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
         from api.query_cache import query_cache
-        from config import override_settings
-
+        query_cache.clear()
+        yield
         query_cache.clear()
 
-        call_count = 0
+    def test_second_call_hits_cache(self):
+        """Pre-populate cache → run_query must return cached entry without
+        calling _agent.run."""
+        import api.runner as runner_module
+        from api.query_cache import query_cache
 
-        def fake_run_query_inner(q, sp, mode="full", interpret=False):
-            nonlocal call_count
-            # We patch _safe_run inside runner to count calls
-            raise AssertionError("should not reach here")
-
-        resp = QueryResponse(
+        cached_resp = QueryResponse(
             question="سوال", sql="SELECT 1", result=[{"n": 1}],
             row_count=1, model="test",
         )
+        query_cache.set("سوال", "full", cached_resp)
 
-        # Pre-populate cache
-        query_cache.set("سوال", "full", resp)
+        # Patch _agent so any real LLM call raises instantly
+        mock_agent = MagicMock()
+        mock_agent.run.side_effect = AssertionError("_agent.run must NOT be called on cache hit")
+        mock_agent._backend.name = "test"
 
-        with override_settings(cache_ttl_seconds=300):
-            query_cache.reconfigure(
-                ttl_seconds=300,
-                max_size=cfg_max_size(),
-            )
+        with patch("api.runner._agent", mock_agent):
             result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
 
-        assert result is resp
-        query_cache.clear()
+        assert result is cached_resp
+        mock_agent.run.assert_not_called()
 
+    def test_cache_miss_calls_agent_and_stores_result(self):
+        """On a cache miss run_query calls _agent.run and stores the result."""
+        import api.runner as runner_module
+        from api.query_cache import query_cache
+        from llm.base import SQLGenerationResult
+        import pandas as pd
 
-def cfg_max_size() -> int:
-    import config as cfg
-    return cfg.settings.cache_max_size
+        df = pd.DataFrame({"x": [1]})
+        sql_result = SQLGenerationResult(
+            sql="SELECT 1", raw_response="SELECT 1", attempt=1
+        )
+
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = (df, sql_result)
+        mock_agent._backend.name = "test"
+
+        with patch("api.runner._agent", mock_agent):
+            result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
+
+        mock_agent.run.assert_called_once()
+        assert query_cache.get("سوال", "full") is result
