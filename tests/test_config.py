@@ -47,6 +47,28 @@ class TestSettings:
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
 
+    # --- cache settings (new) ---
+
+    def test_default_cache_ttl_seconds(self):
+        assert Settings().cache_ttl_seconds == 300
+
+    def test_default_cache_max_size(self):
+        assert Settings().cache_max_size == 256
+
+    def test_env_override_cache_ttl(self):
+        with patch.dict(os.environ, {"CACHE_TTL_SECONDS": "0"}):
+            assert Settings().cache_ttl_seconds == 0
+
+    def test_env_override_cache_max_size(self):
+        with patch.dict(os.environ, {"CACHE_MAX_SIZE": "64"}):
+            assert Settings().cache_max_size == 64
+
+    def test_cache_ttl_zero_means_disabled(self):
+        """TTL=0 is the conventional way to disable the cache."""
+        with patch.dict(os.environ, {"CACHE_TTL_SECONDS": "0"}):
+            s = Settings()
+            assert s.cache_ttl_seconds == 0
+
 
 class TestGetSettings:
     def test_returns_settings_instance(self):
@@ -91,7 +113,6 @@ class TestOverrideSettings:
         """database/executor reads cfg.settings at call-time, so it must see the patch."""
         import database.executor as executor_mod
         with override_settings(max_rows_returned=77):
-            # executor uses cfg.settings.max_rows_returned at runtime
             assert cfg.settings.max_rows_returned == 77
 
     def test_logger_sees_patch(self):
@@ -99,6 +120,14 @@ class TestOverrideSettings:
         import logs.logger as logger_mod
         with override_settings(log_dir="/tmp/test_logs"):
             assert logger_mod._log_file().startswith("/tmp/test_logs")
+
+    def test_cache_ttl_override(self):
+        with override_settings(cache_ttl_seconds=0) as s:
+            assert s.cache_ttl_seconds == 0
+
+    def test_cache_max_size_override(self):
+        with override_settings(cache_max_size=10) as s:
+            assert s.cache_max_size == 10
 
 
 class TestLoggerThreadSafety:

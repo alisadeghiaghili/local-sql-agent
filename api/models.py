@@ -1,111 +1,84 @@
-"""Pydantic request / response models for the API."""
+"""Pydantic request / response models for the Auction NLQ API."""
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-_MAX_QUESTION_LEN: int = int(os.getenv("MAX_QUESTION_LENGTH", "1000"))
-_MIN_QUESTION_LEN: int = 2
-
 
 # ---------------------------------------------------------------------------
-# Request
+# /query
 # ---------------------------------------------------------------------------
 
 class QueryRequest(BaseModel):
-    """Body sent to ``POST /query``."""
-
     question: str = Field(
         ...,
-        description="Natural-language question in Persian or English.",
-        examples=["بالاترین قیمت کشف‌شده گندم در ماه گذشته چقدر بود؟"],
+        min_length=1,
+        max_length=1000,
+        description="Natural-language question (Persian or English)",
     )
     mode: Literal["sql", "result", "full"] = Field(
         default="full",
-        description=(
-            "**sql** — return only the generated SQL.\n\n"
-            "**result** — execute SQL and return only the data rows.\n\n"
-            "**full** — return SQL + data rows + optional interpretation."
-        ),
+        description="'sql'=generate only, 'result'=execute only, 'full'=both",
     )
     interpret: bool = Field(
         default=False,
-        description=(
-            "When *true* and mode is 'result' or 'full', ask the LLM to "
-            "produce a one-paragraph plain-language summary of the results. "
-            "Ignored when mode='sql'."
-        ),
+        description="If True, add a plain-language summary of the result rows",
     )
 
     @field_validator("question")
     @classmethod
-    def validate_question(cls, v: str) -> str:
-        v = v.strip()
-        if len(v) < _MIN_QUESTION_LEN:
-            raise ValueError(
-                f"Question must be at least {_MIN_QUESTION_LEN} characters."
-            )
-        if len(v) > _MAX_QUESTION_LEN:
-            raise ValueError(
-                f"Question must not exceed {_MAX_QUESTION_LEN} characters."
-            )
+    def question_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("question must not be blank")
         return v
 
 
-# ---------------------------------------------------------------------------
-# Response
-# ---------------------------------------------------------------------------
-
 class QueryResponse(BaseModel):
-    """Body returned by ``POST /query``."""
-
-    question: str = Field(description="The original question, echoed back.")
-    sql: str | None = Field(
-        default=None,
-        description="Generated T-SQL. Present for mode='sql' and mode='full'.",
-    )
-    result: list[dict[str, Any]] | None = Field(
-        default=None,
-        description="Result rows. Present for mode='result' and mode='full'.",
-    )
-    interpretation: str | None = Field(
-        default=None,
-        description="LLM plain-language summary. Present only when interpret=true.",
-    )
-    row_count: int = Field(default=0)
-    correction_attempts: int = Field(
-        default=1,
-        description="How many generation attempts were needed (1 = no correction).",
-    )
-    elapsed_seconds: float = Field(default=0.0)
-    model: str = Field(default="")
+    question: str
+    sql: str | None = None
+    result: list[dict[str, Any]] | None = None
+    interpretation: str | None = None
+    row_count: int | None = None
+    correction_attempts: int | None = None
+    elapsed_seconds: float | None = None
+    model: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Error envelope (returned by all exception handlers)
-# ---------------------------------------------------------------------------
-
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
-    request_id: str
-    path: str
-
-
-class ErrorResponse(BaseModel):
-    """Shape of every error body — documented in Swagger."""
-    error: ErrorDetail
-
-
-# ---------------------------------------------------------------------------
-# Health
+# /health
 # ---------------------------------------------------------------------------
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded", "down"]
     ollama: bool
     database: bool
-    model: str
+    model: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# /cache/*
+# ---------------------------------------------------------------------------
+
+class CacheStatsResponse(BaseModel):
+    """Snapshot of cache metrics returned by /cache/stats and /cache/clear."""
+    hits: int = Field(..., description="Total cache hits since last restart")
+    misses: int = Field(..., description="Total cache misses since last restart")
+    evictions: int = Field(..., description="Entries evicted by TTL or LRU")
+    size: int = Field(..., description="Current number of entries in cache")
+    enabled: bool = Field(..., description="False when TTL=0 (cache disabled)")
+
+
+class CacheInvalidateRequest(BaseModel):
+    """Body for POST /cache/invalidate."""
+    question: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Exact question string to evict",
+    )
+    mode: Literal["sql", "result", "full"] = Field(
+        default="full",
+        description="Cache mode key used when the entry was stored",
+    )
