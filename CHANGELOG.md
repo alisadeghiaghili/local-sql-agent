@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [3.2.0] — 2026-06-12
+
+License, documentation, and attribution release.
+
+### Added
+
+- **`LICENSE`** — Project is now licensed under the **Business Source License 1.1 (BUSL-1.1)**.
+  - Free for non-production use.
+  - Commercial/production use requires a written agreement with the author (Ali Sadeghi Aghili).
+  - Converts automatically to Apache 2.0 on **2029-01-01**.
+  - Includes an explicit **Attribution Requirement**: any derivative work must retain
+    `LICENSE` and display: *"Based on Local SQL Agent by Ali Sadeghi Aghili —
+    https://github.com/alisadeghiaghili/local-sql-agent"*.
+
+- **`docs/tutorial.md`** — Comprehensive Persian-language tutorial covering:
+  architecture overview, installation, first query end-to-end, TF-IDF retrieval
+  internals, prompt building, SQL security pipeline, adding new tables/synonyms,
+  miss-analysis workflow, test writing examples, health check, and troubleshooting.
+
+- **`README.md`** — Updated to reflect BUSL-1.1 license, added license badge,
+  attribution notice, contributors table, and link to `docs/tutorial.md`.
+  `docs/tutorial.md` added to architecture tree.
+
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — Creator & Lead Maintainer
+
+---
+
 ## [3.1.0] — 2026-06-12
 
 Minor release — FastAPI HTTP layer, SQLAgent auto-correct loop, LRU query cache,
@@ -76,6 +105,10 @@ tested LLM backend abstraction, and 1 bugfix in cache isolation.
   to be the exact cached instance. Added companion test
   `test_cache_miss_calls_agent_and_stores_result` for the miss path.
 
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — FastAPI layer, SQLAgent, OllamaBackend, QueryCache, middleware, error taxonomy, test suite expansion
+
 ---
 
 ## [3.0.1] — 2026-06-11
@@ -109,6 +142,10 @@ Bugfix release — 12 failing tests resolved across three independent areas.
   Previously only descriptions were scanned; synonym expansion terms such as
   `مشتری` were therefore not recognised as known and appeared in the candidate
   list. Resolves `test_filters_existing_description_tokens`.
+
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — retrieval bugfixes, IDF override, schema registry alias, miss-analysis token scan
 
 ---
 
@@ -164,6 +201,10 @@ Legacy `schema/` package retired. Modular retrieval pipeline fully activated.
 - **`develop` branch** — merged and deleted.
 - **`prompt-accurated` branch** — ancestor of `main`, no unique changes; deleted.
 
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — full architectural consolidation, modular retrieval pipeline, knowledge base, schema migration
+
 ---
 
 ## [2.0.0] — 2026-06-06
@@ -191,6 +232,10 @@ Legacy `schema/` package retired. Modular retrieval pipeline fully activated.
 ### Removed
 - `tests/test_validator.py`: replaced by `tests/test_sql_guard.py`
 
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — config refactor, SQL guard, exporter improvements, REPL, test coverage
+
 ---
 
 ## [1.1.0] — 2026-06-06
@@ -210,6 +255,10 @@ Legacy `schema/` package retired. Modular retrieval pipeline fully activated.
 - Legacy folders: `agents/`, `src/`
 - Old config files: `CHANGELOG` (plain text), `pyproject.toml`, `ruff.toml`
 
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — initial modular architecture, CLI, security layer, schema package
+
 ---
 
 ## [1.0.0] — initial
@@ -218,3 +267,7 @@ Legacy `schema/` package retired. Modular retrieval pipeline fully activated.
 - Proof-of-concept scripts for NLQ-to-SQL via Ollama + LangChain
 - `scripts/create_db.py`: SQLite sample database for local testing
 - Initial `agents/`, `runners/`, `tests/` structure
+
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — proof-of-concept, initial structure

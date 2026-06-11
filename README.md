@@ -1,7 +1,11 @@
 # Local SQL Agent
 
-> **A production-grade, privacy-first Text-to-SQL engine for Persian-language business intelligence.**
+> **A production-grade, privacy-first Text-to-SQL engine for Persian-language business intelligence.**  
 > Runs entirely on your infrastructure — no cloud, no data leakage.
+
+[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
+[![Tests](https://img.shields.io/badge/Tests-427%2B-green)](tests/)
 
 ---
 
@@ -110,6 +114,8 @@ local-sql-agent/
 ├── logs/                          # Rotating log files (auto-created at runtime)
 ├── scripts/
 │   └── analyze_misses.py          # Offline miss-analysis tool for retrieval diagnostics
+├── docs/
+│   └── tutorial.md                # Full Persian tutorial — setup to advanced usage
 └── tests/                         # 427+ unit + integration tests
 ```
 
@@ -263,4 +269,33 @@ Tests run automatically on every push via GitHub Actions (Python 3.13, `pytest-c
 
 ## License
 
-Proprietary. All rights reserved.
+This project is licensed under the **Business Source License 1.1 (BUSL-1.1)**.
+See [`LICENSE`](LICENSE) for full terms.
+
+**Key points:**
+- ✅ Free for non-production, research, and personal use.
+- ❌ Commercial/production use requires a written agreement with the author.
+- 🔄 Converts to **Apache 2.0** on **2029-01-01**.
+- 📌 Any derivative work must retain the [`LICENSE`](LICENSE) file and include
+  the following attribution:
+
+  > Based on **Local SQL Agent** by Ali Sadeghi Aghili  
+  > https://github.com/alisadeghiaghili/local-sql-agent
+
+For commercial licensing inquiries, open an issue or contact the maintainer directly.
+
+---
+
+## Contributors
+
+| Name | Role |
+|---|---|
+| [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) | Creator & Lead Maintainer — architecture, retrieval pipeline, LLM integration, security layer, FastAPI service |
+
+Contributions are welcome. Please open an issue before submitting a pull request so we can discuss the approach.
+
+---
+
+## Acknowledgements
+
+Built with [Ollama](https://ollama.com), [FastAPI](https://fastapi.tiangolo.com), [SQLAlchemy](https://sqlalchemy.org), and [scikit-learn](https://scikit-learn.org).
