@@ -30,6 +30,10 @@ Design notes
   application code.
 * ``execute_fn`` is injected so the agent can be unit-tested without a
   real database (pass a mock / stub).
+* When *execute_fn* is **not** supplied, the agent calls
+  ``database.executor.execute_query`` through its module reference every
+  time — this ensures that ``monkeypatch.setattr(database.executor,
+  'execute_query', ...)`` in tests is visible at call time.
 * The correction prompt is appended *after* the failed SQL, preserving the
   full schema+rules context from the original prompt so the model has all
   the information it needs to fix the query.
@@ -69,6 +73,17 @@ SQL:
 """
 
 
+def _default_execute(sql: str) -> pd.DataFrame:
+    """Call ``database.executor.execute_query`` via module lookup.
+
+    Looking up through the module (rather than capturing the function at
+    import time) means ``monkeypatch.setattr(database.executor,
+    'execute_query', stub)`` is always visible at call time.
+    """
+    import database.executor as _executor_mod
+    return _executor_mod.execute_query(sql)
+
+
 class SQLAgent:
     """Orchestrates retrieval → prompt → LLM → execute with self-correction.
 
@@ -79,7 +94,8 @@ class SQLAgent:
         :class:`~llm.ollama_backend.OllamaBackend` with settings from env.
     execute_fn:
         Callable ``(sql: str) -> pd.DataFrame``.  Defaults to
-        :func:`database.executor.execute_sql`.  Override in tests.
+        :func:`database.executor.execute_query` (looked up at call time so
+        monkeypatching works).  Override in tests for explicit injection.
     max_corrections:
         How many correction rounds to attempt before giving up.
     """
@@ -94,12 +110,8 @@ class SQLAgent:
             from llm.ollama_backend import OllamaBackend
             backend = OllamaBackend()
 
-        if execute_fn is None:
-            from database.executor import execute_sql
-            execute_fn = execute_sql
-
         self._backend = backend
-        self._execute = execute_fn
+        self._execute = execute_fn if execute_fn is not None else _default_execute
         self._max_corrections = max_corrections
 
     # ------------------------------------------------------------------
@@ -132,7 +144,6 @@ class SQLAgent:
 
         for correction_round in range(self._max_corrections + 1):
             if correction_round > 0:
-                # Build correction prompt and regenerate
                 correction_prompt = _CORRECTION_TEMPLATE.format(
                     sql=sql,
                     error=last_error,
@@ -175,7 +186,7 @@ class SQLAgent:
                 if correction_round == self._max_corrections:
                     raise
 
-        # unreachable — loop always returns or raises
+        # unreachable
         raise RuntimeError("SQLAgent loop exited unexpectedly")  # pragma: no cover
 
     # ------------------------------------------------------------------
