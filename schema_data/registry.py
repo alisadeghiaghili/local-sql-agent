@@ -1,41 +1,58 @@
-"""SchemaRegistry — builds schema context string for the prompt."""
-
-from schema_data.tables import TABLES
-from schema_data.columns import COLUMNS
+from schema_data.columns import TABLE_COLUMNS
+from schema_data.tables import TABLE_DESCRIPTIONS
+from schema_data.relationships import RELATIONSHIPS
 
 
 class SchemaRegistry:
 
     @staticmethod
-    def get_table(table_name: str) -> dict | None:
-        return TABLES.get(table_name)
+    def build_schema_context(selected_tables: list) -> str:
 
-    @staticmethod
-    def get_columns(table_name: str) -> list[str]:
-        return COLUMNS.get(table_name, [])
+        lines = []
 
-    @staticmethod
-    def build_schema_context(selected_tables: list[str]) -> str:
-        """Return a formatted schema block for all selected tables."""
+        for table_name in selected_tables:
 
-        sections: list[str] = []
-
-        for table in selected_tables:
-
-            table_meta = TABLES.get(table)
-
-            if not table_meta:
-                continue
-
-            columns = COLUMNS.get(table, [])
-
-            col_block = "\n".join(f"  - {col}" for col in columns)
-
-            block = (
-                f"Table: {table_meta['table']}\n"
-                f"Columns:\n{col_block}"
+            description = TABLE_DESCRIPTIONS.get(
+                table_name, ""
             )
 
-            sections.append(block)
+            columns = TABLE_COLUMNS.get(
+                table_name, {}
+            )
 
-        return "\n\n".join(sections)
+            lines.append(
+                f"Table: {table_name}"
+            )
+
+            if description:
+                lines.append(
+                    f"Description: {description}"
+                )
+
+            if columns:
+                lines.append("Columns:")
+                for col_name, col_desc in columns.items():
+                    lines.append(
+                        f"  - {col_name}: {col_desc}"
+                    )
+
+            lines.append("")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def get_relationships(selected_tables: list) -> list:
+
+        selected = set(selected_tables)
+        result = []
+
+        for name, join_sql in RELATIONSHIPS.items():
+
+            parts = name.split(" -> ")
+            left  = parts[0].split(".")[0]
+            right = parts[1].split(".")[0]
+
+            if left in selected and right in selected:
+                result.append(join_sql)
+
+        return result

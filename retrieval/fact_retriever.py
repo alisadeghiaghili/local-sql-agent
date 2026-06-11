@@ -1,36 +1,23 @@
-FACT_PATTERNS = {
+"""Fact table retriever.
 
-    "CustomerContract": [
-        "خرید",
-        "purchase",
-        "customer purchase",
-        "خریدار"
-    ],
+Strategy (two-tier):
+1. Pattern match — fast keyword match for known fact table signals.
+2. TF-IDF fallback — if nothing matched, delegate to schema.retriever
+   and keep only known fact tables.
+"""
 
-    "Contract": [
-        "معامله",
-        "قرارداد",
-        "trade",
-        "sales",
-        "contract"
-    ],
+from __future__ import annotations
 
-    "Offer": [
-        "عرضه",
-        "offer",
-        "supply"
-    ],
+from schema.retriever import retrieve_tables
 
-    "Order": [
-        "سفارش",
-        "order"
-    ],
+_FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
 
-    "TalarLog": [
-        "لاگ",
-        "گزارش عملیات",
-        "audit"
-    ]
+FACT_PATTERNS: dict[str, list[str]] = {
+    "CustomerContract": ["خرید", "purchase", "customer purchase", "خریدار"],
+    "Contract": ["معامله", "قرارداد", "trade", "sales"],
+    "Offer": ["عرضه", "offer", "supply"],
+    "Order": ["سفارش", "order"],
+    "TalarLog": ["لاگ", "گزارش عملیات"],
 }
 
 
@@ -39,18 +26,18 @@ class FactRetriever:
     @staticmethod
     def retrieve(question: str) -> list[str]:
 
-        question_lower = question.lower()
-
-        matches = []
+        q = question.lower()
+        matches: list[str] = []
 
         for fact, aliases in FACT_PATTERNS.items():
-
             for alias in aliases:
-
-                if alias.lower() in question_lower:
-
+                if alias.lower() in q:
                     matches.append(fact)
-
                     break
 
-        return matches
+        if matches:
+            return matches
+
+        # TF-IDF fallback — keep only fact tables
+        tfidf_tables = retrieve_tables(question)
+        return [t for t in tfidf_tables if t in _FACT_TABLES]
