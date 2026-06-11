@@ -2,13 +2,13 @@
 
 Strategy (two-tier):
 1. Pattern match — fast keyword match for known fact table signals.
-2. TF-IDF fallback — if nothing matched, delegate to schema.retriever
+2. TF-IDF fallback — if nothing matched, delegate to schema_data.retriever
    and keep only known fact tables.
 """
 
 from __future__ import annotations
 
-from schema.retriever import retrieve_tables
+from schema_data.retriever import retrieve_tables
 
 _FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
 
