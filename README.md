@@ -291,6 +291,7 @@ For commercial licensing inquiries, open an issue or contact the maintainer dire
 | Name | Role |
 |---|---|
 | [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) | Creator & Lead Maintainer — architecture, retrieval pipeline, LLM integration, security layer, FastAPI service |
+| [**Melika Bahmanabadi**](https://github.com/MelikaBahmanabadi) | Contributor |
 
 Contributions are welcome. Please open an issue before submitting a pull request so we can discuss the approach.
 
