@@ -13,14 +13,26 @@ GET  /health
 from __future__ import annotations
 
 import logging
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
 import config as cfg
+from api.errors import (
+    NLQError,
+    OutOfScopeError,
+    ForbiddenSQLError,
+    InvalidSQLResponseError,
+    EmptySQLResponseError,
+    ModelUnavailableError,
+    ModelTimeoutError,
+    QueryExecutionError,
+    DatabaseConnectionError,
+    QueryTimeoutError,
+    register_handlers,
+)
+from api.middleware import RequestIDMiddleware, ConcurrencyMiddleware
 from api.models import QueryRequest, QueryResponse, HealthResponse
 from api.runner import run_query
 
@@ -32,7 +44,6 @@ _system_prompt: str = ""
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load heavy resources once at startup."""
     global _system_prompt
     if not _PROMPT_PATH.exists():
         raise RuntimeError(f"System prompt not found: {_PROMPT_PATH}")
@@ -48,6 +59,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# --- Middleware (order matters: outer → inner) ---
+app.add_middleware(ConcurrencyMiddleware)
+app.add_middleware(RequestIDMiddleware)
+
+# --- Exception handlers ---
+register_handlers(app)
+
 
 # ---------------------------------------------------------------------------
 # POST /query
@@ -57,29 +75,25 @@ app = FastAPI(
     "/query",
     response_model=QueryResponse,
     summary="Translate a question to SQL and/or execute it",
+    responses={
+        400: {"description": "Bad request (forbidden SQL, injection attempt, invalid input)"},
+        422: {"description": "Out-of-scope question or Pydantic validation error"},
+        500: {"description": "Unexpected server error"},
+        502: {"description": "LLM or database returned an unusable response"},
+        503: {"description": "LLM or database is unavailable, or server is overloaded"},
+        504: {"description": "LLM inference or query execution timed out"},
+    },
 )
 def query(req: QueryRequest) -> QueryResponse:
+    import time
     start = time.perf_counter()
-    try:
-        response = run_query(
-            question=req.question,
-            system_prompt=_system_prompt,
-            mode=req.mode,
-            interpret=req.interpret,
-        )
-    except ValueError as exc:
-        msg = str(exc)
-        if msg == "OUT_OF_SCOPE":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="OUT_OF_SCOPE: question is outside the Auction domain.",
-            )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        )
+
+    response = run_query(
+        question=req.question,
+        system_prompt=_system_prompt,
+        mode=req.mode,
+        interpret=req.interpret,
+    )
 
     response.elapsed_seconds = round(time.perf_counter() - start, 3)
     return response
