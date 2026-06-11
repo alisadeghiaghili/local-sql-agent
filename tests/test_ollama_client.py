@@ -1,6 +1,8 @@
 """Unit tests for llm/ollama_client.py.
 
-All HTTP calls are mocked — no real Ollama needed.
+All HTTP calls are mocked via the correct internal patch path:
+  llm.ollama_backend.requests  (NOT llm.ollama_client.requests)
+because ollama_client is a shim that delegates to OllamaBackend.
 """
 
 from __future__ import annotations
@@ -23,32 +25,32 @@ def _mock_response(response_text: str, status_code: int = 200) -> MagicMock:
 
 SYSTEM_PROMPT = "You are an SQL generator."
 
+# Correct patch targets: the symbols live in ollama_backend, not ollama_client
+_PATCH_POST  = "llm.ollama_backend.requests.post"
+_PATCH_SLEEP = "llm.ollama_backend.time.sleep"
+
 
 class TestGenerateSql:
     def test_returns_clean_sql(self):
         sql = "SELECT TOP 10 Name FROM [Auction_Dim].[Customer]"
-        with patch("llm.ollama_client.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(sql)
+        with patch(_PATCH_POST, return_value=_mock_response(sql)):
             result = generate_sql("مشتریان", SYSTEM_PROMPT)
         assert "SELECT" in result.upper()
 
     def test_strips_markdown_fence_from_response(self):
         raw = "```sql\nSELECT TOP 5 Name FROM [Auction_Dim].[Customer]\n```"
-        with patch("llm.ollama_client.requests.post") as mock_post:
-            mock_post.return_value = _mock_response(raw)
+        with patch(_PATCH_POST, return_value=_mock_response(raw)):
             result = generate_sql("مشتریان", SYSTEM_PROMPT)
         assert result.startswith("SELECT")
         assert "```" not in result
 
     def test_raises_value_error_on_out_of_scope(self):
-        with patch("llm.ollama_client.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("OUT_OF_SCOPE")
+        with patch(_PATCH_POST, return_value=_mock_response("OUT_OF_SCOPE")):
             with pytest.raises(ValueError, match="OUT_OF_SCOPE"):
                 generate_sql("شهر باران ایران کیست", SYSTEM_PROMPT)
 
     def test_raises_value_error_on_out_of_scope_with_whitespace(self):
-        with patch("llm.ollama_client.requests.post") as mock_post:
-            mock_post.return_value = _mock_response("  out_of_scope  ".upper())
+        with patch(_PATCH_POST, return_value=_mock_response("  out_of_scope  ".upper())):
             with pytest.raises(ValueError, match="OUT_OF_SCOPE"):
                 generate_sql("irrelevant question", SYSTEM_PROMPT)
 
@@ -58,42 +60,42 @@ class TestGenerateSql:
             requests.ConnectionError("refused"),
             _mock_response(sql),
         ]
-        with patch("llm.ollama_client.requests.post", side_effect=responses), \
-             patch("llm.ollama_client.time.sleep"):
+        with patch(_PATCH_POST, side_effect=responses), patch(_PATCH_SLEEP):
             result = generate_sql("مشتری", SYSTEM_PROMPT)
         assert "SELECT" in result.upper()
 
     def test_raises_runtime_error_after_all_retries_exhausted(self):
-        with patch(
-            "llm.ollama_client.requests.post",
-            side_effect=requests.ConnectionError("refused"),
-        ), patch("llm.ollama_client.time.sleep"):
+        with patch(_PATCH_POST, side_effect=requests.ConnectionError("refused")), \
+             patch(_PATCH_SLEEP):
             with pytest.raises(RuntimeError, match="unreachable"):
                 generate_sql("سوال", SYSTEM_PROMPT)
 
     def test_raises_runtime_error_on_http_error(self):
         mock = MagicMock()
         mock.raise_for_status.side_effect = requests.HTTPError("500")
-        with patch("llm.ollama_client.requests.post", return_value=mock), \
-             patch("llm.ollama_client.time.sleep"):
+        with patch(_PATCH_POST, return_value=mock), patch(_PATCH_SLEEP):
             with pytest.raises(RuntimeError, match="unreachable"):
                 generate_sql("سوال", SYSTEM_PROMPT)
 
     def test_prompt_includes_question(self):
         sql = "SELECT 1 AS n"
-        captured = {}
+        captured: dict = {}
+
         def fake_post(url, json, timeout):
             captured["payload"] = json
             return _mock_response(sql)
-        with patch("llm.ollama_client.requests.post", side_effect=fake_post):
+
+        with patch(_PATCH_POST, side_effect=fake_post):
             generate_sql("تعداد قراردادها", SYSTEM_PROMPT)
         assert "تعداد قراردادها" in captured["payload"]["prompt"]
 
     def test_payload_stream_is_false(self):
-        captured = {}
+        captured: dict = {}
+
         def fake_post(url, json, timeout):
             captured["payload"] = json
             return _mock_response("SELECT 1")
-        with patch("llm.ollama_client.requests.post", side_effect=fake_post):
+
+        with patch(_PATCH_POST, side_effect=fake_post):
             generate_sql("سوال", SYSTEM_PROMPT)
         assert captured["payload"]["stream"] is False

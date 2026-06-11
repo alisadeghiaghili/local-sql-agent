@@ -60,6 +60,8 @@ class OllamaBackend(LLMBackend):
         ------
         ValueError("OUT_OF_SCOPE")
             Passed through from the model sentinel.
+        requests.Timeout
+            Propagated immediately — not retried.  Caller maps to ModelTimeoutError.
         RuntimeError
             When the endpoint is unreachable after all retries.
         """
@@ -84,6 +86,10 @@ class OllamaBackend(LLMBackend):
                 return raw
 
             except ValueError:
+                # OUT_OF_SCOPE sentinel — not a transport error, never retry
+                raise
+            except requests.Timeout:
+                # Timeout is a hard failure — propagate immediately, do not retry
                 raise
             except requests.RequestException as exc:
                 last_exc = exc
