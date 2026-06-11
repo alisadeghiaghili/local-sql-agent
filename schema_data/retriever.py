@@ -42,6 +42,14 @@ _ALWAYS_INCLUDE: dict[str, list[str]] = {
         "خرید", "خریدار", "خرید مشتری",
         "purchase", "buyer", "customer purchase",
     ],
+    "Offer": [
+        "عرضه", "عرضهکننده", "عرضهکنندگان", "عرضه کالا", "کالا",
+        "offer", "supply", "listing",
+    ],
+    "Order": [
+        "سفارش", "سفارش خرید", "درخواست",
+        "order", "purchase order",
+    ],
     "Ring": [
         "تالار", "رینگ", "پتروشیمی", "کیش", "فلزات",
         "کشاورزی", "نفتی", "خرد", "طلا", "سیمان", "خودرو",
@@ -65,6 +73,14 @@ def _ngrams(tokens: list[str], n: int) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _build_idf() -> dict[str, float]:
+    """Build IDF weights for all terms in TABLES descriptions.
+
+    Terms that do not appear in any document receive the maximum possible IDF
+    value (``log(N+1) + 1``) so that a query for a rare/absent term scores
+    higher than a query for a ubiquitous one, satisfying:
+
+        idf(rare_term) > idf(common_term)
+    """
     N = len(TABLES)
     doc_freq: dict[str, int] = {}
     for info in TABLES.values():
@@ -73,10 +89,15 @@ def _build_idf() -> dict[str, float]:
         terms = set(tokens) | set(_ngrams(tokens, 2))
         for term in terms:
             doc_freq[term] = doc_freq.get(term, 0) + 1
-    return {
+    idf: dict[str, float] = {
         term: math.log((N + 1) / (df + 1)) + 1.0
         for term, df in doc_freq.items()
     }
+    # The IDF for an unseen term is the theoretical maximum.
+    # Storing it under a sentinel key lets callers look it up via
+    # idf.get(term, idf['__unseen__']) without branching.
+    idf["__unseen__"] = math.log(N + 1) + 1.0
+    return idf
 
 
 def _expand(question: str) -> str:
