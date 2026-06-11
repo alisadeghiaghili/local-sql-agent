@@ -22,12 +22,16 @@ User question (Persian / English)
     ↓
  PromptBuilder  →  structured, context-aware prompt
     ↓
- Ollama (local LLM)  →  raw SQL
+ SQLAgent (llm/sql_agent.py)  →  generate + clean + auto-correct loop
+    ↓
+ OllamaBackend (llm/ollama_backend.py)  →  HTTP call with retry/back-off
     ↓
  SQLGuard  →  sanitised, safe SQL
     ↓
  SQL Server  →  result set  →  export (Excel / CSV / JSON)
 ```
+
+The engine is also exposed as a **FastAPI HTTP service** (`api/server.py`) with LRU query caching, typed error responses, and request-scoped logging middleware.
 
 ---
 
@@ -42,10 +46,14 @@ User question (Persian / English)
 | **Few-shot learning** | Tag-scored example selector injects the most relevant SQL patterns. |
 | **Business rule injection** | Domain rules injected per question topic at prompt-build time. |
 | **SQL security guard** | Blocks DDL, DML, injection patterns, and converts LIMIT→TOP. |
+| **Auto-correct loop** | SQLAgent retries up to N times with error feedback when SQL is invalid. |
+| **FastAPI HTTP API** | REST endpoints for query, cache management, and health check. |
+| **LRU query cache** | Thread-safe TTL + LRU cache; configurable size and expiry. |
+| **Typed error taxonomy** | `NLQError` hierarchy: `OutOfScopeError`, `ModelTimeoutError`, `ModelUnavailableError`, `QueryExecutionError`. |
 | **Retry with back-off** | Automatic exponential retry on Ollama transient failures. |
 | **Structured exports** | Excel, CSV, JSON output with timestamped filenames. |
-| **Thread-safe logging** | Rotating file logger, configurable via environment variables. |
-| **Test suite** | 130 unit + integration tests, CI via GitHub Actions. |
+| **Thread-safe logging** | Rotating file logger + request-scoped middleware correlation ID. |
+| **Test suite** | 427+ unit + integration tests, CI via GitHub Actions. |
 
 ---
 
@@ -53,12 +61,20 @@ User question (Persian / English)
 
 ```
 local-sql-agent/
-├── config.py                      # Typed Settings singleton (env-based, frozen)
+├── config.py                      # Typed Settings singleton (env-based, frozen) + override_settings()
 ├── app.py                         # Interactive CLI entry point (REPL)
+├── api/                           # FastAPI HTTP service
+│   ├── server.py                  # FastAPI app factory + /query, /health, /cache endpoints
+│   ├── runner.py                  # run_query() — cache-aware orchestrator, calls SQLAgent
+│   ├── query_cache.py             # QueryCache — thread-safe TTL + LRU cache singleton
+│   ├── models.py                  # Pydantic request/response models (QueryRequest, QueryResponse)
+│   ├── errors.py                  # NLQError hierarchy → FastAPI exception handlers
+│   ├── middleware.py              # RequestLoggingMiddleware — correlation ID, latency headers
+│   └── health.py                  # /health endpoint — DB + Ollama reachability probes
 ├── core/
 │   └── models.py                  # RetrievalContext — frozen dataclass shared by all layers
 ├── knowledge/                     # Domain knowledge base (edit to extend the domain)
-│   ├── aliases.py                 # RING_ALIASES (hall → surface forms) + SYNONYMS (TF-IDF expansion)
+│   ├── aliases.py                 # RING_ALIASES + SYNONYMS (156 entries, 10 categories)
 │   ├── business_rules.py          # Business rules per topic key
 │   ├── entities.py                # Dimension entity catalog with Persian/English aliases
 │   ├── examples.py                # Tagged few-shot SQL examples (question + sql + tags)
@@ -72,16 +88,19 @@ local-sql-agent/
 │   ├── value_retriever.py         # Filter extraction (ring canonical name, Persian year)
 │   └── example_retriever.py       # Tag-scored few-shot selection (top-3 by overlap)
 ├── schema_data/                   # Schema definitions (single source of truth)
-│   ├── registry.py                # SchemaRegistry.build_schema_context() — LRU-cached
+│   ├── registry.py                # SchemaRegistry — build_schema_context() + build_context() alias
 │   ├── columns.py                 # Column-level schema with FK annotations
-│   ├── tables.py                  # Table descriptions (used by TF-IDF engine)
+│   ├── tables.py                  # Table descriptions (bilingual — used by TF-IDF engine)
 │   ├── relationships.py           # FK relationship map (JOIN SQL per edge)
 │   └── retriever.py               # TF-IDF bigram retriever — fallback for all sub-retrievers
 ├── prompt_engine/
 │   ├── builder.py                 # PromptBuilder.build() — assembles final structured prompt
 │   └── templates.py               # PROMPT_TEMPLATE with labelled sections
 ├── llm/
-│   └── ollama_client.py           # Ollama HTTP client (retry + back-off, calls ContextRetriever)
+│   ├── base.py                    # LLMBackend ABC + SQLGenerationResult dataclass
+│   ├── sql_agent.py               # SQLAgent — generate/clean/auto-correct loop
+│   ├── ollama_backend.py          # OllamaBackend — HTTP client (retry + back-off)
+│   └── ollama_client.py           # Legacy thin client (kept for CLI compatibility)
 ├── security/
 │   └── sql_guard.py               # SQL sanitisation: clean_sql, validate_sql, ensure_top
 ├── database/
@@ -91,7 +110,7 @@ local-sql-agent/
 ├── logs/                          # Rotating log files (auto-created at runtime)
 ├── scripts/
 │   └── analyze_misses.py          # Offline miss-analysis tool for retrieval diagnostics
-└── tests/                         # 130 unit + integration tests
+└── tests/                         # 427+ unit + integration tests
 ```
 
 ---
@@ -125,10 +144,24 @@ OLLAMA_MODEL=llama3
 DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/YourDB?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
 ```
 
-### 4. Run
+### 4a. Run as CLI
 
 ```bash
 python app.py
+```
+
+### 4b. Run as HTTP API
+
+```bash
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+```
+
+#### Example request
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "فروش ماهانه مشتریان برتر", "mode": "full"}'
 ```
 
 ---
@@ -142,8 +175,34 @@ python app.py
 | `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
 | `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time (seconds) |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
+| `CACHE_TTL_SECONDS` | `300` | Query cache TTL in seconds (0 = disabled) |
+| `CACHE_MAX_SIZE` | `256` | Maximum number of cached query results |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/query` | Run a natural-language query; returns SQL + result set |
+| `GET` | `/health` | DB + Ollama reachability probe |
+| `GET` | `/cache/stats` | Current cache size, hits, misses, evictions |
+| `POST` | `/cache/invalidate` | Remove a specific (question, mode) entry |
+| `POST` | `/cache/clear` | Flush the entire cache |
+
+---
+
+## Error Taxonomy
+
+| Exception | HTTP status | When raised |
+|---|---|---|
+| `OutOfScopeError` | 422 | Model returns `OUT_OF_SCOPE` sentinel |
+| `ModelTimeoutError` | 504 | Ollama request exceeds timeout |
+| `ModelUnavailableError` | 503 | Ollama unreachable after all retries |
+| `QueryExecutionError` | 500 | SQL Server execution failure |
+| `ValidationError` (Pydantic) | 422 | Malformed request body |
 
 ---
 
