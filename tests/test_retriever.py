@@ -33,7 +33,7 @@ class TestRetrieveTables:
         assert "Broker" in result
 
     def test_fallback_on_no_match(self):
-        result = retrieve_tables("xyzzy foobar nonexistent_word_12345")
+        result = retrieve_tables("xyzzy foobar nonexistent_word_12345", fallback=True)
         assert set(result) == set(TABLES.keys())
 
     def test_bigram_boosts_customer_contract(self):
@@ -85,7 +85,7 @@ class TestRetrieveTables:
         assert "Date" in result
 
     def test_date_included_via_always_include_signal(self):
-        """'دوره' is an always-include signal for Date."""
+        """'دورهای' is an inflected form of 'دوره' — an always-include signal for Date."""
         result = retrieve_tables("گزارش دورهای سه ماهه")
         assert "Date" in result
 
@@ -128,6 +128,11 @@ class TestExpandSynonyms:
         assert "فصل" in expanded
         assert "معامله" in expanded
 
+    def test_stem_match_doreh_ai(self):
+        """'دورهای' is an inflection of 'دوره' and must expand via stem matching."""
+        expanded = _expand("دورهای")
+        assert "تاریخ" in expanded or "سال" in expanded or "ماه" in expanded
+
 
 class TestBuildIdf:
     def test_returns_dict(self):
@@ -137,8 +142,6 @@ class TestBuildIdf:
 
     def test_rare_term_has_higher_idf(self):
         idf = _build_idf()
-        # 'بسته' appears in only one table (Packet) → high IDF
-        # 'معامله' appears in multiple tables → lower IDF
         assert idf.get("بسته", 0) > idf.get("معامله", 0)
 
     def test_cached(self):

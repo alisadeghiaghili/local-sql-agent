@@ -33,6 +33,8 @@ How it works
 ------------
 1. For every SUCCESS entry in the log, extract the table names that
    appear in the generated SQL (``[Schema].[TableName]`` pattern).
+   Only names that exist in TABLES are considered valid — unknown
+   table names extracted from SQL are silently ignored.
 2. Run ``retrieve_tables(question)`` with the *current* retriever to
    see what tables would be selected today.
 3. Tables that appear in SQL but were NOT retrieved = **misses**.
@@ -69,9 +71,12 @@ _SQL_TABLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Known logical table names (lowercase → canonical) for fast lookup
+_KNOWN_TABLES_LOWER: dict[str, str] = {
+    name.lower(): name for name in TABLES
+}
+
 # Stop-words: tiny words that are never useful as synonym candidates.
-# Split across multiple string literals to avoid long-line SyntaxError on
-# Python 3.12+ (which bans implicit line continuation inside a string).
 _STOP_FA = (
     "\u062f\u0631 \u0627\u0632 \u0628\u0647 \u0648 \u06cc\u0627 \u0627 \u0628\u0627 \u0628\u0631\u0627\u06cc \u0628\u0631 \u062a\u0627 \u06a9\u0647"
     " \u0627\u06cc\u0646 \u0622\u0646 \u0647\u0627 \u0647\u0627\u06cc \u0645\u06cc \u0646\u0647 \u0647\u0645 \u0647\u0645\u0647 \u0686\u0647 \u0686\u0646\u062f"
@@ -102,15 +107,18 @@ class Miss(NamedTuple):
 
 
 def _tables_in_sql(sql: str) -> set[str]:
-    """Return logical table names referenced in *sql* (best-effort)."""
+    """Return logical table names referenced in *sql* (best-effort).
+
+    Only names that exist in the TABLES registry are returned.
+    Unknown names (e.g. from a different schema or a hallucinated table)
+    are silently ignored so they do not pollute miss analysis.
+    """
     found: set[str] = set()
     for m in _SQL_TABLE_RE.finditer(sql):
-        name = m.group(1)
-        # Check against known logical names (case-insensitive)
-        for table_name in TABLES:
-            if table_name.lower() == name.lower():
-                found.add(table_name)
-                break
+        raw_name = m.group(1)
+        canonical = _KNOWN_TABLES_LOWER.get(raw_name.lower())
+        if canonical is not None:
+            found.add(canonical)
     return found
 
 
@@ -152,8 +160,14 @@ def analyse(log_path: Path) -> list[Miss]:
             if not question or not sql:
                 continue
 
-            sql_tables       = _tables_in_sql(sql)
-            retrieved_tables = set(retrieve_tables(question))
+            sql_tables = _tables_in_sql(sql)
+            if not sql_tables:
+                # SQL references no known tables — nothing to analyse
+                continue
+
+            # Use fallback=False so an out-of-domain question returns []
+            # which means ALL sql_tables are "missed" (correct behaviour)
+            retrieved_tables = set(retrieve_tables(question, fallback=False))
             missed           = sorted(sql_tables - retrieved_tables)
 
             if missed:
@@ -173,9 +187,7 @@ def analyse(log_path: Path) -> list[Miss]:
 
 def _build_report(misses: list[Miss]) -> dict:
     """Aggregate misses into a structured report dict."""
-    # Per-table miss count
     table_miss_count: Counter[str] = Counter()
-    # Per-table: which candidate tokens appeared most often
     table_candidates: dict[str, Counter[str]] = defaultdict(Counter)
 
     for m in misses:
@@ -186,9 +198,9 @@ def _build_report(misses: list[Miss]) -> dict:
 
     tables_ranked = [
         {
-            "table":             table,
-            "miss_count":        count,
-            "top_candidates":    [
+            "table":          table,
+            "miss_count":     count,
+            "top_candidates": [
                 {"token": tok, "freq": freq}
                 for tok, freq in table_candidates[table].most_common(10)
             ],
@@ -197,7 +209,7 @@ def _build_report(misses: list[Miss]) -> dict:
     ]
 
     return {
-        "total_success_entries_analysed": sum(1 for _ in misses) + 0,  # set in caller
+        "total_success_entries_analysed": len(misses),
         "total_miss_events":              len(misses),
         "tables_ranked_by_miss_count":    tables_ranked,
         "all_misses": [
@@ -276,8 +288,8 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args      = _parse_args()
-    log_path  = Path(args.log)
+    args     = _parse_args()
+    log_path = Path(args.log)
 
     print(f"Analysing: {log_path.resolve()}")
     misses = analyse(log_path)
