@@ -5,6 +5,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [3.1.0] — 2026-06-12
+
+Minor release — FastAPI HTTP layer, SQLAgent auto-correct loop, LRU query cache,
+tested LLM backend abstraction, and 1 bugfix in cache isolation.
+
+### Added
+
+- **`api/`** — FastAPI HTTP service package:
+  - `server.py` — FastAPI app factory with `/query`, `/health`, `/cache/stats`,
+    `/cache/invalidate`, `/cache/clear` endpoints. `_system_prompt` module-level
+    variable allows test-time injection without environment changes.
+  - `runner.py` — `run_query()`: cache-aware orchestrator that consults
+    `query_cache` before calling `_agent.run`; populates cache on miss.
+  - `query_cache.py` — `QueryCache`: thread-safe TTL + LRU in-process cache;
+    `set / get / invalidate / clear / stats / reconfigure` API.
+    `reconfigure()` now clears the store when TTL or max-size changes.
+  - `models.py` — Pydantic `QueryRequest` / `QueryResponse` request/response
+    models; `mode` field validates `"full" | "sql" | "result"`.
+  - `errors.py` — `NLQError` hierarchy: `OutOfScopeError` (422),
+    `ModelTimeoutError` (504), `ModelUnavailableError` (503),
+    `QueryExecutionError` (500); FastAPI exception handlers registered
+    for each type.
+  - `middleware.py` — `RequestLoggingMiddleware`: per-request correlation ID
+    (`X-Request-Id`), latency header (`X-Response-Time-Ms`), structured log.
+  - `health.py` — `/health` endpoint: probes SQL Server connectivity and
+    Ollama reachability; returns per-component status dict.
+
+- **`llm/base.py`** — `LLMBackend` abstract base class + `SQLGenerationResult`
+  dataclass (`sql`, `raw_response`, `attempt`, `correction_prompts`).
+
+- **`llm/sql_agent.py`** — `SQLAgent`: wraps any `LLMBackend`; runs the
+  generate → `clean_sql` → `validate_sql` loop with up to N correction
+  attempts, feeding validation errors back into the prompt.
+
+- **`llm/ollama_backend.py`** — `OllamaBackend(LLMBackend)`: HTTP client
+  extracted from the old monolithic `ollama_client.py`; exponential back-off
+  retry, `OUT_OF_SCOPE` sentinel detection, `ModelUnavailableError` mapping.
+
+- **`config.py`** — `override_settings()` context manager added for
+  test-time settings mutation without environment side-effects.
+
+- **Test files added:**
+  `test_api_endpoints.py`, `test_api_runner.py`, `test_cache_endpoints.py`,
+  `test_errors.py`, `test_middleware.py`, `test_ollama_backend.py`,
+  `test_query_cache.py`, `test_runner_cache.py`, `test_sql_agent.py`.
+  Total test count: **427+** (up from 231).
+
+### Fixed
+
+- **`api/query_cache.py` — `reconfigure()` did not clear stale entries.**
+  After calling `reconfigure(ttl_seconds=60)`, entries stored under the
+  previous TTL could survive and be returned as valid hits.
+  Fix: `reconfigure()` now calls `self._store.clear()` after updating
+  `_ttl` and `_max_size`.
+
+- **`tests/test_api_runner.py` — cache pollution between tests.**
+  Added `autouse` fixture that calls `query_cache.clear()` before and after
+  each test, preventing cache hits from earlier tests masking failures in
+  later ones (e.g. `test_exception_translated` receiving a cached success).
+
+- **`tests/test_query_cache.py` — `TestQueryCacheRunnerIntegration.test_second_call_hits_cache`
+  triggered real Ollama connection.**
+  The test called `reconfigure()` inside `override_settings()`, which (after
+  the fix above) cleared the pre-populated cache entry. `run_query` then fell
+  through to the real `OllamaBackend` → `ModelUnavailableError`.
+  Fix: removed `reconfigure()` / `override_settings()` from the test; the
+  cache is pre-populated with `query_cache.set()`, `_agent` is patched with
+  a `MagicMock` that raises on `.run()`, and the returned object is asserted
+  to be the exact cached instance. Added companion test
+  `test_cache_miss_calls_agent_and_stores_result` for the miss path.
+
+---
+
 ## [3.0.1] — 2026-06-11
 
 Bugfix release — 12 failing tests resolved across three independent areas.
