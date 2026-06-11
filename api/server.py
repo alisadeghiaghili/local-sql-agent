@@ -8,6 +8,15 @@ POST /query
 
 GET  /health
     Liveness check: confirms Ollama is reachable and DB can be pinged.
+
+GET  /cache/stats
+    Return current cache metrics (hits, misses, size, evictions, enabled).
+
+POST /cache/clear
+    Flush the entire query-result cache and return a stats snapshot.
+
+POST /cache/invalidate
+    Evict a single (question, mode) entry from the cache.
 """
 
 from __future__ import annotations
@@ -16,7 +25,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 import config as cfg
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
@@ -34,7 +43,14 @@ from api.errors import (
     register_handlers,
 )
 from api.middleware import RequestIDMiddleware, ConcurrencyMiddleware
-from api.models import QueryRequest, QueryResponse, HealthResponse
+from api.models import (
+    QueryRequest,
+    QueryResponse,
+    HealthResponse,
+    CacheStatsResponse,
+    CacheInvalidateRequest,
+)
+from api.query_cache import query_cache
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +70,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Auction NLQ Engine",
-    description="Natural-language → SQL → Results API for Auction_DM.",
+    description="Natural-language \u2192 SQL \u2192 Results API for Auction_DM.",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# --- Middleware (order matters: outer → inner) ---
+# --- Middleware (order matters: outer \u2192 inner) ---
 app.add_middleware(ConcurrencyMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
@@ -109,3 +125,53 @@ def query(req: QueryRequest) -> QueryResponse:
 def health() -> HealthResponse:
     from api.health import check_health
     return check_health()
+
+
+# ---------------------------------------------------------------------------
+# Cache admin endpoints
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/cache/stats",
+    response_model=CacheStatsResponse,
+    summary="Return current cache metrics",
+    tags=["cache"],
+)
+def cache_stats() -> CacheStatsResponse:
+    """Return hits, misses, size, evictions, and enabled flag."""
+    s = query_cache.stats()
+    return CacheStatsResponse(**s)
+
+
+@app.post(
+    "/cache/clear",
+    response_model=CacheStatsResponse,
+    summary="Flush the entire query-result cache",
+    tags=["cache"],
+)
+def cache_clear() -> CacheStatsResponse:
+    """Evict all cached responses.  Returns a snapshot of stats *before* clearing."""
+    snapshot = query_cache.stats()
+    query_cache.clear()
+    return CacheStatsResponse(**snapshot)
+
+
+@app.post(
+    "/cache/invalidate",
+    response_model=CacheStatsResponse,
+    summary="Evict a single cache entry",
+    tags=["cache"],
+    responses={404: {"description": "Entry not found in cache"}},
+)
+def cache_invalidate(req: CacheInvalidateRequest) -> CacheStatsResponse:
+    """Remove the cached response for a specific (question, mode) pair.
+
+    Returns 404 if the entry does not exist.
+    """
+    removed = query_cache.invalidate(req.question, req.mode)
+    if not removed:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No cache entry for question={req.question!r} mode={req.mode!r}",
+        )
+    return CacheStatsResponse(**query_cache.stats())
