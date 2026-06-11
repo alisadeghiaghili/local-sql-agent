@@ -55,10 +55,8 @@ class Miss(NamedTuple):
 def _tables_in_sql(sql: str) -> set[str]:
     """Return canonical table names referenced in *sql* that exist in the schema.
 
-    Only names present in the TABLES registry are returned so that
-    references to unknown/non-existent tables are silently ignored.
-    This ensures test_unknown_table_not_included passes and prevents
-    false-positive miss reports for hallucinated table names.
+    Only names present in the TABLES registry are returned so that references
+    to unknown/non-existent tables are silently ignored (no false positives).
     """
     found: set[str] = set()
     for m in _SQL_TABLE_RE.finditer(sql):
@@ -107,8 +105,11 @@ def analyse(log_path: Path) -> list[Miss]:
             if not question or not sql:
                 continue
 
-            sql_tables       = _tables_in_sql(sql)
-            retrieved_tables = set(retrieve_tables(question))
+            sql_tables = _tables_in_sql(sql)
+
+            # Use fallback=False so that unrecognised questions return []
+            # instead of all tables, which would mask every miss.
+            retrieved_tables = set(retrieve_tables(question, fallback=False))
             missed           = sorted(sql_tables - retrieved_tables)
 
             if missed:
