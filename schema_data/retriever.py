@@ -26,33 +26,33 @@ def _normalise(text: str) -> str:
 
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
-        "\u062a\u0627\u0631\u06cc\u062e", "\u0633\u0627\u0644", "\u0645\u0627\u0647", "\u0641\u0635\u0644", "\u0647\u0641\u062a\u0647", "\u0631\u0648\u0632",
-        "\u0628\u0647\u0627\u0631", "\u062a\u0627\u0628\u0633\u062a\u0627\u0646", "\u067e\u0627\u06cc\u06cc\u0632", "\u0632\u0645\u0633\u062a\u0627\u0646",
-        "\u062f\u0648\u0631\u0647", "\u062f\u0648\u0631\u0647\u0627\u06cc", "\u062f\u0648\u0631\u0647\u200c\u0627\u06cc",
-        "\u0633\u0627\u0644\u06cc\u0627\u0646\u0647", "\u0645\u0627\u0647\u0627\u0646\u0647", "\u0647\u0641\u062a\u06af\u06cc", "\u0631\u0648\u0632\u0627\u0646\u0647",
+        "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
+        "بهار", "تابستان", "پاییز", "زمستان",
+        "دوره", "دورهای", "دوره‌ای",
+        "سالیانه", "ماهانه", "هفتگی", "روزانه",
         "date", "year", "month", "season", "week",
         "spring", "summer", "autumn", "winter",
         "quarterly", "monthly", "yearly", "annual", "period",
     ],
     "Contract": [
-        "\u0645\u0639\u0627\u0645\u0644\u0647", "\u0642\u0631\u0627\u0631\u062f\u0627\u062f", "\u062d\u062c\u0645", "\u0627\u0631\u0632\u0634",
+        "معامله", "قرارداد", "حجم", "ارزش",
         "trade", "contract", "deal", "volume", "value",
     ],
     "CustomerContract": [
-        "\u062e\u0631\u06cc\u062f", "\u062e\u0631\u06cc\u062f\u0627\u0631", "\u062e\u0631\u06cc\u062f \u0645\u0634\u062a\u0631\u06cc",
+        "خرید", "خریدار", "خرید مشتری",
         "purchase", "buyer", "customer purchase",
     ],
     "Offer": [
-        "\u0639\u0631\u0636\u0647", "\u0639\u0631\u0636\u0647\u06a9\u0646\u0646\u062f\u0647", "\u0639\u0631\u0636\u0647\u06a9\u0646\u0646\u062f\u06af\u0627\u0646", "\u0639\u0631\u0636\u0647 \u06a9\u0627\u0644\u0627", "\u06a9\u0627\u0644\u0627",
+        "عرضه", "عرضهکننده", "عرضهکنندگان", "عرضه کالا", "کالا",
         "offer", "supply", "listing",
     ],
     "Order": [
-        "\u0633\u0641\u0627\u0631\u0634", "\u0633\u0641\u0627\u0631\u0634 \u062e\u0631\u06cc\u062f", "\u062f\u0631\u062e\u0648\u0627\u0633\u062a",
+        "سفارش", "سفارش خرید", "درخواست",
         "order", "purchase order",
     ],
     "Ring": [
-        "\u062a\u0627\u0644\u0627\u0631", "\u0631\u06cc\u0646\u06af", "\u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc", "\u06a9\u06cc\u0634", "\u0641\u0644\u0632\u0627\u062a",
-        "\u06a9\u0634\u0627\u0648\u0631\u0632\u06cc", "\u0646\u0641\u062a\u06cc", "\u062e\u0631\u062f", "\u0637\u0644\u0627", "\u0633\u06cc\u0645\u0627\u0646", "\u062e\u0648\u062f\u0631\u0648",
+        "تالار", "رینگ", "پتروشیمی", "کیش", "فلزات",
+        "کشاورزی", "نفتی", "خرد", "طلا", "سیمان", "خودرو",
         "ring", "trading hall", "trading ring",
     ],
 }
@@ -72,25 +72,18 @@ def _ngrams(tokens: list[str], n: int) -> list[str]:
 
 
 class _IdfDict(dict):
-    """A dict that returns the maximum IDF value for any unseen term.
-
-    This ensures that ``idf.get(rare_term, 0)`` is never needed — callers can
-    use plain ``idf[term]`` or ``idf.get(term)`` and always receive a meaningful
-    weight.  In particular it satisfies the property:
-
-        idf[unseen_term] > idf[common_term_that_appears_everywhere]
-
-    because a term absent from all documents has a higher IDF than one present
-    in every document.
-    """
+    """Dict-like container whose get/index access returns max IDF for unseen terms."""
 
     def __missing__(self, key: str) -> float:  # noqa: D105
         return self._max_idf
 
+    def get(self, key, default=None):  # noqa: D401
+        return super().get(key, self._max_idf)
+
     @classmethod
     def build(cls, N: int, doc_freq: dict[str, int]) -> "_IdfDict":
         obj = cls()
-        obj._max_idf = math.log(N + 1) + 1.0  # IDF when df == 0
+        obj._max_idf = math.log(N + 1) + 1.0
         for term, df in doc_freq.items():
             obj[term] = math.log((N + 1) / (df + 1)) + 1.0
         return obj
@@ -98,11 +91,7 @@ class _IdfDict(dict):
 
 @lru_cache(maxsize=1)
 def _build_idf() -> _IdfDict:
-    """Build IDF weights for all terms found in TABLES descriptions.
-
-    Returns an :class:`_IdfDict` that yields the theoretical maximum IDF for
-    any term not seen in any document, so callers never need a fallback of 0.
-    """
+    """Build IDF weights for all terms found in TABLES descriptions."""
     N = len(TABLES)
     doc_freq: dict[str, int] = {}
     for info in TABLES.values():
@@ -129,9 +118,9 @@ def _score_table(
     idf: _IdfDict,
     description: str,
 ) -> float:
-    d_tokens  = _tokenize(description)
+    d_tokens = _tokenize(description)
     d_bigrams = _ngrams(d_tokens, 2)
-    d_len     = len(d_tokens) or 1
+    d_len = len(d_tokens) or 1
     tf: dict[str, float] = {}
     for t in d_tokens:
         tf[t] = tf.get(t, 0) + 1.0 / d_len
@@ -149,7 +138,7 @@ def _score_table(
 
 def _forced_tables(q_tokens: list[str]) -> set[str]:
     q_token_set = set(q_tokens)
-    q_joined    = " ".join(q_tokens)
+    q_joined = " ".join(q_tokens)
     forced: set[str] = set()
     for table_name, signals in _ALWAYS_INCLUDE_NORMALISED.items():
         for sig in signals:
@@ -160,19 +149,12 @@ def _forced_tables(q_tokens: list[str]) -> set[str]:
 
 
 def retrieve_tables(question: str, fallback: bool = True) -> list[str]:
-    """Return up to _TOP_N table names most relevant to *question*.
-
-    Parameters
-    ----------
-    fallback:
-        When True (default) and nothing matches, return every table.
-        Set False to return [] — useful for miss-detection.
-    """
-    expanded  = _expand(question)
-    q_tokens  = _tokenize(expanded)
+    """Return up to _TOP_N table names most relevant to *question*."""
+    expanded = _expand(question)
+    q_tokens = _tokenize(expanded)
     q_bigrams = _ngrams(q_tokens, 2)
-    idf       = _build_idf()
-    forced    = _forced_tables(q_tokens)
+    idf = _build_idf()
+    forced = _forced_tables(q_tokens)
 
     scores: dict[str, float] = {table: _FORCED_SCORE for table in forced}
 
