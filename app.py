@@ -19,11 +19,14 @@ from datetime import datetime
 from pathlib import Path
 
 import config as cfg
+from core.models import RetrievalContext
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
 from llm.ollama_client import generate_sql
 from logs.logger import save_log
 from logs.query_log import QueryLog
+from prompt_engine.builder import PromptBuilder
+from retrieval.context_retriever import ContextRetriever
 from security.sql_guard import validate_sql
 
 # ---------------------------------------------------------------------------
@@ -41,6 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _PROMPT_PATH = Path("prompts/system_prompt.md")
 
+
 def _load_system_prompt() -> str:
     if not _PROMPT_PATH.exists():
         logger.error("System prompt not found: %s", _PROMPT_PATH)
@@ -56,9 +60,8 @@ _last_query_time: float = 0.0
 
 
 def _enforce_rate_limit() -> None:
-    """Block until the minimum inter-query interval has elapsed."""
     global _last_query_time
-    elapsed   = time.monotonic() - _last_query_time
+    elapsed = time.monotonic() - _last_query_time
     remaining = _MIN_INTERVAL_SECONDS - elapsed
     if remaining > 0:
         print(f"\u23f3  Please wait {remaining:.1f}s before the next query...")
@@ -74,7 +77,6 @@ _SEP = "=" * 60
 
 
 def _round_half_up(value: float, decimals: int) -> float:
-    """Round *value* to *decimals* places using half-up (not banker's) rounding."""
     multiplier = 10 ** decimals
     return math.floor(value * multiplier + 0.5) / multiplier
 
@@ -106,6 +108,15 @@ def _print_sql(sql: str) -> None:
     print("GENERATED SQL")
     print(_SEP)
     print(sql)
+
+
+def _print_context_summary(context: RetrievalContext) -> None:
+    """Print a brief debug summary of what was retrieved."""
+    print(f"\n\U0001f9e0  Tables   : {context.selected_tables}")
+    print(f"\U0001f4cb  Rules    : {len(context.business_rules)} matched")
+    print(f"\U0001f4d6  Examples : {len(context.examples)} matched")
+    if context.filters:
+        print(f"\U0001f50d  Filters  : {context.filters}")
 
 
 def _print_results(df) -> None:
@@ -150,14 +161,27 @@ def main() -> None:
 
         _enforce_rate_limit()
 
-        sql    = ""
-        start  = time.perf_counter()
+        sql   = ""
+        start = time.perf_counter()
 
         try:
-            sql = generate_sql(question, system_prompt)
+            # 1. Retrieve context
+            context = ContextRetriever.retrieve(question)
+            _print_context_summary(context)
+
+            # 2. Build prompt
+            prompt = PromptBuilder.build(
+                question=question,
+                system_prompt=system_prompt,
+                context=context,
+            )
+
+            # 3. Generate SQL
+            sql = generate_sql(prompt)
             validate_sql(sql)
             _print_sql(sql)
 
+            # 4. Execute
             df      = execute_sql(sql)
             elapsed = time.perf_counter() - start
 
@@ -176,7 +200,7 @@ def main() -> None:
 
         except ValueError as exc:
             elapsed = time.perf_counter() - start
-            msg     = str(exc)
+            msg = str(exc)
             if msg == "OUT_OF_SCOPE":
                 save_log(_make_log(question, "", "OUT_OF_SCOPE", error=msg, elapsed=elapsed))
                 print("\n\u26a0\ufe0f  This system only answers Auction database analytics questions.")
@@ -189,7 +213,7 @@ def main() -> None:
             save_log(_make_log(question, sql, "ERROR", error=str(exc), elapsed=elapsed))
             print(f"\n\u274c Runtime error: {exc}")
 
-        except Exception as exc:           # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             elapsed = time.perf_counter() - start
             save_log(_make_log(question, sql, "ERROR", error=str(exc), elapsed=elapsed))
             logger.exception("Unexpected error")
