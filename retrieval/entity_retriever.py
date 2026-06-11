@@ -3,13 +3,13 @@
 Strategy (two-tier):
 1. Alias match  — fast, exact substring match against knowledge.entities.ENTITIES.
 2. TF-IDF fallback — if alias match returns nothing, delegate to the
-   TF-IDF engine in schema.retriever and keep only dimension tables.
+   TF-IDF engine in schema_data.retriever and keep only dimension tables.
 """
 
 from __future__ import annotations
 
 from knowledge.entities import ENTITIES
-from schema.retriever import retrieve_tables
+from schema_data.retriever import retrieve_tables
 
 _FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
 

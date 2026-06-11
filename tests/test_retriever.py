@@ -1,9 +1,9 @@
-"""Unit tests for schema/retriever.py (TF-IDF + synonym expansion)."""
+"""Unit tests for schema_data/retriever.py (TF-IDF + synonym expansion)."""
 
 from __future__ import annotations
 
-from schema.retriever import retrieve_tables, _expand, _build_idf
-from schema.tables import TABLES
+from schema_data.retriever import retrieve_tables, _expand, _build_idf
+from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
 
 
 class TestRetrieveTables:
@@ -65,10 +65,7 @@ class TestRetrieveTables:
         for name in result:
             assert name in TABLES
 
-    # ─── synonym expansion tests ───────────────────────────────────────
-
     def test_date_included_for_season_word_bahar(self):
-        """'بهار' should trigger Date via synonym expansion."""
         result = retrieve_tables("بیشترین حجم معامله در فصل بهار")
         assert "Date" in result
 
@@ -85,12 +82,10 @@ class TestRetrieveTables:
         assert "Date" in result
 
     def test_date_included_via_always_include_signal(self):
-        """'دوره' is an always-include signal for Date."""
         result = retrieve_tables("گزارش دورهای سه ماهه")
         assert "Date" in result
 
     def test_contract_included_via_hacjm(self):
-        """'حجم' synonym expands to 'معامله' which scores Contract."""
         result = retrieve_tables("حجم معاملات در تالار پتروشیمی")
         assert "Contract" in result
 
@@ -103,7 +98,6 @@ class TestRetrieveTables:
         assert "CustomerContract" in result
 
     def test_complex_query_includes_date_contract_ring(self):
-        """بیشترین حجم معامله در تالار پتروشیمی در فصل بهار"""
         result = retrieve_tables("بیشترین حجم معامله در تالار پتروشیمی در فصل بهار")
         assert "Date" in result
         assert "Contract" in result
@@ -137,8 +131,6 @@ class TestBuildIdf:
 
     def test_rare_term_has_higher_idf(self):
         idf = _build_idf()
-        # 'بسته' appears in only one table (Packet) → high IDF
-        # 'معامله' appears in multiple tables → lower IDF
         assert idf.get("بسته", 0) > idf.get("معامله", 0)
 
     def test_cached(self):
