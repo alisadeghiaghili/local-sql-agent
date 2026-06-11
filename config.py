@@ -39,13 +39,13 @@ class Settings:
         )
     )
     ollama_model: str = field(
-        default_factory=lambda: os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+        default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3")
     )
     db_connection_url: str = field(
         default_factory=lambda: os.getenv(
             "DB_CONNECTION_URL",
-            "mssql+pyodbc://sa@localhost:1433/Auction_DM"
-            "?driver=ODBC+Driver+17+for+SQL+Server",
+            "mssql+pyodbc://username@server:1433/Auction_DM"
+            "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
         )
     )
     query_timeout_seconds: int = field(
