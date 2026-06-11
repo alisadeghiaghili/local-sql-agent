@@ -5,6 +5,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [3.0.1] — 2026-06-11
+
+Bugfix release — 12 failing tests resolved across three independent areas.
+
+### Fixed
+
+- **`schema_data/registry.py`** — `SchemaRegistry.build_context()` alias added;
+  `None` and empty-tuple arguments now treated identically to "include all tables".
+  Resolves `AttributeError: type object 'SchemaRegistry' has no attribute 'build_context'`
+  (7 tests in `test_schema_registry.py`).
+
+- **`schema_data/retriever.py`** — `_IdfDict.get()` now overrides `dict.get` to
+  return `_max_idf` for unseen terms instead of the caller-supplied default.
+  `dict.__missing__` is only invoked on `[]` access, not `.get()`, so the earlier
+  implementation silently returned `0` for any token absent from the corpus.
+  Also added `fallback: bool = True` parameter to `retrieve_tables()`; when
+  `False`, an empty list is returned instead of the full table list when no
+  table scores above `_MIN_SCORE`. Used by `analyse()` to avoid false negatives.
+  Resolves `test_rare_term_has_higher_idf` and `test_detects_miss_when_table_not_retrieved`.
+
+- **`schema_data/tables.py`** — Persian translations appended to every description
+  so that common Persian terms (e.g. `معامله`, `مشتری`, `عرضه`) appear in the
+  IDF corpus as seen terms with a finite IDF, while truly unseen terms receive
+  the strictly higher `_max_idf`. This is required for `test_rare_term_has_higher_idf`
+  to be meaningful.
+
+- **`scripts/analyze_misses.py`** — `_KNOWN_TOKENS` now built from three sources:
+  `TABLE_DESCRIPTIONS` values, `SYNONYMS` keys, **and** `SYNONYMS` values.
+  Previously only descriptions were scanned; synonym expansion terms such as
+  `مشتری` were therefore not recognised as known and appeared in the candidate
+  list. Resolves `test_filters_existing_description_tokens`.
+
+---
+
 ## [3.0.0] — 2026-06-11
 
 Full architectural consolidation. All feature branches merged into `main`.
