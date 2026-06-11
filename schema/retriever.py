@@ -35,8 +35,13 @@ _ALWAYS_INCLUDE: dict[str, list[str]] = {
         "trade", "contract", "deal", "volume", "value",
     ],
     "CustomerContract": [
-        "خرید", "خریدار", "مشتری", "خرید مشتری",
+        "خرید", "خریدار", "خرید مشتری",
         "purchase", "buyer", "customer purchase",
+    ],
+    "Ring": [
+        "تالار", "رینگ", "پتروشیمی", "کیش", "فلزات",
+        "کشاورزی", "نفتی", "خرد", "طلا", "سیمان", "خودرو",
+        "ring", "trading hall", "trading ring",
     ],
 }
 
@@ -139,15 +144,12 @@ def retrieve_tables(question: str, fallback: bool = True) -> list[str]:
 
     scores: dict[str, float] = {}
 
-    # Assign sentinel score to forced tables so they win the top-N race.
     for table_name in forced:
         scores[table_name] = _FORCED_SCORE
 
-    # TF-IDF scores for all tables (forced tables may be overwritten upward).
     for table_name, info in TABLES.items():
         s = _score_table(q_tokens, q_bigrams, idf, info["description"])
         if s >= _MIN_SCORE:
-            # Keep the higher of the two: sentinel wins over any real score.
             scores[table_name] = max(scores.get(table_name, 0.0), s)
 
     if not scores:
