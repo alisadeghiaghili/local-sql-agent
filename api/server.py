@@ -19,6 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 import config as cfg
+import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
 from api.errors import (
     NLQError,
     OutOfScopeError,
@@ -34,7 +35,6 @@ from api.errors import (
 )
 from api.middleware import RequestIDMiddleware, ConcurrencyMiddleware
 from api.models import QueryRequest, QueryResponse, HealthResponse
-from api.runner import run_query
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,9 @@ def query(req: QueryRequest) -> QueryResponse:
     import time
     start = time.perf_counter()
 
-    response = run_query(
+    # Call via module reference so that patch.object(api.runner, 'run_query')
+    # in tests intercepts this call correctly.
+    response = runner.run_query(
         question=req.question,
         system_prompt=_system_prompt,
         mode=req.mode,
