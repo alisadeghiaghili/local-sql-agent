@@ -19,14 +19,11 @@ from datetime import datetime
 from pathlib import Path
 
 import config as cfg
-from core.models import RetrievalContext
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
 from llm.ollama_client import generate_sql
 from logs.logger import save_log
 from logs.query_log import QueryLog
-from prompt_engine.builder import PromptBuilder
-from retrieval.context_retriever import ContextRetriever
 from security.sql_guard import validate_sql
 
 # ---------------------------------------------------------------------------
@@ -110,15 +107,6 @@ def _print_sql(sql: str) -> None:
     print(sql)
 
 
-def _print_context_summary(context: RetrievalContext) -> None:
-    """Print a brief debug summary of what was retrieved."""
-    print(f"\n\U0001f9e0  Tables   : {context.selected_tables}")
-    print(f"\U0001f4cb  Rules    : {len(context.business_rules)} matched")
-    print(f"\U0001f4d6  Examples : {len(context.examples)} matched")
-    if context.filters:
-        print(f"\U0001f50d  Filters  : {context.filters}")
-
-
 def _print_results(df) -> None:
     print(f"\n{_SEP}")
     print("QUERY RESULT")
@@ -165,23 +153,12 @@ def main() -> None:
         start = time.perf_counter()
 
         try:
-            # 1. Retrieve context
-            context = ContextRetriever.retrieve(question)
-            _print_context_summary(context)
-
-            # 2. Build prompt
-            prompt = PromptBuilder.build(
-                question=question,
-                system_prompt=system_prompt,
-                context=context,
-            )
-
-            # 3. Generate SQL
-            sql = generate_sql(prompt)
+            # generate_sql handles retrieval + prompt assembly internally
+            sql = generate_sql(question, system_prompt)
             validate_sql(sql)
             _print_sql(sql)
 
-            # 4. Execute
+            # Execute
             df      = execute_sql(sql)
             elapsed = time.perf_counter() - start
 

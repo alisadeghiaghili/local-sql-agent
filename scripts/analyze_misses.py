@@ -22,6 +22,9 @@ _SQL_TABLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_KNOWN_TABLES: frozenset[str] = frozenset(TABLES.keys())
+_KNOWN_TABLES_LOWER: dict[str, str] = {t.lower(): t for t in _KNOWN_TABLES}
+
 _STOP_FA = (
     "در از به و یا ا با برای بر تا که"
     " این آن ها های می نه هم همه چه چند"
@@ -50,18 +53,21 @@ class Miss(NamedTuple):
 
 
 def _tables_in_sql(sql: str) -> set[str]:
-    """Return table names referenced in *sql* via FROM/JOIN clauses.
+    """Return canonical table names referenced in *sql* that exist in the schema.
 
-    Unlike the previous version, this no longer filters by TABLES — it returns
-    every name matched by the regex so that the analyser can detect tables that
-    the retriever missed *even when those tables exist in the schema registry*.
-    The caller (analyse) is responsible for deciding what counts as a miss.
+    Only names present in the TABLES registry are returned so that
+    references to unknown/non-existent tables are silently ignored.
+    This ensures test_unknown_table_not_included passes and prevents
+    false-positive miss reports for hallucinated table names.
     """
     found: set[str] = set()
     for m in _SQL_TABLE_RE.finditer(sql):
-        name = m.group(1)
-        if name:  # skip empty captures
-            found.add(name)
+        raw_name = m.group(1)
+        if not raw_name:
+            continue
+        canonical = _KNOWN_TABLES_LOWER.get(raw_name.lower())
+        if canonical is not None:
+            found.add(canonical)
     return found
 
 
