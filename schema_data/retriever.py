@@ -26,33 +26,33 @@ def _normalise(text: str) -> str:
 
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
-        "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
-        "بهار", "تابستان", "پاییز", "زمستان",
-        "دوره", "دورهای", "دوره‌ای",
-        "سالیانه", "ماهانه", "هفتگی", "روزانه",
+        "\u062a\u0627\u0631\u06cc\u062e", "\u0633\u0627\u0644", "\u0645\u0627\u0647", "\u0641\u0635\u0644", "\u0647\u0641\u062a\u0647", "\u0631\u0648\u0632",
+        "\u0628\u0647\u0627\u0631", "\u062a\u0627\u0628\u0633\u062a\u0627\u0646", "\u067e\u0627\u06cc\u06cc\u0632", "\u0632\u0645\u0633\u062a\u0627\u0646",
+        "\u062f\u0648\u0631\u0647", "\u062f\u0648\u0631\u0647\u0627\u06cc", "\u062f\u0648\u0631\u0647\u200c\u0627\u06cc",
+        "\u0633\u0627\u0644\u06cc\u0627\u0646\u0647", "\u0645\u0627\u0647\u0627\u0646\u0647", "\u0647\u0641\u062a\u06af\u06cc", "\u0631\u0648\u0632\u0627\u0646\u0647",
         "date", "year", "month", "season", "week",
         "spring", "summer", "autumn", "winter",
         "quarterly", "monthly", "yearly", "annual", "period",
     ],
     "Contract": [
-        "معامله", "قرارداد", "حجم", "ارزش",
+        "\u0645\u0639\u0627\u0645\u0644\u0647", "\u0642\u0631\u0627\u0631\u062f\u0627\u062f", "\u062d\u062c\u0645", "\u0627\u0631\u0632\u0634",
         "trade", "contract", "deal", "volume", "value",
     ],
     "CustomerContract": [
-        "خرید", "خریدار", "خرید مشتری",
+        "\u062e\u0631\u06cc\u062f", "\u062e\u0631\u06cc\u062f\u0627\u0631", "\u062e\u0631\u06cc\u062f \u0645\u0634\u062a\u0631\u06cc",
         "purchase", "buyer", "customer purchase",
     ],
     "Offer": [
-        "عرضه", "عرضهکننده", "عرضهکنندگان", "عرضه کالا", "کالا",
+        "\u0639\u0631\u0636\u0647", "\u0639\u0631\u0636\u0647\u06a9\u0646\u0646\u062f\u0647", "\u0639\u0631\u0636\u0647\u06a9\u0646\u0646\u062f\u06af\u0627\u0646", "\u0639\u0631\u0636\u0647 \u06a9\u0627\u0644\u0627", "\u06a9\u0627\u0644\u0627",
         "offer", "supply", "listing",
     ],
     "Order": [
-        "سفارش", "سفارش خرید", "درخواست",
+        "\u0633\u0641\u0627\u0631\u0634", "\u0633\u0641\u0627\u0631\u0634 \u062e\u0631\u06cc\u062f", "\u062f\u0631\u062e\u0648\u0627\u0633\u062a",
         "order", "purchase order",
     ],
     "Ring": [
-        "تالار", "رینگ", "پتروشیمی", "کیش", "فلزات",
-        "کشاورزی", "نفتی", "خرد", "طلا", "سیمان", "خودرو",
+        "\u062a\u0627\u0644\u0627\u0631", "\u0631\u06cc\u0646\u06af", "\u067e\u062a\u0631\u0648\u0634\u06cc\u0645\u06cc", "\u06a9\u06cc\u0634", "\u0641\u0644\u0632\u0627\u062a",
+        "\u06a9\u0634\u0627\u0648\u0631\u0632\u06cc", "\u0646\u0641\u062a\u06cc", "\u062e\u0631\u062f", "\u0637\u0644\u0627", "\u0633\u06cc\u0645\u0627\u0646", "\u062e\u0648\u062f\u0631\u0648",
         "ring", "trading hall", "trading ring",
     ],
 }
@@ -71,15 +71,37 @@ def _ngrams(tokens: list[str], n: int) -> list[str]:
     return [" ".join(tokens[i: i + n]) for i in range(len(tokens) - n + 1)]
 
 
+class _IdfDict(dict):
+    """A dict that returns the maximum IDF value for any unseen term.
+
+    This ensures that ``idf.get(rare_term, 0)`` is never needed — callers can
+    use plain ``idf[term]`` or ``idf.get(term)`` and always receive a meaningful
+    weight.  In particular it satisfies the property:
+
+        idf[unseen_term] > idf[common_term_that_appears_everywhere]
+
+    because a term absent from all documents has a higher IDF than one present
+    in every document.
+    """
+
+    def __missing__(self, key: str) -> float:  # noqa: D105
+        return self._max_idf
+
+    @classmethod
+    def build(cls, N: int, doc_freq: dict[str, int]) -> "_IdfDict":
+        obj = cls()
+        obj._max_idf = math.log(N + 1) + 1.0  # IDF when df == 0
+        for term, df in doc_freq.items():
+            obj[term] = math.log((N + 1) / (df + 1)) + 1.0
+        return obj
+
+
 @lru_cache(maxsize=1)
-def _build_idf() -> dict[str, float]:
-    """Build IDF weights for all terms in TABLES descriptions.
+def _build_idf() -> _IdfDict:
+    """Build IDF weights for all terms found in TABLES descriptions.
 
-    Terms that do not appear in any document receive the maximum possible IDF
-    value (``log(N+1) + 1``) so that a query for a rare/absent term scores
-    higher than a query for a ubiquitous one, satisfying:
-
-        idf(rare_term) > idf(common_term)
+    Returns an :class:`_IdfDict` that yields the theoretical maximum IDF for
+    any term not seen in any document, so callers never need a fallback of 0.
     """
     N = len(TABLES)
     doc_freq: dict[str, int] = {}
@@ -89,15 +111,7 @@ def _build_idf() -> dict[str, float]:
         terms = set(tokens) | set(_ngrams(tokens, 2))
         for term in terms:
             doc_freq[term] = doc_freq.get(term, 0) + 1
-    idf: dict[str, float] = {
-        term: math.log((N + 1) / (df + 1)) + 1.0
-        for term, df in doc_freq.items()
-    }
-    # The IDF for an unseen term is the theoretical maximum.
-    # Storing it under a sentinel key lets callers look it up via
-    # idf.get(term, idf['__unseen__']) without branching.
-    idf["__unseen__"] = math.log(N + 1) + 1.0
-    return idf
+    return _IdfDict.build(N, doc_freq)
 
 
 def _expand(question: str) -> str:
@@ -112,7 +126,7 @@ def _expand(question: str) -> str:
 def _score_table(
     q_tokens: list[str],
     q_bigrams: list[str],
-    idf: dict[str, float],
+    idf: _IdfDict,
     description: str,
 ) -> float:
     d_tokens  = _tokenize(description)
@@ -125,10 +139,10 @@ def _score_table(
         tf[bg] = tf.get(bg, 0) + _BIGRAM_MULTIPLIER / d_len
     score = 0.0
     for term in set(q_tokens):
-        if term in tf and term in idf:
+        if term in tf:
             score += tf[term] * idf[term]
     for bg in set(q_bigrams):
-        if bg in tf and bg in idf:
+        if bg in tf:
             score += tf[bg] * idf[bg] * _BIGRAM_MULTIPLIER
     return score
 
