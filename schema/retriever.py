@@ -11,6 +11,7 @@ from schema.tables import TABLES
 
 _TOP_N: int = 6
 _MIN_SCORE: float = 0.01
+_FORCED_SCORE: float = 1e9   # large enough to always sort to the front
 _BIGRAM_MULTIPLIER: float = 1.5
 
 
@@ -19,9 +20,6 @@ def _normalise(text: str) -> str:
     return unicodedata.normalize("NFC", text).replace("\u200c", "")
 
 
-# Signals for always-include tables.
-# A signal matches when it appears as an exact token OR as a substring in the
-# normalised, lowercased, ZWNJ-stripped expanded question.
 _ALWAYS_INCLUDE: dict[str, list[str]] = {
     "Date": [
         "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
@@ -42,7 +40,6 @@ _ALWAYS_INCLUDE: dict[str, list[str]] = {
     ],
 }
 
-# Pre-normalise all signals once at import time for fast lookup.
 _ALWAYS_INCLUDE_NORMALISED: dict[str, list[str]] = {
     table: [_normalise(s).lower() for s in signals]
     for table, signals in _ALWAYS_INCLUDE.items()
@@ -108,14 +105,11 @@ def _score_table(
 def _forced_tables(q_tokens: list[str]) -> set[str]:
     """Return table names whose always-include signals fire on *q_tokens*."""
     q_token_set = set(q_tokens)
-    q_joined = " ".join(q_tokens)
+    q_joined    = " ".join(q_tokens)
     forced: set[str] = set()
     for table_name, signals in _ALWAYS_INCLUDE_NORMALISED.items():
         for sig in signals:
-            sig_tokens = sig.split()
-            # exact token match (single or multi-word signal)
-            token_match = all(t in q_token_set for t in sig_tokens)
-            # substring match — catches partial stems / compound forms
+            token_match  = all(t in q_token_set for t in sig.split())
             substr_match = sig in q_joined
             if token_match or substr_match:
                 forced.add(table_name)
@@ -124,42 +118,40 @@ def _forced_tables(q_tokens: list[str]) -> set[str]:
 
 
 def retrieve_tables(question: str, fallback: bool = True) -> list[str]:
-    """Return table names most relevant to *question*.
+    """Return up to _TOP_N table names most relevant to *question*.
 
-    Always-include tables that match signals are returned unconditionally
-    and are **not** counted against *_TOP_N*, so the result list may
-    contain more than _TOP_N entries when forced tables are present.
+    Always-include tables whose signals fire are given a sentinel score
+    (_FORCED_SCORE) so they always rank inside the top-N slice.
+    The result therefore never exceeds _TOP_N entries.
 
     Parameters
     ----------
     fallback:
-        When True (default) and no table scores above _MIN_SCORE *and* no
-        always-include signals fire, return all tables.  Set to False to
-        return an empty list instead — useful when callers need to
-        distinguish "no match" from "all".
+        When True (default) and nothing matches at all, return every table.
+        Set to False to return [] instead — useful for miss-detection.
     """
-    expanded    = _expand(question)
-    q_tokens    = _tokenize(expanded)
-    q_bigrams   = _ngrams(q_tokens, 2)
-    idf         = _build_idf()
+    expanded  = _expand(question)
+    q_tokens  = _tokenize(expanded)
+    q_bigrams = _ngrams(q_tokens, 2)
+    idf       = _build_idf()
 
-    # 1. Collect always-include tables independently of scoring.
     forced = _forced_tables(q_tokens)
 
-    # 2. TF-IDF scores for all tables.
     scores: dict[str, float] = {}
+
+    # Assign sentinel score to forced tables so they win the top-N race.
+    for table_name in forced:
+        scores[table_name] = _FORCED_SCORE
+
+    # TF-IDF scores for all tables (forced tables may be overwritten upward).
     for table_name, info in TABLES.items():
         s = _score_table(q_tokens, q_bigrams, idf, info["description"])
         if s >= _MIN_SCORE:
-            scores[table_name] = s
+            # Keep the higher of the two: sentinel wins over any real score.
+            scores[table_name] = max(scores.get(table_name, 0.0), s)
 
-    # 3. If nothing matched at all, apply fallback policy.
-    if not scores and not forced:
+    if not scores:
         return list(TABLES.keys()) if fallback else []
 
-    # 4. Rank by score, take top-N (forced tables excluded from this cap).
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    top_scored = [name for name, _ in ranked[:_TOP_N] if name not in forced]
-
-    # 5. Always-include tables come first; scored tables fill the rest.
-    return list(forced) + top_scored
+    return [name for name, _ in ranked[:_TOP_N]]
