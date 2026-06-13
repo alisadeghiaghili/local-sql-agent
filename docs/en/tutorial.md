@@ -1,8 +1,8 @@
 # Local SQL Agent — Tutorial
 
-> **فارسی:** [آموزش کامل](../fa/tutorial.md)
+> **[فارسی](../fa/tutorial.md)**
 
-This tutorial is written in vignette style: rather than listing every function and parameter, it walks you through real tasks end-to-end. By the end you will have installed the engine, run your first query, understood how every layer works, extended the knowledge base for a new domain entity, diagnosed a retrieval miss, and written tests for all of it.
+This tutorial is written in the vignette style used by tidyverse packages: instead of listing every API surface, it walks you through real tasks end-to-end. By the time you finish, you will have installed the engine, run your first Persian-language query, extended the knowledge base with a new table, diagnosed a retrieval miss, and written a test for each layer.
 
 ---
 
@@ -10,18 +10,22 @@ This tutorial is written in vignette style: rather than listing every function a
 
 1. [Installation](#1-installation)
 2. [Your first query](#2-your-first-query)
-3. [How retrieval works](#3-how-retrieval-works)
-4. [How the prompt is built](#4-how-the-prompt-is-built)
-5. [The SQL security pipeline](#5-the-sql-security-pipeline)
-6. [Exporting results](#6-exporting-results)
-7. [Adding a new table](#7-adding-a-new-table)
-8. [Adding synonyms and aliases](#8-adding-synonyms-and-aliases)
-9. [Adding few-shot examples](#9-adding-few-shot-examples)
-10. [Diagnosing retrieval misses](#10-diagnosing-retrieval-misses)
-11. [Writing tests](#11-writing-tests)
-12. [Using the HTTP API](#12-using-the-http-api)
-13. [Health check and monitoring](#13-health-check-and-monitoring)
-14. [Troubleshooting](#14-troubleshooting)
+3. [Understanding the pipeline](#3-understanding-the-pipeline)
+4. [How retrieval works](#4-how-retrieval-works)
+5. [How the prompt is built](#5-how-the-prompt-is-built)
+6. [The SQL security pipeline](#6-the-sql-security-pipeline)
+7. [Exporting results](#7-exporting-results)
+8. [Adding a new table](#8-adding-a-new-table)
+9. [Adding synonyms and aliases](#9-adding-synonyms-and-aliases)
+10. [Adding few-shot examples](#10-adding-few-shot-examples)
+11. [Adding business rules](#11-adding-business-rules)
+12. [Diagnosing retrieval misses](#12-diagnosing-retrieval-misses)
+13. [Using the HTTP API](#13-using-the-http-api)
+14. [Query cache](#14-query-cache)
+15. [Health check and monitoring](#15-health-check-and-monitoring)
+16. [Writing tests](#16-writing-tests)
+17. [Configuration reference](#17-configuration-reference)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
@@ -38,7 +42,7 @@ The engine needs three things outside Python: a running Ollama instance, a SQL S
 | SQL Server | 2016+ | Any edition including Express |
 | ODBC Driver | 17 or 18 | `msodbcsql17` / `msodbcsql18` |
 
-### Step 1 — Clone and create a virtual environment
+### Clone and install
 
 ```bash
 git clone https://github.com/alisadeghiaghili/local-sql-agent.git
@@ -51,7 +55,7 @@ source .venv/bin/activate        # Linux / macOS
 pip install -r requirements.txt
 ```
 
-### Step 2 — Configure
+### Configure
 
 ```bash
 cp .env.example .env
@@ -72,7 +76,7 @@ CACHE_TTL_SECONDS=300
 CACHE_MAX_SIZE=256
 ```
 
-### Step 3 — Pull a model
+### Pull a model
 
 ```bash
 ollama pull llama3          # fast, good baseline (~4 GB)
@@ -80,13 +84,13 @@ ollama pull llama3.1:8b     # better on complex multi-table joins
 ollama pull llama3.1:70b    # best accuracy, requires ~40 GB RAM
 ```
 
-Start with `llama3`. Switch to a larger model only if you see the engine producing wrong table names or malformed SQL.
+Start with `llama3`. Switch to a larger model only if you see the engine producing wrong table names or malformed SQL on your real questions.
 
 ---
 
 ## 2. Your first query
 
-Let’s run the engine and see what actually happens.
+Let's run the engine and see what actually happens.
 
 ### CLI
 
@@ -104,7 +108,7 @@ Auction NLQ Engine  —  type 'exit' to quit
 Question:
 ```
 
-Type a question — Persian or English:
+Type a question — Persian, English, or mixed:
 
 ```
 Question: top 5 customers by purchase value in 1402
@@ -122,6 +126,9 @@ WHERE d.PersianYear = 1402
 GROUP BY c.Name
 ORDER BY PurchaseValue DESC
 
+════════════════════════════════════════════════════════════
+QUERY RESULT
+════════════════════════════════════════════════════════════
 Name                      PurchaseValue
 ────────────────────────  ─────────────
 شرکت آلفا                   4820000000
@@ -132,9 +139,34 @@ Returned Rows: 5  |  Execution Time: 1.38s
 Excel saved → exports/result_20260613_142257.xlsx
 ```
 
-### Python client
+Type `exit` to quit.
 
-Once the HTTP server is running, you can query it from any Python script:
+### Over HTTP
+
+```bash
+# Start the API server first
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+
+# In another terminal
+curl -X POST http://localhost:8000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "top 5 customers by purchase value in 1402", "mode": "full"}'
+```
+
+```json
+{
+  "question": "top 5 customers by purchase value in 1402",
+  "sql":    "SELECT TOP 5 c.Name, SUM(cc.TotalPrice) AS PurchaseValue ...",
+  "result": [
+    {"Name": "شرکت آلفا", "PurchaseValue": 4820000000},
+    ...
+  ],
+  "row_count": 5,
+  "status": "SUCCESS"
+}
+```
+
+### From Python
 
 ```python
 import requests
@@ -145,40 +177,74 @@ r = requests.post(
 )
 data = r.json()
 print(data["sql"])        # the generated T-SQL
-print(data["result"])     # list of row dicts
 print(data["row_count"])  # 5
-print(data["status"])     # SUCCESS
-```
-
-### Response schema
-
-```json
-{
-  "question": "top 5 customers by purchase value in 1402",
-  "sql": "SELECT TOP 5 c.Name, SUM(cc.TotalPrice) AS PurchaseValue ...",
-  "result": [{"Name": "شرکت آلفا", "PurchaseValue": 4820000000}, ...],
-  "row_count": 5,
-  "status": "SUCCESS"
-}
+print(data["result"][0])  # first row as dict
 ```
 
 ---
 
-## 3. How retrieval works
+## 3. Understanding the pipeline
 
-The most important thing to understand about this engine is that **the LLM never sees your full schema**. Before the model is called, six independent retrievers build a tight, question-specific context.
+The most important thing to understand about this engine: **the LLM never sees your full schema.** Before the model is called, six independent retrievers build a tight, question-specific context. The LLM receives that — not a dump of your entire schema. This scoping is why locally-run 8–20 B models are accurate enough for production use.
 
-### The six retrievers
+```
+Question (Persian / English / mixed)
+    │
+    ▼
+ ContextRetriever
+    ├─ EntityRetriever        alias match → TF-IDF fallback
+    ├─ FactRetriever          keyword match → TF-IDF fallback
+    ├─ RelationshipRetriever  JOIN clauses for selected tables
+    ├─ RuleRetriever          domain business rules by keyword
+    ├─ ExampleRetriever       tag-scored few-shot SQL examples
+    └─ ValueRetriever         ring canonical name + Persian year
+    │
+    ▼
+ PromptBuilder  →  schema + rules + examples, precisely scoped
+    │
+    ▼
+ SQLAgent  →  generate → clean → validate → auto-correct (up to N retries)
+    │
+    ▼
+ SQLGuard  →  blocks DDL/DML/injection, rewrites LIMIT→TOP
+    │
+    ▼
+ SQL Server  →  DataFrame  →  Excel / CSV / JSON
+```
+
+---
+
+## 4. How retrieval works
+
+### The six retrievers — a traced example
+
+Let's follow a real question through the pipeline:
 
 ```
 Question: "برترین مشتریان تالار پتروشیمی در 1402"
           │
-          ├─ EntityRetriever     → ["Customer"]              (alias match: "مشتری")
-          ├─ FactRetriever       → ["CustomerContract"]      (keyword match: "خرید")
-          ├─ RelationshipRetriever → ["JOIN Customer ON ..."] (FK for selected tables)
-          ├─ RuleRetriever       → ["خرید: ..."]            (topic match: "مشتری")
-          ├─ ExampleRetriever    → top-3 few-shot examples    (tag-overlap score)
-          └─ ValueRetriever      → {Ring: "تالار پتروشیمی", PersianYear: 1402}
+          ├─ EntityRetriever
+          │     "مشتری" is an alias in entities.py  →  ["Customer"]
+          │
+          ├─ FactRetriever
+          │     "خرید" / "مشتری" match FACT_PATTERNS  →  ["CustomerContract"]
+          │
+          ├─ RelationshipRetriever
+          │     selected tables: {Customer, CustomerContract, Date}
+          │     → ["JOIN [Auction_Dim].[Customer] ON ..."]
+          │       ["JOIN [Auction_Dim].[Date]     ON ..."]
+          │
+          ├─ RuleRetriever
+          │     "مشتری" / "خرید" match rule keys
+          │     → ["ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود."]
+          │
+          ├─ ExampleRetriever
+          │     inferred tags: {customer, top, value, purchase, ring}
+          │     → top-3 examples by tag overlap score
+          │
+          └─ ValueRetriever
+                "تالار پتروشیمی" → RING_ALIASES hit → "Petrochemical"
+                "1402"           → Persian year regex → {PersianYear: 1402}
 ```
 
 All six outputs are packaged into a `RetrievalContext` dataclass and handed to `PromptBuilder`.
@@ -187,8 +253,8 @@ All six outputs are packaged into a `RetrievalContext` dataclass and handed to `
 
 Every retriever uses the same strategy: **fast path first, TF-IDF fallback second**.
 
-- **Fast path:** exact alias or keyword match against `knowledge/entities.py`, `knowledge/aliases.py`, or hardcoded patterns. This is O(1).
-- **TF-IDF fallback:** if the fast path returns nothing, `schema_data/retriever.py` scores all table descriptions against the question using bigram TF-IDF. Slower but handles novel phrasing.
+- **Fast path:** exact alias or keyword match against `knowledge/entities.py`, `knowledge/aliases.py`, or hardcoded patterns. O(1).
+- **TF-IDF fallback:** if the fast path returns nothing, `schema_data/retriever.py` scores all table descriptions against the question using bigram TF-IDF. Handles novel phrasing.
 
 You can call the TF-IDF engine directly to debug retrieval:
 
@@ -196,18 +262,19 @@ You can call the TF-IDF engine directly to debug retrieval:
 from schema_data.retriever import retrieve_tables
 
 print(retrieve_tables("فروش ماهانه مشتریان"))
-# ['Contract', 'Customer', 'Date']
+# ['CustomerContract', 'Customer', 'Date']
 
-# fallback=False: return [] instead of full list when nothing scores above threshold
+# fallback=False → return [] when nothing scores above threshold
 print(retrieve_tables("xyzzy nonsense", fallback=False))
 # []
 ```
 
 ### Forced tables
 
-Some tables must always appear regardless of TF-IDF score. The `_ALWAYS_INCLUDE` dict in `schema_data/retriever.py` handles this:
+Some tables must always appear regardless of TF-IDF score. The `_ALWAYS_INCLUDE` dict handles this:
 
 ```python
+# schema_data/retriever.py
 _ALWAYS_INCLUDE = {
     "سال":   ["Date"],
     "ماه":   ["Date"],
@@ -215,13 +282,23 @@ _ALWAYS_INCLUDE = {
 }
 ```
 
-Any question containing the word `سال` or `ماه` will always receive the `Date` table in context — even if TF-IDF scores it low.
+Any question containing the word `سال` or `ماه` always gets the `Date` table in context.
+
+### Tuning the TF-IDF engine
+
+```python
+# schema_data/retriever.py
+_TOP_N     = 6      # max tables returned
+_MIN_SCORE = 0.01   # discard tables scoring below this
+```
+
+Raise `_MIN_SCORE` for stricter retrieval (less noise). Lower it for broader retrieval (more context for the LLM on ambiguous questions).
 
 ---
 
-## 4. How the prompt is built
+## 5. How the prompt is built
 
-Once `ContextRetriever` has assembled the `RetrievalContext`, `PromptBuilder.build()` turns it into the final prompt string. You can call this directly to inspect what the model sees:
+Once `ContextRetriever` has assembled the `RetrievalContext`, `PromptBuilder.build()` turns it into the final prompt string. Call it directly to inspect exactly what the model sees:
 
 ```python
 from core.models import RetrievalContext
@@ -235,11 +312,11 @@ context = RetrievalContext(
         "JOIN [Auction_Dim].[Customer] "
         "ON [Auction_Fact].[CustomerContract].[BuyerCustomer_ID] = [Auction_Dim].[Customer].[ID]"
     ],
-    business_rules=["خرید: ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود."],
+    business_rules=["ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود."],
     examples=[
         {
             "question": "برترین مشتریان",
-            "sql": "SELECT TOP 10 c.Name, SUM(cc.TotalPrice) AS PurchaseValue ...",
+            "sql":      "SELECT TOP 10 c.Name, SUM(cc.TotalPrice) AS PurchaseValue ...",
         }
     ],
     filters={"PersianYear": 1402},
@@ -260,20 +337,17 @@ The output is a structured string with clearly labelled sections:
 You are a T-SQL expert for SQL Server 2019.
 
 ## Business Rules
-خرید: ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود.
+ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود.
 
 ## Schema
 Table: CustomerContract
   TotalPrice  Purchase total value
   ...
-Table: Customer
-  Name        Customer full name
-  ...
 
 ## Relationships
 JOIN [Auction_Dim].[Customer] ON ...
 
-## Active Filters
+## Filters
 PersianYear = 1402
 
 ## Examples
@@ -288,15 +362,15 @@ This structure — not a raw schema dump — is why small local models produce c
 
 ---
 
-## 5. The SQL security pipeline
+## 6. The SQL security pipeline
 
-Every SQL string — from the model, from a test, from anywhere — must pass through three functions in `security/sql_guard.py` before it can be executed.
+Every SQL string — from the model, from a test, from anywhere — must pass through three functions in `security/sql_guard.py` before it can reach the database.
 
 ```python
 from security.sql_guard import clean_sql, validate_sql, ensure_top
 
-# --- Step 1: clean ---
-# Strips markdown fences, preamble prose, and converts LIMIT→TOP
+# ── Step 1: clean ──────────────────────────────────────────────────────────
+# Strips markdown fences, preamble prose, converts LIMIT→TOP
 raw = """
 Here is the SQL query you requested:
 ```sql
@@ -307,23 +381,23 @@ sql = clean_sql(raw)
 print(sql)
 # SELECT TOP 10 * FROM [Auction_Fact].[Contract]
 
-# --- Step 2: validate ---
+# ── Step 2: validate ───────────────────────────────────────────────────────
 # Raises ValueError on any forbidden pattern
-validate_sql(sql)  # passes
+validate_sql(sql)  # passes — it's a SELECT
 
 try:
-    validate_sql("DROP TABLE Contract")
+    validate_sql("DROP TABLE [Auction_Fact].[Contract]")
 except ValueError as e:
     print(e)
     # Forbidden SQL keyword detected: DROP
 
-# --- Step 3: ensure TOP ---
-# Injects TOP n when missing; leaves existing TOP unchanged
-sql_with_top    = ensure_top("SELECT Name FROM Customer", n=500)
-sql_already_top = ensure_top("SELECT TOP 10 Name FROM Customer", n=500)
+# ── Step 3: ensure TOP ─────────────────────────────────────────────────────
+# Injects TOP n when absent; leaves existing TOP unchanged
+print(ensure_top("SELECT Name FROM Customer", n=500))
+# SELECT TOP 500 Name FROM Customer
 
-print(sql_with_top)     # SELECT TOP 500 Name FROM Customer
-print(sql_already_top)  # SELECT TOP 10 Name FROM Customer  (unchanged)
+print(ensure_top("SELECT TOP 10 Name FROM Customer", n=500))
+# SELECT TOP 10 Name FROM Customer   ← unchanged
 ```
 
 ### What is blocked
@@ -336,11 +410,11 @@ print(sql_already_top)  # SELECT TOP 10 Name FROM Customer  (unchanged)
 | Schema introspection | `INFORMATION_SCHEMA`, `SYS.` |
 | Stacked queries | `;` followed by a new statement |
 
-`LIMIT` is not blocked — it is automatically rewritten to `TOP n` for SQL Server compatibility.
+`LIMIT` is **not blocked** — it is automatically rewritten to `TOP n` for SQL Server compatibility. `validate_sql` also enforces that every statement starts with `SELECT` or `WITH`; anything else is rejected before it reaches the database.
 
 ---
 
-## 6. Exporting results
+## 7. Exporting results
 
 The CLI saves every successful result to Excel automatically. For programmatic use:
 
@@ -351,20 +425,18 @@ from exporters.excel_exporter import export_excel
 df = execute_sql("SELECT TOP 100 * FROM [Auction_Fact].[Contract]")
 print(f"{len(df)} rows, {len(df.columns)} columns")
 
-# Excel with auto-fitted columns and a timestamped filename
+# Auto-fitted columns, timestamped filename
 path = export_excel(df)
-print(path)  # exports/result_20260613_142500.xlsx
+print(path)  # exports/result_20260613_160000.xlsx
 ```
 
-All exports land in the directory specified by `EXPORT_DIR` (default: `exports/`). The directory is created automatically on first use.
+All exports land in `EXPORT_DIR` (default: `exports/`). The directory is created automatically on first use. Column widths are capped at 60 characters.
 
 ---
 
-## 7. Adding a new table
+## 8. Adding a new table
 
-Imagine your exchange starts clearing trades for a new instrument category and you need to add a `Broker` dimension table.
-
-This is a five-step process, entirely within configuration files — no engine code changes.
+Imagine your exchange starts clearing trades for a new instrument and you need to add a `Broker` dimension table. This is a five-step process — configuration files only, no engine code changes.
 
 ### Step 1 — Describe the table (bilingual)
 
@@ -374,14 +446,14 @@ This is a five-step process, entirely within configuration files — no engine c
 TABLE_DESCRIPTIONS: dict[str, str] = {
     # ... existing entries ...
     "Broker": (
-        "Registered brokerage firms (\u06a9\u0627\u0631\u06af\u0632\u0627\u0631\u06cc\u200c\u0647\u0627) licensed to execute trades on the exchange. "
-        "Contains broker code, full name, and license status. "
-        "برای فیلتر کردن بر اساس کارگزار یا کارمزد کارگزاری از این جدول استفاده کنید."
+        "Registered brokerage firms (کارگزاری‌ها) licensed to execute trades on the exchange. "
+        "Contains broker code, full registered name, and license status. "
+        "برای فیلتر یا گروه‌بندی بر اساس کارگزار یا کارمزد از این جدول استفاده کنید."
     ),
 }
 ```
 
-> **Always write table descriptions bilingually.** The TF-IDF engine tokenises both Persian and English. A bilingual description means the fallback retriever will find this table whether the user asks in Persian or English.
+> **Always write descriptions bilingually.** The TF-IDF engine tokenises both Persian and English. A bilingual description means the fallback retriever finds this table whether the user asks in Persian or English.
 
 ### Step 2 — Define columns
 
@@ -389,7 +461,7 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
 
 ```python
 TABLE_COLUMNS: dict[str, dict[str, str]] = {
-    # ... existing entries ...
+    # ...
     "Broker": {
         "BrokerID":   "Surrogate primary key",
         "BrokerCode": "Exchange-assigned numeric code (کد کارگزاری)",
@@ -399,13 +471,13 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
 }
 ```
 
-### Step 3 — Register the JOIN relationship
+### Step 3 — Register the JOIN
 
 `schema_data/relationships.py`:
 
 ```python
 RELATIONSHIPS: dict[str, str] = {
-    # ... existing entries ...
+    # ...
     "Contract -> Broker": (
         "JOIN [Auction_Dim].[Broker] "
         "ON [Auction_Fact].[Contract].[BuyBroker_ID] = [Auction_Dim].[Broker].[BrokerID]"
@@ -420,7 +492,7 @@ RELATIONSHIPS: dict[str, str] = {
 ```python
 "Broker": {
     "aliases": ["کارگزار", "کارگزاری", "معامله‌گر", "broker", "brokerage"],
-    "table": "Broker",
+    "table":   "Broker",
 }
 ```
 
@@ -431,49 +503,46 @@ python -c "
 from schema_data.retriever import retrieve_tables
 result = retrieve_tables('فروش کارگزاران در 1402')
 print(result)
-assert 'Broker' in result, 'Broker not retrieved!'
+assert 'Broker' in result
 print('OK')
 "
 ```
 
+If `Broker` is missing, add more Persian tokens to its description or add synonyms — see the next section.
+
 ---
 
-## 8. Adding synonyms and aliases
+## 9. Adding synonyms and aliases
 
-The retriever misses a table when users phrase a question using a word that doesn’t appear in any table description, entity alias, or synonym list.
+The retriever misses a table when users phrase a question using a word that appears in neither the table description nor any alias list.
 
-**Scenario:** analysts say `عرضه کالا` but the `Offer` table isn’t being retrieved.
-
-### Check what’s happening
+**Scenario:** analysts say `عرضه کالا` but the `Offer` table is never retrieved.
 
 ```python
+# Diagnose
 from schema_data.retriever import retrieve_tables
 from knowledge.aliases import SYNONYMS
 
-print(retrieve_tables("عرضه کالا", fallback=False))
-# []  ← nothing found on fast path
-
-print("عرضه" in SYNONYMS)  # False ← not in synonyms either
+print(retrieve_tables("عرضه کالا", fallback=False))  # []
+print("عرضه" in SYNONYMS)                             # False
 ```
 
-### Fix: add the synonym
-
-`knowledge/aliases.py`:
+**Fix:** add to `knowledge/aliases.py`:
 
 ```python
 SYNONYMS: dict[str, list[str]] = {
-    # ... existing entries ...
-    "عرضه": ["Offer", "offer", "supply", "عرضه کالا", "عرضه‌کننده"],
+    # ...
+    "عرضه":  ["Offer", "offer", "supply", "عرضه کالا", "عرضه‌کننده"],
+    "تقاضا": ["demand", "bid", "Bid"],
 }
 ```
 
-### Verify
+**Verify:**
 
 ```bash
 python -c "
 from schema_data.retriever import retrieve_tables
-result = retrieve_tables('عرضه کالا تالار پتروشیمی')
-print(result)
+result = retrieve_tables('حجم عرضه کالا تالار پتروشیمی')
 assert 'Offer' in result
 print('OK')
 "
@@ -481,9 +550,10 @@ print('OK')
 
 ### Trading hall canonical names
 
-For trading hall names specifically, use `RING_ALIASES` in `knowledge/aliases.py`. The `ValueRetriever` maps any alias to the canonical hall name before injecting it as a filter:
+For trading hall names specifically, use `RING_ALIASES`. The `ValueRetriever` maps any variant to the canonical name before injecting it as a SQL filter:
 
 ```python
+# knowledge/aliases.py
 RING_ALIASES["تالار برق"] = [
     "برق", "تالار برق", "رینگ برق", "بازار برق", "انرژی برق"
 ]
@@ -491,17 +561,15 @@ RING_ALIASES["تالار برق"] = [
 
 ---
 
-## 9. Adding few-shot examples
+## 10. Adding few-shot examples
 
-Few-shot examples are the single highest-leverage improvement you can make to SQL accuracy. When the `ExampleRetriever` finds examples whose tags overlap with the question’s detected tags, those examples are injected verbatim into the prompt.
-
-### Adding an example
+Few-shot examples are the single highest-leverage improvement you can make to SQL accuracy. When `ExampleRetriever` finds examples whose tags overlap with the question's inferred tags, those examples are injected verbatim into the prompt — giving the LLM a concrete SQL pattern to follow.
 
 `knowledge/examples.py`:
 
 ```python
-EXAMPLES = [
-    # ... existing entries ...
+EXAMPLES: list[dict] = [
+    # ...
     {
         "tags": ["broker", "top", "trade", "value", "year"],
         "question": "top 5 brokers by trade value in 1402",
@@ -523,29 +591,53 @@ ORDER BY TradeValue DESC""",
 
 ### Tagging strategy
 
-Use **small, reusable tags** rather than long question phrases. The `ExampleRetriever` scores by tag set intersection, so broader tags match more questions.
+Use **small, reusable tags** rather than long phrases. The retriever scores by tag-set intersection, so broader tags match more questions.
 
 | Good tags | Why |
 |---|---|
-| `broker`, `top`, `value`, `year` | Each reusable across many questions |
-| `month`, `count`, `customer` | Combine naturally with others |
+| `broker`, `top`, `value` | Reusable across many question patterns |
+| `month`, `count`, `customer` | Combine naturally with other tags |
 
 | Avoid | Why |
 |---|---|
 | `"top 5 brokers by trade value in 1402"` | Too specific — only matches identical question |
-| Single-character or stop words | Noise, no signal |
+| Single-character or stop words | No signal |
 
 ---
 
-## 10. Diagnosing retrieval misses
+## 11. Adding business rules
 
-A retrieval miss is when the model generates SQL that references a table the retriever never included in context. The model guessed — sometimes correctly, often not.
+Business rules are injected verbatim into the prompt whenever `RuleRetriever` detects a matching keyword in the question. They correct systematic model errors — wrong column names, wrong tables, wrong aggregation logic — without any fine-tuning.
 
-The `analyze_misses.py` script compares your query log’s `tables_used` against the `tables_retrieved` recorded at retrieval time:
+`knowledge/business_rules.py`:
+
+```python
+BUSINESS_RULES: dict[str, str] = {
+    # ...
+    "broker": (
+        "Broker commission (کارمزد کارگزاری) is stored in Contract.BrokerFee, "
+        "not in a separate table. "
+        "Always join [Auction_Dim].[Broker] via Contract.BuyBroker_ID."
+    ),
+    "electricity": (
+        "Electricity trades in تالار انرژی only. "
+        "Unit of measurement is megawatt-hour (مگاوات‌ساعت). "
+        "Use Ring.RingName = 'Electricity' as the filter."
+    ),
+}
+```
+
+The key is matched case-insensitively against the full question text. Keep keys short (single English words or short phrases) so they fire broadly across paraphrases.
+
+---
+
+## 12. Diagnosing retrieval misses
+
+A **retrieval miss** is when the model generates SQL referencing a table the retriever never included in context. The model guessed — sometimes correctly, often not. Left unaddressed, misses erode user trust.
 
 ```bash
 python scripts/analyze_misses.py
-# reads logs/query_history.jsonl by default
+# default: logs/query_history.jsonl
 
 python scripts/analyze_misses.py /path/to/other.jsonl
 ```
@@ -557,62 +649,173 @@ Sample output:
 
 ──────────────────────────────────────────────────────────
 Table : Broker  (missed 2×)
-  candidate: 'کارگزار'  (freq=2)  ← add to SYNONYMS
-  candidate: 'بورس'     (freq=1)  ← add to TABLE_DESCRIPTIONS
+  candidate token: 'کارگزار'   (freq=2)  ← add to SYNONYMS
+  candidate token: 'بورس'      (freq=1)  ← add to TABLE_DESCRIPTIONS
 
 Table : Ring    (missed 1×)
-  candidate: 'تالار'     (freq=1)  ← add to RING_ALIASES
+  candidate token: 'تالار'      (freq=1)  ← add to RING_ALIASES
 ──────────────────────────────────────────────────────────
 ```
 
-**Reading the output:** `Broker` appeared in generated SQL twice, but the retriever never put it in context. Users used the word `کارگزار` in those questions. That word is not in `SYNONYMS` or `TABLE_DESCRIPTIONS` — so add it (see section 8).
+**How to act on the output:**
 
-### Programmatic use
+| What you see | Fix |
+|---|---|
+| Token not in `SYNONYMS` | Add it to `knowledge/aliases.py` |
+| Table not in `TABLE_DESCRIPTIONS` | Add it to `schema_data/tables.py` |
+| Hall name variant unrecognised | Add it to `RING_ALIASES` |
+| Table retrieved correctly but SQL is wrong | Add a few-shot example |
+
+Programmatic use:
 
 ```python
 from pathlib import Path
 from scripts.analyze_misses import analyse, _build_report
 
-misses = analyse(Path("logs/query_history.jsonl"))
-report = _build_report(misses)
+report = _build_report(analyse(Path("logs/query_history.jsonl")))
 
 for entry in report["tables_ranked_by_miss_count"]:
     print(f"{entry['table']}: {entry['miss_count']} misses")
     for cand in entry["top_candidates"][:3]:
-        print(f"  → consider adding synonym: '{cand['token']}'")
+        print(f"  → add alias: '{cand['token']}'")
 ```
 
 ---
 
-## 11. Writing tests
+## 13. Using the HTTP API
 
-Tests live in `tests/`. The suite uses `pytest`; shared fixtures are in `tests/conftest.py`.
+```bash
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+# Swagger UI: http://localhost:8000/docs
+```
 
-### Testing retrieval
+### POST /query
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "فروش ماهانه تالار پتروشیمی در 1402", "mode": "full"}'
+```
+
+| `mode` | Behaviour |
+|---|---|
+| `full` (default) | Generate SQL, execute it, return SQL + rows |
+| `sql` | Generate and return SQL only — do not execute |
+| `result` | Generate + execute — return rows only |
+
+### Error responses
+
+| Exception | HTTP | When |
+|---|---|---|
+| `OutOfScopeError` | 422 | Model returns `OUT_OF_SCOPE` sentinel |
+| `ModelTimeoutError` | 504 | Ollama request exceeded timeout |
+| `ModelUnavailableError` | 503 | Ollama unreachable after all retries |
+| `QueryExecutionError` | 500 | SQL Server execution failure |
+| `ValidationError` | 422 | Malformed request body |
+
+---
+
+## 14. Query cache
+
+Identical `(question, mode)` pairs are served from an in-process LRU + TTL cache — no LLM call, no database hit.
+
+```bash
+# Inspect cache state
+curl http://localhost:8000/cache/stats
+# {"size": 4, "hits": 17, "misses": 4, "evictions": 0}
+
+# Remove one specific entry
+curl -X POST http://localhost:8000/cache/invalidate \
+  -H 'Content-Type: application/json' \
+  -d '{"question": "فروش ماهانه", "mode": "full"}'
+
+# Flush everything
+curl -X POST http://localhost:8000/cache/clear
+```
+
+Cache behaviour is controlled by two `.env` settings:
+
+```dotenv
+CACHE_TTL_SECONDS=300   # entries expire after 5 minutes
+CACHE_MAX_SIZE=256      # oldest entry evicted when full (LRU)
+```
+
+Set `CACHE_TTL_SECONDS=0` to disable caching entirely — useful during development or when testing new examples.
+
+---
+
+## 15. Health check and monitoring
+
+```bash
+curl http://localhost:8000/health
+```
+
+```json
+{
+  "status":   "ok",
+  "database": true,
+  "ollama":   true,
+  "model":    "llama3"
+}
+```
+
+| `status` | Meaning |
+|---|---|
+| `ok` | Both SQL Server and Ollama are reachable |
+| `degraded` | One component is unreachable |
+| `down` | Both components are down |
+
+Every query is appended to `logs/query_history.jsonl` as a single JSON line:
+
+```json
+{
+  "timestamp":              "2026-06-13T14:22:57",
+  "question":               "برترین مشتریان در 1402",
+  "generated_sql":          "SELECT TOP 10 c.Name ...",
+  "tables_retrieved":       ["CustomerContract", "Customer", "Date"],
+  "model_name":             "llama3",
+  "row_count":              10,
+  "execution_time_seconds": 1.38,
+  "status":                 "SUCCESS",
+  "excel_file":             "exports/result_20260613_142257.xlsx"
+}
+```
+
+Each HTTP request also receives a correlation ID in `X-Request-Id` and execution time in `X-Response-Time-Ms`.
+
+Feed this log to `analyze_misses.py` regularly to catch retrieval gaps before users notice them.
+
+---
+
+## 16. Writing tests
+
+Tests live in `tests/`. The suite uses `pytest`; shared fixtures are in `tests/conftest.py`. The suite has 427+ tests across unit and integration levels.
+
+### Retriever tests
 
 ```python
 # tests/test_retriever.py
 from schema_data.retriever import retrieve_tables
 
 class TestRetrieveTables:
-    def test_contract_retrieved_for_trade_question(self):
-        assert "Contract" in retrieve_tables("ارزش معاملات")
+    def test_customer_retrieved_for_buyer_question(self):
+        assert "Customer" in retrieve_tables("برترین خریداران")
 
-    def test_customer_retrieved_for_customer_question(self):
-        assert "Customer" in retrieve_tables("برترین مشتریان")
+    def test_date_forced_whenever_year_mentioned(self):
+        # _ALWAYS_INCLUDE guarantees Date on any year/month keyword
+        assert "Date" in retrieve_tables("فروش سالیانه در 1402")
 
-    def test_date_forced_on_year_keyword(self):
-        # _ALWAYS_INCLUDE triggers on 'سال'
-        assert "Date" in retrieve_tables("فروش سالیانه")
-
-    def test_fallback_false_on_garbage(self):
+    def test_fallback_false_returns_empty_on_noise(self):
         assert retrieve_tables("xyzzy nonsense", fallback=False) == []
 
-    def test_english_question_works(self):
-        assert "Customer" in retrieve_tables("top customers")
+    def test_bilingual_parity(self):
+        fa = retrieve_tables("مشتریان برتر")
+        en = retrieve_tables("top customers")
+        assert "Customer" in fa
+        assert "Customer" in en
 ```
 
-### Testing the SQL guard
+### SQL guard tests
 
 ```python
 # tests/test_sql_guard.py
@@ -623,12 +826,11 @@ class TestCleanSql:
     def test_strips_markdown_fence(self):
         assert clean_sql("```sql\nSELECT 1\n```") == "SELECT 1"
 
-    def test_limit_to_top(self):
+    def test_rewrites_limit_to_top(self):
         assert clean_sql("SELECT * FROM T LIMIT 5") == "SELECT TOP 5 * FROM T"
 
     def test_strips_preamble_prose(self):
-        raw = "Here is the query:\nSELECT 1"
-        assert clean_sql(raw) == "SELECT 1"
+        assert clean_sql("Here is the query:\nSELECT 1") == "SELECT 1"
 
     def test_empty_raises(self):
         with pytest.raises(ValueError, match="empty"):
@@ -646,11 +848,11 @@ class TestValidateSql:
         with pytest.raises(ValueError):
             validate_sql(bad)
 
-    def test_select_passes(self):
-        validate_sql("SELECT TOP 10 Name FROM Customer")  # no exception
+    def test_valid_select_passes(self):
+        validate_sql("SELECT TOP 10 Name FROM [Auction_Dim].[Customer]")
 
 class TestEnsureTop:
-    def test_injects_top(self):
+    def test_injects_top_when_absent(self):
         result = ensure_top("SELECT Name FROM Customer", n=50)
         assert "TOP 50" in result.upper()
 
@@ -659,7 +861,7 @@ class TestEnsureTop:
         assert ensure_top(sql, n=50) == sql
 ```
 
-### Testing the API
+### API tests
 
 ```python
 # tests/test_api_endpoints.py
@@ -669,158 +871,94 @@ from api.server import app
 
 client = TestClient(app)
 
-def test_query_returns_sql_field():
+def test_query_returns_200_with_sql_key():
     mock = MagicMock()
     mock.sql = "SELECT TOP 5 Name FROM Customer"
     mock.df.to_dict.return_value = []
     mock.df.__len__ = lambda s: 0
 
     with patch("api.runner.run_query", return_value=mock):
-        r = client.post("/query", json={"question": "list customers"})
+        r = client.post("/query", json={"question": "top customers"})
 
     assert r.status_code == 200
     assert "sql" in r.json()
 
-def test_health_ok_when_both_reachable():
-    with patch("api.health.check_db", return_value=True), \
+def test_health_ok_when_both_up():
+    with patch("api.health.check_db",     return_value=True), \
          patch("api.health.check_ollama", return_value=True):
         r = client.get("/health")
     assert r.json()["status"] == "ok"
 
 def test_health_degraded_when_db_down():
-    with patch("api.health.check_db", return_value=False), \
+    with patch("api.health.check_db",     return_value=False), \
          patch("api.health.check_ollama", return_value=True):
         r = client.get("/health")
     assert r.json()["status"] == "degraded"
 ```
 
-### Running tests
+### Running the suite
 
 ```bash
 pytest                                   # all tests
 pytest tests/test_sql_guard.py -v        # one module, verbose
-pytest -k "retriever" -v                # filter by keyword
-pytest --cov=. --cov-report=html         # coverage report
+pytest -k "retriever" -v                # keyword filter
+pytest --cov=. --cov-report=html         # with coverage
 open htmlcov/index.html
 ```
 
 ---
 
-## 12. Using the HTTP API
+## 17. Configuration reference
 
-```bash
-uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
-# Swagger UI: http://localhost:8000/docs
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `llama3` | Model name (`llama3`, `llama3.1:8b`, `codellama`, …) |
+| `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
+| `QUERY_TIMEOUT_SECONDS` | `60` | Abort SQL queries that run longer than this |
+| `MAX_ROWS_RETURNED` | `1000` | Hard row cap injected as `TOP n` on every query |
+| `CACHE_TTL_SECONDS` | `300` | Cache entry lifetime in seconds (`0` = disabled) |
+| `CACHE_MAX_SIZE` | `256` | Max cached entries; oldest evicted on overflow (LRU) |
+| `LOG_DIR` | `logs` | Log directory — auto-created on first use |
+| `EXPORT_DIR` | `exports` | Export directory — auto-created on first use |
+| `DEFAULT_TOP_N` | `100` | Fallback `TOP n` when model omits it |
+
+All settings are read at startup via `config.py → Settings`. To override in tests:
+
+```python
+from config import override_settings
+
+with override_settings(MAX_ROWS_RETURNED=10, CACHE_TTL_SECONDS=0):
+    result = run_query("top customers")
+    # MAX_ROWS_RETURNED=10 is active only inside this block
 ```
-
-### POST /query
-
-```bash
-curl -X POST http://localhost:8000/query \
-  -H 'Content-Type: application/json' \
-  -d '{"question": "فروش ماهانه تالار پتروشیمی در 1402", "mode": "full"}'
-```
-
-`mode` values:
-
-| Value | Behaviour |
-|---|---|
-| `full` (default) | Generate SQL, execute it, return SQL + rows |
-| `sql` | Generate and return SQL only — do not execute |
-| `result` | Execute a previously generated SQL, return rows only |
-
-### Managing the query cache
-
-Identical questions (same text + same mode) are served from the LRU cache:
-
-```bash
-# Inspect cache state
-curl http://localhost:8000/cache/stats
-# {"size": 4, "hits": 17, "misses": 4, "evictions": 0}
-
-# Invalidate one entry
-curl -X POST http://localhost:8000/cache/invalidate \
-  -H 'Content-Type: application/json' \
-  -d '{"question": "فروش ماهانه", "mode": "full"}'
-
-# Flush everything
-curl -X POST http://localhost:8000/cache/clear
-```
-
-TTL and max size are set by `CACHE_TTL_SECONDS` and `CACHE_MAX_SIZE` in `.env`.
 
 ---
 
-## 13. Health check and monitoring
+## 18. Troubleshooting
 
-```bash
-curl http://localhost:8000/health
-```
-
-```json
-{
-  "status": "ok",
-  "database": true,
-  "ollama": true,
-  "model": "llama3"
-}
-```
-
-| `status` | Meaning |
-|---|---|
-| `ok` | Both SQL Server and Ollama are reachable |
-| `degraded` | One component is unreachable |
-| `down` | Neither component is reachable |
-
-Every query is logged to `logs/query_history.jsonl`:
-
-```json
-{
-  "timestamp": "2026-06-13T14:22:57",
-  "question": "برترین مشتریان در 1402",
-  "generated_sql": "SELECT TOP 10 ...",
-  "tables_retrieved": ["CustomerContract", "Customer", "Date"],
-  "model_name": "llama3",
-  "row_count": 10,
-  "execution_time_seconds": 1.38,
-  "status": "SUCCESS",
-  "excel_file": "exports/result_20260613_142257.xlsx"
-}
-```
-
-Feed this log to `analyze_misses.py` regularly to catch retrieval gaps before users notice them.
-
----
-
-## 14. Troubleshooting
-
-### A table is missing from retrieval results
+### A table is never retrieved
 
 ```python
 from schema_data.tables import TABLE_DESCRIPTIONS
 from knowledge.aliases import SYNONYMS
 from schema_data.retriever import retrieve_tables
 
-# Is the table even registered?
-print("Broker" in TABLE_DESCRIPTIONS)        # False → add it to tables.py
-
-# Is the user's word in synonyms?
-print(SYNONYMS.get("کارگزار"))                  # None → add it to aliases.py
-
-# What does TF-IDF return for the question?
+print("Broker" in TABLE_DESCRIPTIONS)          # False → add to tables.py
+print(SYNONYMS.get("کارگزار"))                   # None  → add to aliases.py
 print(retrieve_tables("کارگزاران برتر", fallback=True))
 ```
 
 ### Generated SQL references wrong tables or columns
 
-1. Add a few-shot example that demonstrates the correct pattern (`knowledge/examples.py`)
-2. Add or sharpen the business rule (`knowledge/business_rules.py`)
+1. Add a few-shot example for that question pattern → `knowledge/examples.py`
+2. Add or tighten the business rule → `knowledge/business_rules.py`
 3. Upgrade to a larger model: `ollama pull llama3.1:70b`
 
 ### `RuntimeError: Database connection failed`
 
 ```bash
-# Check the health endpoint first
+# Health endpoint first
 curl http://localhost:8000/health
 
 # Test the connection string directly
@@ -832,7 +970,7 @@ with get_engine().connect() as c:
 "
 ```
 
-### `ModelUnavailableError` (HTTP 503)
+### `503 ModelUnavailableError`
 
 ```bash
 curl http://localhost:11434/api/tags    # is Ollama running?
@@ -840,12 +978,20 @@ ollama list                            # is the model downloaded?
 ollama pull llama3                     # re-pull if missing
 ```
 
-### `ValueError: Received empty SQL from model`
+### `OUT_OF_SCOPE` response
 
-The model returned an out-of-scope signal (`OUT_OF_SCOPE` sentinel). Check the log:
+The model decided the question is outside the domain. Check the log:
 
 ```bash
 grep OUT_OF_SCOPE logs/query_history.jsonl | tail -5
 ```
 
-If the question is legitimately in-domain, add a few-shot example that covers it.
+Fix: add a few-shot example that shows the correct SQL for that question type.
+
+### `ValueError: Received empty SQL from model`
+
+The model returned prose instead of SQL. Common causes:
+
+- Model too small for the join complexity → use `llama3.1:8b` or larger
+- System prompt too restrictive → review `prompts/system_prompt.md`
+- No relevant few-shot example → add one to `knowledge/examples.py`
