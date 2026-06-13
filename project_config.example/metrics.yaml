@@ -1,0 +1,22 @@
+# metrics.yaml — TEMPLATE (copy to project_config/metrics.yaml and fill in real data)
+#
+# Each top-level key is a metric identifier (snake_case).
+# aliases:    list of phrases (native language + English) a user might use
+#             to refer to this metric
+# expression: SQL aggregation expression using TableName.ColumnName format
+
+metrics:
+  # Example 1: a value metric
+  total_value:
+    aliases: ["total value", "sum of value"]
+    expression: "SUM(YourFactTable.TotalPrice)"
+
+  # Example 2: a volume/quantity metric
+  total_quantity:
+    aliases: ["total quantity", "volume"]
+    expression: "SUM(YourFactTable.Quantity)"
+
+  # Example 3: an average price metric
+  average_price:
+    aliases: ["average price", "mean price"]
+    expression: "AVG(YourFactTable.Price)"

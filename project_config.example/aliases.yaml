@@ -1,0 +1,46 @@
+# aliases.yaml — TEMPLATE (copy to project_config/aliases.yaml and fill in real data)
+#
+# ring_aliases: maps a canonical hall/ring name to the surface forms users
+#   might type in a natural-language question.
+#   Format:  "Canonical Name": ["form1", "form2", ...]
+#
+# synonyms: maps a surface-form word to canonical tokens used in table
+#   descriptions, enabling TF-IDF retrieval to find the right table.
+#   All keys and values must be lowercase.
+#   Format:  "surface word": ["canonical_token1", "canonical_token2"]
+
+ring_aliases:
+  # Example 1: a trading hall for industrial goods
+  "Hall Industrial":
+    - "industrial"
+    - "hall industrial"
+    - "industrial ring"
+    - "industrial market"
+
+  # Example 2: an export hall
+  "Hall Export":
+    - "export"
+    - "hall export"
+    - "export ring"
+    - "export market"
+
+  # Example 3: add more halls as needed
+  "Hall Example3":
+    - "example3"
+    - "hall example3"
+
+synonyms:
+  # Temporal synonyms
+  # "surface_word": ["canonical_token1", "canonical_token2"]
+  "annual": ["year", "date"]
+  "monthly": ["month", "date"]
+  "weekly": ["week", "date"]
+
+  # Trade / value synonyms
+  "volume": ["trade", "amount"]
+  "value": ["price", "trade"]
+  "transaction": ["trade", "contract"]
+
+  # Entity synonyms — add your domain-specific terms here
+  "buyer": ["customer", "purchase"]
+  "seller": ["supplier", "offer"]

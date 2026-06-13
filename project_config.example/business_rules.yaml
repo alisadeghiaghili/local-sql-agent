@@ -1,0 +1,28 @@
+# business_rules.yaml — TEMPLATE (copy to project_config/business_rules.yaml and fill in real data)
+#
+# Each top-level key is a rule category name (lowercase, no spaces).
+# rule_text: free-form instructions for the LLM explaining how to query
+#            this concept correctly. Use | for multiline text.
+#            Reference actual table/column names from your database.
+
+rules:
+  # Example 1: rules for a purchase/transaction concept
+  purchase:
+    rule_text: |
+      Purchase queries must use YourSchema.YourFactTable.
+      Purchase value = SUM(YourFactTable.TotalPrice)
+      Purchase volume = SUM(YourFactTable.Quantity)
+
+  # Example 2: rules for an entity ranking concept
+  customer_ranking:
+    rule_text: |
+      Customer ranking must be based on YourFactTable.
+      Use ORDER BY SUM(YourFactTable.TotalPrice) DESC.
+      Join with YourDimTable on YourFactTable.Customer_ID = YourDimTable.ID.
+
+  # Example 3: rules for date filtering
+  date:
+    rule_text: |
+      All date filtering must use YourSchema.DateTable.
+      Year filter = YearColumn
+      Month filter = MonthColumn
