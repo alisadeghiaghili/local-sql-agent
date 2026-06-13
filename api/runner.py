@@ -1,8 +1,25 @@
 """Core request handler — wires SQLAgent, executor, and interpreter.
 
-All raw exceptions from sub-layers are caught here and re-raised as
-typed NLQError subclasses so ``api/errors.py`` handlers emit the correct
-HTTP status code.
+Thread-safety model
+-------------------
+``SQLAgent`` itself holds no per-request mutable state: after ``__init__``
+all attributes (``_backend``, ``_execute``, ``_max_corrections``) are
+read-only.  Concurrent calls to ``agent.run()`` or ``backend.generate()``
+therefore do not race.
+
+However, a plain module-level singleton (``_agent = SQLAgent()``) has two
+problems:
+
+1. It is created at *import time*, which means any misconfigured env var
+   raises during ``import api.runner`` — before the server can return a
+   meaningful error.
+2. If a future change adds per-request mutable state to ``SQLAgent`` or
+   ``OllamaBackend`` the silent sharing would become a real race.
+
+The fix: the singleton is created **lazily** inside ``_get_agent()`` which
+is protected by a ``threading.Lock``.  The agent instance is cached after
+the first successful construction and reused across requests.  Tests can
+reset the cache via ``_reset_agent_for_testing()``.
 
 Query result cache
 ------------------
@@ -18,6 +35,7 @@ Successful ``result`` and ``full`` mode responses are stored in
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Literal
 
 import requests as _requests
@@ -42,7 +60,43 @@ from llm.sql_agent import SQLAgent
 
 logger = logging.getLogger(__name__)
 
-_agent = SQLAgent()
+# ---------------------------------------------------------------------------
+# Thread-safe lazy singleton
+# ---------------------------------------------------------------------------
+
+_agent_lock: threading.Lock = threading.Lock()
+_agent_instance: SQLAgent | None = None
+
+
+def _get_agent() -> SQLAgent:
+    """Return the shared ``SQLAgent``, constructing it once on first call.
+
+    The double-checked locking pattern avoids lock contention on every
+    request after the first construction.
+    """
+    global _agent_instance
+    if _agent_instance is None:          # fast path — no lock needed once set
+        with _agent_lock:
+            if _agent_instance is None:  # second check inside lock
+                logger.debug("Constructing SQLAgent singleton")
+                _agent_instance = SQLAgent()
+    return _agent_instance
+
+
+def _reset_agent_for_testing(agent: SQLAgent | None = None) -> None:
+    """Replace (or clear) the cached agent.  **Test-only helper.**
+
+    Call with an explicit ``agent`` to inject a mock, or with no arguments
+    to force re-construction on the next ``_get_agent()`` call.
+    """
+    global _agent_instance
+    with _agent_lock:
+        _agent_instance = agent
+
+
+# ---------------------------------------------------------------------------
+# Helpers that need the agent
+# ---------------------------------------------------------------------------
 
 _INTERPRET_TEMPLATE = """
 You are a helpful data analyst. The user asked:
@@ -72,7 +126,9 @@ def run_query(
 
     Raises only :class:`~api.errors.NLQError` subclasses.
     """
-    # ── cache lookup (result / full, no interpret) ────────────────────────
+    agent = _get_agent()
+
+    # ── cache lookup (result / full, no interpret) ──────────────────────────────────────
     use_cache = (mode in ("result", "full")) and not interpret
     if use_cache:
         cached = query_cache.get(question, mode)
@@ -81,22 +137,22 @@ def run_query(
             return cached
         logger.debug("Cache MISS question=%.60s mode=%s", question, mode)
 
-    # ── sql-only mode: generate without executing ─────────────────────────
+    # ── sql-only mode: generate without executing ─────────────────────────────────
     if mode == "sql":
-        sql = _safe_generate_sql_only(question, system_prompt)
+        sql = _safe_generate_sql_only(agent, question, system_prompt)
         return QueryResponse(
             question=question,
             sql=sql,
-            model=_agent._backend.name,
+            model=agent._backend.name,
         )
 
-    # ── result / full mode ────────────────────────────────────────────────
-    df, result = _safe_run(question, system_prompt)
+    # ── result / full mode ─────────────────────────────────────────────────────────
+    df, result = _safe_run(agent, question, system_prompt)
     rows: list[dict] = df.to_dict(orient="records")
 
     interpretation: str | None = None
     if interpret and mode in ("result", "full"):
-        interpretation = _interpret(question, rows)
+        interpretation = _interpret(agent, question, rows)
 
     response = QueryResponse(
         question=question,
@@ -105,10 +161,10 @@ def run_query(
         interpretation=interpretation,
         row_count=len(rows),
         correction_attempts=result.attempt,
-        model=_agent._backend.name,
+        model=agent._backend.name,
     )
 
-    # ── cache store ───────────────────────────────────────────────────────
+    # ── cache store ──────────────────────────────────────────────────────────────
     if use_cache:
         query_cache.set(question, mode, response)
         logger.debug("Cache SET  question=%.60s mode=%s", question, mode)
@@ -120,7 +176,7 @@ def run_query(
 # Private helpers — exception translation
 # ---------------------------------------------------------------------------
 
-def _safe_generate_sql_only(question: str, system_prompt: str) -> str:
+def _safe_generate_sql_only(agent: SQLAgent, question: str, system_prompt: str) -> str:
     from retrieval.context_retriever import ContextRetriever
     from prompt_engine.builder import PromptBuilder
     from security.sql_guard import clean_sql, validate_sql
@@ -130,7 +186,7 @@ def _safe_generate_sql_only(question: str, system_prompt: str) -> str:
         question=question, system_prompt=system_prompt, context=context
     )
     try:
-        raw = _agent._backend.generate(prompt)
+        raw = agent._backend.generate(prompt)
     except ValueError as exc:
         if str(exc) == "OUT_OF_SCOPE":
             raise OutOfScopeError("This question is outside the Auction domain.")
@@ -166,10 +222,10 @@ def _safe_generate_sql_only(question: str, system_prompt: str) -> str:
     return sql
 
 
-def _safe_run(question: str, system_prompt: str):
+def _safe_run(agent: SQLAgent, question: str, system_prompt: str):
     """Run SQLAgent and translate every exception to a typed NLQError."""
     try:
-        return _agent.run(question, system_prompt)
+        return agent.run(question, system_prompt)
 
     except ValueError as exc:
         msg = str(exc)
@@ -213,11 +269,11 @@ def _safe_run(question: str, system_prompt: str):
         )
 
 
-def _interpret(question: str, rows: list[dict]) -> str:
+def _interpret(agent: SQLAgent, question: str, rows: list[dict]) -> str:
     preview_text = "\n".join(str(r) for r in rows[:20]) or "(empty result set)"
     prompt = _INTERPRET_TEMPLATE.format(question=question, rows=preview_text)
     try:
-        return _agent._backend.generate(prompt).strip()
+        return agent._backend.generate(prompt).strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Interpretation failed (non-fatal): %s", exc)
         return ""
