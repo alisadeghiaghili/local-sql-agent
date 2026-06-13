@@ -42,7 +42,7 @@ from api.errors import (
     QueryTimeoutError,
     register_handlers,
 )
-from api.middleware import RequestIDMiddleware, ConcurrencyMiddleware
+from api.middleware import RequestIDMiddleware, RateLimitMiddleware, ConcurrencyMiddleware
 from api.models import (
     QueryRequest,
     QueryResponse,
@@ -75,8 +75,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --- Middleware (order matters: outer \u2192 inner) ---
+# --- Middleware (order matters: outer → inner) ---
+# 1. ConcurrencyMiddleware  — innermost: applied after rate-limit passes
+# 2. RateLimitMiddleware    — per-IP token-bucket (429 on excess)
+# 3. RequestIDMiddleware    — outermost: stamps X-Request-ID first so all
+#                              downstream middleware can log it
+#
+# FastAPI/Starlette applies add_middleware() in REVERSE order, so the last
+# add_middleware() call becomes the outermost layer.
 app.add_middleware(ConcurrencyMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
 # --- Exception handlers ---
@@ -94,6 +102,7 @@ register_handlers(app)
     responses={
         400: {"description": "Bad request (forbidden SQL, injection attempt, invalid input)"},
         422: {"description": "Out-of-scope question or Pydantic validation error"},
+        429: {"description": "Rate limit exceeded"},
         500: {"description": "Unexpected server error"},
         502: {"description": "LLM or database returned an unusable response"},
         503: {"description": "LLM or database is unavailable, or server is overloaded"},
