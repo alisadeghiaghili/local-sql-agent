@@ -1,78 +1,29 @@
-EXAMPLES = [
+"""Lazy loader for examples config.
 
-    {
-        "tags": ["customer", "count"],
-        "question": "How many customers exist?",
-        "sql": "SELECT COUNT(*) AS CustomerCount FROM [Auction_Dim].[Customer]"
-    },
-    {
-        "tags": ["trade", "count"],
-        "question": "How many contracts exist?",
-        "sql": "SELECT COUNT(*) AS ContractCount FROM [Auction_Fact].[Contract]"
-    },
-    {
-        "tags": ["purchase", "count"],
-        "question": "How many customer contracts exist?",
-        "sql": "SELECT COUNT(*) AS CustomerContractCount FROM [Auction_Fact].[CustomerContract]"
-    },
-    {
-        "tags": ["supplier", "count"],
-        "question": "How many suppliers exist?",
-        "sql": "SELECT COUNT(*) AS SupplierCount FROM [Auction_Dim].[Supplier]"
-    },
-    {
-        "tags": ["symbol", "count"],
-        "question": "How many symbols exist?",
-        "sql": "SELECT COUNT(*) AS SymbolCount FROM [Auction_Dim].[Symbol]"
-    },
-    {
-        "tags": ["trade", "value", "sum"],
-        "question": "What is the total trade value?",
-        "sql": "SELECT SUM(TotalPrice) AS TradeValue FROM [Auction_Fact].[Contract]"
-    },
-    {
-        "tags": ["purchase", "value", "sum"],
-        "question": "What is the total purchase value?",
-        "sql": "SELECT SUM(TotalPrice) AS PurchaseValue FROM [Auction_Fact].[CustomerContract]"
-    },
-    {
-        "tags": ["purchase", "volume", "sum"],
-        "question": "What is the total purchase volume?",
-        "sql": "SELECT SUM(Quantity) AS PurchaseVolume FROM [Auction_Fact].[CustomerContract]"
-    },
-    {
-        "tags": ["trade", "price", "average"],
-        "question": "What is the average trade price?",
-        "sql": "SELECT AVG(Price) AS AvgTradePrice FROM [Auction_Fact].[Contract]"
-    },
-    {
-        "tags": ["ring", "trade", "value", "top"],
-        "question": "Which ring has the highest sales?",
-        "sql": "SELECT TOP 1 r.Name, SUM(c.TotalPrice) AS TotalSales FROM [Auction_Fact].[Contract] c JOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID GROUP BY r.Name ORDER BY TotalSales DESC"
-    },
-    {
-        "tags": ["customer", "top", "purchase", "value"],
-        "question": "Top 5 customers by purchase value.",
-        "sql": "SELECT TOP 5 c.Name, SUM(cc.TotalPrice) AS PurchaseValue FROM [Auction_Fact].[CustomerContract] cc JOIN [Auction_Dim].[Customer] c ON cc.BuyerCustomer_ID = c.ID GROUP BY c.Name ORDER BY PurchaseValue DESC"
-    },
-    {
-        "tags": ["broker", "top", "purchase", "value"],
-        "question": "Top 5 buyer brokers by purchase value.",
-        "sql": "SELECT TOP 5 b.Name, SUM(cc.TotalPrice) AS PurchaseValue FROM [Auction_Fact].[CustomerContract] cc JOIN [Auction_Dim].[Broker] b ON cc.BuyerBroker_ID = b.ID GROUP BY b.Name ORDER BY PurchaseValue DESC"
-    },
-    {
-        "tags": ["trade", "date", "year", "group_by"],
-        "question": "Trade value by Persian year.",
-        "sql": "SELECT d.PersianYear, SUM(c.TotalPrice) AS TradeValue FROM [Auction_Fact].[Contract] c JOIN [General_Dim].[Date] d ON c.Date_ID = d.ID GROUP BY d.PersianYear ORDER BY d.PersianYear"
-    },
-    {
-        "tags": ["offer", "value", "sum"],
-        "question": "What is the total offer value?",
-        "sql": "SELECT SUM(HallContractTotalPrice) AS OfferValue FROM [Auction_Fact].[Offer]"
-    },
-    {
-        "tags": ["customer", "active", "count"],
-        "question": "How many active customers exist?",
-        "sql": "SELECT COUNT(DISTINCT BuyerCustomer_ID) AS ActiveCustomers FROM [Auction_Fact].[CustomerContract]"
-    }
-]
+Variables are loaded from project_config/examples.yaml on first access.
+``import knowledge.examples`` never fails even if project_config/ is absent.
+ConfigNotFoundError is only raised when EXAMPLES is accessed.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from knowledge.config_loader import load_examples
+
+_cache: dict[str, Any] = {}
+
+
+def __getattr__(name: str) -> Any:
+    if name == "EXAMPLES":
+        if "_loaded" not in _cache:
+            cfg = load_examples()
+            # Expose as plain list matching original structure:
+            # [{"tags": [...], "question": "...", "sql": "..."}]
+            _cache["EXAMPLES"] = [
+                {"tags": ex.tags, "question": ex.question, "sql": ex.sql}
+                for ex in cfg.examples
+            ]
+            _cache["_loaded"] = True
+        return _cache[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
