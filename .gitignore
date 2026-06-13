@@ -9,3 +9,6 @@ logs/*.jsonl
 dist/
 build/
 *.egg-info/
+
+# Project-specific configuration (contains domain data — never commit)
+project_config/
