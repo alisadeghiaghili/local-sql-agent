@@ -1,0 +1,94 @@
+# Auction domain business rules
+# Each key is a rule category name.
+# rule_text: free-form instructions for the LLM about how to query this concept.
+
+rules:
+  purchase:
+    rule_text: |
+      Customer purchases must use Auction_Fact.CustomerContract.
+      Purchase value = SUM(CustomerContract.TotalPrice)
+      Purchase volume = SUM(CustomerContract.Quantity)
+      Customer ranking must be based on CustomerContract.
+  trade:
+    rule_text: |
+      Trade analysis must use Auction_Fact.Contract.
+      Contract value = SUM(Contract.TotalPrice)
+      Contract volume = SUM(Contract.HallMatchingQuantity)
+      Trade count = COUNT(DISTINCT Contract.ID)
+      Average trade price = AVG(Contract.Price)
+  offer:
+    rule_text: |
+      Offer analysis must use Auction_Fact.Offer.
+      Offer quantity = SUM(Offer.OfferQuantity)
+      Offer value = SUM(Offer.HallContractTotalPrice)
+      Offer count = COUNT(DISTINCT Offer.ID)
+  order:
+    rule_text: |
+      Order analysis must use Auction_Fact.Order.
+      Order volume = SUM(Order.BuyOrder_Lot)
+      Order count = COUNT(DISTINCT Order.ID)
+  customer:
+    rule_text: |
+      مشتری = Customer
+      خریدار = Customer
+      Customer ranking must use CustomerContract.
+  supplier:
+    rule_text: |
+      عرضه کننده = Supplier
+      فروشنده = Supplier
+      تامین کننده = Supplier
+  broker:
+    rule_text: |
+      کارگزار = Broker
+      Buyer broker means BuyerBroker_ID.
+      Seller broker means SellerBroker_ID.
+      Broker performance must be calculated using BuyerBroker_ID or SellerBroker_ID.
+      Never use generic Broker_ID when question explicitly mentions buyer or seller broker.
+  symbol:
+    rule_text: |
+      نماد = Symbol
+      کالا = Symbol
+      محصول = Symbol
+      Trading symbol = TradingSymbol
+  date:
+    rule_text: |
+      All date filtering must use General_Dim.Date.
+      Year filter = PersianYear
+      Month filter = PersianMonth
+      Persian month name filter = PersianMonthName
+  ring:
+    rule_text: |
+      تالار = Ring
+      رینگ = Ring
+      پتروشیمی = تالار پتروشیمی
+      سیمان = تالار سیمان
+  currency:
+    rule_text: |
+      ارز = Currency
+      Currency name comes from Currency.PersianName
+  bank:
+    rule_text: |
+      بانک = Bank
+      شعبه بانک = Bank
+  carrier:
+    rule_text: |
+      حمل کننده = Carrier
+      باربری = Carrier
+  delivery:
+    rule_text: |
+      محل تحویل = DeliveryPlace
+      انبار = DeliveryPlace
+  payment:
+    rule_text: |
+      شرایط پرداخت = PaymentDelivery
+      شرایط تحویل = PaymentDelivery
+  topn:
+    rule_text: |
+      Top customers:
+      ORDER BY SUM(CustomerContract.TotalPrice) DESC
+
+      Top suppliers:
+      ORDER BY SUM(Offer.HallContractTotalPrice) DESC
+
+      Top commodities:
+      ORDER BY SUM(CustomerContract.TotalPrice) DESC
