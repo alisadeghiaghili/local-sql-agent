@@ -288,10 +288,40 @@ For commercial licensing inquiries, open an issue or contact the maintainer dire
 
 ## Contributors
 
-| Name | Role |
+### [Ali Sadeghi Aghili](https://github.com/alisadeghiaghili) — System Architecture & Engineering
+
+**Role:** Creator & Lead Engineer
+
+| Area | Modules |
 |---|---|
-| [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) | Creator & Lead Maintainer — architecture, retrieval pipeline, LLM integration, security layer, FastAPI service |
-| [**Melika Bahmanabadi**](https://github.com/MelikaBahmanabadi) | Contributor |
+| **Orchestration & CLI** | `app.py` — main REPL loop: NLQ input → SQL generation → execution → Excel export → structured logging |
+| **Configuration** | `config.py` — typed `Settings` singleton, env-based overrides, `override_settings()` test helper |
+| **Core layer** | `core/models.py` — `RetrievalContext`, `SQLGenerationResult`, `QueryLogRecord` frozen dataclasses |
+| **LLM integration** | `llm/sql_agent.py`, `llm/ollama_backend.py` — generate / clean / auto-correct loop with exponential retry and back-off |
+| **Retrieval pipeline** | `retrieval/context_retriever.py` — orchestrates all six sub-retrievers into a single `RetrievalContext`; `retrieval/entity_retriever.py`, `retrieval/fact_retriever.py`, `retrieval/relationship_retriever.py`, `retrieval/rule_retriever.py`, `retrieval/value_retriever.py`, `retrieval/example_retriever.py` |
+| **Schema layer** | `schema_data/` — table definitions, column allowlist, FK relationship map, `SchemaRegistry`, TF-IDF bigram fallback retriever |
+| **Prompt engineering** | `prompt_engine/builder.py`, `prompt_engine/templates.py` — dynamic, context-aware prompt assembly |
+| **Validation & security** | `security/sql_guard.py`, `validation/` — multi-layer guard: SELECT-only enforcement, forbidden keyword blocklist, schema allowlist (tables + columns), business rule validation |
+| **Database** | `database/connection.py`, `database/executor.py` — SQLAlchemy singleton engine, query timeout, hard row cap, `QueryAnalyzer` (TOP injection, SELECT * guard, JOIN count limit) |
+| **FastAPI service** | `api/` — `/query`, `/health`, `/cache` endpoints; `RequestLoggingMiddleware`; LRU + TTL `QueryCache`; typed `NLQError` hierarchy with HTTP status mapping |
+| **Exports & logging** | `exporters/` — Excel/CSV/JSON with timestamped filenames; `app_logging/` — rotating JSONL logger with correlation ID, execution time, and row count |
+| **Test suite** | `tests/` — 427+ unit and integration tests; GitHub Actions CI |
+
+---
+
+### [Melika Bahmanabadi](https://github.com/MelikaBahmanabadi) — Domain Knowledge & Business Intelligence
+
+**Role:** Domain Expert & Knowledge Engineer
+
+| Area | Modules |
+|---|---|
+| **Trading hall aliases** | `knowledge/aliases.py` — `RING_ALIASES`: Persian-language alias map for all 11 trading halls (تالار پتروشیمی، فلزات، کشاورزی، انرژی، فرآورده‌های نفتی، سیمان، صادراتی، کیش، صنعتی، معدنی، فرعی) with colloquial and formal variants |
+| **Business metrics** | `knowledge/metrics.py` — 35+ named metrics with Persian aliases and SQL aggregate expressions covering trade value/volume, purchase value/volume, broker/IME/SEO wages, offer prices, hall matching stats, order analytics, and TalarLog price tracking |
+| **Few-shot examples** | `knowledge/examples.py` — 22 annotated NLQ→SQL pairs with semantic tags (`customer`, `trade`, `purchase`, `ring`, `broker`, `wage`, etc.) used by `ExampleRetriever` for few-shot prompt injection |
+| **Business rules** | `knowledge/business_rules.py` — domain rules for purchase, trade, offer, customer, supplier, and top-N patterns; injected verbatim into prompts by `RuleRetriever` |
+| **Entity catalog** | `knowledge/entities.py` — dimension entity definitions mapping Persian/English natural-language concepts to `Auction_DM` database tables |
+
+---
 
 Contributions are welcome. Please open an issue before submitting a pull request so we can discuss the approach.
 
