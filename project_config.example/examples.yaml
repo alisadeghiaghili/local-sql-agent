@@ -1,0 +1,22 @@
+# examples.yaml — TEMPLATE (copy to project_config/examples.yaml and fill in real data)
+#
+# A list of few-shot examples for the LLM.
+# tags:     list of keywords describing this example (used for retrieval)
+# question: a natural-language question a user might ask
+# sql:      the correct SQL query for this question against your database
+
+examples:
+  # Example 1: simple count query
+  - tags: ["entity1", "count"]
+    question: "How many Entity1 records exist?"
+    sql: "SELECT COUNT(*) AS Entity1Count FROM [YourSchema].[YourTable]"
+
+  # Example 2: aggregation query
+  - tags: ["purchase", "value", "sum"]
+    question: "What is the total purchase value?"
+    sql: "SELECT SUM(TotalPrice) AS TotalValue FROM [YourSchema].[YourFactTable]"
+
+  # Example 3: join + top-N query
+  - tags: ["entity1", "top", "value"]
+    question: "Top 5 Entity1 by value."
+    sql: "SELECT TOP 5 d.Name, SUM(f.TotalPrice) AS Value FROM [YourSchema].[YourFactTable] f JOIN [YourSchema].[YourDimTable] d ON f.Entity1_ID = d.ID GROUP BY d.Name ORDER BY Value DESC"

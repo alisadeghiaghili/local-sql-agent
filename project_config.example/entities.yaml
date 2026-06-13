@@ -1,0 +1,24 @@
+# entities.yaml — TEMPLATE (copy to project_config/entities.yaml and fill in real data)
+#
+# Each top-level key is the canonical entity name (used in code).
+# aliases: list of surface forms a user might use in a question
+#          (include both native language and English forms)
+# table:   exact database table name this entity maps to
+# schema:  optional — the schema name (e.g. "dim", "fact")
+
+entities:
+  # Example 1: a dimension entity
+  Entity1:
+    aliases: ["entity1", "first entity", "entity one"]
+    table: "your_dim_table_name"
+
+  # Example 2: another dimension entity with multilingual aliases
+  Entity2:
+    aliases: ["entity2", "second entity", "native_word_for_entity2"]
+    table: "your_other_dim_table"
+
+  # Example 3: a fact-related lookup entity
+  Entity3:
+    aliases: ["entity3", "type3", "kind3"]
+    table: "your_lookup_table"
+    # schema: "fact"   # uncomment and set if needed
