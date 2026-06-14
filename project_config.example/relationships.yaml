@@ -1,0 +1,46 @@
+# relationships.yaml
+# -------------------
+# Defines JOIN hints between tables.
+# These are used by the retrieval pipeline to construct multi-table queries.
+#
+# Fields
+# ------
+# from_table   : source table name (without schema)
+# from_schema  : (optional) source schema name
+# from_column  : FK column on the source table
+# to_table     : target table name (without schema)
+# to_schema    : (optional) target schema name
+# to_column    : PK/referenced column on the target table
+# join_hint    : the full JOIN clause (used directly in prompt context)
+#
+# Tips
+# ----
+# * You can auto-generate a first draft of this file by running:
+#     python -m database.schema_inspector_cli --dry-run
+# * Both directions (A->B and B->A) are registered automatically by the
+#   relationship_map module, so you only need to list each pair once.
+
+relationships:
+  - from_table: "Contract"
+    from_schema: "Auction_Fact"
+    from_column: "Ring_ID"
+    to_table: "Ring"
+    to_schema: "Auction_Dim"
+    to_column: "ID"
+    join_hint: "JOIN Auction_Dim.Ring ON Auction_Fact.Contract.Ring_ID = Auction_Dim.Ring.ID"
+
+  - from_table: "Contract"
+    from_schema: "Auction_Fact"
+    from_column: "Seller_ID"
+    to_table: "Person"
+    to_schema: "General_Dim"
+    to_column: "ID"
+    join_hint: "JOIN General_Dim.Person ON Auction_Fact.Contract.Seller_ID = General_Dim.Person.ID"
+
+  - from_table: "Offer"
+    from_schema: "Auction_Fact"
+    from_column: "Contract_ID"
+    to_table: "Contract"
+    to_schema: "Auction_Fact"
+    to_column: "ID"
+    join_hint: "JOIN Auction_Fact.Contract ON Auction_Fact.Offer.Contract_ID = Auction_Fact.Contract.ID"
