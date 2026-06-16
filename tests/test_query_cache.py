@@ -148,11 +148,11 @@ class TestQueryCacheRunnerIntegration:
     --------
     1. Pre-populate the module-level ``query_cache`` singleton with a
        known ``QueryResponse``.
-    2. Patch ``api.runner._agent`` so any accidental fall-through to the
+    2. Patch ``api.runner.agent`` so any accidental fall-through to the
        real Ollama backend raises immediately (no network required).
     3. Call ``run_query`` with the same (question, mode) key.
     4. Assert the returned object is the exact cached instance and that
-       ``_agent.run`` was never called.
+       ``agent.run`` was never called.
 
     This proves run_query() consults the cache before touching the LLM,
     without coupling the test to reconfigure() semantics.
@@ -167,7 +167,7 @@ class TestQueryCacheRunnerIntegration:
 
     def test_second_call_hits_cache(self):
         """Pre-populate cache → run_query must return cached entry without
-        calling _agent.run."""
+        calling agent.run."""
         import api.runner as runner_module
         from api.query_cache import query_cache
 
@@ -177,19 +177,19 @@ class TestQueryCacheRunnerIntegration:
         )
         query_cache.set("سوال", "full", cached_resp)
 
-        # Patch _agent so any real LLM call raises instantly
+        # Patch agent so any real LLM call raises instantly
         mock_agent = MagicMock()
-        mock_agent.run.side_effect = AssertionError("_agent.run must NOT be called on cache hit")
+        mock_agent.run.side_effect = AssertionError("agent.run must NOT be called on cache hit")
         mock_agent._backend.name = "test"
 
-        with patch("api.runner._agent", mock_agent):
+        with patch("api.runner.agent", mock_agent):
             result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
 
         assert result is cached_resp
         mock_agent.run.assert_not_called()
 
     def test_cache_miss_calls_agent_and_stores_result(self):
-        """On a cache miss run_query calls _agent.run and stores the result."""
+        """On a cache miss run_query calls agent.run and stores the result."""
         import api.runner as runner_module
         from api.query_cache import query_cache
         from llm.base import SQLGenerationResult
@@ -204,7 +204,7 @@ class TestQueryCacheRunnerIntegration:
         mock_agent.run.return_value = (df, sql_result)
         mock_agent._backend.name = "test"
 
-        with patch("api.runner._agent", mock_agent):
+        with patch("api.runner.agent", mock_agent):
             result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
 
         mock_agent.run.assert_called_once()
