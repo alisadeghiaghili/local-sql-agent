@@ -43,7 +43,7 @@ def _clear_cache():
     """Isolate every test: wipe the shared cache singleton before and after.
 
     Without this, a successful run_query() in an earlier test populates the
-    cache so that a later test gets a cache-hit instead of calling _agent.run,
+    cache so that a later test gets a cache-hit instead of calling agent.run,
     causing correction_attempts / side_effect assertions to fail.
     """
     from api.query_cache import query_cache
@@ -54,10 +54,10 @@ def _clear_cache():
 
 @pytest.fixture(autouse=True)
 def patch_agent():
-    """Replace the module-level _agent in runner with a fresh mock."""
+    """Replace the module-level agent in runner with a fresh mock."""
     mock_agent = MagicMock()
     mock_agent._backend.name = "ollama:test"
-    with patch("api.runner._agent", mock_agent):
+    with patch("api.runner.agent", mock_agent):
         yield mock_agent
 
 

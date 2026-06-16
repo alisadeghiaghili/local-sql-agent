@@ -54,10 +54,10 @@ def _clear_cache():
 
 @pytest.fixture()
 def mock_agent():
-    """Patch the module-level _agent so no real LLM / DB is needed."""
+    """Patch the module-level agent so no real LLM / DB is needed."""
     agent = MagicMock()
     agent._backend.name = "ollama:test"
-    with patch("api.runner._agent", agent):
+    with patch("api.runner.agent", agent):
         yield agent
 
 
@@ -271,7 +271,7 @@ class TestHttpIntegration:
 
         assert r1.status_code == 200
         assert r2.status_code == 200
-        # _agent.run must have been called exactly once across both requests
+        # agent.run must have been called exactly once across both requests
         mock_agent.run.assert_called_once()
 
     def test_different_questions_each_call_agent(self, client, mock_agent):
