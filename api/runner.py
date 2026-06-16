@@ -7,7 +7,7 @@ all attributes (``_backend``, ``_execute``, ``_max_corrections``) are
 read-only.  Concurrent calls to ``agent.run()`` or ``backend.generate()``
 therefore do not race.
 
-However, a plain module-level singleton (``_agent = SQLAgent()``) has two
+However, a plain module-level singleton (``agent = SQLAgent()``) has two
 problems:
 
 1. It is created at *import time*, which means any misconfigured env var
@@ -19,7 +19,9 @@ problems:
 The fix: the singleton is created **lazily** inside ``_get_agent()`` which
 is protected by a ``threading.Lock``.  The agent instance is cached after
 the first successful construction and reused across requests.  Tests can
-reset the cache via ``_reset_agent_for_testing()``.
+patch the module-level ``agent`` name directly via
+``unittest.mock.patch('api.runner.agent', mock)`` or call
+``_reset_agent_for_testing()`` to force re-construction.
 
 Query result cache
 ------------------
@@ -61,37 +63,48 @@ from llm.sql_agent import SQLAgent
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Thread-safe lazy singleton
+# Module-level agent singleton
 # ---------------------------------------------------------------------------
+# Public name ``agent`` is intentional: tests patch it with
+#   patch('api.runner.agent', mock_agent)
+# The private lock + double-checked locking ensure thread-safe lazy init.
 
 _agent_lock: threading.Lock = threading.Lock()
-_agent_instance: SQLAgent | None = None
+
+# Public alias — starts as None; lazily populated by _get_agent().
+# Keeping this as a plain module attribute (not a property) is what makes
+# unittest.mock.patch work: patch() replaces the name in the module's
+# __dict__, so run_query() sees the mock on the very next read.
+agent: SQLAgent | None = None
 
 
 def _get_agent() -> SQLAgent:
     """Return the shared ``SQLAgent``, constructing it once on first call.
 
-    The double-checked locking pattern avoids lock contention on every
-    request after the first construction.
+    Uses double-checked locking to avoid contention on every request after
+    the first construction.  Always reads / writes the public ``agent`` name
+    so that test patches applied to ``api.runner.agent`` are respected.
     """
-    global _agent_instance
-    if _agent_instance is None:          # fast path — no lock needed once set
+    global agent
+    if agent is None:          # fast path — no lock needed once set
         with _agent_lock:
-            if _agent_instance is None:  # second check inside lock
+            if agent is None:  # second check inside lock
                 logger.debug("Constructing SQLAgent singleton")
-                _agent_instance = SQLAgent()
-    return _agent_instance
+                agent = SQLAgent()
+    return agent
 
 
-def _reset_agent_for_testing(agent: SQLAgent | None = None) -> None:
+def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
     """Replace (or clear) the cached agent.  **Test-only helper.**
 
-    Call with an explicit ``agent`` to inject a mock, or with no arguments
-    to force re-construction on the next ``_get_agent()`` call.
+    Call with an explicit ``new_agent`` to inject a mock, or with no
+    arguments to force re-construction on the next ``_get_agent()`` call.
+    Prefer ``unittest.mock.patch('api.runner.agent', mock)`` in fixtures
+    when you want automatic teardown.
     """
-    global _agent_instance
+    global agent
     with _agent_lock:
-        _agent_instance = agent
+        agent = new_agent
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +139,12 @@ def run_query(
 
     Raises only :class:`~api.errors.NLQError` subclasses.
     """
-    agent = _get_agent()
+    # Read the public ``agent`` name — if a test has patched it via
+    # patch('api.runner.agent', mock), _get_agent() is bypassed entirely
+    # because the mock is already non-None.
+    _agent = _get_agent()
 
-    # ── cache lookup (result / full, no interpret) ──────────────────────────────────────
+    # ── cache lookup (result / full, no interpret) ─────────────────────────
     use_cache = (mode in ("result", "full")) and not interpret
     if use_cache:
         cached = query_cache.get(question, mode)
@@ -137,22 +153,22 @@ def run_query(
             return cached
         logger.debug("Cache MISS question=%.60s mode=%s", question, mode)
 
-    # ── sql-only mode: generate without executing ─────────────────────────────────
+    # ── sql-only mode: generate without executing ──────────────────────────
     if mode == "sql":
-        sql = _safe_generate_sql_only(agent, question, system_prompt)
+        sql = _safe_generate_sql_only(_agent, question, system_prompt)
         return QueryResponse(
             question=question,
             sql=sql,
-            model=agent._backend.name,
+            model=_agent._backend.name,
         )
 
-    # ── result / full mode ─────────────────────────────────────────────────────────
-    df, result = _safe_run(agent, question, system_prompt)
+    # ── result / full mode ─────────────────────────────────────────────────
+    df, result = _safe_run(_agent, question, system_prompt)
     rows: list[dict] = df.to_dict(orient="records")
 
     interpretation: str | None = None
     if interpret and mode in ("result", "full"):
-        interpretation = _interpret(agent, question, rows)
+        interpretation = _interpret(_agent, question, rows)
 
     response = QueryResponse(
         question=question,
@@ -161,10 +177,10 @@ def run_query(
         interpretation=interpretation,
         row_count=len(rows),
         correction_attempts=result.attempt,
-        model=agent._backend.name,
+        model=_agent._backend.name,
     )
 
-    # ── cache store ──────────────────────────────────────────────────────────────
+    # ── cache store ────────────────────────────────────────────────────────
     if use_cache:
         query_cache.set(question, mode, response)
         logger.debug("Cache SET  question=%.60s mode=%s", question, mode)
