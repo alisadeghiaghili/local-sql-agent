@@ -55,6 +55,10 @@ _ALWAYS_INCLUDE: dict[str, list[str]] = {
         "کشاورزی", "نفتی", "خرد", "طلا", "سیمان", "خودرو",
         "ring", "trading hall", "trading ring",
     ],
+    "Broker": [
+        "کارگزار", "کارگزار خریدار", "کارگزار فروشنده",
+        "Broker", "seller broker", "buyer broker"
+    ],
 }
 
 _ALWAYS_INCLUDE_NORMALISED: dict[str, list[str]] = {

@@ -60,6 +60,7 @@ TABLE_COLUMNS = {
         "Symbol_ID": "FK → Auction_Dim.Symbol",
         "BuyerCustomer_ID": "FK → Auction_Dim.Customer",
         "BuyerBroker_ID": "FK → Auction_Dim.Broker",
+        "SellerBroker_ID": "FK → Auction_Dim.Broker",
         "BuyOrder_Lot": "Ordered lot size",
     },
 
@@ -72,20 +73,20 @@ TABLE_COLUMNS = {
 
     "Supplier": {
         "ID": "Primary key",
-        "Name": "Supplier name",
+        "Customer_Name": "Supplier name",
         "NationalCode": "National ID",
     },
 
     "Broker": {
         "ID": "Primary key",
-        "Name": "Brokerage firm name",
+        "PersianName": "Broker name",
         "Code": "Broker code",
     },
 
     "Symbol": {
         "ID": "Primary key",
-        "Name": "Symbol / commodity name",
-        "Code": "Symbol code",
+        "Commodity_PersianName": "Symbol / commodity name",
+        "Commodity_Symbol": "Commodity Symbol",
         "IsActive": "Active flag",
     },
 
@@ -108,5 +109,9 @@ TABLE_COLUMNS = {
         "ID": "Primary key",
         "PersianName": "Currency name in Persian",
         "Code": "ISO currency code",
+    },
+    "DeliveryPlace":{
+        "DeliveryPlace_OriginalPK": "Primary key",
+        "PersianName": "delivery place name in Persian",
     },
 }
