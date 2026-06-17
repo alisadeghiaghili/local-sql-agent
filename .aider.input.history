@@ -1,0 +1,87 @@
+
+# 2026-06-18 00:57:58.476166
++Y
+
+# 2026-06-18 00:58:19.990176
++N
+
+# 2026-06-18 01:02:40.058537
++/ask Review this codebase critically and ruthlessly. List all architectural flaws, code quality issues, security vulnerabilities, and improvement opportunities. Do not sugarcoat anything.
++
++After the review, I want to add two things:
++1. A "skill" system — reusable prompt templates or modules that give the agent specific capabilities
++2. A "refiner" layer — a step that takes the initial output and improves it before returning the final result
++
++Analyze what currently exists and suggest exactly how to implement both.
+
+# 2026-06-18 01:06:24.284366
++N
+
+# 2026-06-18 01:06:53.688927
++/ask Review this codebase critically and ruthlessly. List all architectural flaws, code quality issues, security vulnerabilities, and improvement opportunities. Do not sugarcoat anything.
++
++After the review, I want to add two things:
++1. A "skill" system — reusable prompt templates or modules that give the agent specific capabilities
++2. A "refiner" layer — a step that takes the initial output and improves it before returning the final result
++
++Analyze what currently exists and suggest exactly how to implement both.
+
+# 2026-06-18 01:08:12.738790
++N
+
+# 2026-06-18 01:08:54.097510
++/ask Review this codebase critically and ruthlessly. List all architectural flaws, code quality issues, security vulnerabilities, and improvement opportunities. Do not sugarcoat anything.
++
++After the review, I want to add two things:
++1. A "skill" system — reusable prompt templates or modules that give the agent specific capabilities
++2. A "refiner" layer — a step that takes the initial output and improves it before returning the final result
++
++Analyze what currently exists and suggest exactly how to implement both.
+
+# 2026-06-18 01:28:45.731003
++N
+
+# 2026-06-18 01:28:52.118295
++> /ask Review this codebase critically and ruthlessly. List all architectural flaws, code quality issues, security vuln
++> erabilities, and improvement opportunities. Do not sugarcoat anything.
++>
++> After the review, I want to add two things:
++> 1. A "skill" system — reusable prompt templates or modules that give the agent specific capabilities
++> 2. A "refiner" layer — a step that takes the initial output and improves it before returning the final result
++>
++> Analyze what currently exists and suggest exactly how to implement both.
++
++litellm.NotFoundError: NotFoundError: OpenAIException - litellm.NotFoundError: AnthropicException -
++b'<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not
++Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n'. Received Model Group=claude-sonnet
++Available Model Group Fallbacks=None
+
+# 2026-06-18 01:28:58.637504
++cls
+
+# 2026-06-18 01:29:20.842505
++/ask Review this codebase critically and ruthlessly. List all architectural flaws, code quality issues, security vulnerabilities, and improvement opportunities. Do not sugarcoat anything.
++
++After the review, I want to add two things:
++1. A "skill" system — reusable prompt templates or modules that give the agent specific capabilities
++2. A "refiner" layer — a step that takes the initial output and improves it before returning the final result
++
++Analyze what currently exists and suggest exactly how to implement both.
+
+# 2026-06-18 01:31:34.785371
++/add .
+
+# 2026-06-18 01:33:02.047364
++/ask Review this codebase critically and ruthlessly. List all architectural flaws, code quality issues, security vulnerabilities, and improvement opportunities. Do not sugarcoat anything.
++
++After the review, I want to add two things:
++1. A "skill" system — reusable prompt templates or modules that give the agent specific capabilities
++2. A "refiner" layer — a step that takes the initial output and improves it before returning the final result
++
++Analyze what currently exists and suggest exactly how to implement both.
+
+# 2026-06-18 01:35:18.840909
++git init
+
+# 2026-06-18 01:36:00.397414
++/add .
