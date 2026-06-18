@@ -12,3 +12,4 @@ build/
 
 # Project-specific configuration (contains domain data — never commit)
 project_config/
+.aider*
