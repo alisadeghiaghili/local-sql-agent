@@ -118,3 +118,45 @@ Phase 1: Building skills/ package
 - Create `refiner/` package scaffold (`base.py`, `pipeline.py`)
 - Extract self-correction loop from `SQLAgent` into `CorrectionRefiner`
 - Move `ensure_top` into `EnsureTopRefiner`
+
+---
+
+### [2026-06-18] Security Hardening and Bug Fixes
+
+**What Was Built:**
+- `security/sql_guard.py` — rewrote `validate_sql` to close three security gaps:
+  - Added `_strip_comments()` and `_normalise_for_scan()` helpers that remove block comments (`/* */`) and line comments (`--`) and collapse all whitespace before keyword matching — closes `DELETE/*comment*/FROM` and `DELETE\nFROM` bypass
+  - Added explicit semicolon check before all other validation — blocks stacked queries (`SELECT 1; DROP TABLE x`)
+  - Added `OPENROWSET`, `OPENDATASOURCE`, `BULK INSERT` to `_FORBIDDEN` — closes T-SQL data exfiltration vectors
+  - Switched forbidden keyword matching from substring-with-trailing-space to word-boundary regex (`\bKEYWORD\b`) so no trailing space is needed and no whitespace trick can bypass it
+- `security/sql_guard.py` — fixed `clean_sql` double-search bug: `_LIMIT_RE.search(sql)` result is now stored once and reused instead of called twice
+- `prompt_engine/builder.py` — fixed `set()` ordering bug: `selected_tables` now uses `context.selected_tables` (order-preserving, deduplicated) instead of `set(context.entities + context.facts)`
+- `prompt_engine/builder.py` — added `skills: list | None = None` parameter; active skill fragments are rendered and injected into `{skill_instructions}` placeholder
+- `prompt_engine/templates.py` — added `SKILL INSTRUCTIONS` section between `DETECTED FILTERS` and `EXAMPLES`
+- `api/runner.py` — added `OperationalError` and `SATimeout` catch blocks in `_safe_run` — these were imported but never caught, causing unhandled 500s on DB timeout/connection failure
+- `api/runner.py` — removed `InjectionAttemptError` dead import (was imported, never raised, no injection detection logic existed to raise it)
+- `llm/sql_agent.py` — reviewed; `backend_name` property and `generate_sql_only` method flagged as still needed but not yet implemented in this session
+
+**Decisions Made:**
+- `validate_sql` normalisation (comment stripping + whitespace collapse + uppercase) is applied to a copy of the SQL — the original string is never mutated, so `clean_sql` output is preserved exactly for execution
+- Word-boundary regex matching (`\bKEYWORD\b`) is used for all whole-word forbidden tokens; prefix tokens (`XP_`, `SP_`) are matched with plain `in` since they are intentionally prefix-only
+- `BULK INSERT` is matched as a two-word phrase via `re.escape` + `\b` boundaries — the space inside is preserved in the pattern
+- Semicolon check is placed first (before comment stripping) because a semicolon in a comment is still a semicolon in the raw SQL and should be rejected
+- `OperationalError` and `SATimeout` map to `DatabaseConnectionError` by default; if the message contains "timeout" or "lock" they map to `QueryTimeoutError` instead
+
+**Remaining Issues Not Yet Fixed (carried forward):**
+- `runner.py` still accesses `agent._backend` directly in `run_query`, `_safe_generate_sql_only`, and `_interpret` — `SQLAgent.backend_name` property not yet added
+- `_safe_generate_sql_only` in `runner.py` still duplicates retrieval + prompt assembly instead of delegating to `SQLAgent` — `SQLAgent.generate_sql_only()` not yet implemented
+- `QueryLog.as_dict()` still hardcodes field names — `dataclasses.asdict()` not yet applied
+- `ollama_client.py` shim still exists and `app.py` still uses it — two pipelines still live
+- `requirements.txt` still has no version pins
+- `RetrievalContext.dimensions` redundant alias still present
+
+**Next Steps:**
+- Add `backend_name` public property to `SQLAgent`
+- Add `generate_sql_only(question, system_prompt)` method to `SQLAgent` that runs retrieval + prompt + generate + clean + validate without executing
+- Update `runner.py` to use `agent.backend_name` and `agent.generate_sql_only()` — eliminate all `_backend` direct access
+- Delete `_safe_generate_sql_only` from `runner.py` once `SQLAgent.generate_sql_only()` exists
+- Fix `QueryLog.as_dict()` to use `dataclasses.asdict()`
+- Unify `app.py` REPL onto `SQLAgent` and delete `ollama_client.py`
+- Pin all versions in `requirements.txt`
