@@ -12,10 +12,13 @@
 
 ## قرارداد / Contract
 
-یک معامله بسته‌شده در تالار.
+در این دیتابیس منظور از "معامله" و "خرید" مشتری است که در
+`[Auction_Fact].[CustomerContract]` ثبت می‌شود.
+`[Auction_Fact].[Contract]` فقط برای تطابق تالاری (Hall Matching)
+استفاده می‌شود و ربطی به معاملات نهایی ندارد.
 
-جدول اصلی: `[Auction_Fact].[Contract]`
-جزئیات خرید: `[Auction_Fact].[CustomerContract]`
+جدول اصلی معاملات: `[Auction_Fact].[CustomerContract]`
+جدول تطابق تالار: `[Auction_Fact].[Contract]`
 
 ---
 
