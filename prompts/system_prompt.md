@@ -104,4 +104,4 @@ Question: What is Python?
 Response: OUT_OF_SCOPE
 
 Question: What is the total sales in تالار پتروشیمی?
-Response: SELECT TOP 100 SUM(c.TotalPrice) AS TotalSales FROM [Auction_Fact].[Contract] c JOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID WHERE r.Name = N'تالار پتروشیمی'
+Response: SELECT TOP 100 SUM(cc.TotalPrice) AS TotalSales FROM [Auction_Fact].[CustomerContract] cc JOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID WHERE r.Name = N'تالار پتروشیمی'
