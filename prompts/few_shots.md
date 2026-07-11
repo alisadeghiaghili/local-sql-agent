@@ -20,10 +20,10 @@ Which ring has the highest sales?
 SQL:
 SELECT TOP 1
     r.Name,
-    SUM(c.TotalPrice) AS TotalSales
-FROM [Auction_Fact].[Contract] c
+    SUM(cc.TotalPrice) AS TotalSales
+FROM [Auction_Fact].[CustomerContract] cc
 JOIN [Auction_Dim].[Ring] r
-    ON c.Ring_ID = r.ID
+    ON cc.Ring_ID = r.ID
 GROUP BY r.Name
 ORDER BY TotalSales DESC
 

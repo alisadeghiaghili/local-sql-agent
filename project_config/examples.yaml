@@ -24,7 +24,7 @@ examples:
 
   - tags: ["trade", "value", "sum"]
     question: "What is the total trade value?"
-    sql: "SELECT SUM(TotalPrice) AS TradeValue FROM [Auction_Fact].[Contract]"
+    sql: "SELECT SUM(TotalPrice) AS TradeValue FROM [Auction_Fact].[CustomerContract]"
 
   - tags: ["purchase", "value", "sum"]
     question: "What is the total purchase value?"
@@ -36,11 +36,11 @@ examples:
 
   - tags: ["trade", "price", "average"]
     question: "What is the average trade price?"
-    sql: "SELECT AVG(Price) AS AvgTradePrice FROM [Auction_Fact].[Contract]"
+    sql: "SELECT AVG(Price) AS AvgTradePrice FROM [Auction_Fact].[CustomerContract]"
 
   - tags: ["ring", "trade", "value", "top"]
     question: "Which ring has the highest sales?"
-    sql: "SELECT TOP 1 r.Name, SUM(c.TotalPrice) AS TotalSales FROM [Auction_Fact].[Contract] c JOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID GROUP BY r.Name ORDER BY TotalSales DESC"
+    sql: "SELECT TOP 1 r.Name, SUM(cc.TotalPrice) AS TotalSales FROM [Auction_Fact].[CustomerContract] cc JOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID GROUP BY r.Name ORDER BY TotalSales DESC"
 
   - tags: ["customer", "top", "purchase", "value"]
     question: "Top 5 customers by purchase value."
@@ -52,7 +52,7 @@ examples:
 
   - tags: ["trade", "date", "year", "group_by"]
     question: "Trade value by Persian year."
-    sql: "SELECT d.PersianYear, SUM(c.TotalPrice) AS TradeValue FROM [Auction_Fact].[Contract] c JOIN [General_Dim].[Date] d ON c.Date_ID = d.ID GROUP BY d.PersianYear ORDER BY d.PersianYear"
+    sql: "SELECT d.PersianYear, SUM(cc.TotalPrice) AS TradeValue FROM [Auction_Fact].[CustomerContract] cc JOIN [General_Dim].[Date] d ON cc.Date_ID = d.ID GROUP BY d.PersianYear ORDER BY d.PersianYear"
 
   - tags: ["offer", "value", "sum"]
     question: "What is the total offer value?"

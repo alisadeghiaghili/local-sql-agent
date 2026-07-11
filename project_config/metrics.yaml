@@ -11,14 +11,14 @@ metrics:
     aliases: ["حجم خرید"]
     expression: "SUM(CustomerContract.Quantity)"
   trade_value:
-    aliases: ["ارزش معامله"]
-    expression: "SUM(Contract.TotalPrice)"
+    aliases: ["ارزش معامله", "ارزش معاملات"]
+    expression: "SUM(CustomerContract.TotalPrice)"
   contract_price_avg:
-    aliases: ["میانگین قیمت قرارداد"]
-    expression: "AVG(Contract.Price)"
+    aliases: ["میانگین قیمت معامله", "میانگین قیمت خرید"]
+    expression: "AVG(CustomerContract.Price)"
   contract_price_max:
-    aliases: ["بیشترین قیمت قرارداد"]
-    expression: "MAX(Contract.Price)"
+    aliases: ["بیشترین قیمت معامله", "بیشترین قیمت خرید"]
+    expression: "MAX(CustomerContract.Price)"
   hall_matching_quantity:
     aliases: ["حجم مچینگ"]
     expression: "SUM(Contract.HallMatchingQuantity)"
