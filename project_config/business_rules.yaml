@@ -11,11 +11,18 @@ rules:
       Customer ranking must be based on CustomerContract.
   trade:
     rule_text: |
-      Trade analysis must use Auction_Fact.Contract.
-      Contract value = SUM(Contract.TotalPrice)
-      Contract volume = SUM(Contract.HallMatchingQuantity)
-      Trade count = COUNT(DISTINCT Contract.ID)
-      Average trade price = AVG(Contract.Price)
+      در این دیتابیس، تمام "معاملات" و "خرید" و "فروش" مشتریان
+      در جدول Auction_Fact.CustomerContract ذخیره می‌شود.
+      جدول Auction_Fact.Contract فقط برای تطابق تالاری (Hall Matching) استفاده می‌شود
+      و ربطی به معاملات نهایی مشتریان ندارد.
+
+      Trade value = SUM(CustomerContract.TotalPrice)
+      Trade volume = SUM(CustomerContract.Quantity)
+      Trade count = COUNT(DISTINCT CustomerContract.ID)
+      Average trade price = AVG(CustomerContract.Price)
+
+      Contract table (Auction_Fact.Contract) is ONLY for Hall Matching analysis.
+      When user asks about trades/transactions/معاملات use CustomerContract NOT Contract.
   offer:
     rule_text: |
       Offer analysis must use Auction_Fact.Offer.
