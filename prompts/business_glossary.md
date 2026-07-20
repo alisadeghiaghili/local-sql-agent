@@ -44,6 +44,12 @@
 
 در جدول: `[Auction_Dim].[Broker]`
 
+ستون نام: `PersianName` — نام کارگزاری (Broker name)
+
+⚠️ Broker ستون `Name` ندارد. همیشه از `PersianName` استفاده کنید.
+نادرست: `b.Name`
+درست: `b.PersianName`
+
 ---
 
 ## نماد / Symbol
