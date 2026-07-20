@@ -51,6 +51,9 @@ rules:
       Seller broker means SellerBroker_ID.
       Broker performance must be calculated using BuyerBroker_ID or SellerBroker_ID.
       Never use generic Broker_ID when question explicitly mentions buyer or seller broker.
+      Broker display name column is PersianName, NOT Name.
+      Correct: b.PersianName
+      Incorrect: b.Name
   symbol:
     rule_text: |
       نماد = Symbol
