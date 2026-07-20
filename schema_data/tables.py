@@ -10,7 +10,7 @@ TABLE_DESCRIPTIONS = {
     # --- Dimension Tables ---
     "Customer": "Auction_Dim.Customer — buyer / customer master data مشتری خریدار",
     "Supplier": "Auction_Dim.Supplier — supplier / seller master data تامین‌کننده فروشنده",
-    "Broker": "Auction_Dim.Broker — brokerage firms کارگزاری",
+    "Broker": "Auction_Dim.Broker — brokerage firms کارگزاری columns: PersianName (broker name). PersianName is the display name, NOT Name column (Name does not exist on Broker).",
     "Symbol": "Auction_Dim.Symbol — trading symbols (commodities) نماد کالا",
     "Ring": "Auction_Dim.Ring — trading halls / rings تالار رینگ",
     "Date": "General_Dim.Date — Persian calendar date dimension تاریخ سال ماه",
