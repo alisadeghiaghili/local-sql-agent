@@ -9,6 +9,6 @@ logs/*.jsonl
 dist/
 build/
 *.egg-info/
-
+.config.example
 # Project-specific configuration (contains domain data — never commit)
 project_config/
