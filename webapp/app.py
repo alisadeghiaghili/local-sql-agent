@@ -1,0 +1,171 @@
+"""Simple web front-end for the local SQL agent.
+
+Usage (from this folder)::
+
+    py -3.13 app.py create-user alice            # prompts for password
+    py -3.13 app.py create-user alice s3cret     # password on the command line
+    py -3.13 app.py                              # dev server on http://127.0.0.1:5000
+
+Users are stored in ``app.db`` (SQLite) with hashed passwords.  Every
+submitted question is logged to the ``logs`` table with its result.
+"""
+
+from __future__ import annotations
+
+import getpass
+import os
+import secrets
+import sqlite3
+import sys
+from pathlib import Path
+
+from flask import Flask, flash, redirect, render_template, request, session, url_for
+
+import db
+from agent import answer_question
+
+WEBAPP_DIR = Path(__file__).resolve().parent
+SECRET_KEY_FILE = WEBAPP_DIR / ".secret_key"
+
+# How many result rows are rendered on the page (the full set is in the CSV).
+MAX_ROWS_SHOWN = 100
+
+# Only this account may create new users via /register (env ADMIN_USER overrides).
+ADMIN_USER = os.getenv("ADMIN_USER", "bahmanabadi.m")
+
+
+def _secret_key() -> str:
+    """Env var wins; otherwise persist a random key so sessions survive restarts."""
+    env_key = os.getenv("SECRET_KEY")
+    if env_key:
+        return env_key
+    if SECRET_KEY_FILE.exists():
+        return SECRET_KEY_FILE.read_text().strip()
+    key = secrets.token_hex(32)
+    SECRET_KEY_FILE.write_text(key)
+    return key
+
+
+def create_app() -> Flask:
+    db.init_db()
+    app = Flask(__name__)
+    app.secret_key = _secret_key()
+    app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 8  # 8h login
+
+    @app.context_processor
+    def _inject_auth() -> dict[str, str | None]:
+        return {"current_user": session.get("username"), "admin_user": ADMIN_USER}
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if "username" in session:
+            return redirect(url_for("index"))
+        if request.method == "POST":
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "")
+            if db.verify_user(username, password) is None:
+                flash("Invalid username or password.", "error")
+            else:
+                session["username"] = username
+                session.permanent = True
+                return redirect(url_for("index"))
+        return render_template("login.html")
+
+    @app.route("/register", methods=["GET", "POST"])
+    def register():
+        username = session.get("username")
+        if username is None:
+            return redirect(url_for("login"))
+        if username != ADMIN_USER:
+            flash("Only an administrator can create accounts.", "error")
+            return redirect(url_for("index"))
+        if request.method == "POST":
+            new_username = request.form.get("username", "").strip()
+            password = request.form.get("password", "")
+            confirm = request.form.get("confirm", "")
+            if not new_username or not password:
+                flash("Username and password are required.", "error")
+            elif password != confirm:
+                flash("Passwords do not match.", "error")
+            else:
+                try:
+                    db.create_user(new_username, password)
+                except sqlite3.IntegrityError:
+                    flash(f"Username '{new_username}' is already taken.", "error")
+                else:
+                    flash(f"Account '{new_username}' created.", "success")
+                    return redirect(url_for("register"))
+        return render_template("register.html", username=username)
+
+    @app.route("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
+
+    @app.route("/", methods=["GET", "POST"])
+    def index():
+        if "username" not in session:
+            return redirect(url_for("login"))
+        result = None
+        if request.method == "POST":
+            question = request.form.get("question", "").strip()
+            if not question:
+                flash("Please enter a question.", "error")
+            else:
+                interpret = request.form.get("interpret") == "on"
+                result = answer_question(question, interpret)
+                db.log_query(
+                    username=session["username"],
+                    question=question,
+                    status=result["status"],
+                    generated_sql=result["sql"],
+                    interpretation=result["interpretation"],
+                    output_file=result["output_file"],
+                    row_count=result["row_count"],
+                    error_message=result["error_message"],
+                    elapsed_seconds=result["elapsed_seconds"],
+                )
+                if result["status"] != "SUCCESS":
+                    flash(result["error_message"], "error")
+        return render_template(
+            "index.html",
+            username=session["username"],
+            result=result,
+            max_rows_shown=MAX_ROWS_SHOWN,
+        )
+
+    return app
+
+
+app = create_app()
+
+
+def _cli_create_user(argv: list[str]) -> int:
+    """create-user <username> [password] — password prompts if omitted."""
+    if len(argv) < 2:
+        print("Usage: app.py create-user <username> [password]")
+        return 2
+    username = argv[1].strip()
+    password = argv[2] if len(argv) > 2 else getpass.getpass("Password: ")
+    if not username or not password:
+        print("Username and password must not be empty.")
+        return 2
+    try:
+        db.create_user(username, password)
+    except Exception as exc:  # noqa: BLE001 - sqlite3.IntegrityError and friends
+        print(f"Failed to create user: {exc}")
+        return 1
+    print(f"User '{username}' created.")
+    return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "create-user":
+        return _cli_create_user(argv)
+    app.run(host="127.0.0.1", port=5000, debug=False)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
