@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Ask · Local SQL Agent{% endblock %}
+{% block content %}
+
+<section class="card ask-card">
+  <h2>Ask your question</h2>
+  <p class="muted">English or Persian — the agent will answer against the database.</p>
+  <form method="post" action="{{ url_for('index') }}">
+    <textarea name="question" rows="4" dir="auto" required
+              placeholder="e.g. Top 10 customers by purchase value in 1402&#10;برترین مشتریان از نظر ارزش خرید در سال 1402 کدامند؟"></textarea>
+    <div class="form-row">
+      <label class="check">
+        <input type="checkbox" name="interpret" checked>
+        Show plain-language summary
+      </label>
+      <button class="btn btn-primary" type="submit">Ask</button>
+    </div>
+  </form>
+</section>
+
+{% if result %}
+<section class="card results-card">
+  <div class="results-head">
+    <h2>Results</h2>
+    {% if result.status == "SUCCESS" %}
+      <span class="badge badge-ok">SUCCESS</span>
+    {% else %}
+      <span class="badge badge-err">ERROR</span>
+    {% endif %}
+    <span class="muted meta">model: {{ result.model or "—" }} · {{ result.elapsed_seconds }}s</span>
+  </div>
+
+  <p class="asked" dir="auto"><strong>Question:</strong> {{ result.question }}</p>
+
+  {% if result.sql %}
+  <details class="sql-box">
+    <summary>Generated SQL</summary>
+    <pre><code>{{ result.sql }}</code></pre>
+  </details>
+  {% endif %}
+
+  {% if result.interpretation %}
+  <p class="interpretation" dir="auto">{{ result.interpretation }}</p>
+  {% endif %}
+
+  {% if result.columns %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>{% for col in result.columns %}<th dir="auto">{{ col }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for row in result.rows[:max_rows_shown] %}
+        <tr>{% for col in result.columns %}<td dir="auto">{{ row[col] }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="meta">
+    {{ result.row_count }} row{{ "s" if result.row_count != 1 }}
+    {% if result.row_count > max_rows_shown %}· showing first {{ max_rows_shown }}{% endif %}
+    {% if result.output_file %}· saved to <code>{{ result.output_file }}</code>{% endif %}
+  </p>
+  {% elif result.status == "SUCCESS" %}
+  <p class="muted">No rows returned for this question.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% endblock %}

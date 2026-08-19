@@ -1,0 +1,6 @@
+outputs/
+app.db
+.secret_key
+__pycache__/
+*.pyc
+.venv/
