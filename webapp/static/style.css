@@ -151,6 +151,20 @@ textarea { resize: vertical; min-height: 110px; }
 
 .flash-error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
 
+/* ── loading spinner ────────────────────────────────── */
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 24px;
+  margin-bottom: 24px;
+}
+
+.loading[hidden] { display: none; }
+
+.loading img { width: 96px; height: 96px; }
+
 /* ── results ────────────────────────────────────────── */
 .ask-card { margin-bottom: 24px; }
 
