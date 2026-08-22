@@ -15,6 +15,11 @@ RULES:
 * Never hallucinate columns.
 * Never hallucinate joins.
 
+COLUMN NAMES:
+* Column names shown in the schema are exact. Never rename, translate, or invent column names — use them exactly as listed.
+* The customer/supplier national code (کد ملی، شناسه ملی) is stored in the column [NationalID]. There is no column named [NationalCode] anywhere in the database.
+* Example: correct: c.NationalID — incorrect: c.NationalCode
+
 SQL SERVER RULES:
 
 * Never use LIMIT.
