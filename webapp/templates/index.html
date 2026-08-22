@@ -64,7 +64,7 @@
   <p class="meta">
     {{ result.row_count }} row{{ "s" if result.row_count != 1 }}
     {% if result.row_count > max_rows_shown %}· showing first {{ max_rows_shown }}{% endif %}
-    {% if result.output_file %}· saved to <code>{{ result.output_file }}</code>{% endif %}
+    {% if output_filename %}· <a class="btn btn-small" href="{{ url_for('download', filename=output_filename) }}">Download CSV</a>{% endif %}
   </p>
   {% elif result.status == "SUCCESS" %}
   <p class="muted">No rows returned for this question.</p>
