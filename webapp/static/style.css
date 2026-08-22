@@ -7,6 +7,7 @@
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
   --ok: #16a34a;
+  --ok-dark: #15803d;
   --err: #dc2626;
   --radius: 12px;
 }
@@ -139,6 +140,23 @@ textarea { resize: vertical; min-height: 110px; }
 
 .btn-block { width: 100%; margin-top: 20px; }
 .btn-small { padding: 6px 12px; font-size: 13px; }
+
+.btn-group { display: flex; align-items: center; gap: 10px; }
+
+.btn-download {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #fff;
+}
+
+.btn-download:hover { background: var(--ok-dark); border-color: var(--ok-dark); }
+
+.icon-dl {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+  margin-right: 6px;
+}
 
 /* ── flash messages ─────────────────────────────────── */
 .flash {
