@@ -5,7 +5,7 @@
 <section class="card ask-card">
   <h2>Ask your question</h2>
   <p class="muted">English or Persian — the agent will answer against the database.</p>
-  <form method="post" action="{{ url_for('index') }}">
+  <form method="post" action="{{ url_for('index') }}" id="ask-form">
     <textarea name="question" rows="4" dir="auto" required
               placeholder="e.g. Top 10 customers by purchase value in 1402&#10;برترین مشتریان از نظر ارزش خرید در سال 1402 کدامند؟"></textarea>
     <div class="form-row">
@@ -17,6 +17,11 @@
     </div>
   </form>
 </section>
+
+<div id="loading" class="loading" hidden>
+  <img src="{{ url_for('static', filename='images/spinner.svg') }}" alt="Loading">
+  <p class="muted">Running your question…</p>
+</div>
 
 {% if result %}
 <section class="card results-card">
@@ -66,5 +71,12 @@
   {% endif %}
 </section>
 {% endif %}
+
+<script>
+  document.getElementById("ask-form").addEventListener("submit", () => {
+    document.getElementById("loading").hidden = false;
+    document.querySelector("#ask-form button[type=submit]").disabled = true;
+  });
+</script>
 
 {% endblock %}
