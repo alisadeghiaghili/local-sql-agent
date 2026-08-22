@@ -67,14 +67,14 @@ TABLE_COLUMNS = {
     "Customer": {
         "ID": "Primary key",
         "Name": "Customer full name",
-        "NationalCode": "National ID",
+        "NationalID": "National ID / national code (کد ملی، شناسه ملی). Exact column name is NationalID — never write NationalCode.",
         "IsActive": "Active flag",
     },
 
     "Supplier": {
         "ID": "Primary key",
         "Customer_Name": "Supplier name",
-        "NationalCode": "National ID",
+        "NationalID": "National ID / national code (کد ملی، شناسه ملی). Exact column name is NationalID — never write NationalCode.",
     },
 
     "Broker": {
