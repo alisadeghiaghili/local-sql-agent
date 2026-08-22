@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="core" cx="35%" cy="30%">
+      <stop offset="0" stop-color="#e9ffff"/>
+      <stop offset=".28" stop-color="#39e8ff"/>
+      <stop offset=".62" stop-color="#2477ff"/>
+      <stop offset="1" stop-color="#7b35e8"/>
+    </radialGradient>
+
+    <linearGradient id="cyanBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#55f5ff"/>
+      <stop offset=".5" stop-color="#2585ff"/>
+      <stop offset="1" stop-color="#8b45ff"/>
+    </linearGradient>
+
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#8f4dff"/>
+      <stop offset=".5" stop-color="#35cfff"/>
+      <stop offset="1" stop-color="#b77aff"/>
+    </linearGradient>
+
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <filter id="softGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+
+    <style>
+      .orbit { fill:none; stroke:url(#cyanBlue); stroke-linecap:round; }
+      .orbit2 { fill:none; stroke:url(#violet); stroke-linecap:round; }
+      .node { filter:url(#glow); transform-box:fill-box; transform-origin:center; animation:pulse 1.8s ease-in-out infinite; }
+      .n2{animation-delay:.15s}.n3{animation-delay:.30s}.n4{animation-delay:.45s}
+      .n5{animation-delay:.60s}.n6{animation-delay:.75s}.n7{animation-delay:.90s}
+      .n8{animation-delay:1.05s}.n9{animation-delay:1.20s}.n10{animation-delay:1.35s}
+      .n11{animation-delay:1.50s}.n12{animation-delay:1.65s}
+      .energy { stroke-dasharray:22 180; animation:flow 1.6s linear infinite; }
+      .energy2 { stroke-dasharray:12 150; animation:flow 2.2s linear infinite reverse; }
+      .spin { transform-origin:256px 256px; animation:spin 9s linear infinite; }
+      .spinReverse { transform-origin:256px 256px; animation:spinReverse 12s linear infinite; }
+      @keyframes pulse {
+        0%,100% { opacity:.35; transform:scale(.78); }
+        45% { opacity:1; transform:scale(1.16); }
+        70% { opacity:.55; transform:scale(.92); }
+      }
+      @keyframes flow { to { stroke-dashoffset:-220; } }
+      @keyframes spin { to { transform:rotate(360deg); } }
+      @keyframes spinReverse { to { transform:rotate(-360deg); } }
+      @media(prefers-reduced-motion:reduce){
+        .node,.energy,.energy2,.spin,.spinReverse{animation:none}
+      }
+    </style>
+  </defs>
+
+  <!-- Transparent background -->
+
+  <!-- Soft ambient glow -->
+  <circle cx="256" cy="256" r="175" fill="#4bcfff" opacity=".08" filter="url(#softGlow)"/>
+  <circle cx="256" cy="256" r="125" fill="#7d4cff" opacity=".06" filter="url(#softGlow)"/>
+
+  <!-- Rotating orbital neural structure -->
+  <g class="spin">
+    <ellipse class="orbit" cx="256" cy="256" rx="205" ry="108" stroke-width="3" opacity=".65"/>
+    <ellipse class="orbit2" cx="256" cy="256" rx="190" ry="145" stroke-width="2.5" opacity=".55" transform="rotate(58 256 256)"/>
+    <ellipse class="orbit" cx="256" cy="256" rx="175" ry="88" stroke-width="2" opacity=".45" transform="rotate(-55 256 256)"/>
+  </g>
+
+  <!-- Neural connections -->
+  <g fill="none" stroke-linecap="round">
+    <path class="orbit" stroke-width="7" opacity=".45"
+      d="M105 220 C150 170 180 160 224 205 S315 160 397 205"/>
+    <path class="orbit2" stroke-width="6" opacity=".42"
+      d="M105 300 C155 335 184 295 218 270 S300 210 407 285"/>
+    <path class="orbit" stroke-width="5" opacity=".42"
+      d="M145 135 C190 210 210 230 256 256 S325 315 370 385"/>
+    <path class="orbit2" stroke-width="5" opacity=".38"
+      d="M365 135 C325 190 310 225 256 256 S180 325 140 375"/>
+
+    <!-- Moving energy packets -->
+    <path class="energy" stroke="#ffffff" stroke-width="4"
+      d="M105 220 C150 170 180 160 224 205 S315 160 397 205"/>
+    <path class="energy2" stroke="#8fffff" stroke-width="3"
+      d="M105 300 C155 335 184 295 218 270 S300 210 407 285"/>
+    <path class="energy" stroke="#d8c7ff" stroke-width="3"
+      d="M145 135 C190 210 210 230 256 256 S325 315 370 385"/>
+  </g>
+
+  <!-- Outer nodes -->
+  <g>
+    <circle class="node n1" cx="105" cy="220" r="13" fill="url(#core)"/>
+    <circle class="node n2" cx="145" cy="135" r="11" fill="url(#cyanBlue)"/>
+    <circle class="node n3" cx="224" cy="205" r="10" fill="url(#violet)"/>
+    <circle class="node n4" cx="397" cy="205" r="14" fill="url(#core)"/>
+    <circle class="node n5" cx="407" cy="285" r="10" fill="url(#cyanBlue)"/>
+    <circle class="node n6" cx="370" cy="385" r="13" fill="url(#core)"/>
+    <circle class="node n7" cx="140" cy="375" r="12" fill="url(#cyanBlue)"/>
+    <circle class="node n8" cx="105" cy="300" r="9" fill="url(#violet)"/>
+    <circle class="node n9" cx="365" cy="135" r="11" fill="url(#cyanBlue)"/>
+    <circle class="node n10" cx="218" cy="270" r="9" fill="url(#core)"/>
+    <circle class="node n11" cx="300" cy="210" r="9" fill="url(#violet)"/>
+    <circle class="node n12" cx="325" cy="315" r="10" fill="url(#cyanBlue)"/>
+  </g>
+
+  <!-- Small orbiting particles -->
+  <g class="spinReverse" filter="url(#glow)">
+    <circle cx="256" cy="55" r="3" fill="#55f5ff"/>
+    <circle cx="447" cy="256" r="3" fill="#9b65ff"/>
+    <circle cx="256" cy="457" r="3" fill="#55f5ff"/>
+    <circle cx="65" cy="256" r="3" fill="#b77aff"/>
+  </g>
+</svg>
