@@ -14,15 +14,26 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import secrets
 import sqlite3
 import sys
 from pathlib import Path
 
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import (
+    Flask,
+    abort,
+    flash,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
 
 import db
-from agent import answer_question
+from agent import OUTPUT_DIR, answer_question
 
 WEBAPP_DIR = Path(__file__).resolve().parent
 SECRET_KEY_FILE = WEBAPP_DIR / ".secret_key"
@@ -102,6 +113,15 @@ def create_app() -> Flask:
         session.clear()
         return redirect(url_for("login"))
 
+    @app.route("/download/<filename>")
+    def download(filename):
+        if "username" not in session:
+            return redirect(url_for("login"))
+        # Only serve files the agent itself generated, never arbitrary paths.
+        if not re.fullmatch(r"output_[0-9]{8}_[0-9]{6}(?:_[0-9]+)?\.csv", filename):
+            abort(404)
+        return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+
     @app.route("/", methods=["GET", "POST"])
     def index():
         if "username" not in session:
@@ -132,6 +152,11 @@ def create_app() -> Flask:
             username=session["username"],
             result=result,
             max_rows_shown=MAX_ROWS_SHOWN,
+            output_filename=(
+                Path(result["output_file"]).name
+                if result and result["output_file"]
+                else None
+            ),
         )
 
     return app
