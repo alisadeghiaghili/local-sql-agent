@@ -22,6 +22,11 @@ body {
   line-height: 1.6;
 }
 
+/* ── Persian (FA) typography ───────────────────────── */
+html[lang="fa"] body {
+  font-family: "B Yekan", "Yekan", "Vazirmatn", "Noto Sans Arabic", Tahoma, sans-serif;
+}
+
 .container {
   max-width: 900px;
   margin: 0 auto;
