@@ -34,6 +34,8 @@ _FA: dict[str, str] = {
     "s": "ثانیه",
     "Question:": "سؤال:",
     "Generated SQL": "SQL تولیدشده",
+    "Copy": "کپی",
+    "Copied": "کپی شد",
     "No rows returned for this question.": "برای این سؤال هیچ ردیفی بازنگشت.",
     "showing first %(count)s rows": "نمایش %(count)s ردیف نخست",
     "Ask · Local SQL Agent": "پرسش · Local SQL Agent",
