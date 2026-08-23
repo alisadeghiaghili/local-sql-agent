@@ -46,8 +46,8 @@ header {
 }
 
 .logo {
-  height: 70px;
-  width: 70px;
+  height: 120px;
+  width: 120px;
 }
 
 nav { display: flex; align-items: center; gap: 12px; }
