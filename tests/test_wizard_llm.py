@@ -36,6 +36,21 @@ import llm.wizard_llm as wz
 # ---------------------------------------------------------------------------
 
 class TestSelectProvider:
+    """Config is mocked so probe results are deterministic and independent of
+    the real .env / os.environ state."""
+
+    @staticmethod
+    def _fake_cfg() -> MagicMock:
+        cfg = MagicMock()
+        cfg.settings.ollama_model = "llama3"
+        cfg.settings.ollama_url = "http://localhost:11434/api/generate"
+        cfg.settings.openai_api_key = "sk-test"
+        cfg.settings.openai_model = "gpt-4o-mini"
+        cfg.settings.openai_base_url = "http://vllm:8000/v1"
+        cfg.settings.anthropic_api_key = ""
+        cfg.settings.anthropic_model = "claude-3-5-sonnet-20241022"
+        return cfg
+
     def test_prefers_requested_provider_when_reachable(self):
         with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
             with patch.object(
@@ -45,7 +60,7 @@ class TestSelectProvider:
             ) as openai_cls:
                 ollama_cls.return_value.test_connection.return_value = True
                 openai_cls.return_value.test_connection.return_value = True
-                with patch.object(wz, "_config_or_none", return_value=None):
+                with patch.object(wz, "_config_or_none", return_value=self._fake_cfg()):
                     assert wz.select_provider(prefer="ollama") == "ollama"
 
     def test_falls_back_when_prefer_unreachable(self):
@@ -57,7 +72,7 @@ class TestSelectProvider:
             ) as openai_cls:
                 ollama_cls.return_value.test_connection.return_value = False
                 openai_cls.return_value.test_connection.return_value = True
-                with patch.object(wz, "_config_or_none", return_value=None):
+                with patch.object(wz, "_config_or_none", return_value=self._fake_cfg()):
                     with patch.object(
                         wz.time, "perf_counter", side_effect=[0.0, 0.1, 0.0, 0.05]
                     ):
@@ -65,6 +80,8 @@ class TestSelectProvider:
 
     def test_skips_unconfigured_openai(self):
         """OpenAI without an API key must not be selected."""
+        cfg = self._fake_cfg()
+        cfg.settings.openai_api_key = ""
         with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
             with patch.object(
                 wz, "_OllamaProvider", spec=True
@@ -73,10 +90,9 @@ class TestSelectProvider:
             ) as openai_cls:
                 ollama_cls.return_value.test_connection.return_value = False
                 openai_cls.return_value.test_connection.return_value = True
-                with patch.object(wz, "_config_or_none", return_value=None):
-                    with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
-                        with pytest.raises(RuntimeError, match="No LLM provider"):
-                            wz.select_provider(prefer="ollama")
+                with patch.object(wz, "_config_or_none", return_value=cfg):
+                    with pytest.raises(RuntimeError, match="No LLM provider"):
+                        wz.select_provider(prefer="ollama")
 
     def test_raises_when_nothing_reachable(self):
         with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
@@ -87,7 +103,7 @@ class TestSelectProvider:
             ) as openai_cls:
                 ollama_cls.return_value.test_connection.return_value = False
                 openai_cls.return_value.test_connection.return_value = False
-                with patch.object(wz, "_config_or_none", return_value=None):
+                with patch.object(wz, "_config_or_none", return_value=self._fake_cfg()):
                     with pytest.raises(RuntimeError, match="No LLM provider"):
                         wz.select_provider(prefer="ollama")
 
