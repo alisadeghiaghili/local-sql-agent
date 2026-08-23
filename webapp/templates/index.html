@@ -37,7 +37,7 @@
     {% else %}
       <span class="badge badge-err">{{ _("ERROR") }}</span>
     {% endif %}
-    <span class="muted meta">{{ _("model") }}: {{ result.model or "—" }} · {{ result.elapsed_seconds }}{{ _("s") }}</span>
+    <span class="muted meta">{{ _("model") }}: {{ result.model or "—" }} · {% if current_lang == "fa" %}<bdi>{{ result.elapsed_seconds }}</bdi> {{ _("s") }}{% else %}{{ result.elapsed_seconds }}{{ _("s") }}{% endif %}</span>
   </div>
 
   <p class="asked" dir="auto"><strong>{{ _("Question:") }}</strong> {{ result.question }}</p>
