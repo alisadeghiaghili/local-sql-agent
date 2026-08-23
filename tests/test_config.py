@@ -26,6 +26,38 @@ class TestSettings:
         with patch.dict(os.environ, {"OLLAMA_MODEL": "my-model"}):
             assert Settings().ollama_model == "my-model"
 
+    def test_default_llm_provider_is_auto(self):
+        assert Settings().llm_provider == "auto"
+
+    def test_env_override_llm_provider(self):
+        with patch.dict(os.environ, {"LLM_PROVIDER": "openai"}):
+            assert Settings().llm_provider == "openai"
+
+    def test_env_override_openai_base_url(self):
+        with patch.dict(os.environ, {"OPENAI_BASE_URL": "http://vllm:8000/v1"}):
+            assert Settings().openai_base_url == "http://vllm:8000/v1"
+
+    def test_env_override_openai_api_key(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            assert Settings().openai_api_key == "sk-test"
+
+    def test_validate_openai_requires_key(self):
+        s = Settings.__new__(Settings)
+        object.__setattr__(s, "llm_provider", "openai")
+        object.__setattr__(s, "ollama_model", "llama3")
+        object.__setattr__(s, "openai_api_key", "")
+        object.__setattr__(s, "db_connection_url", "mssql+ok")
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            s.validate()
+
+    def test_validate_unknown_provider(self):
+        s = Settings.__new__(Settings)
+        object.__setattr__(s, "llm_provider", "grok")
+        object.__setattr__(s, "ollama_model", "llama3")
+        object.__setattr__(s, "db_connection_url", "mssql+ok")
+        with pytest.raises(ValueError, match="LLM_PROVIDER"):
+            s.validate()
+
     def test_frozen(self):
         with pytest.raises((AttributeError, TypeError)):
             Settings().ollama_model = "x"  # type: ignore[misc]
@@ -35,6 +67,7 @@ class TestSettings:
 
     def test_validate_raises_for_placeholder_model(self):
         s = Settings.__new__(Settings)
+        object.__setattr__(s, "llm_provider", "auto")
         object.__setattr__(s, "ollama_model", "change_me")
         object.__setattr__(s, "db_connection_url", "mssql+ok")
         with pytest.raises(ValueError, match="OLLAMA_MODEL"):
@@ -42,6 +75,7 @@ class TestSettings:
 
     def test_validate_raises_for_empty_url(self):
         s = Settings.__new__(Settings)
+        object.__setattr__(s, "llm_provider", "auto")
         object.__setattr__(s, "ollama_model", "gpt-oss:20b")
         object.__setattr__(s, "db_connection_url", "")
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
