@@ -1,23 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Ask · Local SQL Agent{% endblock %}
+{% block title %}{{ _("Ask · Local SQL Agent") }}{% endblock %}
 {% block content %}
 
 <section class="card ask-card">
-  <h2>Ask your question</h2>
-  <p class="muted">English or Persian — the agent will answer against the database.</p>
+  <h2>{{ _("Ask your question") }}</h2>
+  <p class="muted">{{ _("English or Persian — the agent will answer against the database.") }}</p>
   <form method="post" action="{{ url_for('index') }}" id="ask-form">
     <textarea name="question" rows="4" dir="auto" required
               placeholder="e.g. Top 10 customers by purchase value in 1402&#10;برترین مشتریان از نظر ارزش خرید در سال 1402 کدامند؟"></textarea>
     <div class="form-row">
       <label class="check">
         <input type="checkbox" name="interpret" checked>
-        Show plain-language summary
+        {{ _("Show plain-language summary") }}
       </label>
       <div class="btn-group">
         {% if output_filename %}
-        <a class="btn btn-download" href="{{ url_for('download', filename=output_filename) }}"><svg class="icon-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Report</a>
+        <a class="btn btn-download" href="{{ url_for('download', filename=output_filename) }}"><svg class="icon-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{ _("Report") }}</a>
         {% endif %}
-        <button class="btn btn-primary" type="submit">Ask</button>
+        <button class="btn btn-primary" type="submit">{{ _("Ask") }}</button>
       </div>
     </div>
   </form>
@@ -25,26 +25,26 @@
 
 <div id="loading" class="loading" hidden>
   <img src="{{ url_for('static', filename='images/spinner.svg') }}" alt="Loading">
-  <p class="muted">Running your question…</p>
+  <p class="muted">{{ _("Running your question…") }}</p>
 </div>
 
 {% if result %}
 <section class="card results-card">
   <div class="results-head">
-    <h2>Results</h2>
+    <h2>{{ _("Results") }}</h2>
     {% if result.status == "SUCCESS" %}
-      <span class="badge badge-ok">SUCCESS</span>
+      <span class="badge badge-ok">{{ _("SUCCESS") }}</span>
     {% else %}
-      <span class="badge badge-err">ERROR</span>
+      <span class="badge badge-err">{{ _("ERROR") }}</span>
     {% endif %}
-    <span class="muted meta">model: {{ result.model or "—" }} · {{ result.elapsed_seconds }}s</span>
+    <span class="muted meta">{{ _("model") }}: {{ result.model or "—" }} · {{ result.elapsed_seconds }}{{ _("s") }}</span>
   </div>
 
-  <p class="asked" dir="auto"><strong>Question:</strong> {{ result.question }}</p>
+  <p class="asked" dir="auto"><strong>{{ _("Question:") }}</strong> {{ result.question }}</p>
 
   {% if result.sql %}
   <details class="sql-box">
-    <summary>Generated SQL</summary>
+    <summary>{{ _("Generated SQL") }}</summary>
     <pre><code>{{ result.sql }}</code></pre>
   </details>
   {% endif %}
@@ -67,11 +67,15 @@
     </table>
   </div>
   <p class="meta">
+    {% if current_lang == "fa" %}
+    {{ result.row_count }} ردیف
+    {% else %}
     {{ result.row_count }} row{{ "s" if result.row_count != 1 }}
-    {% if result.row_count > max_rows_shown %}· showing first {{ max_rows_shown }}{% endif %}
+    {% endif %}
+    {% if result.row_count > max_rows_shown %}· {{ _("showing first %(count)s rows", count=max_rows_shown) }}{% endif %}
   </p>
   {% elif result.status == "SUCCESS" %}
-  <p class="muted">No rows returned for this question.</p>
+  <p class="muted">{{ _("No rows returned for this question.") }}</p>
   {% endif %}
 </section>
 {% endif %}
