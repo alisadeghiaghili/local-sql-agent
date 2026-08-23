@@ -148,6 +148,24 @@ textarea { resize: vertical; min-height: 110px; }
 
 .check input { width: auto; }
 
+.provider-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  margin: 0;
+}
+
+.provider-select select {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
 /* ── buttons ────────────────────────────────────────── */
 .btn {
   display: inline-block;
