@@ -45,7 +45,10 @@
   {% if result.sql %}
   <details class="sql-box">
     <summary>{{ _("Generated SQL") }}</summary>
-    <pre><code>{{ result.sql }}</code></pre>
+    <div class="sql-body" dir="ltr">
+      <pre><code>{{ result.sql }}</code></pre>
+      <button type="button" class="btn btn-small btn-copy" id="copy-sql">{{ _("Copy") }}</button>
+    </div>
   </details>
   {% endif %}
 
@@ -86,6 +89,28 @@
     document.querySelector("#ask-form button[type=submit]").disabled = true;
     document.querySelectorAll(".results-card, .btn-download").forEach((el) => el.remove());
   });
+
+  const copyBtn = document.getElementById("copy-sql");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", async () => {
+      const sql = document.querySelector(".sql-body code").innerText;
+      try {
+        await navigator.clipboard.writeText(sql);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = sql;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      const original = copyBtn.textContent;
+      copyBtn.textContent = "{{ _('Copied') }}";
+      setTimeout(() => { copyBtn.textContent = original; }, 2000);
+    });
+  }
 </script>
 
 {% endblock %}
