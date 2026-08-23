@@ -189,7 +189,7 @@ textarea { resize: vertical; min-height: 110px; }
 
 .loading[hidden] { display: none; }
 
-.loading img { width: 96px; height: 96px; }
+.loading img { width: 224px; height: 224px; }
 
 /* ── results ────────────────────────────────────────── */
 .ask-card { margin-bottom: 24px; }
