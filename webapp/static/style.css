@@ -53,6 +53,28 @@ header {
 nav { display: flex; align-items: center; gap: 12px; }
 .user { color: var(--muted); font-size: 14px; }
 
+.header-right { display: flex; align-items: center; gap: 14px; }
+
+.lang-switch {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lang-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.lang-btn:hover { background: var(--bg); }
+.lang-btn.active { background: var(--primary); color: #fff; }
+
 /* ── cards & forms ──────────────────────────────────── */
 .card {
   background: var(--surface);
@@ -163,7 +185,7 @@ textarea { resize: vertical; min-height: 110px; }
   width: 16px;
   height: 16px;
   vertical-align: -3px;
-  margin-right: 6px;
+  margin-inline-end: 6px;
 }
 
 /* ── flash messages ─────────────────────────────────── */
