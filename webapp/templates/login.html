@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Login · Local SQL Agent{% endblock %}
+{% block title %}{{ _("Login · Local SQL Agent") }}{% endblock %}
 {% block content %}
 <div class="auth-wrap">
   <div class="card auth-card">
-    <h1>Welcome</h1>
-    <p class="muted">Sign in to ask your database a question in Persian or English.</p>
+    <h1>{{ _("Welcome") }}</h1>
+    <p class="muted">{{ _("Sign in to ask your database a question in Persian or English.") }}</p>
     <form method="post" action="{{ url_for('login') }}">
-      <label for="username">Username</label>
+      <label for="username">{{ _("Username") }}</label>
       <input id="username" name="username" type="text" autocomplete="username" required autofocus>
 
-      <label for="password">Password</label>
+      <label for="password">{{ _("Password") }}</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required>
 
-      <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+      <button class="btn btn-primary btn-block" type="submit">{{ _("Sign in") }}</button>
     </form>
   </div>
 </div>
