@@ -80,6 +80,7 @@
   document.getElementById("ask-form").addEventListener("submit", () => {
     document.getElementById("loading").hidden = false;
     document.querySelector("#ask-form button[type=submit]").disabled = true;
+    document.querySelectorAll(".results-card, .btn-download").forEach((el) => el.remove());
   });
 </script>
 
