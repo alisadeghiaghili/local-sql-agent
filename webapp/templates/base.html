@@ -10,7 +10,10 @@
 <body>
   <div class="container">
     <header>
-      <div class="brand">Local SQL Agent</div>
+      <div class="brand">
+        <img class="logo" src="{{ url_for('static', filename='images/favicon.png') }}" alt="IME logo">
+        Local SQL Agent
+      </div>
       {% if username %}
       <nav>
         <span class="user">{{ username }}</span>

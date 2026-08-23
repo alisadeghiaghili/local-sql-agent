@@ -37,9 +37,17 @@ header {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+
+.logo {
+  height: 70px;
+  width: 70px;
 }
 
 nav { display: flex; align-items: center; gap: 12px; }
