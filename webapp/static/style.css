@@ -260,14 +260,18 @@ textarea { resize: vertical; min-height: 110px; }
 
 .sql-box summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 
-.sql-box pre {
-  margin: 10px 0 4px;
+.sql-body { text-align: left; }
+
+.sql-body pre {
+  margin: 10px 0 8px;
   overflow-x: auto;
   font-family: Consolas, "Cascadia Code", monospace;
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.btn-copy { margin-top: 4px; }
 
 .interpretation {
   background: #eff6ff;
