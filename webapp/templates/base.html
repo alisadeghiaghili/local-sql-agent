@@ -21,7 +21,7 @@
           {% if current_user == admin_user %}
           <a class="btn btn-small" href="{{ url_for('register') }}">{{ _("Add user") }}</a>
           {% endif %}
-          <a class="btn btn-small" href="{{ url_for('logout') }}">{{ _("Logout") }}</a>
+          <a class="btn btn-small btn-danger" href="{{ url_for('logout') }}">{{ _("Logout") }}</a>
         </nav>
         {% endif %}
         <div class="lang-switch" role="group" aria-label="Language">

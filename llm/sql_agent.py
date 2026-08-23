@@ -91,7 +91,10 @@ class SQLAgent:
     ----------
     backend:
         Any :class:`LLMBackend` implementation.  Defaults to
-        :class:`~llm.ollama_backend.OllamaBackend` with settings from env.
+        :func:`~llm.wizard_llm.build_backend` built from *provider*.
+    provider:
+        Provider name (``auto``/``ollama``/``openai``/``mock``).  Used only
+        when *backend* is None; defaults to ``cfg.settings.llm_provider``.
     execute_fn:
         Callable ``(sql: str) -> pd.DataFrame``.  Defaults to
         :func:`database.executor.execute_query` (looked up at call time so
@@ -105,10 +108,11 @@ class SQLAgent:
         backend: LLMBackend | None = None,
         execute_fn: Callable[[str], pd.DataFrame] | None = None,
         max_corrections: int = MAX_CORRECTION_ATTEMPTS,
+        provider: str | None = None,
     ) -> None:
         if backend is None:
-            from llm.ollama_backend import OllamaBackend
-            backend = OllamaBackend()
+            from llm.wizard_llm import build_backend
+            backend = build_backend(provider)
 
         self._backend = backend
         self._execute = execute_fn if execute_fn is not None else _default_execute

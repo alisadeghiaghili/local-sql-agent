@@ -24,13 +24,32 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Generator
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover — python-dotenv is in requirements.txt
+    load_dotenv = None
+
+if load_dotenv is not None and (Path(__file__).resolve().parent / ".env").is_file():
+    # Never overrides real environment variables; only fills gaps.
+    load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Immutable runtime settings resolved from environment variables."""
 
+    # ── LLM provider ─────────────────────────────────────────────────────
+    # "auto" probes the configured providers at runtime and picks the first
+    # accessible one, preferring `llm_provider_prefer` (ollama by default).
+    llm_provider: str = field(
+        default_factory=lambda: os.getenv("LLM_PROVIDER", "auto")
+    )
+    llm_provider_prefer: str = field(
+        default_factory=lambda: os.getenv("LLM_PROVIDER_PREFER", "ollama")
+    )
     ollama_url: str = field(
         default_factory=lambda: os.getenv(
             "OLLAMA_URL", "http://localhost:11434/api/generate"
@@ -38,6 +57,25 @@ class Settings:
     )
     ollama_model: str = field(
         default_factory=lambda: os.getenv("OLLAMA_MODEL", "llama3")
+    )
+    openai_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "OPENAI_BASE_URL", "https://api.openai.com/v1"
+        )
+    )
+    openai_model: str = field(
+        default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    )
+    openai_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENAI_API_KEY", "")
+    )
+    anthropic_api_key: str = field(
+        default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
+    )
+    anthropic_model: str = field(
+        default_factory=lambda: os.getenv(
+            "ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"
+        )
     )
     db_connection_url: str = field(
         default_factory=lambda: os.getenv(
@@ -75,8 +113,15 @@ class Settings:
             "your_password_here", "your_server_here",
             "your_db_here", "change_me", "",
         }
+        if self.llm_provider not in ("auto", "ollama", "openai", "anthropic", "mock"):
+            raise ValueError(
+                f"LLM_PROVIDER must be one of auto/ollama/openai/anthropic/mock, "
+                f"got {self.llm_provider!r}"
+            )
         if not self.ollama_model or self.ollama_model in placeholders:
             raise ValueError("OLLAMA_MODEL is not configured")
+        if self.llm_provider == "openai" and not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is not configured for provider='openai'")
         if not self.db_connection_url or self.db_connection_url in placeholders:
             raise ValueError("DB_CONNECTION_URL is not configured")
 

@@ -77,21 +77,37 @@ _agent_lock: threading.Lock = threading.Lock()
 # __dict__, so run_query() sees the mock on the very next read.
 agent: SQLAgent | None = None
 
+# Per-provider agents, keyed by provider name.  Only used when run_query()
+# is called with an explicit provider (e.g. from the webapp dropdown).
+_agents_by_provider: dict[str, SQLAgent] = {}
 
-def _get_agent() -> SQLAgent:
+
+def _get_agent(provider: str | None = None) -> SQLAgent:
     """Return the shared ``SQLAgent``, constructing it once on first call.
 
-    Uses double-checked locking to avoid contention on every request after
-    the first construction.  Always reads / writes the public ``agent`` name
-    so that test patches applied to ``api.runner.agent`` are respected.
+    When *provider* is None the module-level ``agent`` singleton is used
+    (test patches applied to ``api.runner.agent`` are respected).  An
+    explicit provider builds its own cached instance.
     """
     global agent
-    if agent is None:          # fast path — no lock needed once set
-        with _agent_lock:
-            if agent is None:  # second check inside lock
-                logger.debug("Constructing SQLAgent singleton")
-                agent = SQLAgent()
-    return agent
+    if provider is None:
+        if agent is None:      # fast path — no lock needed once set
+            with _agent_lock:
+                if agent is None:  # second check inside lock
+                    logger.debug("Constructing SQLAgent singleton")
+                    agent = SQLAgent()
+        return agent
+
+    cached = _agents_by_provider.get(provider)
+    if cached is not None:
+        return cached
+    with _agent_lock:
+        cached = _agents_by_provider.get(provider)
+        if cached is None:
+            logger.debug("Constructing SQLAgent for provider=%s", provider)
+            cached = SQLAgent(provider=provider)
+            _agents_by_provider[provider] = cached
+    return cached
 
 
 def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
@@ -105,6 +121,7 @@ def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
     global agent
     with _agent_lock:
         agent = new_agent
+        _agents_by_provider.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -131,18 +148,23 @@ def run_query(
     system_prompt: str,
     mode: Literal["sql", "result", "full"] = "full",
     interpret: bool = False,
+    provider: str | None = None,
 ) -> QueryResponse:
     """Full pipeline with typed error translation and query-result caching.
 
     Cache is consulted/populated only for mode='result'|'full' with
     interpret=False.  sql-only and interpreted requests always bypass it.
 
+    *provider* selects the LLM backend: ``None`` uses the default singleton
+    (``cfg.settings.llm_provider``), any other value (``auto``, ``ollama``,
+    ``openai``, ...) builds/returns a dedicated agent for that provider.
+
     Raises only :class:`~api.errors.NLQError` subclasses.
     """
     # Read the public ``agent`` name — if a test has patched it via
     # patch('api.runner.agent', mock), _get_agent() is bypassed entirely
     # because the mock is already non-None.
-    _agent = _get_agent()
+    _agent = _get_agent(provider)
 
     # ── cache lookup (result / full, no interpret) ─────────────────────────
     use_cache = (mode in ("result", "full")) and not interpret
