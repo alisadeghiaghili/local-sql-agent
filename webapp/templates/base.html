@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ current_lang }}" dir="{{ 'rtl' if current_lang == 'fa' else 'ltr' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,15 +14,22 @@
         <img class="logo" src="{{ url_for('static', filename='images/favicon.png') }}" alt="IME logo">
         Local SQL Agent
       </div>
-      {% if username %}
-      <nav>
-        <span class="user">{{ username }}</span>
-        {% if current_user == admin_user %}
-        <a class="btn btn-small" href="{{ url_for('register') }}">Add user</a>
+      <div class="header-right">
+        {% if username %}
+        <nav>
+          <span class="user">{{ username }}</span>
+          {% if current_user == admin_user %}
+          <a class="btn btn-small" href="{{ url_for('register') }}">{{ _("Add user") }}</a>
+          {% endif %}
+          <a class="btn btn-small" href="{{ url_for('logout') }}">{{ _("Logout") }}</a>
+        </nav>
         {% endif %}
-        <a class="btn btn-small" href="{{ url_for('logout') }}">Logout</a>
-      </nav>
-      {% endif %}
+        <div class="lang-switch" role="group" aria-label="Language">
+          {% for code, label in langs %}
+          <a class="lang-btn{{ ' active' if current_lang == code }}" href="{{ url_for('set_lang', lang=code) }}">{{ label }}</a>
+          {% endfor %}
+        </div>
+      </div>
     </header>
 
     {% with messages = get_flashed_messages(with_categories=true) %}

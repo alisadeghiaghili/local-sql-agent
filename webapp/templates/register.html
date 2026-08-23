@@ -1,21 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Register · Local SQL Agent{% endblock %}
+{% block title %}{{ _("Register · Local SQL Agent") }}{% endblock %}
 {% block content %}
 <div class="auth-wrap">
   <div class="card auth-card">
-    <h1>Add user</h1>
-    <p class="muted">Create an account for a new user of the Local SQL Agent.</p>
+    <h1>{{ _("Add user") }}</h1>
+    <p class="muted">{{ _("Create an account for a new user of the Local SQL Agent.") }}</p>
     <form method="post" action="{{ url_for('register') }}">
-      <label for="username">Username</label>
+      <label for="username">{{ _("Username") }}</label>
       <input id="username" name="username" type="text" autocomplete="username" required autofocus>
 
-      <label for="password">Password</label>
+      <label for="password">{{ _("Password") }}</label>
       <input id="password" name="password" type="password" autocomplete="new-password" required>
 
-      <label for="confirm">Confirm password</label>
+      <label for="confirm">{{ _("Confirm password") }}</label>
       <input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
 
-      <button class="btn btn-primary btn-block" type="submit">Create account</button>
+      <button class="btn btn-primary btn-block" type="submit">{{ _("Create account") }}</button>
     </form>
   </div>
 </div>

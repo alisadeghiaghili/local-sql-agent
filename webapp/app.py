@@ -33,6 +33,7 @@ from flask import (
 )
 
 import db
+import i18n
 from agent import OUTPUT_DIR, answer_question
 
 WEBAPP_DIR = Path(__file__).resolve().parent
@@ -43,6 +44,11 @@ MAX_ROWS_SHOWN = 100
 
 # Only this account may create new users via /register (env ADMIN_USER overrides).
 ADMIN_USER = os.getenv("ADMIN_USER", "bahmanabadi.m")
+
+
+def _flash(text: str, category: str = "message", **kwargs) -> None:
+    """Flash ``text`` translated into the session's current language."""
+    flash(i18n.translate(text, i18n.get_lang(), **kwargs), category)
 
 
 def _secret_key() -> str:
@@ -67,6 +73,24 @@ def create_app() -> Flask:
     def _inject_auth() -> dict[str, str | None]:
         return {"current_user": session.get("username"), "admin_user": ADMIN_USER}
 
+    @app.context_processor
+    def _inject_i18n() -> dict:
+        lang = i18n.get_lang()
+        return {
+            "current_lang": lang,
+            "langs": [(code, code.upper()) for code in i18n.LANGS],
+            "_": lambda text, **kwargs: i18n.translate(text, lang, **kwargs),
+        }
+
+    @app.route("/lang/<lang>")
+    def set_lang(lang):
+        if lang in i18n.LANGS:
+            session["lang"] = lang
+        referrer = request.referrer or ""
+        if referrer.startswith(request.host_url):
+            return redirect(referrer)
+        return redirect(url_for("index"))
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if "username" in session:
@@ -75,7 +99,7 @@ def create_app() -> Flask:
             username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
             if db.verify_user(username, password) is None:
-                flash("Invalid username or password.", "error")
+                _flash("Invalid username or password.", "error")
             else:
                 session["username"] = username
                 session.permanent = True
@@ -88,23 +112,23 @@ def create_app() -> Flask:
         if username is None:
             return redirect(url_for("login"))
         if username != ADMIN_USER:
-            flash("Only an administrator can create accounts.", "error")
+            _flash("Only an administrator can create accounts.", "error")
             return redirect(url_for("index"))
         if request.method == "POST":
             new_username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
             confirm = request.form.get("confirm", "")
             if not new_username or not password:
-                flash("Username and password are required.", "error")
+                _flash("Username and password are required.", "error")
             elif password != confirm:
-                flash("Passwords do not match.", "error")
+                _flash("Passwords do not match.", "error")
             else:
                 try:
                     db.create_user(new_username, password)
                 except sqlite3.IntegrityError:
-                    flash(f"Username '{new_username}' is already taken.", "error")
+                    _flash("Username '%(name)s' is already taken.", "error", name=new_username)
                 else:
-                    flash(f"Account '{new_username}' created.", "success")
+                    _flash("Account '%(name)s' created.", "success", name=new_username)
                     return redirect(url_for("register"))
         return render_template("register.html", username=username)
 
@@ -130,7 +154,7 @@ def create_app() -> Flask:
         if request.method == "POST":
             question = request.form.get("question", "").strip()
             if not question:
-                flash("Please enter a question.", "error")
+                _flash("Please enter a question.", "error")
             else:
                 interpret = request.form.get("interpret") == "on"
                 result = answer_question(question, interpret)
