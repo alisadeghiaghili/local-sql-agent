@@ -96,11 +96,30 @@
 {% endif %}
 
 <script>
-  document.getElementById("ask-form").addEventListener("submit", () => {
+  // Guards against double submission — Enter (requestSubmit) bypasses a
+  // disabled button, so the flag is checked in the handler itself.
+  let formSubmitting = false;
+  document.getElementById("ask-form").addEventListener("submit", (e) => {
+    if (formSubmitting) {
+      e.preventDefault();
+      return;
+    }
+    formSubmitting = true;
     document.getElementById("loading").hidden = false;
     document.querySelector("#ask-form button[type=submit]").disabled = true;
     document.querySelectorAll(".results-card, .btn-download").forEach((el) => el.remove());
   });
+
+  // Enter submits the question; Shift+Enter inserts a newline (IME-safe so
+  // confirming a Persian composition candidate never submits mid-word).
+  const questionInput = document.querySelector("#ask-form textarea[name=question]");
+  if (questionInput) {
+    questionInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      questionInput.form.requestSubmit();
+    });
+  }
 
   const copyBtn = document.getElementById("copy-sql");
   if (copyBtn) {
