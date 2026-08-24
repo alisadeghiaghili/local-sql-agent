@@ -399,6 +399,33 @@ thead th {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) { background: #fafbfc; }
 
+/* ── pagination ─────────────────────────────────────── */
+tbody tr[hidden] { display: none; }
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.pagination[hidden] { display: none; }
+
+.pagination .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.page-info {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 96px;
+  text-align: center;
+}
+
 .meta {
   margin-top: 12px;
   color: var(--muted);
