@@ -412,7 +412,7 @@ tbody tr[hidden] { display: none; }
 
 .pagination[hidden] { display: none; }
 
-.pagination .btn:disabled {
+.btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;
