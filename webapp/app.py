@@ -39,9 +39,6 @@ from agent import OUTPUT_DIR, answer_question
 WEBAPP_DIR = Path(__file__).resolve().parent
 SECRET_KEY_FILE = WEBAPP_DIR / ".secret_key"
 
-# How many result rows are rendered on the page (the full set is in the CSV).
-MAX_ROWS_SHOWN = 100
-
 # Only this account may create new users via /register (env ADMIN_USER overrides).
 ADMIN_USER = os.getenv("ADMIN_USER", "bahmanabadi.m")
 
@@ -176,7 +173,6 @@ def create_app() -> Flask:
             "index.html",
             username=session["username"],
             result=result,
-            max_rows_shown=MAX_ROWS_SHOWN,
             output_filename=(
                 Path(result["output_file"]).name
                 if result and result["output_file"]

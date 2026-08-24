@@ -70,20 +70,24 @@
       <thead>
         <tr>{% for col in result.columns %}<th dir="auto">{{ col }}</th>{% endfor %}</tr>
       </thead>
-      <tbody>
-        {% for row in result.rows[:max_rows_shown] %}
+      <tbody id="results-body">
+        {% for row in result.rows %}
         <tr>{% for col in result.columns %}<td dir="auto">{{ row[col] }}</td>{% endfor %}</tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  <nav class="pagination" id="pagination" hidden aria-label="{{ _('Results') }}">
+    <button type="button" class="btn btn-small" id="page-prev">{{ _("Previous") }}</button>
+    <span class="page-info" id="page-info" dir="auto"></span>
+    <button type="button" class="btn btn-small" id="page-next">{{ _("Next") }}</button>
+  </nav>
   <p class="meta">
     {% if current_lang == "fa" %}
     {{ result.row_count }} ردیف
     {% else %}
     {{ result.row_count }} row{{ "s" if result.row_count != 1 }}
     {% endif %}
-    {% if result.row_count > max_rows_shown %}· {{ _("showing first %(count)s rows", count=max_rows_shown) }}{% endif %}
   </p>
   {% elif result.status == "SUCCESS" %}
   <p class="muted">{{ _("No rows returned for this question.") }}</p>
@@ -118,6 +122,39 @@
       copyBtn.textContent = "{{ _('Copied') }}";
       setTimeout(() => { copyBtn.textContent = original; }, 2000);
     });
+  }
+
+  // Paginate the results table at 20 rows per page.
+  const resultsBody = document.getElementById("results-body");
+  if (resultsBody) {
+    const ROWS_PER_PAGE = 20;
+    const rows = Array.from(resultsBody.querySelectorAll("tr"));
+    const pageCount = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
+    const nav = document.getElementById("pagination");
+    const prevBtn = document.getElementById("page-prev");
+    const nextBtn = document.getElementById("page-next");
+    const pageInfo = document.getElementById("page-info");
+    const pageLabel = "{{ _('Page %(page)s of %(pages)s') }}";
+    let page = 1;
+
+    const renderPage = () => {
+      const start = (page - 1) * ROWS_PER_PAGE;
+      rows.forEach((row, i) => {
+        row.hidden = i < start || i >= start + ROWS_PER_PAGE;
+      });
+      prevBtn.disabled = page <= 1;
+      nextBtn.disabled = page >= pageCount;
+      pageInfo.textContent = pageLabel
+        .replace("%(page)s", String(page))
+        .replace("%(pages)s", String(pageCount));
+    };
+
+    if (pageCount > 1) {
+      nav.hidden = false;
+      prevBtn.addEventListener("click", () => { if (page > 1) { page--; renderPage(); } });
+      nextBtn.addEventListener("click", () => { if (page < pageCount) { page++; renderPage(); } });
+      renderPage();
+    }
   }
 </script>
 

@@ -41,7 +41,9 @@ _FA: dict[str, str] = {
     "Copy": "کپی",
     "Copied": "کپی شد",
     "No rows returned for this question.": "برای این سؤال هیچ ردیفی بازنگشت.",
-    "showing first %(count)s rows": "نمایش %(count)s ردیف نخست",
+    "Previous": "قبلی",
+    "Next": "بعدی",
+    "Page %(page)s of %(pages)s": "صفحه %(page)s از %(pages)s",
     "Ask · Local SQL Agent": "پرسش · Local SQL Agent",
     # login.html
     "Welcome": "خوش آمدید",
