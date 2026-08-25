@@ -24,10 +24,6 @@ _FA: dict[str, str] = {
         "انگلیسی یا فارسی — عامل بر اساس پایگاه داده به سؤال شما پاسخ می‌دهد."
     ),
     "Show plain-language summary": "نمایش خلاصه به زبان ساده",
-    "Provider": "ارائه‌دهنده",
-    "Auto": "خودکار",
-    "Ollama": "اولاما",
-    "OpenAI": "اوپن‌ای‌آی",
     "Ask": "ارسال",
     "Report": "گزارش",
     "Running your question…": "در حال پردازش سؤال شما…",
@@ -69,6 +65,17 @@ _FA: dict[str, str] = {
     "Username '%(name)s' is already taken.": "نام کاربری «%(name)s» قبلاً گرفته شده است.",
     "Account '%(name)s' created.": "حساب «%(name)s» ایجاد شد.",
     "Please enter a question.": "لطفاً یک سؤال وارد کنید.",
+    # sample questions panel
+    "Sample Questions": "نمونه سوالات",
+    "Click a question to ask it instantly.": "برای پرسیدن، روی یک سؤال کلیک کنید.",
+    "Top 5 customers by purchase value in 1402": "۵ مشتری برتر از نظر ارزش خرید در سال ۱۴۰۲",
+    "Trade volume in the cement ring in Mordad 1405": "حجم معاملات تالار سیمان در مرداد ۱۴۰۵",
+    "Which ring had the highest sales in 1404?": "کدام تالار بیشترین فروش را در سال ۱۴۰۴ داشته است؟",
+    "Total purchase value by month in 1405": "ارزش کل خرید به تفکیک ماه در سال ۱۴۰۵",
+    "How many active customers exist?": "چند مشتری فعال وجود دارد؟",
+    "Sales on Thursdays in the petrochemical ring": "فروش روزهای پنجشنبه در تالار پتروشیمی و فرآورده های نفتی",
+    "Top 5 brokers by purchase value in 1403": "۵ کارگزار برتر از نظر ارزش خرید در سال ۱۴۰۳",
+    "Sales in the Kish export ring in 1402": "فروش تالار کالای صادراتی کیش در سال ۱۴۰۲",
 }
 
 
