@@ -93,8 +93,8 @@ class SQLAgent:
         Any :class:`LLMBackend` implementation.  Defaults to
         :func:`~llm.wizard_llm.build_backend` built from *provider*.
     provider:
-        Provider name (``auto``/``ollama``/``openai``/``mock``).  Used only
-        when *backend* is None; defaults to ``cfg.settings.llm_provider``.
+        Provider name (``openai``/``mock``).  Used only when *backend* is
+        None; defaults to the OpenAI-compatible backend.
     execute_fn:
         Callable ``(sql: str) -> pd.DataFrame``.  Defaults to
         :func:`database.executor.execute_query` (looked up at call time so

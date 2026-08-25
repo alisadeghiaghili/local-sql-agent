@@ -108,6 +108,81 @@ class TestRunQuerySuccess:
         assert resp.interpretation == "summary text"
         patch_agent._backend.generate.assert_called_once()
 
+    def test_interpret_replaces_toman_with_rial(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "مجموع خرید ۱۲۰ میلیارد تومان بود."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == "مجموع خرید ۱۲۰ میلیارد ریال بود."
+        assert "تومان" not in resp.interpretation
+
+    def test_interpret_replaces_english_toman_with_rial(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "Total purchase value was 120 billion toman."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == "Total purchase value was 120 billion Rial."
+        assert "toman" not in resp.interpretation.lower()
+
+    def test_interpret_replaces_capitalized_toman_with_rial(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "Total value: 120 billion Toman, up 5% vs last year."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == (
+            "Total value: 120 billion Rial, up 5% vs last year."
+        )
+        assert "toman" not in resp.interpretation.lower()
+
+    def test_interpret_adds_thousands_separators_ascii(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "مجموع خرید 12000000000 تومان در سال 1402 بود."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == (
+            "مجموع خرید 12,000,000,000 ریال در سال 1402 بود."
+        )
+
+    def test_interpret_adds_thousands_separators_persian_digits(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "ارزش کل ۱۲۰۰۰۰۰۰۰۰۰ ریال بود."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == "ارزش کل ۱۲,۰۰۰,۰۰۰,۰۰۰ ریال بود."
+
+    def test_interpret_preserves_4_digit_years_and_formats_counts(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "در سال 1402 تعداد 32808 معامله ثبت شد."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == (
+            "در سال 1402 تعداد 32,808 معامله ثبت شد."
+        )
+        assert "1,402" not in resp.interpretation
+
+    def test_interpret_normalizes_space_separated_number_to_commas(self, patch_agent):
+        from api.runner import run_query
+        patch_agent.run.return_value = _good_result()
+        patch_agent._backend.generate.return_value = (
+            "مجموع فروش 143\u202f066\u202f295\u202f130\u202f000 ریال بود."
+        )
+        resp = run_query("test", system_prompt="", mode="full", interpret=True)
+        assert resp.interpretation == (
+            "مجموع فروش 143,066,295,130,000 ریال بود."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Exception translation

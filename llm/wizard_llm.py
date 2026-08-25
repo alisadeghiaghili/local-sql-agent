@@ -1,15 +1,11 @@
 """
 llm/wizard_llm.py — LLM abstraction layer for local-sql-agent.
 
-Supports five providers:
+Supports two providers:
 
-* ``auto``     — probe the configured providers and pick the most accessible
-                 one.  By default ``ollama`` is preferred; falls back to the
-                 next provider that answers (see :func:`select_provider`).
-* ``ollama``   — local Ollama instance  (POST /api/generate)
-* ``openai``   — OpenAI-compatible API  (reads OPENAI_API_KEY from env)
-* ``anthropic`` — Anthropic Claude API  (reads ANTHROPIC_API_KEY from env)
-* ``mock``     — returns empty stubs, no network needed (CI / tests)
+* ``openai`` — OpenAI-compatible API (vLLM / LM Studio / Ollama /v1);
+               reads OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL from env.
+* ``mock``   — returns empty stubs, no network needed (CI / tests)
 
 All calls enforce a 30-second timeout.  On JSON parse failure the call is
 retried ONCE with an explicit repair prompt before raising ValueError.
@@ -18,7 +14,7 @@ Typical usage::
 
     from llm.wizard_llm import WizardLLM
 
-    llm = WizardLLM(provider="auto", model=None)   # auto-pick provider
+    llm = WizardLLM(provider="openai", model=None)   # OpenAI-compatible endpoint
     result = llm.generate("Return JSON with key x equal to 1", expect_json=True)
     # {"x": 1}
 
@@ -27,7 +23,7 @@ Typical usage::
                     base_url="http://localhost:1234/v1")
 
 The SQL pipeline backend (:func:`build_backend`) is built from the same
-provider names so the webapp dropdown and the agent stay consistent.
+provider names so the webapp and the agent stay consistent.
 """
 
 from __future__ import annotations
@@ -50,10 +46,6 @@ _TIMEOUT: int = 30  # seconds — enforced on every outbound call
 # Matches ```json ... ``` and plain ``` ... ``` fences, including optional
 # leading/trailing whitespace inside the fence.
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
-
-# Providers considered by "auto" selection, in preference order.
-_PROBE_CANDIDATES: tuple[str, ...] = ("ollama", "openai", "anthropic")
-_PROBE_TIMEOUT: float = 3.0  # seconds per provider health probe
 
 
 def _config_or_none():
@@ -112,33 +104,6 @@ def _parse_json(text: str) -> Union[dict, list]:
 # Provider back-ends  (internal — not part of the public API)
 # ---------------------------------------------------------------------------
 
-class _OllamaProvider:
-    def __init__(self, model: str, base_url: str) -> None:
-        self._model = model
-        # Accept either a bare host ("http://localhost:11434") or a full URL
-        # ending with "/api/generate".
-        base = base_url.rstrip("/")
-        self._url = base if base.endswith("/api/generate") else f"{base}/api/generate"
-        # Health-check URL (list local models)
-        self._tags_url = self._url.replace("/api/generate", "/api/tags")
-
-    def generate(self, prompt: str) -> str:
-        resp = requests.post(
-            self._url,
-            json={"model": self._model, "prompt": prompt, "stream": False},
-            timeout=_TIMEOUT,
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-
-    def test_connection(self, timeout: float = 5.0) -> bool:
-        try:
-            r = requests.get(self._tags_url, timeout=timeout)
-            return r.status_code == 200
-        except Exception:  # noqa: BLE001
-            return False
-
-
 class _OpenAIProvider:
     def __init__(self, model: str, base_url: str, api_key: str) -> None:
         self._model = model
@@ -178,46 +143,6 @@ class _OpenAIProvider:
             return False
 
 
-class _AnthropicProvider:
-    _BASE_URL = "https://api.anthropic.com/v1"
-
-    def __init__(self, model: str, api_key: str, base_url: str | None = None) -> None:
-        self._model = model
-        self._api_key = api_key
-        base = (base_url or self._BASE_URL).rstrip("/")
-        self._messages_url = f"{base}/messages"
-        self._models_url = f"{base}/models"
-
-    @property
-    def _headers(self) -> dict:
-        return {
-            "x-api-key": self._api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-
-    def generate(self, prompt: str) -> str:
-        resp = requests.post(
-            self._messages_url,
-            headers=self._headers,
-            json={
-                "model": self._model,
-                "max_tokens": 4096,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=_TIMEOUT,
-        )
-        resp.raise_for_status()
-        return resp.json()["content"][0]["text"].strip()
-
-    def test_connection(self, timeout: float = 5.0) -> bool:
-        try:
-            r = requests.get(self._models_url, headers=self._headers, timeout=timeout)
-            return r.status_code == 200
-        except Exception:  # noqa: BLE001
-            return False
-
-
 class _MockProvider:
     """Deterministic stub — no network, for CI / unit tests."""
 
@@ -233,85 +158,14 @@ class _MockProvider:
 
 
 # ---------------------------------------------------------------------------
-# Provider auto-selection
-# ---------------------------------------------------------------------------
-
-def select_provider(
-    prefer: str = "ollama",
-    timeout: float = _PROBE_TIMEOUT,
-    _candidates: tuple[str, ...] = _PROBE_CANDIDATES,
-) -> str:
-    """Return the most accessible provider name.
-
-    Probes every candidate provider with a short HTTP health request and
-    keeps the ones that answer.  *prefer* (``ollama`` by default) wins when
-    reachable; otherwise the fastest-responding reachable provider is
-    returned.  Raises ``RuntimeError`` if none of the candidates respond.
-
-    Parameters
-    ----------
-    prefer:
-        Provider given priority when multiple candidates are reachable.
-    timeout:
-        Per-provider probe timeout in seconds.
-    """
-    cfg = _config_or_none()
-
-    def _probe(name: str) -> float | None:
-        """Return probe latency in seconds, or None when unreachable."""
-        try:
-            if name == "ollama":
-                model = cfg.settings.ollama_model if cfg else os.getenv("OLLAMA_MODEL", "llama3")
-                url = cfg.settings.ollama_url if cfg else os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-                probe = _OllamaProvider(model, url)
-            elif name == "openai":
-                key = cfg.settings.openai_api_key if cfg else os.getenv("OPENAI_API_KEY", "")
-                if not key:
-                    return None  # unconfigured → not a candidate
-                model = cfg.settings.openai_model if cfg else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-                url = cfg.settings.openai_base_url if cfg else os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-                probe = _OpenAIProvider(model, url, key)
-            elif name == "anthropic":
-                key = cfg.settings.anthropic_api_key if cfg else os.getenv("ANTHROPIC_API_KEY", "")
-                if not key:
-                    return None
-                model = cfg.settings.anthropic_model if cfg else "claude-3-5-sonnet-20241022"
-                probe = _AnthropicProvider(model, key)
-            else:
-                return None
-            start = time.perf_counter()
-            ok = probe.test_connection(timeout)
-            return (time.perf_counter() - start) if ok else None
-        except Exception:  # noqa: BLE001 - any failure means "not accessible"
-            return None
-
-    candidates = [prefer] + [p for p in _candidates if p != prefer]
-    latencies: dict[str, float] = {}
-    for name in candidates:
-        latency = _probe(name)
-        if latency is not None:
-            latencies[name] = latency
-            logger.info("[wizard_llm] provider %r reachable (%.0f ms)", name, latency * 1000)
-
-    if prefer in latencies:
-        return prefer
-    if latencies:
-        return min(latencies, key=latencies.get)
-    raise RuntimeError(
-        "No LLM provider is reachable. Check OLLAMA_URL / OPENAI_BASE_URL / "
-        "ANTHROPIC_API_KEY in .env"
-    )
-
-
-# ---------------------------------------------------------------------------
-# SQL-pipeline backend (same provider vocabulary as WizardLLM)
+# SQL-pipeline backend
 # ---------------------------------------------------------------------------
 
 class OpenAIBackend(LLMBackend):
     """OpenAI-compatible chat backend for the SQL pipeline.
 
-    Contract mirrors :class:`~llm.ollama_backend.OllamaBackend`: raw text
-    out, ``ValueError("OUT_OF_SCOPE")`` sentinel, transport retries with
+    Contract mirrors the legacy Ollama backend: raw text out,
+    ``ValueError("OUT_OF_SCOPE")`` sentinel, transport retries with
     exponential back-off, ``RuntimeError`` after all retries exhausted.
     """
 
@@ -407,56 +261,73 @@ class MockBackend(LLMBackend):
 def build_backend(provider: str | None = None) -> LLMBackend:
     """Build the SQL-pipeline LLM backend for *provider*.
 
-    ``None``/``"auto"`` resolves via :func:`select_provider`; ``ollama`` and
-    ``openai`` map to their LLMBackend implementations; ``mock`` returns a
-    stub.  Raises ``ValueError`` for unknown providers.
+    ``None``/``"openai"`` (and legacy ``"auto"``) map to the OpenAI-compatible
+    backend; ``mock`` returns a stub.  Raises ``ValueError`` for unknown
+    providers.
     """
-    cfg = _config_or_none()
-    name = (provider or (cfg.settings.llm_provider if cfg else "auto") or "auto").strip().lower()
-    if name == "auto":
-        name = select_provider()
-
-    if name == "ollama":
-        from llm.ollama_backend import OllamaBackend  # noqa: PLC0415
-        return OllamaBackend()
-    if name == "openai":
+    name = (provider or "openai").strip().lower()
+    if name in ("auto", "openai"):
         return OpenAIBackend()
     if name == "mock":
         return MockBackend()
     raise ValueError(f"Unsupported LLM provider: {provider!r}")
 
 
+def generate_sql(question: str, system_prompt: str) -> str:
+    """Generate SQL for *question* using the OpenAI-compatible backend.
+
+    This function only calls the LLM — it does **not** execute the
+    generated SQL against any database.
+
+    Raises
+    ------
+    ValueError("OUT_OF_SCOPE")
+        Passed through from the model sentinel.
+    RuntimeError
+        When the endpoint is unreachable after all retries.
+    """
+    from retrieval.context_retriever import ContextRetriever
+    from prompt_engine.builder import PromptBuilder
+    from security.sql_guard import clean_sql, validate_sql
+
+    context = ContextRetriever.retrieve(question)
+    prompt = PromptBuilder.build(
+        question=question,
+        system_prompt=system_prompt,
+        context=context,
+    )
+    raw = build_backend().generate(prompt)
+    sql = clean_sql(raw)
+    validate_sql(sql)
+    return sql
+
+
 # ---------------------------------------------------------------------------
-# Public WizardLLM class
+# Public WizardLLM class (setup wizard)
 # ---------------------------------------------------------------------------
 
 class WizardLLM:
-    """Unified LLM interface supporting auto, ollama, openai, anthropic, mock.
+    """Unified LLM interface for the setup wizard (openai / mock).
 
     Parameters
     ----------
     provider:
-        One of ``"auto"``, ``"ollama"``, ``"openai"``, ``"anthropic"``,
-        ``"mock"``.  ``"auto"`` resolves to the most accessible provider via
-        :func:`select_provider`.
+        ``"openai"`` (default; legacy ``"auto"`` is treated as ``"openai"``)
+        or ``"mock"``.
     model:
-        Model identifier, e.g. ``"llama3"``, ``"gpt-4o-mini"``,
-        ``"claude-3-5-sonnet-20241022"``.  When ``None`` the per-provider
+        Model identifier, e.g. ``"gpt-oss-20:F16"``.  When ``None`` the
         model from ``config.settings`` (i.e. .env) is used.
     base_url:
-        Optional override for the provider's default endpoint.
-        Useful for LM Studio, vLLM, or custom Ollama deployments.
+        Optional override for the OpenAI-compatible endpoint.
+        Useful for LM Studio, vLLM, or custom deployments.
 
     Raises
     ------
     ValueError
-        If *provider* is not supported, or if a required API key
-        environment variable is missing.
-    RuntimeError
-        If ``provider="auto"`` and no provider is reachable.
+        If *provider* is not supported, or if OPENAI_API_KEY is missing.
     """
 
-    _SUPPORTED = frozenset({"auto", "ollama", "openai", "anthropic", "mock"})
+    _SUPPORTED = frozenset({"openai", "mock"})
 
     def __init__(
         self,
@@ -465,6 +336,8 @@ class WizardLLM:
         base_url: str | None = None,
     ) -> None:
         provider = provider.strip().lower()
+        if provider == "auto":
+            provider = "openai"
         if provider not in self._SUPPORTED:
             raise ValueError(
                 f"Unsupported provider {provider!r}. "
@@ -473,19 +346,10 @@ class WizardLLM:
 
         cfg = _config_or_none()
 
-        if provider == "auto":
-            provider = select_provider()
-
         self.provider = provider
         self.model = model
 
-        if provider == "ollama":
-            if model is None:
-                model = cfg.settings.ollama_model if cfg else os.getenv("OLLAMA_MODEL", "llama3")
-            url = base_url or (cfg.settings.ollama_url if cfg else os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"))
-            self._backend: Any = _OllamaProvider(model, url)
-
-        elif provider == "openai":
+        if provider == "openai":
             key = (cfg.settings.openai_api_key if cfg else None) or os.getenv("OPENAI_API_KEY", "")
             if not key:
                 raise ValueError(
@@ -494,19 +358,8 @@ class WizardLLM:
                 )
             if model is None:
                 model = cfg.settings.openai_model if cfg else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-            url = base_url or (cfg.settings.openai_base_url if cfg else os.getenv("WIZARD_LLM_BASE_URL", "https://api.openai.com/v1"))
-            self._backend = _OpenAIProvider(model, url, key)
-
-        elif provider == "anthropic":
-            key = (cfg.settings.anthropic_api_key if cfg else None) or os.getenv("ANTHROPIC_API_KEY", "")
-            if not key:
-                raise ValueError(
-                    "ANTHROPIC_API_KEY environment variable is required "
-                    "for provider='anthropic'."
-                )
-            if model is None:
-                model = cfg.settings.anthropic_model if cfg else "claude-3-5-sonnet-20241022"
-            self._backend = _AnthropicProvider(model, key, base_url)
+            url = base_url or (cfg.settings.openai_base_url if cfg else os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+            self._backend: Any = _OpenAIProvider(model, url, key)
 
         else:  # mock
             self._backend = _MockProvider()
@@ -593,14 +446,12 @@ class WizardLLM:
         """Construct a WizardLLM from the project's config / environment.
 
         Reads (in order of precedence):
-        * ``WIZARD_LLM_PROVIDER``  — overrides ``LLM_PROVIDER`` (.env)
+        * ``WIZARD_LLM_PROVIDER``  — overrides the default (``openai``)
         * ``WIZARD_LLM_MODEL``     — overrides the per-provider model
         * ``WIZARD_LLM_BASE_URL``  — optional endpoint override
         """
         cfg = _config_or_none()
-        provider = os.getenv("WIZARD_LLM_PROVIDER") or (
-            cfg.settings.llm_provider if cfg else "auto"
-        )
+        provider = os.getenv("WIZARD_LLM_PROVIDER") or "openai"
         return cls(
             provider=provider,
             model=os.getenv("WIZARD_LLM_MODEL") or None,

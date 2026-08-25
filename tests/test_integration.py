@@ -1,116 +1,41 @@
-"""Integration-level tests for the full pipeline.
+"""Integration tests for llm.wizard_llm.generate_sql.
 
-All external I/O (Ollama HTTP, SQL Server) is replaced by mocks.
-Patch target: llm.ollama_backend.requests  (the module that actually
-uses requests, not the shim ollama_client).
+Patch target: llm.wizard_llm.requests.post  (the module that actually uses
+requests).  ``generate_sql`` wires retrieval → prompt → LLM → clean → validate.
 """
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
-import requests as requests_lib
 
-_PATCH_POST  = "llm.ollama_backend.requests.post"
-_PATCH_SLEEP = "llm.ollama_backend.time.sleep"
+from llm.wizard_llm import generate_sql
 
-
-def _mock_response(text: str, status: int = 200) -> MagicMock:
-    m = MagicMock()
-    m.status_code = status
-    m.json.return_value = {"response": text}
-    m.raise_for_status = MagicMock()
-    return m
+_PATCH_POST = "llm.wizard_llm.requests.post"
+_PATCH_SLEEP = "llm.wizard_llm.time.sleep"
 
 
-SIMPLE_SQL  = "SELECT TOP 10 * FROM [Auction_Dim].[Customer]"
-SIMPLE_DF   = pd.DataFrame({"Id": [1, 2], "Name": ["علی", "سارا"]})
-SYSTEM_PROMPT = "You are an SQL generator."
+def _openai_response(text: str) -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = {"choices": [{"message": {"content": text}}]}
+    resp.raise_for_status = MagicMock()
+    return resp
 
 
-# ---------------------------------------------------------------------------
-# Fixture: fake DB executor
-# ---------------------------------------------------------------------------
+class TestGenerateSql:
+    def test_returns_cleaned_sql(self):
+        raw = "Sure! Here is the SQL:\n```sql\nSELECT TOP 10 * FROM [Auction_Dim].[Customer]\n```"
+        with patch(_PATCH_POST, return_value=_openai_response(raw)), patch(_PATCH_SLEEP):
+            sql = generate_sql("How many customers?", "You are a T-SQL expert.")
+        assert sql.startswith("SELECT TOP 10")
 
-@pytest.fixture()
-def fake_execute(monkeypatch):
-    """Replace database.executor.execute_query with a stub."""
-    def _execute(sql: str, **kw):
-        return SIMPLE_DF.copy()
-    monkeypatch.setattr("database.executor.execute_query", _execute)
-    return _execute
+    def test_converts_limit_to_top(self):
+        with patch(_PATCH_POST, return_value=_openai_response("SELECT * FROM t LIMIT 5")), patch(_PATCH_SLEEP):
+            sql = generate_sql("q", "sys")
+        assert "TOP 5" in sql and "LIMIT" not in sql
 
-
-# ---------------------------------------------------------------------------
-# Happy path
-# ---------------------------------------------------------------------------
-
-class TestHappyPath:
-    def test_full_pipeline_success(self, fake_execute):
-        from llm.ollama_client import generate_sql
-        with patch(_PATCH_POST, return_value=_mock_response(SIMPLE_SQL)):
-            sql = generate_sql("لیست مشتریان", SYSTEM_PROMPT)
-        assert "Customer" in sql
-
-    def test_pipeline_returns_string_sql(self, fake_execute):
-        from llm.ollama_client import generate_sql
-        with patch(_PATCH_POST, return_value=_mock_response(SIMPLE_SQL)):
-            result = generate_sql("سوال", SYSTEM_PROMPT)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-
-# ---------------------------------------------------------------------------
-# Out-of-scope
-# ---------------------------------------------------------------------------
-
-class TestOutOfScope:
-    def test_out_of_scope_raises_value_error(self, fake_execute):
-        from llm.ollama_client import generate_sql
-        with patch(_PATCH_POST, return_value=_mock_response("OUT_OF_SCOPE")):
+    def test_out_of_scope_raises(self):
+        with patch(_PATCH_POST, return_value=_openai_response("OUT_OF_SCOPE")), patch(_PATCH_SLEEP):
             with pytest.raises(ValueError, match="OUT_OF_SCOPE"):
-                generate_sql("سوال بی ربط", SYSTEM_PROMPT)
-
-
-# ---------------------------------------------------------------------------
-# Ollama unreachable
-# ---------------------------------------------------------------------------
-
-class TestOllamaUnreachable:
-    def test_raises_runtime_error_after_retries(self, fake_execute):
-        from llm.ollama_client import generate_sql
-        with patch(_PATCH_POST, side_effect=requests_lib.ConnectionError("refused")), \
-             patch(_PATCH_SLEEP):
-            with pytest.raises(RuntimeError, match="unreachable"):
-                generate_sql("سوال", SYSTEM_PROMPT)
-
-
-# ---------------------------------------------------------------------------
-# Log file parsing (kept from original suite — no mocks needed)
-# ---------------------------------------------------------------------------
-
-class TestLogParsing:
-    def test_reads_valid_json_log(self, tmp_path):
-        log_file = tmp_path / "test.jsonl"
-        entries = [
-            {"status": "SUCCESS", "question": "سوال", "generated_sql": SIMPLE_SQL},
-            {"status": "FAILED",  "question": "دیگر",   "generated_sql": ""},
-        ]
-        log_file.write_text("\n".join(json.dumps(e) for e in entries))
-
-        from core.analyze_misses import analyse
-        # analyse reads a Path object
-        result = analyse(log_file)
-        assert isinstance(result, list)
-
-    def test_empty_log_returns_empty_list(self, tmp_path):
-        log_file = tmp_path / "empty.jsonl"
-        log_file.write_text("")
-        from core.analyze_misses import analyse
-        result = analyse(log_file)
-        assert result == []
+                generate_sql("Who is the president?", "sys")

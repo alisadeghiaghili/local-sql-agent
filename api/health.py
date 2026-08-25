@@ -1,4 +1,4 @@
-"""Health-check logic — probes Ollama and the SQL Server database.
+"""Health-check logic — probes the OpenAI-compatible LLM and the SQL Server database.
 
 Exposed via ``GET /health``.  Returns a :class:`~api.models.HealthResponse`
 with an overall status of ``"ok"``, ``"degraded"``, or ``"down"`` plus
@@ -9,7 +9,7 @@ Typical usage::
     from api.health import check_health
 
     resp = check_health()
-    # HealthResponse(status='ok', ollama=True, database=True, model='llama3')
+    # HealthResponse(status='ok', openai=True, database=True, model='gpt-oss-20:F16')
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def check_health() -> HealthResponse:
 
     Runs two synchronous probes sequentially:
 
-    1. :func:`_ping_ollama` — HTTP GET to ``/api/tags`` (5 s timeout).
+    1. :func:`_ping_openai` — HTTP GET to ``<base_url>/models`` (5 s timeout).
     2. :func:`_ping_db` — ``SELECT 1`` via the shared SQLAlchemy engine.
 
     Combined worst-case latency is ~10 seconds (two back-to-back 5 s
@@ -42,48 +42,47 @@ def check_health() -> HealthResponse:
 
         * ``status`` (``str``) —
 
-          * ``"ok"``       — both Ollama and the database are reachable.
+          * ``"ok"``       — both the LLM endpoint and the database are reachable.
           * ``"degraded"`` — exactly one dependency is reachable.
           * ``"down"``     — neither dependency is reachable.
 
-        * ``ollama``   (``bool``) — ``True`` if Ollama responded with HTTP 200.
+        * ``openai``   (``bool``) — ``True`` if the endpoint responded with HTTP 200.
         * ``database`` (``bool``) — ``True`` if ``SELECT 1`` executed without error.
-        * ``model``    (``str``)  — ``cfg.settings.ollama_model`` at call time.
+        * ``model``    (``str``)  — ``cfg.settings.openai_model`` at call time.
 
     Examples
     --------
     >>> resp = check_health()          # doctest: +SKIP
     >>> resp.status in ("ok", "degraded", "down")
     True
-    >>> isinstance(resp.ollama, bool)
+    >>> isinstance(resp.openai, bool)
     True
     >>> isinstance(resp.database, bool)
     True
     """
-    ollama_ok = _ping_ollama()
+    openai_ok = _ping_openai()
     db_ok     = _ping_db()
 
-    if ollama_ok and db_ok:
+    if openai_ok and db_ok:
         overall = "ok"
-    elif ollama_ok or db_ok:
+    elif openai_ok or db_ok:
         overall = "degraded"
     else:
         overall = "down"
 
     return HealthResponse(
         status=overall,
-        ollama=ollama_ok,
+        openai=openai_ok,
         database=db_ok,
-        model=cfg.settings.ollama_model,
+        model=cfg.settings.openai_model,
     )
 
 
-def _ping_ollama() -> bool:
-    """Return ``True`` if the Ollama ``/api/tags`` endpoint responds with HTTP 200.
+def _ping_openai() -> bool:
+    """Return ``True`` if the OpenAI-compatible ``/models`` endpoint responds with HTTP 200.
 
-    The base URL is derived from ``cfg.settings.ollama_url`` by stripping the
-    path suffix (e.g. ``http://host:11434/api/generate`` →
-    ``http://host:11434``) and appending ``/tags``.
+    The URL is ``cfg.settings.openai_base_url`` with ``/models`` appended,
+    authenticated with the configured Bearer token.
 
     Timeout: 5 seconds.  Any exception (connection refused, DNS failure,
     non-200 status) is caught and causes the function to return ``False``
@@ -92,14 +91,14 @@ def _ping_ollama() -> bool:
     Returns
     -------
     bool
-        ``True``  — Ollama is reachable and the ``/tags`` endpoint returned
-        HTTP 200.
+        ``True``  — the endpoint is reachable and ``/models`` returned HTTP 200.
 
         ``False`` — unreachable, wrong status code, or any exception.
     """
     try:
-        base = cfg.settings.ollama_url.rstrip("/").rsplit("/", 1)[0]
-        resp = requests.get(f"{base}/tags", timeout=5)
+        base = cfg.settings.openai_base_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {cfg.settings.openai_api_key}"}
+        resp = requests.get(f"{base}/models", headers=headers, timeout=5)
         return resp.status_code == 200
     except Exception:   # noqa: BLE001
         return False
