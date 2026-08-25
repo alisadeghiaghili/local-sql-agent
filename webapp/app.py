@@ -154,8 +154,7 @@ def create_app() -> Flask:
                 _flash("Please enter a question.", "error")
             else:
                 interpret = request.form.get("interpret") == "on"
-                provider = request.form.get("provider", "auto")
-                result = answer_question(question, interpret, provider)
+                result = answer_question(question, interpret)
                 db.log_query(
                     username=session["username"],
                     question=question,
