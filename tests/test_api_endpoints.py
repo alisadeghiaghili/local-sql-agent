@@ -49,7 +49,7 @@ def _ok_response(**overrides):
         row_count=2,
         correction_attempts=1,
         elapsed_seconds=0.1,
-        model="ollama:llama3",
+        model="openai:gpt-oss-20:F16",
     )
     defaults.update(overrides)
     return QueryResponse(**defaults)
@@ -135,10 +135,10 @@ class TestQueryModes:
 
     def test_model_name_echoed(self, app_and_client):
         _, client, mock_run = app_and_client
-        mock_run.return_value = _ok_response(model="ollama:codellama")
+        mock_run.return_value = _ok_response(model="openai:gpt-oss-20:F16")
         resp = client.post("/query", json={"question": VALID_Q})
         assert resp.status_code == 200
-        assert resp.json()["model"] == "ollama:codellama"
+        assert resp.json()["model"] == "openai:gpt-oss-20:F16"
 
 
 # ---------------------------------------------------------------------------
@@ -190,15 +190,15 @@ class TestQueryErrors:
 # ---------------------------------------------------------------------------
 
 class TestHealth:
-    def _make_health_resp(self, ollama_ok: bool, db_ok: bool) -> object:
+    def _make_health_resp(self, openai_ok: bool, db_ok: bool) -> object:
         import api.server as server_module
         server_module._system_prompt = "stub"
-        status = "ok" if (ollama_ok and db_ok) else "degraded" if (ollama_ok or db_ok) else "down"
+        status = "ok" if (openai_ok and db_ok) else "degraded" if (openai_ok or db_ok) else "down"
         health_resp = HealthResponse(
             status=status,
-            ollama=ollama_ok,
+            openai=openai_ok,
             database=db_ok,
-            model="llama3",
+            model="gpt-oss-20:F16",
         )
         with patch("api.health.check_health", return_value=health_resp):
             client = TestClient(server_module.app, raise_server_exceptions=False)
@@ -209,13 +209,13 @@ class TestHealth:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
-        assert body["ollama"] is True
+        assert body["openai"] is True
         assert body["database"] is True
 
-    def test_ollama_down_degraded(self):
+    def test_llm_down_degraded(self):
         resp = self._make_health_resp(False, True)
         assert resp.json()["status"] == "degraded"
-        assert resp.json()["ollama"] is False
+        assert resp.json()["openai"] is False
 
     def test_db_down_degraded(self):
         resp = self._make_health_resp(True, False)
