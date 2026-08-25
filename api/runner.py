@@ -14,7 +14,7 @@ problems:
    raises during ``import api.runner`` — before the server can return a
    meaningful error.
 2. If a future change adds per-request mutable state to ``SQLAgent`` or
-   ``OllamaBackend`` the silent sharing would become a real race.
+   ``OpenAIBackend`` the silent sharing would become a real race.
 
 The fix: the singleton is created **lazily** inside ``_get_agent()`` which
 is protected by a ``threading.Lock``.  The agent instance is cached after
@@ -37,6 +37,7 @@ Successful ``result`` and ``full`` mode responses are stored in
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import Literal
 
@@ -77,37 +78,19 @@ _agent_lock: threading.Lock = threading.Lock()
 # __dict__, so run_query() sees the mock on the very next read.
 agent: SQLAgent | None = None
 
-# Per-provider agents, keyed by provider name.  Only used when run_query()
-# is called with an explicit provider (e.g. from the webapp dropdown).
-_agents_by_provider: dict[str, SQLAgent] = {}
 
-
-def _get_agent(provider: str | None = None) -> SQLAgent:
+def _get_agent() -> SQLAgent:
     """Return the shared ``SQLAgent``, constructing it once on first call.
 
-    When *provider* is None the module-level ``agent`` singleton is used
-    (test patches applied to ``api.runner.agent`` are respected).  An
-    explicit provider builds its own cached instance.
+    Test patches applied to ``api.runner.agent`` are respected.
     """
     global agent
-    if provider is None:
-        if agent is None:      # fast path — no lock needed once set
-            with _agent_lock:
-                if agent is None:  # second check inside lock
-                    logger.debug("Constructing SQLAgent singleton")
-                    agent = SQLAgent()
-        return agent
-
-    cached = _agents_by_provider.get(provider)
-    if cached is not None:
-        return cached
-    with _agent_lock:
-        cached = _agents_by_provider.get(provider)
-        if cached is None:
-            logger.debug("Constructing SQLAgent for provider=%s", provider)
-            cached = SQLAgent(provider=provider)
-            _agents_by_provider[provider] = cached
-    return cached
+    if agent is None:      # fast path — no lock needed once set
+        with _agent_lock:
+            if agent is None:  # second check inside lock
+                logger.debug("Constructing SQLAgent singleton")
+                agent = SQLAgent()
+    return agent
 
 
 def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
@@ -121,7 +104,6 @@ def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
     global agent
     with _agent_lock:
         agent = new_agent
-        _agents_by_provider.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +121,8 @@ The database returned these results (up to 20 rows shown):
 
 Write a concise one-paragraph summary in the same language as the question.
 Do not repeat column names literally — describe findings in plain language.
+All monetary values are in Iranian Rials (ریال): always express amounts with
+the unit Rial/ریال and never use toman/تومان.
 If the result is empty, say so clearly.
 """
 
@@ -148,23 +132,20 @@ def run_query(
     system_prompt: str,
     mode: Literal["sql", "result", "full"] = "full",
     interpret: bool = False,
-    provider: str | None = None,
 ) -> QueryResponse:
     """Full pipeline with typed error translation and query-result caching.
 
     Cache is consulted/populated only for mode='result'|'full' with
     interpret=False.  sql-only and interpreted requests always bypass it.
 
-    *provider* selects the LLM backend: ``None`` uses the default singleton
-    (``cfg.settings.llm_provider``), any other value (``auto``, ``ollama``,
-    ``openai``, ...) builds/returns a dedicated agent for that provider.
+    The LLM backend is the shared OpenAI-compatible ``SQLAgent`` singleton.
 
     Raises only :class:`~api.errors.NLQError` subclasses.
     """
     # Read the public ``agent`` name — if a test has patched it via
     # patch('api.runner.agent', mock), _get_agent() is bypassed entirely
     # because the mock is already non-None.
-    _agent = _get_agent(provider)
+    _agent = _get_agent()
 
     # ── cache lookup (result / full, no interpret) ─────────────────────────
     use_cache = (mode in ("result", "full")) and not interpret
@@ -236,7 +217,7 @@ def _safe_generate_sql_only(agent: SQLAgent, question: str, system_prompt: str) 
         )
     except _requests.ConnectionError as exc:
         raise ModelUnavailableError(
-            "Cannot reach the LLM backend. Is Ollama running?",
+            "Cannot reach the LLM backend. Check OPENAI_BASE_URL / OPENAI_API_KEY.",
             detail=str(exc),
         )
     except RuntimeError as exc:
@@ -283,13 +264,13 @@ def _safe_run(agent: SQLAgent, question: str, system_prompt: str):
 
     except _requests.ConnectionError as exc:
         raise ModelUnavailableError(
-            "Cannot reach the LLM backend. Is Ollama running?",
+            "Cannot reach the LLM backend. Check OPENAI_BASE_URL / OPENAI_API_KEY.",
             detail=str(exc),
         )
 
     except RuntimeError as exc:
         msg = str(exc)
-        if "Ollama" in msg or "unreachable" in msg.lower():
+        if "unreachable" in msg.lower():
             raise ModelUnavailableError(msg)
         if "LOCK_TIMEOUT" in msg or "lock timeout" in msg.lower():
             raise QueryTimeoutError(
@@ -307,11 +288,48 @@ def _safe_run(agent: SQLAgent, question: str, system_prompt: str):
         )
 
 
+_THOUSAND_SEP = r"[ \u00A0\u202F\u2009\u066C]"  # space, NBSP, NNBSP, thin space, ٬
+
+# Numbers already written with thousands separators (e.g. "143 066 295 000").
+_SEPARATED_NUMBER_RE = re.compile(
+    rf"(?<!\d)\d{{1,3}}(?:{_THOUSAND_SEP}\d{{3}})+(?!\d)"
+)
+
+
+def _thousands_separate(number: str) -> str:
+    """Insert comma thousands separators into a digit string (ASCII or Persian)."""
+    digits = list(number)
+    for i in range(len(digits) - 3, 0, -3):
+        digits.insert(i, ",")
+    return "".join(digits)
+
+
+def _format_numbers(text: str) -> str:
+    """Normalize large numbers to comma thousands-separators.
+
+    Handles both bare runs (``12000000000``) and numbers already separated
+    with spaces / NBSP / thin space (``143 066 295 000``).  4-digit Persian
+    years like ``1402`` are left alone.
+    """
+    def _to_commas(match: re.Match) -> str:
+        digits = "".join(ch for ch in match.group(0) if ch.isdigit())
+        return _thousands_separate(digits)
+
+    text = _SEPARATED_NUMBER_RE.sub(_to_commas, text)
+    text = re.sub(r"\d{5,}", lambda m: _thousands_separate(m.group(0)), text)
+    return text
+
+
 def _interpret(agent: SQLAgent, question: str, rows: list[dict]) -> str:
     preview_text = "\n".join(str(r) for r in rows[:20]) or "(empty result set)"
     prompt = _INTERPRET_TEMPLATE.format(question=question, rows=preview_text)
     try:
-        return agent._backend.generate(prompt).strip()
+        summary = agent._backend.generate(prompt).strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Interpretation failed (non-fatal): %s", exc)
         return ""
+    # Belt-and-suspenders: the model may still write toman despite the prompt rule.
+    summary = re.sub(r"toman", "Rial", summary.replace("تومان", "ریال"), flags=re.IGNORECASE)
+    # Normalize price numbers to comma thousands-separators.
+    summary = _format_numbers(summary)
+    return summary
