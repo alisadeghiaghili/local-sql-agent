@@ -95,7 +95,7 @@ Scoping the prompt — instead of dumping your full schema — is what makes loc
 
 | | Feature | Detail |
 |---|---|---|
-| 🔒 | **100% local** | Ollama + SQL Server on-premise. Zero external API calls. |
+| 🔒 | **On-premise LLM** | OpenAI-compatible endpoint (vLLM / LM Studio / Ollama /v1) + SQL Server. No cloud provider required. |
 | 🌐 | **Bilingual** | Persian and English questions handled natively. |
 | 🧩 | **Modular retrieval** | 6 independent retrievers — swap or extend without touching the engine. |
 | 🔍 | **Two-tier retrieval** | Fast alias/pattern matching first; TF-IDF bigram engine as fallback. |
@@ -107,13 +107,13 @@ Scoping the prompt — instead of dumping your full schema — is what makes loc
 | 💾 | **LRU query cache** | Thread-safe TTL + LRU cache; configurable size and expiry. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Structured logging** | Rotating JSONL logger with correlation ID, latency, row count. |
-| 🧪 | **Test suite** | 427+ unit + integration tests; GitHub Actions CI. |
+| 🧪 | **Test suite** | 470+ unit + integration tests; GitHub Actions CI. |
 
 ---
 
 ## Quick start
 
-**Requires:** Python 3.11+, [Ollama](https://ollama.com) on `localhost:11434`, SQL Server + ODBC Driver 17
+**Requires:** Python 3.11+, an OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) reachable via `OPENAI_BASE_URL`, SQL Server + ODBC Driver 17
 
 ```bash
 # 1. Clone and install
@@ -125,15 +125,14 @@ pip install -r requirements.txt
 cp .env.example .env
 # Set at minimum:
 #   DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/DB?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
-#   OLLAMA_MODEL=llama3
+#   OPENAI_BASE_URL=http://your-llm-host:8000/v1
+#   OPENAI_MODEL=gpt-oss-20:F16
+#   OPENAI_API_KEY=your-key
 
-# 3. Pull a model
-ollama pull llama3
-
-# 4a. CLI
+# 3a. CLI
 python app.py
 
-# 4b. HTTP API
+# 3b. HTTP API
 uvicorn api.server:app --host 0.0.0.0 --port 8000
 ```
 
@@ -146,8 +145,9 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000
 
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `llama3` | Model name (`llama3`, `mistral`, `codellama`, …) |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model name served by the endpoint |
+| `OPENAI_API_KEY` | *(required)* | API key for the endpoint |
 | `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
 | `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time (seconds) |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
@@ -163,7 +163,7 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/query` | Run a natural-language query; returns SQL + result set |
-| `GET` | `/health` | DB + Ollama reachability probe |
+| `GET` | `/health` | DB + LLM endpoint reachability probe |
 | `GET` | `/cache/stats` | Cache size, hits, misses, evictions |
 | `POST` | `/cache/invalidate` | Remove a specific cached entry |
 | `POST` | `/cache/clear` | Flush the entire cache |
@@ -173,8 +173,8 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000
 | Exception | HTTP | When |
 |---|---|---|
 | `OutOfScopeError` | 422 | Question is outside the domain |
-| `ModelTimeoutError` | 504 | Ollama request timed out |
-| `ModelUnavailableError` | 503 | Ollama unreachable after all retries |
+| `ModelTimeoutError` | 504 | LLM request timed out |
+| `ModelUnavailableError` | 503 | LLM endpoint unreachable after all retries |
 | `QueryExecutionError` | 500 | SQL Server execution failure |
 
 ---
@@ -223,7 +223,7 @@ local-sql-agent/
 │   ├── models.py             #   Pydantic request/response models
 │   ├── errors.py             #   NLQError hierarchy → HTTP handlers
 │   ├── middleware.py         #   correlation ID + latency headers
-│   └── health.py             #   /health — DB + Ollama probes
+│   └── health.py             #   /health — DB + LLM endpoint probes
 ├── knowledge/                # ★ Domain knowledge (edit to extend)
 │   ├── aliases.py            #   RING_ALIASES + SYNONYMS
 │   ├── business_rules.py     #   rules per topic key
@@ -249,7 +249,7 @@ local-sql-agent/
 │   └── templates.py          #   PROMPT_TEMPLATE
 ├── llm/
 │   ├── sql_agent.py          #   generate → clean → auto-correct loop
-│   ├── ollama_backend.py     #   HTTP client + exponential back-off
+│   ├── wizard_llm.py         #   OpenAI-compatible backend (retries + back-off)
 │   └── base.py               #   LLMBackend ABC
 ├── security/
 │   └── sql_guard.py          #   clean_sql / validate_sql / ensure_top
@@ -262,7 +262,7 @@ local-sql-agent/
 ├── docs/
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 427+ unit + integration tests
+└── tests/                    # 470+ unit + integration tests
 ```
 
 ---
@@ -315,7 +315,7 @@ Every generated SQL query passes through `security/sql_guard.py` before executio
 | **Orchestration & CLI** | `app.py` — main REPL loop: NLQ input → SQL generation → execution → Excel export → structured logging |
 | **Configuration** | `config.py` — typed `Settings` singleton, env-based overrides, `override_settings()` test helper |
 | **Core layer** | `core/models.py` — `RetrievalContext`, `SQLGenerationResult`, `QueryLogRecord` frozen dataclasses |
-| **LLM integration** | `llm/sql_agent.py`, `llm/ollama_backend.py` — generate / clean / auto-correct loop with exponential retry and back-off |
+| **LLM integration** | `llm/sql_agent.py`, `llm/wizard_llm.py` — generate / clean / auto-correct loop with exponential retry and back-off |
 | **Retrieval pipeline** | `retrieval/context_retriever.py` — orchestrates all six sub-retrievers into a single `RetrievalContext`; all six sub-retriever modules |
 | **Schema layer** | `schema_data/` — table definitions, column allowlist, FK relationship map, `SchemaRegistry`, TF-IDF bigram fallback retriever |
 | **Prompt engineering** | `prompt_engine/builder.py`, `prompt_engine/templates.py` — dynamic, context-aware prompt assembly |
@@ -323,7 +323,7 @@ Every generated SQL query passes through `security/sql_guard.py` before executio
 | **Database** | `database/connection.py`, `database/executor.py` — SQLAlchemy singleton engine, query timeout, hard row cap |
 | **FastAPI service** | `api/` — `/query`, `/health`, `/cache` endpoints; `RequestLoggingMiddleware`; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Exports & logging** | `exporters/`, `app_logging/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 427+ unit and integration tests; GitHub Actions CI |
+| **Test suite** | `tests/` — 470+ unit and integration tests; GitHub Actions CI |
 
 ---
 
@@ -345,4 +345,4 @@ Contributions welcome — open an issue before submitting a PR.
 
 ---
 
-Built with [Ollama](https://ollama.com) · [FastAPI](https://fastapi.tiangolo.com) · [SQLAlchemy](https://sqlalchemy.org) · [scikit-learn](https://scikit-learn.org)
+Built with an OpenAI-compatible LLM endpoint (vLLM / LM Studio / Ollama `/v1`) · [FastAPI](https://fastapi.tiangolo.com) · [SQLAlchemy](https://sqlalchemy.org) · [scikit-learn](https://scikit-learn.org)
