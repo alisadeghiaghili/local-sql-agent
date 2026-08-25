@@ -2,6 +2,30 @@
 {% block title %}{{ _("Ask · Local SQL Agent") }}{% endblock %}
 {% block content %}
 
+{% set sample_questions = [
+  _("Top 5 customers by purchase value in 1402"),
+  _("Trade volume in the cement ring in Mordad 1405"),
+  _("Which ring had the highest sales in 1404?"),
+  _("Total purchase value by month in 1405"),
+  _("How many active customers exist?"),
+  _("Sales on Thursdays in the petrochemical ring"),
+  _("Top 5 brokers by purchase value in 1403"),
+  _("Sales in the Kish export ring in 1402"),
+] %}
+
+<div class="layout">
+  <aside class="card sample-panel">
+    <h2>{{ _("Sample Questions") }}</h2>
+    <p class="muted sample-hint">{{ _("Click a question to ask it instantly.") }}</p>
+    <div class="sample-list">
+      {% for question in sample_questions %}
+      <button type="button" class="sample-btn" data-question="{{ question }}">{{ question }}</button>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <div class="main-panel">
+
 <section class="card ask-card">
   <h2>{{ _("Ask your question") }}</h2>
   <p class="muted">{{ _("English or Persian — the agent will answer against the database.") }}</p>
@@ -13,18 +37,7 @@
         <input type="checkbox" name="interpret" checked>
         {{ _("Show plain-language summary") }}
       </label>
-      <label class="provider-select">
-        {{ _("Provider") }}
-        <select name="provider">
-          <option value="auto" selected>{{ _("Auto") }}</option>
-          <option value="ollama">{{ _("Ollama") }}</option>
-          <option value="openai">{{ _("OpenAI") }}</option>
-        </select>
-      </label>
       <div class="btn-group">
-        {% if output_filename %}
-        <a class="btn btn-download" href="{{ url_for('download', filename=output_filename) }}"><svg class="icon-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>{{ _("Report") }}</a>
-        {% endif %}
         <button class="btn btn-primary" type="submit">{{ _("Ask") }}</button>
       </div>
     </div>
@@ -54,7 +67,7 @@
   <details class="sql-box">
     <summary>{{ _("Generated SQL") }}</summary>
     <div class="sql-body" dir="ltr">
-      <pre><code>{{ result.sql }}</code></pre>
+      <pre><code id="sql-code">{{ result.sql }}</code></pre>
       <button type="button" class="btn btn-small btn-copy" id="copy-sql">{{ _("Copy") }}</button>
     </div>
   </details>
@@ -92,9 +105,21 @@
   {% elif result.status == "SUCCESS" %}
   <p class="muted">{{ _("No rows returned for this question.") }}</p>
   {% endif %}
+
+  {% if output_filename %}
+  <div class="results-download">
+    <a class="btn btn-download btn-download-icon" href="{{ url_for('download', filename=output_filename) }}" title="{{ _('Report') }}" aria-label="{{ _('Report') }}"><svg class="icon-dl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='vendor/sql-formatter.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/prism.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/prism-sql.min.js') }}"></script>
 <script>
   // Guards against double submission — Enter (requestSubmit) bypasses a
   // disabled button, so the flag is checked in the handler itself.
@@ -107,6 +132,7 @@
     formSubmitting = true;
     document.getElementById("loading").hidden = false;
     document.querySelector("#ask-form button[type=submit]").disabled = true;
+    document.querySelectorAll(".sample-btn").forEach((btn) => (btn.disabled = true));
     document.querySelectorAll(".results-card, .btn-download").forEach((el) => el.remove());
   });
 
@@ -119,6 +145,33 @@
       e.preventDefault();
       questionInput.form.requestSubmit();
     });
+  }
+
+  // Clicking a sample question fills the box and submits it immediately
+  // (the ASK button is disabled while the request is processing).
+  document.querySelectorAll(".sample-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (formSubmitting || !questionInput) return;
+      questionInput.value = btn.dataset.question;
+      questionInput.focus();
+      questionInput.form.requestSubmit();
+    });
+  });
+
+  // Beautify the generated SQL and colour its keywords (Prism) so it is
+  // easier to read. Falls back to the raw SQL if the libraries are missing.
+  const sqlCode = document.getElementById("sql-code");
+  if (sqlCode) {
+    const rawSql = sqlCode.textContent;
+    try {
+      const formatted = window.sqlFormatter.format(rawSql, {
+        language: "tsql",
+        keywordCase: "upper",
+      });
+      sqlCode.innerHTML = window.Prism.highlight(formatted, window.Prism.languages.sql, "sql");
+    } catch {
+      sqlCode.textContent = rawSql;
+    }
   }
 
   const copyBtn = document.getElementById("copy-sql");
@@ -146,7 +199,7 @@
   // Paginate the results table at 20 rows per page.
   const resultsBody = document.getElementById("results-body");
   if (resultsBody) {
-    const ROWS_PER_PAGE = 20;
+    const ROWS_PER_PAGE = 10;
     const rows = Array.from(resultsBody.querySelectorAll("tr"));
     const pageCount = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
     const nav = document.getElementById("pagination");

@@ -26,15 +26,134 @@ body {
   line-height: 1.6;
 }
 
+/* ── Persian font (Vazirmatn — self-hosted, clear and readable) ── */
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("fonts/Vazirmatn-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("fonts/Vazirmatn-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("fonts/Vazirmatn-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("fonts/Vazirmatn-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ── Persian (FA) typography ───────────────────────── */
 html[lang="fa"] body {
-  font-family: "B Yekan", "Yekan", "Vazirmatn", "Noto Sans Arabic", Tahoma, sans-serif;
+  font-family: "Vazirmatn", "B Yekan", "Yekan", "Noto Sans Arabic", Tahoma, sans-serif;
 }
 
 .container {
-  max-width: 900px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 24px 16px 64px;
+}
+
+/* ── two-column layout: sample questions (left) + ask panel ─────────── */
+.layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  direction: ltr; /* keep the sidebar physically on the left in both LTR and RTL */
+}
+
+.sample-panel {
+  width: 340px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 16px;
+}
+
+.main-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+html[lang="fa"] .sample-panel,
+html[lang="fa"] .main-panel {
+  direction: rtl;
+}
+
+.sample-panel h2 { margin-top: 0; }
+.sample-hint { margin: -8px 0 14px; font-size: 13px; }
+
+.sample-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sample-btn {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: start;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s,
+              transform 0.1s ease;
+}
+
+.sample-btn:hover {
+  background: var(--bg);
+  border-color: var(--primary-light);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.sample-btn:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm);
+}
+
+.sample-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+}
+
+.sample-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sample-btn { transition: none; }
+  .sample-btn:hover, .sample-btn:active { transform: none; }
+}
+
+@media (max-width: 960px) {
+  .layout { flex-direction: column; }
+  .sample-panel { width: 100%; position: static; }
 }
 
 /* ── header ─────────────────────────────────────────── */
@@ -154,24 +273,6 @@ textarea { resize: vertical; min-height: 110px; }
 
 .check input { width: auto; }
 
-.provider-select {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 400;
-  margin: 0;
-}
-
-.provider-select select {
-  font: inherit;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-}
-
 /* ── buttons ────────────────────────────────────────── */
 .btn {
   display: inline-block;
@@ -274,6 +375,25 @@ textarea { resize: vertical; min-height: 110px; }
   margin-inline-end: 6px;
 }
 
+/* ── icon-only download box at the bottom of the results card ────────── */
+.results-download {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.btn-download-icon {
+  padding: 10px 12px;
+  line-height: 0;
+}
+
+.btn-download-icon .icon-dl {
+  width: 18px;
+  height: 18px;
+  margin-inline-end: 0;
+  vertical-align: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn { transition: none; }
   .btn:hover, .btn:active { transform: none; }
@@ -351,11 +471,25 @@ textarea { resize: vertical; min-height: 110px; }
 .sql-body pre {
   margin: 10px 0 8px;
   overflow-x: auto;
+  background: #0f172a;
+  border-radius: 8px;
+  padding: 12px 14px;
   font-family: Consolas, "Cascadia Code", monospace;
   font-size: 13px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── SQL keyword highlighting (dark code block) ─────────────── */
+.sql-body code { color: #f8fafc; } /* plain identifiers stay white on the dark background */
+.sql-body code .token.keyword     { color: #60a5fa; font-weight: 600; }
+.sql-body code .token.string      { color: #fbbf24; }
+.sql-body code .token.number      { color: #f472b6; }
+.sql-body code .token.comment     { color: #64748b; font-style: italic; }
+.sql-body code .token.function    { color: #c084fc; }
+.sql-body code .token.operator    { color: #94a3b8; }
+.sql-body code .token.punctuation { color: #94a3b8; }
 
 .btn-copy { margin-top: 4px; }
 
