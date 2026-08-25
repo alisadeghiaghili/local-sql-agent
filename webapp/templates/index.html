@@ -30,8 +30,7 @@
   <h2>{{ _("Ask your question") }}</h2>
   <p class="muted">{{ _("English or Persian — the agent will answer against the database.") }}</p>
   <form method="post" action="{{ url_for('index') }}" id="ask-form">
-    <textarea name="question" rows="4" dir="auto" required
-              placeholder="e.g. Top 10 customers by purchase value in 1402&#10;برترین مشتریان از نظر ارزش خرید در سال 1402 کدامند؟"></textarea>
+    <textarea name="question" rows="4" dir="auto" required></textarea>
     <div class="form-row">
       <label class="check">
         <input type="checkbox" name="interpret" checked>
