@@ -98,11 +98,18 @@ TABLE_COLUMNS = {
 
     "Date": {
         "ID": "Primary key",
-        "PersianYear": "Shamsi year (e.g. 1402)",
-        "PersianMonth": "Shamsi month number (1-12)",
-        "PersianMonthName": "Shamsi month name (e.g. فروردین)",
-        "PersianDay": "Shamsi day",
-        "GregorianDate": "Gregorian equivalent date",
+        "RealDate": "Gregorian (میلادی) calendar date (DATE type). This is the Gregorian date column — there is NO column named GregorianDate. Use for Gregorian date filters/display.",
+        "PersianDate": "Full Shamsi (Persian) date as a zero-padded string 'YYYY/MM/DD' (e.g. 1405/01/01). Preferred way to filter dates: exact day WHERE d.PersianDate = '1405/01/01'; year prefix WHERE d.PersianDate LIKE '1405/%'; year+month prefix WHERE d.PersianDate LIKE '1405/05/%'.",
+        "PersianYear": "Shamsi year number, 4-digit integer (e.g. 1402). Use for year filters: WHERE d.PersianYear = 1402.",
+        "PersianSeason": "Shamsi season number 1-4 (1=بهار spring, 2=تابستان summer, 3=پاییز autumn, 4=زمستان winter)",
+        "PersianSeasonName": "Shamsi season name in Persian (بهار، تابستان، پاییز، زمستان)",
+        "PersianMonth": "Shamsi month number 1-12 (1=فروردین ... 12=اسفند). Use for month filters: WHERE d.PersianMonth = 5.",
+        "PersianMonthName": "Shamsi month name in Persian (فروردین، اردیبهشت، خرداد، تیر، مرداد، شهریور، مهر، آبان، آذر، دی، بهمن، اسفند)",
+        "PersianDayOfMonth": "Shamsi day-of-month number 1-31. This is the day-of-month column — there is NO column named PersianDay. Use for day filters: WHERE d.PersianDayOfMonth = 15.",
+        "PersianWeekOfYear": "Shamsi week number within the year (1-53). The Persian week runs Saturday (شنبه) to Friday (جمعه).",
+        "PersianWeekRange": "Week date range as string 'YYYY/MM/DD - YYYY/MM/DD' (e.g. 1402/01/01 - 1402/01/07). Use for week-range filters/display.",
+        "PersianDayOfWeek": "Shamsi day-of-week number 1-7, where 1=شنبه (Saturday, first day of the Persian week) and 7=جمعه (Friday). Most reliable column for day-of-week filters: WHERE d.PersianDayOfWeek = 5.",
+        "PersianDayOfWeekName": "Shamsi day-of-week name in Persian (شنبه، یکشنبه، دوشنبه، سه‌شنبه، چهارشنبه، پنجشنبه، جمعه). CAUTION: stored inconsistently in the DB (e.g. 'چهار شنبه' vs 'چهارشنبه') — prefer PersianDayOfWeek (integer) for filtering; use this column only for display.",
     },
 
     "Currency": {
