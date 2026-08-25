@@ -52,7 +52,7 @@ class QueryResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded", "down"]
-    ollama: bool
+    openai: bool
     database: bool
     model: str | None = None
 

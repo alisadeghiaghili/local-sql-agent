@@ -21,7 +21,7 @@ from pathlib import Path
 import config as cfg
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
-from llm.ollama_client import generate_sql
+from llm.wizard_llm import generate_sql
 from logs.logger import save_log
 from logs.query_log import QueryLog
 from security.sql_guard import validate_sql
@@ -91,7 +91,7 @@ def _make_log(
         timestamp=datetime.now(),
         question=question,
         generated_sql=sql,
-        model_name=cfg.settings.ollama_model,
+        model_name=cfg.settings.openai_model,
         status=status,          # type: ignore[arg-type]
         excel_file=excel_file,
         row_count=row_count,
@@ -129,7 +129,7 @@ def main() -> None:
 
     print(_SEP)
     print(" Auction NLQ Engine")
-    print(f" Model : {cfg.settings.ollama_model}")
+    print(f" Model : {cfg.settings.openai_model}")
     print(f" DB    : {cfg.settings.db_connection_url.split('@')[-1].split('?')[0]}")
     print(_SEP)
     print(" Type your question in Persian or English.")

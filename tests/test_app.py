@@ -60,7 +60,7 @@ class TestMakeLog:
         assert log.execution_time_seconds == 1.235
 
     def test_model_name_comes_from_cfg(self):
-        with override_settings(ollama_model="test-model-x"):
+        with override_settings(openai_model="test-model-x"):
             log = app._make_log("q", "", "SUCCESS")
         assert log.model_name == "test-model-x"
 
@@ -445,7 +445,7 @@ class TestMainRepl:
     # -----------------------------------------------------------------------
 
     def test_banner_shows_model_name(self, capsys):
-        with override_settings(ollama_model="test-banner-model"), \
+        with override_settings(openai_model="test-banner-model"), \
              patch("builtins.input", side_effect=["exit"]), \
              patch.object(app, "_load_system_prompt", return_value="SYS"), \
              patch.object(app, "_enforce_rate_limit"):

@@ -12,9 +12,6 @@ from config import Settings, get_settings, override_settings
 
 
 class TestSettings:
-    def test_default_ollama_url(self):
-        assert Settings().ollama_url == "http://localhost:11434/api/generate"
-
     def test_default_max_rows(self):
         assert Settings().max_rows_returned == 1000
 
@@ -22,16 +19,14 @@ class TestSettings:
         with patch.dict(os.environ, {"MAX_ROWS_RETURNED": "42"}):
             assert Settings().max_rows_returned == 42
 
-    def test_env_override_model(self):
-        with patch.dict(os.environ, {"OLLAMA_MODEL": "my-model"}):
-            assert Settings().ollama_model == "my-model"
+    def test_default_openai_model(self):
+        with patch.dict(os.environ):
+            os.environ.pop("OPENAI_MODEL", None)
+            assert Settings().openai_model == "gpt-4o-mini"
 
-    def test_default_llm_provider_is_auto(self):
-        assert Settings().llm_provider == "auto"
-
-    def test_env_override_llm_provider(self):
-        with patch.dict(os.environ, {"LLM_PROVIDER": "openai"}):
-            assert Settings().llm_provider == "openai"
+    def test_env_override_openai_model(self):
+        with patch.dict(os.environ, {"OPENAI_MODEL": "gpt-oss-20:F16"}):
+            assert Settings().openai_model == "gpt-oss-20:F16"
 
     def test_env_override_openai_base_url(self):
         with patch.dict(os.environ, {"OPENAI_BASE_URL": "http://vllm:8000/v1"}):
@@ -41,42 +36,36 @@ class TestSettings:
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
             assert Settings().openai_api_key == "sk-test"
 
-    def test_validate_openai_requires_key(self):
+    def test_validate_requires_openai_key(self):
         s = Settings.__new__(Settings)
-        object.__setattr__(s, "llm_provider", "openai")
-        object.__setattr__(s, "ollama_model", "llama3")
         object.__setattr__(s, "openai_api_key", "")
+        object.__setattr__(s, "openai_model", "gpt-oss-20:F16")
+        object.__setattr__(s, "openai_base_url", "http://vllm:8000/v1")
         object.__setattr__(s, "db_connection_url", "mssql+ok")
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):
             s.validate()
 
-    def test_validate_unknown_provider(self):
-        s = Settings.__new__(Settings)
-        object.__setattr__(s, "llm_provider", "grok")
-        object.__setattr__(s, "ollama_model", "llama3")
-        object.__setattr__(s, "db_connection_url", "mssql+ok")
-        with pytest.raises(ValueError, match="LLM_PROVIDER"):
-            s.validate()
-
     def test_frozen(self):
         with pytest.raises((AttributeError, TypeError)):
-            Settings().ollama_model = "x"  # type: ignore[misc]
+            Settings().openai_model = "x"  # type: ignore[misc]
 
     def test_validate_passes(self):
         Settings().validate()
 
     def test_validate_raises_for_placeholder_model(self):
         s = Settings.__new__(Settings)
-        object.__setattr__(s, "llm_provider", "auto")
-        object.__setattr__(s, "ollama_model", "change_me")
+        object.__setattr__(s, "openai_api_key", "sk-test")
+        object.__setattr__(s, "openai_model", "change_me")
+        object.__setattr__(s, "openai_base_url", "http://vllm:8000/v1")
         object.__setattr__(s, "db_connection_url", "mssql+ok")
-        with pytest.raises(ValueError, match="OLLAMA_MODEL"):
+        with pytest.raises(ValueError, match="OPENAI_MODEL"):
             s.validate()
 
     def test_validate_raises_for_empty_url(self):
         s = Settings.__new__(Settings)
-        object.__setattr__(s, "llm_provider", "auto")
-        object.__setattr__(s, "ollama_model", "gpt-oss:20b")
+        object.__setattr__(s, "openai_api_key", "sk-test")
+        object.__setattr__(s, "openai_model", "gpt-oss-20:F16")
+        object.__setattr__(s, "openai_base_url", "http://vllm:8000/v1")
         object.__setattr__(s, "db_connection_url", "")
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
@@ -126,17 +115,17 @@ class TestOverrideSettings:
         assert cfg.settings.max_rows_returned == original
 
     def test_yields_patched_object(self):
-        with override_settings(ollama_model="test-model") as s:
-            assert s.ollama_model == "test-model"
+        with override_settings(openai_model="test-model") as s:
+            assert s.openai_model == "test-model"
 
     def test_restores_on_exception(self):
-        original = cfg.settings.ollama_model
+        original = cfg.settings.openai_model
         try:
-            with override_settings(ollama_model="boom"):
+            with override_settings(openai_model="boom"):
                 raise RuntimeError("oops")
         except RuntimeError:
             pass
-        assert cfg.settings.ollama_model == original
+        assert cfg.settings.openai_model == original
 
     def test_multiple_fields(self):
         with override_settings(max_rows_returned=3, query_timeout_seconds=5) as s:

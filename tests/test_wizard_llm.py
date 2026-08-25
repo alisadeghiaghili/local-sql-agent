@@ -1,24 +1,7 @@
-"""TDD tests for llm/wizard_llm.py — auto provider selection + build_backend.
+"""TDD tests for llm/wizard_llm.py — build_backend + OpenAIBackend + WizardLLM.
 
-Contracts
----------
-select_provider()
-  - Prefers the `prefer` provider when it is reachable.
-  - Falls back to the fastest reachable provider otherwise.
-  - Raises RuntimeError when no candidate is reachable.
-  - Skips unconfigured providers (e.g. openai without an API key).
-
-build_backend()
-  - "ollama" → OllamaBackend
-  - "openai" → OpenAIBackend
-  - "mock"   → MockBackend
-  - "auto"   → resolves via select_provider then maps to a backend
-  - unknown  → ValueError
-
-OpenAIBackend.generate()
-  - Returns raw text from chat-completions response.
-  - Raises ValueError("OUT_OF_SCOPE") for the sentinel.
-  - Sends the Bearer header when an API key is configured.
+Provider surface is intentionally small: ``openai`` (OpenAI-compatible
+endpoint) and ``mock`` only.
 """
 
 from __future__ import annotations
@@ -29,83 +12,22 @@ import pytest
 import requests
 
 import llm.wizard_llm as wz
+from llm.wizard_llm import WizardLLM
 
 
-# ---------------------------------------------------------------------------
-# select_provider
-# ---------------------------------------------------------------------------
+class TestJsonHelpers:
+    def test_strip_fences(self):
+        assert wz._strip_fences("```json\n{\"a\": 1}\n```") == '{"a": 1}'
 
-class TestSelectProvider:
-    """Config is mocked so probe results are deterministic and independent of
-    the real .env / os.environ state."""
+    def test_find_json_substring(self):
+        assert wz._find_json_substring("prefix {\"a\": 1}") == '{"a": 1}'
 
-    @staticmethod
-    def _fake_cfg() -> MagicMock:
-        cfg = MagicMock()
-        cfg.settings.ollama_model = "llama3"
-        cfg.settings.ollama_url = "http://localhost:11434/api/generate"
-        cfg.settings.openai_api_key = "sk-test"
-        cfg.settings.openai_model = "gpt-4o-mini"
-        cfg.settings.openai_base_url = "http://vllm:8000/v1"
-        cfg.settings.anthropic_api_key = ""
-        cfg.settings.anthropic_model = "claude-3-5-sonnet-20241022"
-        return cfg
+    def test_find_json_substring_missing(self):
+        with pytest.raises(ValueError, match="No JSON"):
+            wz._find_json_substring("no json here")
 
-    def test_prefers_requested_provider_when_reachable(self):
-        with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
-            with patch.object(
-                wz, "_OllamaProvider", spec=True
-            ) as ollama_cls, patch.object(
-                wz, "_OpenAIProvider", spec=True
-            ) as openai_cls:
-                ollama_cls.return_value.test_connection.return_value = True
-                openai_cls.return_value.test_connection.return_value = True
-                with patch.object(wz, "_config_or_none", return_value=self._fake_cfg()):
-                    assert wz.select_provider(prefer="ollama") == "ollama"
-
-    def test_falls_back_when_prefer_unreachable(self):
-        with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
-            with patch.object(
-                wz, "_OllamaProvider", spec=True
-            ) as ollama_cls, patch.object(
-                wz, "_OpenAIProvider", spec=True
-            ) as openai_cls:
-                ollama_cls.return_value.test_connection.return_value = False
-                openai_cls.return_value.test_connection.return_value = True
-                with patch.object(wz, "_config_or_none", return_value=self._fake_cfg()):
-                    with patch.object(
-                        wz.time, "perf_counter", side_effect=[0.0, 0.1, 0.0, 0.05]
-                    ):
-                        assert wz.select_provider(prefer="ollama") == "openai"
-
-    def test_skips_unconfigured_openai(self):
-        """OpenAI without an API key must not be selected."""
-        cfg = self._fake_cfg()
-        cfg.settings.openai_api_key = ""
-        with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
-            with patch.object(
-                wz, "_OllamaProvider", spec=True
-            ) as ollama_cls, patch.object(
-                wz, "_OpenAIProvider", spec=True
-            ) as openai_cls:
-                ollama_cls.return_value.test_connection.return_value = False
-                openai_cls.return_value.test_connection.return_value = True
-                with patch.object(wz, "_config_or_none", return_value=cfg):
-                    with pytest.raises(RuntimeError, match="No LLM provider"):
-                        wz.select_provider(prefer="ollama")
-
-    def test_raises_when_nothing_reachable(self):
-        with patch.object(wz, "_PROBE_CANDIDATES", ("ollama", "openai")):
-            with patch.object(
-                wz, "_OllamaProvider", spec=True
-            ) as ollama_cls, patch.object(
-                wz, "_OpenAIProvider", spec=True
-            ) as openai_cls:
-                ollama_cls.return_value.test_connection.return_value = False
-                openai_cls.return_value.test_connection.return_value = False
-                with patch.object(wz, "_config_or_none", return_value=self._fake_cfg()):
-                    with pytest.raises(RuntimeError, match="No LLM provider"):
-                        wz.select_provider(prefer="ollama")
+    def test_parse_json(self):
+        assert wz._parse_json("```json\n{\"x\": [1, 2]}\n```") == {"x": [1, 2]}
 
 
 # ---------------------------------------------------------------------------
@@ -113,28 +35,21 @@ class TestSelectProvider:
 # ---------------------------------------------------------------------------
 
 class TestBuildBackend:
-    def test_ollama_maps_to_ollama_backend(self):
-        with patch.object(wz, "_config_or_none", return_value=None):
-            from llm.ollama_backend import OllamaBackend
-            assert isinstance(wz.build_backend("ollama"), OllamaBackend)
+    def test_default_maps_to_openai_backend(self):
+        assert isinstance(wz.build_backend(), wz.OpenAIBackend)
 
     def test_openai_maps_to_openai_backend(self):
-        with patch.object(wz, "_config_or_none", return_value=None):
-            assert isinstance(wz.build_backend("openai"), wz.OpenAIBackend)
+        assert isinstance(wz.build_backend("openai"), wz.OpenAIBackend)
+
+    def test_auto_maps_to_openai_backend(self):
+        assert isinstance(wz.build_backend("auto"), wz.OpenAIBackend)
 
     def test_mock_maps_to_mock_backend(self):
-        with patch.object(wz, "_config_or_none", return_value=None):
-            assert isinstance(wz.build_backend("mock"), wz.MockBackend)
-
-    def test_auto_resolves_then_maps(self):
-        with patch.object(wz, "select_provider", return_value="openai"):
-            with patch.object(wz, "_config_or_none", return_value=None):
-                assert isinstance(wz.build_backend("auto"), wz.OpenAIBackend)
+        assert isinstance(wz.build_backend("mock"), wz.MockBackend)
 
     def test_unknown_provider_raises(self):
-        with patch.object(wz, "_config_or_none", return_value=None):
-            with pytest.raises(ValueError, match="Unsupported LLM provider"):
-                wz.build_backend("grok")
+        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+            wz.build_backend("ollama")
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +108,32 @@ class TestOpenAIBackend:
             with patch("time.sleep"):
                 with pytest.raises(RuntimeError, match="down"):
                     self._backend().generate("prompt")
+
+
+# ---------------------------------------------------------------------------
+# WizardLLM
+# ---------------------------------------------------------------------------
+
+class TestWizardLLM:
+    def test_auto_resolves_to_openai(self):
+        llm = WizardLLM(provider="auto", model="m", base_url="http://fake/v1")
+        assert llm.provider == "openai"
+
+    def test_unknown_provider_raises(self):
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            WizardLLM(provider="anthropic")
+
+    def test_mock_provider_works_without_key(self):
+        llm = WizardLLM(provider="mock", model="mock")
+        assert llm.test_connection() is True
+
+    def test_openai_requires_api_key(self):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+            with patch.object(wz, "_config_or_none", return_value=None):
+                with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+                    WizardLLM(provider="openai")
+
+    def test_mock_generate_returns_json(self):
+        llm = WizardLLM(provider="mock", model="mock")
+        result = llm.generate("anything", expect_json=True)
+        assert isinstance(result, dict)

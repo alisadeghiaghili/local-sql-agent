@@ -8,8 +8,8 @@ Usage
 
     python setup_project.py \\
         --db-url  "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\
-        --llm-provider ollama \\
-        --llm-model    llama3 \\
+        --llm-provider openai \\
+        --llm-model    gpt-oss-20:F16 \\
         --language     fa \\
         --output       project_config/ \\
         --review       interactive
@@ -802,7 +802,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--db-url",       metavar="URL",  default=None)
     p.add_argument("--llm-provider", metavar="NAME", default=None,
-                   choices=["auto", "ollama", "openai", "anthropic", "mock"])
+                   choices=["openai", "mock"])
     p.add_argument("--llm-model",    metavar="NAME", default=None)
     p.add_argument("--llm-base-url", metavar="URL",  default=None)
     p.add_argument("--language",     metavar="LANG", default=None,
@@ -873,7 +873,7 @@ def main(argv: list[str] | None = None) -> int:
     _save_log(log_path, log)
 
     # ---- Setup LLM ----
-    provider = args.llm_provider or os.getenv("WIZARD_LLM_PROVIDER", "auto")
+    provider = args.llm_provider or os.getenv("WIZARD_LLM_PROVIDER", "openai")
     model    = args.llm_model    or os.getenv("WIZARD_LLM_MODEL")
     base_url = args.llm_base_url or os.getenv("WIZARD_LLM_BASE_URL") or None
 

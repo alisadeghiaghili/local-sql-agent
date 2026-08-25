@@ -64,11 +64,10 @@ def _export_csv(rows: list[dict]) -> str:
 def answer_question(
     question: str,
     interpret: bool = True,
-    provider: str = "auto",
 ) -> dict:
     """Run one question through the full pipeline; never raises.
 
-    *provider* selects the LLM backend (``auto``/``ollama``/``openai``).
+    Uses the shared OpenAI-compatible LLM backend.
 
     Returns a dict with ``status`` ("SUCCESS" or "ERROR"), the generated
     SQL, result rows/columns, plain-language interpretation, output file
@@ -78,7 +77,6 @@ def answer_question(
     try:
         resp = run_query(
             question, system_prompt(), mode="full", interpret=interpret,
-            provider=provider,
         )
         rows = resp.result or []
         output_file = _export_csv(rows) if rows else None
