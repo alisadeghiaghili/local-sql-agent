@@ -49,3 +49,19 @@ JOIN [Auction_Dim].[Customer] c
     ON cc.BuyerCustomer_ID = c.ID
 GROUP BY c.Name
 ORDER BY PurchaseValue DESC
+
+
+Question:
+Contracts in the cement ring in Mordad 1405.
+
+SQL:
+SELECT TOP 100
+    cc.ID,
+    cc.TotalPrice
+FROM [Auction_Fact].[CustomerContract] cc
+INNER JOIN [General_Dim].[Date] gd
+    ON cc.Date_ID = gd.ID
+INNER JOIN [Auction_Dim].[Ring] r
+    ON cc.Ring_ID = r.ID
+WHERE r.Name = N'تالار سیمان'
+  AND gd.PersianDate LIKE '1405/05/%'

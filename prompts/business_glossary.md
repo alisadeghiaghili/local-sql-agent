@@ -66,6 +66,13 @@
 
 در جدول: `[general_Dim].[Date]`
 
+فیلتر تاریخ با ستون رشته‌ای `PersianDate` (فرمت صفر-پرشده `YYYY/MM/DD`):
+- سال ۱۴۰۵: `gd.PersianDate LIKE '1405/%'`
+- ماه مرداد ۱۴۰۵: `gd.PersianDate LIKE '1405/05/%'`
+- روز مشخص: `gd.PersianDate = '1405/05/15'`
+
+اتصال جدول واقعیت به تاریخ: `JOIN [general_Dim].[Date] gd ON cc.Date_ID = gd.ID`
+
 ---
 
 # QUERY INTERPRETATION RULES

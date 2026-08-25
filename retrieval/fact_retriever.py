@@ -14,7 +14,7 @@ _FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
 
 FACT_PATTERNS: dict[str, list[str]] = {
     "CustomerContract": ["خرید", "purchase", "customer purchase", "خریدار"],
-    "Contract": ["معامله", "قرارداد", "trade", "sales"],
+    "Contract": ["معامله", "معاملات", "قرارداد", "trade", "sales"],
     "Offer": ["عرضه", "offer", "supply"],
     "Order": ["سفارش", "order"],
     "TalarLog": ["لاگ", "گزارش عملیات"],

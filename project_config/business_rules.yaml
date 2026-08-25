@@ -62,16 +62,57 @@ rules:
       Trading symbol = TradingSymbol
   date:
     rule_text: |
-      All date filtering must use General_Dim.Date.
-      Year filter = PersianYear
-      Month filter = PersianMonth
-      Persian month name filter = PersianMonthName
+      All date filtering must use General_Dim.Date (alias gd).
+      Join facts to the Date table via Date_ID: JOIN [General_Dim].[Date] gd ON cc.Date_ID = gd.ID
+      (CustomerContract also has HallDate_ID / FinalPaymentDate_ID etc. — use Date_ID unless the question names another date.)
+
+      PREFERRED — filter dates with the PersianDate string column (zero-padded 'YYYY/MM/DD', e.g. '1405/01/01'):
+      - Year (سال):        gd.PersianDate LIKE '1405/%'
+      - Year + month:      gd.PersianDate LIKE '1405/05/%'   (month zero-padded, e.g. 05 for مرداد)
+      - Exact day:         gd.PersianDate = '1405/05/15'
+
+      Month name → number (used to build the 'YYYY/MM/%' prefix):
+      فروردین=1، اردیبهشت=2، خرداد=3، تیر=4، مرداد=5، شهریور=6، مهر=7، آبان=8، آذر=9، دی=10، بهمن=11، اسفند=12
+
+      Example (trades in تالار سیمان, مرداد 1405):
+      SELECT TOP 100 cc.ID, cc.TotalPrice
+      FROM [Auction_Fact].[CustomerContract] cc
+      INNER JOIN [General_Dim].[Date] gd ON cc.Date_ID = gd.ID
+      INNER JOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID
+      WHERE r.Name = N'تالار سیمان'
+        AND gd.PersianDate LIKE '1405/05/%'
+
+      Alternative integer columns (for GROUP BY / display, or exact filters):
+      - d.PersianYear (1405), d.PersianMonth (1-12), d.PersianMonthName (N'مرداد')
+      - d.PersianDayOfMonth (1-31), d.PersianDayOfWeek (1-7, 1=شنبه ... 7=جمعه — filter by the integer, NOT by name)
+      - d.PersianWeekOfYear (1-53), d.PersianWeekRange ('YYYY/MM/DD - YYYY/MM/DD')
+      - d.PersianSeason (1=بهار, 2=تابستان, 3=پاییز, 4=زمستان) / d.PersianSeasonName
+      - Gregorian (میلادی) date column is d.RealDate — there is NO column named GregorianDate
+
+      Rules:
+      - The Persian year starts from month 1 (فروردین). If no year is given, use the most recent year present in the data.
   ring:
     rule_text: |
       تالار = Ring
       رینگ = Ring
-      پتروشیمی = تالار پتروشیمی
-      سیمان = تالار سیمان
+      Always filter Ring by the FULL name stored in Auction_Dim.Ring.Name.
+      Partial names map to the exact full name:
+      پتروشیمی = تالار پتروشیمی و فرآورده های نفتی
+      فلزات / بورس فلزات = تالار بورس فلزات قدیم
+      صنعتی یا معدنی = تالار صنعتی و معدنی
+      کشاورزی = تالار کشاورزی
+      کشاورزی مشهد = تالار کشاورزی مشهد
+      نفتی / فرآورده های نفتی = تالار فرآورده های نفتی
+      صادراتی / کالای صادراتی = تالار کالای صادراتی
+      کیش = تالار کالای صادراتی کيش
+      فرعی = تالار فرعی
+      فرعی صادراتی = تالار فرعی صادراتی
+      خرد / معاملات خرد = تالار معاملات خرد
+      مناقصه = تالار مناقصه
+      مناقصه یکجا = تالار مناقصه یکجا
+      حراج باز = تالار حراج باز
+      حراج همزمان = تالار حراج همزمان
+      Example: WHERE r.Name = N'تالار پتروشیمی و فرآورده های نفتی'
   currency:
     rule_text: |
       ارز = Currency
