@@ -83,7 +83,8 @@
 │                    │  MUST RUN ON-    │                          │
 │                    │  PREMISE ONLY    │                          │
 │                    │                  │                          │
-│                    │  Ollama + SQL    │                          │
+│                    │  OpenAI-compat. │                          │
+│                    │  LLM + SQL      │                          │
 │                    │  Server on      │                          │
 │                    │  company hardware│                          │
 │                    └──────────────────┘                          │
@@ -99,16 +100,16 @@
   ├──────────────────┬──────────────────┬───────────────────────┤
   │  LANGUAGES       │  MODELS          │  RETRIEVAL            │
   │  ─────────       │  ──────          │  ─────────            │
-  │  Persian +       │  Any Ollama      │  6 Independent        │
-  │  English         │  Model           │  Modules              │
-  │                  │  (llama3,        │                       │
-  │                  │   codellama,     │                       │
-  │                  │   mistral)       │                       │
+  │  Persian +       │  Any Model on   │  6 Independent        │
+  │  English         │  the OpenAI-    │  Modules              │
+  │                  │  compatible     │                       │
+  │                  │  endpoint       │                       │
+  │                  │  (gpt-oss, …)   │                       │
   ├──────────────────┼──────────────────┼───────────────────────┤
   │  TESTS           │  DEPLOYMENT      │  CLOUD                │
   │  ──────          │  ──────────      │  ─────                │
-  │  427+            │  On-Premise      │  Zero External        │
-  │  Unit +          │  Only            │  Dependencies          │
+  │  470+            │  On-Premise      │  OpenAI-compatible   │
+  │  Unit +          │  Only            │  LLM Endpoint        │
   │  Integration     │                  │                       │
   └──────────────────┴──────────────────┴───────────────────────┘
 ```
@@ -252,17 +253,17 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  LAYER 5: LLM GENERATION                                             ║
 ║  ┌────────────────────────────────────────────────────────────────┐   ║
 ║  │                                                                │   ║
-║  │   llm/ollama_backend.py ──► Ollama API                        │   ║
+║  │   llm/wizard_llm.py ──► OpenAI-compatible API             │   ║
 ║  │                                                                │   ║
 ║  │   ┌──────────────────────────────────────────────────────┐    │   ║
 ║  │   │                                                      │    │   ║
-║  │   │   Prompt ──► POST localhost:11434/api/generate       │    │   ║
+║  │   │   Prompt ──► POST <base_url>/chat/completions         │    │   ║
 ║  │   │                    │                                 │    │   ║
 ║  │   │                    ▼                                 │    │   ║
 ║  │   │             ┌──────────────┐                         │    │   ║
-║  │   │             │   Ollama     │                         │    │   ║
-║  │   │             │   Model      │  llama3 / codellama /   │    │   ║
-║  │   │             │   (Local)    │  mistral / ...          │    │   ║
+║  │   │             │ OpenAI-compat│                         │    │   ║
+║  │   │             │  Model       │  gpt-oss / vLLM /       │    │   ║
+║  │   │             │  (Endpoint)  │  LM Studio / ...        │    │   ║
 ║  │   │             └──────┬───────┘                         │    │   ║
 ║  │   │                    │                                 │    │   ║
 ║  │   │                    ▼                                 │    │   ║
@@ -410,8 +411,8 @@ This diagram shows which modules communicate with each other:
               │                 │                   │
               ▼                 ▼                   ▼
   ┌───────────────┐  ┌──────────────┐  ┌───────────────────┐
-  │  context      │  │  ollama      │  │  sql_guard.py     │
-  │  _retriever.py│  │  _backend.py │  │                   │
+  │  context      │  │  wizard_llm  │  │  sql_guard.py     │
+  │  _retriever.py│  │  .py         │  │                   │
   └───────┬───────┘  └──────────────┘  └───────────────────┘
           │
           │  calls 6 sub-retrievers:
@@ -862,7 +863,7 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
 
 ### Step 6: LLM Generation
 
-**Module:** `llm/ollama_backend.py` → Ollama API
+**Module:** `llm/wizard_llm.py` → OpenAI-compatible API
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐
@@ -874,11 +875,12 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │        ▼                                                       │
   │   ┌────────────────────────────────────────────────────────┐   │
   │   │                                                        │   │
-  │   │   POST http://localhost:11434/api/generate             │   │
+  │   │   POST <base_url>/chat/completions                     │   │
   │   │                                                        │   │
   │   │   {                                                    │   │
-  │   │     "model": "llama3",                                 │   │
-  │   │     "prompt": "<assembled prompt>",                    │   │
+  │   │     "model": "gpt-oss-20:F16",                         │   │
+  │   │     "messages": [{"role": "user",                      │   │
+  │   │                   "content": "<prompt>"}],             │   │
   │   │     "stream": false                                    │   │
   │   │   }                                                    │   │
   │   │                                                        │   │
@@ -1272,7 +1274,7 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │     "timestamp": "2026-06-27T14:22:57",                       │
   │     "question": "فروش ماهانه تالار پتروشیمی در 1402",         │
   │     "generated_sql": "SELECT TOP 1000 d.PersianMonthName...",  │
-  │     "model_name": "llama3",                                    │
+  │     "model_name": "openai:gpt-oss-20:F16",                    │
   │     "status": "SUCCESS",                                       │
   │     "row_count": 12,                                           │
   │     "execution_time_seconds": 3.456,                           │
@@ -1305,7 +1307,7 @@ local-sql-agent/
 │   ├── models.py              #   Pydantic request/response models
 │   ├── errors.py              #   Error hierarchy → HTTP status mapping
 │   ├── middleware.py          #   Request ID, rate limiting, concurrency control
-│   └── health.py              #   /health endpoint (DB + Ollama probe)
+│   └── health.py              #   /health endpoint (DB + LLM endpoint probe)
 │
 ├── retrieval/                 # Modular retrieval pipeline (6 retrievers)
 │   ├── context_retriever.py   #   Orchestrator → single RetrievalContext
@@ -1322,9 +1324,8 @@ local-sql-agent/
 │
 ├── llm/                       # LLM integration
 │   ├── base.py                #   LLMBackend abstract base class
-│   ├── ollama_backend.py      #   Ollama HTTP client with retry + back-off
-│   ├── sql_agent.py           #   Generate → clean → validate → auto-correct loop
-│   └── ollama_client.py       #   Legacy client (backward compatibility)
+│   ├── wizard_llm.py          #   OpenAI-compatible client with retry + back-off
+│   └── sql_agent.py           #   Generate → clean → validate → auto-correct loop
 │
 ├── security/                  # SQL safety
 │   └── sql_guard.py           #   clean_sql, validate_sql, ensure_top
@@ -1384,9 +1385,9 @@ local-sql-agent/
   │                                                                 │
   │                    MODULE DEPENDENCY MAP                         │
   │                                                                 │
-  │   app.py ──────────► sql_agent.py ──► ollama_backend.py         │
+  │   app.py ──────────► sql_agent.py ──► wizard_llm.py              │
   │      │                    │                  │                   │
-  │      │                    │                  └──► Ollama API     │
+  │      │                    │                  └──► OpenAI API     │
   │      │                    │                                       │
   │      │                    ├──► context_retriever.py               │
   │      │                    │         │                             │
@@ -1440,7 +1441,8 @@ local-sql-agent/
   │                                                                 │
   │   ┌──────────────┐    ┌──────────────────────────────────┐     │
   │   │  GET         │    │  /health                         │     │
-  │   │  /health     │───►│  Check DB + Ollama reachability  │     │
+  │   │  /health     │───►│  Check DB + LLM endpoint         │     │
+  │   │             │    │  reachability                     │     │
   │   └──────────────┘    └──────────────────────────────────┘     │
   │                                                                 │
   │   ┌──────────────┐    ┌──────────────────────────────────┐     │
@@ -1635,14 +1637,15 @@ All configuration is read from **environment variables** (or a `.env` file):
   │   ┌────────────────────┬────────────────┬─────────────────┐   │
   │   │  VARIABLE          │  DEFAULT       │  DESCRIPTION    │   │
   │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  OLLAMA_URL        │  localhost:    │  Ollama API     │   │
-  │   │                    │  11434/api/    │  endpoint       │   │
-  │   │                    │  generate      │                 │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  OLLAMA_MODEL      │  llama3        │  Model name     │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  DB_CONNECTION_URL │  (required)    │  SQLAlchemy     │   │
-  │   │                    │                │  connection     │   │
+  │   │  OPENAI_BASE_URL│  api.openai.   │  OpenAI-compatible │   │
+  │   │                 │  com/v1        │  endpoint          │   │
+  │   ├─────────────────┼────────────────┼────────────────────┤   │
+  │   │  OPENAI_MODEL   │  gpt-4o-mini   │  Model name        │   │
+  │   ├─────────────────┼────────────────┼────────────────────┤   │
+  │   │  OPENAI_API_KEY │  (required)    │  Endpoint API key  │   │
+  │   ├─────────────────┼────────────────┼────────────────────┤   │
+  │   │  DB_CONNECTION_URL │  (required) │  SQLAlchemy        │   │
+  │   │                 │                │  connection        │   │
   │   ├────────────────────┼────────────────┼─────────────────┤   │
   │   │  QUERY_TIMEOUT_    │  60            │  Max query time │   │
   │   │  SECONDS           │                │  (seconds)      │   │
@@ -1676,18 +1679,21 @@ All configuration is read from **environment variables** (or a `.env` file):
   │                                                                 │
   │   ┌───────────────┐    ┌───────────────┐    ┌───────────────┐  │
   │   │               │    │               │    │               │  │
-  │   │   Python      │    │   Ollama      │    │   SQL Server  │  │
-  │   │   3.11+       │    │   installed   │    │   + ODBC      │  │
-  │   │               │    │   & running   │    │   Driver 17   │  │
-  │   │               │    │   on :11434   │    │               │  │
+  │   │   Python      │    │  OpenAI-      │    │   SQL Server  │  │
+  │   │   3.11+       │    │  compatible   │    │   + ODBC      │  │
+  │   │               │    │  LLM endpoint │    │   Driver 17   │  │
+  │   │               │    │  (vLLM/LM     │    │               │  │
+  │   │               │    │   Studio/…)   │    │               │  │
   │   └───────────────┘    └───────────────┘    └───────────────┘  │
   │          │                    │                    │            │
   │          └────────────────────┼────────────────────┘            │
   │                               │                                 │
   │                               ▼                                 │
   │                    ┌─────────────────────┐                      │
-  │                    │  Pull AI model:     │                      │
-  │                    │  ollama pull llama3 │                      │
+  │                    │  Set in .env:       │                      │
+  │                    │  OPENAI_BASE_URL,   │                      │
+  │                    │  OPENAI_MODEL,      │                      │
+  │                    │  OPENAI_API_KEY     │                      │
   │                    └─────────────────────┘                      │
   │                                                                 │
   └─────────────────────────────────────────────────────────────────┘
@@ -1701,12 +1707,9 @@ pip install -r requirements.txt
 
 # Step 2: Configure environment
 cp .env.example .env
-# Edit .env with your database URL and model name
+# Edit .env with your database URL, OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY
 
-# Step 3: Pull the AI model
-ollama pull llama3
-
-# Step 4: Run the interactive CLI
+# Step 3: Run the interactive CLI
 python app.py
 ```
 

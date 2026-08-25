@@ -31,14 +31,14 @@ This tutorial is written in the vignette style used by tidyverse packages: inste
 
 ## 1. Installation
 
-The engine needs three things outside Python: a running Ollama instance, a SQL Server database, and an ODBC driver for the connection.
+The engine needs three things outside Python: an OpenAI-compatible LLM endpoint (vLLM / LM Studio / Ollama `/v1`), a SQL Server database, and an ODBC driver for the connection.
 
 ### What you need
 
 | Dependency | Minimum | Notes |
 |---|---|---|
 | Python | 3.11 | |
-| [Ollama](https://ollama.com) | any | Must run on `localhost:11434` |
+| OpenAI-compatible LLM endpoint | any | e.g. vLLM, LM Studio, or Ollama's `/v1` API, reachable via `OPENAI_BASE_URL` |
 | SQL Server | 2016+ | Any edition including Express |
 | ODBC Driver | 17 or 18 | `msodbcsql17` / `msodbcsql18` |
 
@@ -61,30 +61,27 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Open `.env`. The only two required values are your database URL and the Ollama model name:
+Open `.env`. The required values are your database URL and the LLM endpoint configuration:
 
 ```dotenv
 # Required
 DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/YourDB?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
-OLLAMA_MODEL=llama3
+OPENAI_BASE_URL=http://your-llm-host:8000/v1
+OPENAI_MODEL=gpt-oss-20:F16
+OPENAI_API_KEY=your-key
 
 # Sensible defaults — override as needed
-OLLAMA_URL=http://localhost:11434/api/generate
 MAX_ROWS_RETURNED=1000
 QUERY_TIMEOUT_SECONDS=60
 CACHE_TTL_SECONDS=300
 CACHE_MAX_SIZE=256
 ```
 
-### Pull a model
+`OPENAI_BASE_URL` must point at any server exposing the OpenAI-compatible chat API (`/chat/completions`) — vLLM, LM Studio, Ollama (`/v1`), etc. The model you name in `OPENAI_MODEL` must be served by that endpoint.
 
-```bash
-ollama pull llama3          # fast, good baseline (~4 GB)
-ollama pull llama3.1:8b     # better on complex multi-table joins
-ollama pull llama3.1:70b    # best accuracy, requires ~40 GB RAM
-```
+### Model availability
 
-Start with `llama3`. Switch to a larger model only if you see the engine producing wrong table names or malformed SQL on your real questions.
+Start with a model the endpoint already serves (e.g. `gpt-oss-20:F16`). Pick a larger model only if you see the engine producing wrong table names or malformed SQL on your real questions.
 
 ---
 
@@ -708,8 +705,8 @@ curl -X POST http://localhost:8000/query \
 | Exception | HTTP | When |
 |---|---|---|
 | `OutOfScopeError` | 422 | Model returns `OUT_OF_SCOPE` sentinel |
-| `ModelTimeoutError` | 504 | Ollama request exceeded timeout |
-| `ModelUnavailableError` | 503 | Ollama unreachable after all retries |
+| `ModelTimeoutError` | 504 | LLM request exceeded timeout |
+| `ModelUnavailableError` | 503 | LLM endpoint unreachable after all retries |
 | `QueryExecutionError` | 500 | SQL Server execution failure |
 | `ValidationError` | 422 | Malformed request body |
 
@@ -754,14 +751,14 @@ curl http://localhost:8000/health
 {
   "status":   "ok",
   "database": true,
-  "ollama":   true,
-  "model":    "llama3"
+  "openai":   true,
+  "model":    "gpt-oss-20:F16"
 }
 ```
 
 | `status` | Meaning |
 |---|---|
-| `ok` | Both SQL Server and Ollama are reachable |
+| `ok` | Both SQL Server and the LLM endpoint are reachable |
 | `degraded` | One component is unreachable |
 | `down` | Both components are down |
 
@@ -773,7 +770,7 @@ Every query is appended to `logs/query_history.jsonl` as a single JSON line:
   "question":               "برترین مشتریان در 1402",
   "generated_sql":          "SELECT TOP 10 c.Name ...",
   "tables_retrieved":       ["CustomerContract", "Customer", "Date"],
-  "model_name":             "llama3",
+  "model_name":             "openai:gpt-oss-20:F16",
   "row_count":              10,
   "execution_time_seconds": 1.38,
   "status":                 "SUCCESS",
@@ -884,14 +881,14 @@ def test_query_returns_200_with_sql_key():
     assert "sql" in r.json()
 
 def test_health_ok_when_both_up():
-    with patch("api.health.check_db",     return_value=True), \
-         patch("api.health.check_ollama", return_value=True):
+    with patch("api.health._ping_db",    return_value=True), \
+         patch("api.health._ping_openai", return_value=True):
         r = client.get("/health")
     assert r.json()["status"] == "ok"
 
 def test_health_degraded_when_db_down():
-    with patch("api.health.check_db",     return_value=False), \
-         patch("api.health.check_ollama", return_value=True):
+    with patch("api.health._ping_db",    return_value=False), \
+         patch("api.health._ping_openai", return_value=True):
         r = client.get("/health")
     assert r.json()["status"] == "degraded"
 ```
@@ -912,8 +909,9 @@ open htmlcov/index.html
 
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `llama3` | Model name (`llama3`, `llama3.1:8b`, `codellama`, …) |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model served by the endpoint |
+| `OPENAI_API_KEY` | *(required)* | API key for the endpoint |
 | `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
 | `QUERY_TIMEOUT_SECONDS` | `60` | Abort SQL queries that run longer than this |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap injected as `TOP n` on every query |
@@ -953,7 +951,7 @@ print(retrieve_tables("کارگزاران برتر", fallback=True))
 
 1. Add a few-shot example for that question pattern → `knowledge/examples.py`
 2. Add or tighten the business rule → `knowledge/business_rules.py`
-3. Upgrade to a larger model: `ollama pull llama3.1:70b`
+3. Upgrade to a larger model served by the endpoint (e.g. `gpt-oss-20:F16`)
 
 ### `RuntimeError: Database connection failed`
 
@@ -973,9 +971,8 @@ with get_engine().connect() as c:
 ### `503 ModelUnavailableError`
 
 ```bash
-curl http://localhost:11434/api/tags    # is Ollama running?
-ollama list                            # is the model downloaded?
-ollama pull llama3                     # re-pull if missing
+curl http://your-llm-host:8000/v1/models   # is the LLM endpoint reachable?
+# then verify OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY in .env
 ```
 
 ### `OUT_OF_SCOPE` response
@@ -992,6 +989,6 @@ Fix: add a few-shot example that shows the correct SQL for that question type.
 
 The model returned prose instead of SQL. Common causes:
 
-- Model too small for the join complexity → use `llama3.1:8b` or larger
+- Model too small for the join complexity → use a larger model served by the endpoint
 - System prompt too restrictive → review `prompts/system_prompt.md`
 - No relevant few-shot example → add one to `knowledge/examples.py`

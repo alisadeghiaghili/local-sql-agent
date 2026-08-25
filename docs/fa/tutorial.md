@@ -1,42 +1,42 @@
-# Local SQL Agent — Tutorial
+# آموزش Local SQL Agent
 
-**English** | [فارسی ↓](#آموزش-local-sql-agent)
-
----
-
-This tutorial follows the vignette style: instead of listing every function signature, it walks you through real tasks from start to finish. By the end you will have run your first query, extended the knowledge base for a new domain entity, diagnosed a retrieval miss, and written a test.
-
-## Table of contents
-
-1. [Installation](#1-installation)
-2. [Your first query](#2-your-first-query)
-3. [How retrieval works](#3-how-retrieval-works)
-4. [How the prompt is built](#4-how-the-prompt-is-built)
-5. [The SQL security pipeline](#5-the-sql-security-pipeline)
-6. [Exporting results](#6-exporting-results)
-7. [Adding a new table](#7-adding-a-new-table)
-8. [Adding synonyms and aliases](#8-adding-synonyms-and-aliases)
-9. [Adding few-shot examples](#9-adding-few-shot-examples)
-10. [Diagnosing retrieval misses](#10-diagnosing-retrieval-misses)
-11. [Writing tests](#11-writing-tests)
-12. [Using the HTTP API](#12-using-the-http-api)
-13. [Health check and monitoring](#13-health-check-and-monitoring)
-14. [Troubleshooting](#14-troubleshooting)
+[English](../en/tutorial.md) | **فارسی**
 
 ---
 
-## 1. Installation
+این آموزش به سبک vignette نوشته شده است: به‌جای فهرست‌کردن امضای تک‌تک توابع، شما را قدم‌به‌قدم از میان کارهای واقعی هدایت می‌کند. در پایان این آموزش، اولین کوئری خود را اجرا کرده‌اید، پایگاه دانش را برای یک entity جدید توسعه داده‌اید، یک خطای بازیابی (retrieval miss) را تشخیص داده‌اید و یک تست نوشته‌اید.
 
-### What you need
+## فهرست مطالب
 
-| Dependency | Minimum version | Notes |
+1. نصب
+2. اولین کوئری شما
+3. بازیابی (Retrieval) چگونه کار می‌کند
+4. پرامپت چگونه ساخته می‌شود
+5. خط لوله امنیتی SQL
+6. خروجی گرفتن از نتایج
+7. افزودن یک جدول جدید
+8. افزودن مترادف‌ها و نام‌های مستعار
+9. افزودن مثال‌های few-shot
+10. تشخیص خطاهای بازیابی
+11. نوشتن تست
+12. استفاده از HTTP API
+13. بررسی سلامت و پایش
+14. رفع اشکال
+
+---
+
+## 1. نصب
+
+### چه چیزهایی لازم دارید
+
+| وابستگی | حداقل نسخه | توضیحات |
 |---|---|---|
 | Python | 3.11 | |
-| [Ollama](https://ollama.com) | any | Must be running on `localhost:11434` |
-| SQL Server | 2016+ | Accessed via ODBC |
-| ODBC Driver | 17 or 18 | `msodbcsql17` / `msodbcsql18` |
+| endpoint سازگار با OpenAI | هر نسخه | برای مثال vLLM، LM Studio یا API «/v1» اولاما که از طریق `OPENAI_BASE_URL` در دسترس باشد |
+| SQL Server | 2016+ | دسترسی از طریق ODBC |
+| درایور ODBC | 17 یا 18 | `msodbcsql17` / `msodbcsql18` |
 
-### Step 1 — Clone and create a virtual environment
+### مرحله ۱ — کلون کردن مخزن و ساخت محیط مجازی
 
 ```bash
 git clone https://github.com/alisadeghiaghili/local-sql-agent.git
@@ -49,18 +49,20 @@ source .venv/bin/activate      # Linux / macOS
 pip install -r requirements.txt
 ```
 
-### Step 2 — Configure
+### مرحله ۲ — پیکربندی
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and set at minimum:
+فایل `.env` را باز کنید و حداقل موارد زیر را تنظیم کنید:
 
 ```dotenv
 # Required
 DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/YourDB?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
-OLLAMA_MODEL=llama3
+OPENAI_BASE_URL=http://your-llm-host:8000/v1
+OPENAI_MODEL=gpt-oss-20:F16
+OPENAI_API_KEY=your-key
 
 # Optional tuning
 MAX_ROWS_RETURNED=500
@@ -68,17 +70,13 @@ QUERY_TIMEOUT_SECONDS=30
 CACHE_TTL_SECONDS=300
 ```
 
-### Step 3 — Pull a model
+### مرحله ۳ — در دسترس بودن مدل
 
-```bash
-ollama pull llama3          # fast, good baseline
-ollama pull llama3.1:8b     # better for complex joins
-ollama pull llama3.1:70b    # best accuracy, needs ~40 GB RAM
-```
+`OPENAI_BASE_URL` باید به سروری اشاره کند که API گفتگو سازگار با OpenAI (`/chat/completions`) را ارائه می‌دهد — برای مثال vLLM، LM Studio یا اولاما (`/v1`). مدلی که در `OPENAI_MODEL` نام می‌برید باید توسط همان endpoint سرو شود.
 
 ---
 
-## 2. Your first query
+## 2. اولین کوئری شما
 
 ### CLI
 
@@ -86,7 +84,7 @@ ollama pull llama3.1:70b    # best accuracy, needs ~40 GB RAM
 python app.py
 ```
 
-You will see:
+خروجی زیر را مشاهده می‌کنید:
 
 ```
 ════════════════════════════════════════════════════════════
@@ -96,7 +94,7 @@ Auction NLQ Engine Started
 Question:
 ```
 
-Type a question in Persian or English:
+یک سؤال به فارسی یا انگلیسی تایپ کنید:
 
 ```
 Question: top 5 customers by purchase value in 1402
@@ -124,7 +122,7 @@ Returned Rows: 5  |  Execution Time: 1.38s
 Excel Saved: exports/result_20260613_142257.xlsx
 ```
 
-Type `exit` to quit.
+برای خروج عبارت `exit` را تایپ کنید.
 
 ### Python
 
@@ -143,9 +141,9 @@ print(data["row_count"])  # 5
 
 ---
 
-## 3. How retrieval works
+## 3. بازیابی (Retrieval) چگونه کار می‌کند
 
-Before the LLM is called, `ContextRetriever` runs six independent retrievers and combines their output into a single `RetrievalContext`.
+پیش از فراخوانی LLM، `ContextRetriever` شش بازیاب مستقل را اجرا می‌کند و خروجی آن‌ها را در یک `RetrievalContext` واحد ترکیب می‌کند.
 
 ```
 Question: "برترین مشتریان تالار پتروشیمی در 1402"
@@ -158,11 +156,11 @@ Question: "برترین مشتریان تالار پتروشیمی در 1402"
           └─ ValueRetriever      → {"Ring": "تالار پتروشیمی", "PersianYear": 1402}
 ```
 
-### Two-tier retrieval
+### بازیابی دو مرحله‌ای
 
-Every retriever first tries a **fast path** (exact alias or keyword match). If that yields nothing, it falls back to the **TF-IDF bigram engine** (`schema_data/retriever.py`) which scores all table descriptions against the question.
+هر بازیاب ابتدا از **مسیر سریع** (تطبیق دقیق alias یا کلمه کلیدی) استفاده می‌کند. اگر نتیجه‌ای به دست نیاید، به **موتور bigram با TF-IDF** (`schema_data/retriever.py`) برگشت می‌خورد که همه توضیحات جدول‌ها را با سؤال امتیازدهی می‌کند.
 
-You can call the TF-IDF retriever directly:
+می‌توانید بازیاب TF-IDF را مستقیماً فراخوانی کنید:
 
 ```python
 from schema_data.retriever import retrieve_tables
@@ -176,9 +174,9 @@ print(retrieve_tables("xyzzy", fallback=False))
 # []
 ```
 
-### Forced tables
+### جدول‌های اجباری
 
-Some tables must always appear when certain keywords are present:
+برخی جدول‌ها باید همیشه در حضور کلمات کلیدی مشخص در زمینه (context) حضور داشته باشند:
 
 ```python
 # schema_data/retriever.py
@@ -189,13 +187,13 @@ _ALWAYS_INCLUDE = {
 }
 ```
 
-This means any question mentioning a year or month will always receive the `Date` table in context.
+یعنی هر سؤالی که به سال یا ماه اشاره کند، همیشه جدول `Date` را در context دریافت می‌کند.
 
 ---
 
-## 4. How the prompt is built
+## 4. پرامپت چگونه ساخته می‌شود
 
-`PromptBuilder.build()` assembles the final prompt from the `RetrievalContext`:
+`PromptBuilder.build()` پرامپت نهایی را از روی `RetrievalContext` می‌سازد:
 
 ```python
 from core.models import RetrievalContext
@@ -227,13 +225,13 @@ prompt = PromptBuilder.build(
 print(prompt)
 ```
 
-The prompt has clearly labelled sections — `## Business Rules`, `## Schema`, `## Relationships`, `## Filters`, `## Examples`, `## Question` — which is what allows smaller models to reliably produce correct SQL.
+پرامپت دارای بخش‌های برچسب‌گذاری‌شده و روشن است — `## Business Rules`، `## Schema`، `## Relationships`، `## Filters`، `## Examples`، `## Question` — و همین ساختار است که به مدل‌های کوچک‌تر امکان می‌دهد SQL صحیح تولید کنند.
 
 ---
 
-## 5. The SQL security pipeline
+## 5. خط لوله امنیتی SQL
 
-Every SQL string — whether from the model or anywhere else — passes through three functions in `security/sql_guard.py`:
+هر رشته SQL — چه از مدل و چه از هر جای دیگر — از سه تابع در `security/sql_guard.py` عبور می‌کند:
 
 ```python
 from security.sql_guard import clean_sql, validate_sql, ensure_top
@@ -266,21 +264,21 @@ print(sql)
 # SELECT TOP 10 * FROM [Auction_Fact].[Contract]  ← unchanged (already has TOP)
 ```
 
-### What is blocked
+### چه چیزهایی مسدود می‌شوند
 
-| Category | Keywords |
+| دسته | کلمات کلیدی |
 |---|---|
 | DDL | `DROP`, `ALTER`, `CREATE`, `TRUNCATE` |
 | DML | `DELETE`, `UPDATE`, `INSERT`, `MERGE` |
-| Execution | `EXECUTE`, `EXEC`, `XP_`, `SP_` |
-| Schema introspection | `INFORMATION_SCHEMA`, `SYS.` |
-| Raw pagination | `LIMIT` (rewritten to `TOP`, not blocked) |
+| اجرا | `EXECUTE`, `EXEC`, `XP_`, `SP_` |
+| کاوش ساختار (Schema) | `INFORMATION_SCHEMA`, `SYS.` |
+| صفحه‌بندی خام | `LIMIT` (به `TOP` تبدیل می‌شود، مسدود نمی‌شود) |
 
 ---
 
-## 6. Exporting results
+## 6. خروجی گرفتن از نتایج
 
-The CLI saves every successful query to Excel automatically. You can also trigger exports programmatically:
+CLI به‌صورت خودکار نتیجه هر کوئری موفق را در Excel ذخیره می‌کند. همچنین می‌توانید خروجی را به‌صورت برنامه‌نویسی‌شده فراخوانی کنید:
 
 ```python
 from database.executor import execute_sql
@@ -293,15 +291,15 @@ path = export_excel(df)
 print(path)  # exports/result_20260613_142500.xlsx
 ```
 
-All export files land in the directory set by `EXPORT_DIR` (default: `exports/`).
+همه فایل‌های خروجی در پوشه‌ای که با `EXPORT_DIR` تعیین شده ذخیره می‌شوند (پیش‌فرض: `exports/`).
 
 ---
 
-## 7. Adding a new table
+## 7. افزودن یک جدول جدید
 
-Suppose your exchange now trades in a new instrument and you need to add a `Broker` table.
+فرض کنید بورس شما اکنون در یک ابزار مالی جدید معامله می‌کند و باید جدول `Broker` را اضافه کنید.
 
-### Step 1 — Describe the table (bilingual)
+### مرحله ۱ — توصیف جدول (دوزبانه)
 
 `schema_data/tables.py`:
 
@@ -316,9 +314,9 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
 }
 ```
 
-> **Write descriptions bilingually.** The TF-IDF engine tokenises both Persian and English, so bilingual descriptions make the fallback retriever work for both languages.
+> **توصیف‌ها را دوزبانه بنویسید.** موتور TF-IDF هم فارسی و هم انگلیسی را توکن‌سازی می‌کند؛ بنابراین توصیف‌های دوزبانه باعث می‌شوند بازیاب پشتیبان (fallback) برای هر دو زبان کار کند.
 
-### Step 2 — Define columns
+### مرحله ۲ — تعریف ستون‌ها
 
 `schema_data/columns.py`:
 
@@ -334,7 +332,7 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
 }
 ```
 
-### Step 3 — Add JOIN relationship
+### مرحله ۳ — افزودن رابطه JOIN
 
 `schema_data/relationships.py`:
 
@@ -348,7 +346,7 @@ RELATIONSHIPS: dict[str, str] = {
 }
 ```
 
-### Step 4 — Add Persian aliases
+### مرحله ۴ — افزودن نام‌های مستعار فارسی
 
 `knowledge/entities.py`:
 
@@ -359,7 +357,7 @@ RELATIONSHIPS: dict[str, str] = {
 }
 ```
 
-### Step 5 — Verify
+### مرحله ۵ — بررسی
 
 ```bash
 python -c "
@@ -371,11 +369,11 @@ print(retrieve_tables('فروش کارگزاران'))
 
 ---
 
-## 8. Adding synonyms and aliases
+## 8. افزودن مترادف‌ها و نام‌های مستعار
 
-If the retriever misses a table because users phrase questions differently, add a synonym.
+اگر کاربران سؤال را طور دیگری بیان کنند و بازیاب جدول را پیدا نکند، یک مترادف (synonym) اضافه کنید.
 
-**Scenario:** users say "عرضه کالا" but the `Offer` table is not being retrieved.
+**سناریو:** کاربران می‌گویند «عرضه کالا» اما جدول `Offer` بازیابی نمی‌شود.
 
 `knowledge/aliases.py`:
 
@@ -386,7 +384,7 @@ SYNONYMS: dict[str, list[str]] = {
 }
 ```
 
-Then verify:
+سپس بررسی کنید:
 
 ```bash
 python -c "
@@ -396,7 +394,7 @@ print(retrieve_tables('عرضه کالا در تالار پتروشیمی'))
 # Should include 'Offer'
 ```
 
-For trading hall names specifically, the canonical mapping lives in `RING_ALIASES`:
+برای نام تالارهای معاملاتی، نگاشت متعارف در `RING_ALIASES` نگهداری می‌شود:
 
 ```python
 RING_ALIASES["تالار برق"] = [
@@ -406,9 +404,9 @@ RING_ALIASES["تالار برق"] = [
 
 ---
 
-## 9. Adding few-shot examples
+## 9. افزودن مثال‌های few-shot
 
-Few-shot examples are the highest-leverage way to improve SQL accuracy. When a question's tags overlap with an example's tags, that example is injected into the prompt.
+مثال‌های few-shot پرارزش‌ترین راه برای بهبود دقت SQL هستند. وقتی برچسب‌های یک سؤال با برچسب‌های یک مثال هم‌پوشانی داشته باشد، آن مثال در پرامپت تزریق می‌شود.
 
 `knowledge/examples.py`:
 
@@ -432,15 +430,15 @@ EXAMPLES = [
 ]
 ```
 
-**Tagging strategy:** use small, reusable tags (`broker`, `top`, `value`, `month`, `year`, `count`) rather than long phrases. The `ExampleRetriever` scores by tag overlap, so broader tags match more questions.
+**راهبرد برچسب‌گذاری:** از برچسب‌های کوچک و قابل‌استفاده مجدد (`broker`, `top`, `value`, `month`, `year`, `count`) به‌جای عبارت‌های طولانی استفاده کنید. `ExampleRetriever` بر اساس هم‌پوشانی برچسب‌ها امتیاز می‌دهد؛ بنابراین برچسب‌های گسترده‌تر با سؤال‌های بیشتری تطبیق می‌خورند.
 
 ---
 
-## 10. Diagnosing retrieval misses
+## 10. تشخیص خطاهای بازیابی (retrieval miss)
 
-A retrieval miss happens when the model generates SQL referencing a table that the retriever did not include in context. The model essentially guessed the table name — sometimes correctly, often not.
+خطای بازیابی وقتی رخ می‌دهد که مدل SQLای تولید کند که به جدولی اشاره دارد که بازیاب آن را در context قرار نداده است. مدل عملاً نام جدول را حدس زده است — گاهی درست، و اغلب اشتباه.
 
-The `analyze_misses.py` script scans your query log and finds these patterns:
+اسکریپت `analyze_misses.py` لاگ کوئری‌های شما را بررسی می‌کند و این الگوها را پیدا می‌کند:
 
 ```bash
 python scripts/analyze_misses.py
@@ -449,7 +447,7 @@ python scripts/analyze_misses.py
 python scripts/analyze_misses.py /path/to/other_log.jsonl
 ```
 
-Sample output:
+نمونه خروجی:
 
 ```
 🔍  3 miss event(s) detected
@@ -464,9 +462,9 @@ Sample output:
 ────────────────────────────────────────────────────────
 ```
 
-**How to read this:** `Broker` appeared in generated SQL twice, but the retriever did not put it in context. Users used the word `کارگزار` in those questions — that word is not yet in `SYNONYMS` or `TABLE_DESCRIPTIONS`. The fix: add `"کارگزار"` to `knowledge/aliases.py`.
+**چگونه این خروجی را بخوانیم:** `Broker` دو بار در SQL تولیدشده ظاهر شده، اما بازیاب آن را در context قرار نداده است. کاربران در آن سؤال‌ها از واژه `کارگزار` استفاده کرده‌اند — واژه‌ای که هنوز در `SYNONYMS` یا `TABLE_DESCRIPTIONS` نیست. راه‌حل: افزودن `"کارگزار"` به `knowledge/aliases.py`.
 
-You can also call `analyse()` programmatically:
+همچنین می‌توانید `analyse()` را به‌صورت برنامه‌نویسی‌شده فراخوانی کنید:
 
 ```python
 from pathlib import Path
@@ -483,11 +481,11 @@ for entry in report["tables_ranked_by_miss_count"]:
 
 ---
 
-## 11. Writing tests
+## 11. نوشتن تست
 
-Tests live in `tests/`. The project uses `pytest`; fixtures are in `tests/conftest.py`.
+تست‌ها در `tests/` قرار دارند. پروژه از `pytest` استفاده می‌کند و فیکسچرها در `tests/conftest.py` هستند.
 
-### Testing the retriever
+### تست بازیاب
 
 ```python
 # tests/test_retriever.py
@@ -514,7 +512,7 @@ class TestRetrieveTables:
         assert "Customer" in en
 ```
 
-### Testing the SQL guard
+### تست نگهبان SQL
 
 ```python
 # tests/test_sql_guard.py
@@ -554,7 +552,7 @@ class TestEnsureTop:
         assert ensure_top(sql, n=50) == sql
 ```
 
-### Testing the API
+### تست API
 
 ```python
 # tests/test_api_endpoints.py
@@ -577,13 +575,13 @@ def test_query_endpoint_returns_sql():
     assert "sql" in response.json()
 
 def test_health_endpoint_returns_ok():
-    with patch("api.health.check_db", return_value=True), \
-         patch("api.health.check_ollama", return_value=True):
+    with patch("api.health._ping_db", return_value=True), \
+         patch("api.health._ping_openai", return_value=True):
         response = client.get("/health")
     assert response.json()["status"] == "ok"
 ```
 
-### Running tests
+### اجرای تست‌ها
 
 ```bash
 pytest                                  # all tests
@@ -595,7 +593,7 @@ open htmlcov/index.html
 
 ---
 
-## 12. Using the HTTP API
+## 12. استفاده از HTTP API
 
 ```bash
 uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
@@ -612,14 +610,14 @@ curl -X POST http://localhost:8000/query \
   }'
 ```
 
-`mode` options:
-- `full` (default) — returns SQL + executed result set
-- `sql` — returns SQL only, does not execute
-- `result` — executes and returns rows only
+گزینه‌های `mode`:
+- `full` (پیش‌فرض) — SQL و نتیجه اجراشده را برمی‌گرداند
+- `sql` — فقط SQL را برمی‌گرداند و اجرا نمی‌کند
+- `result` — فقط اجرا و ردیف‌ها را برمی‌گرداند
 
-### Query cache
+### کش کوئری
 
-Repeat identical questions are served from the in-process LRU cache:
+سؤال‌های یکسان تکراری از کش LRU درون‌فرآیندی سرو می‌شوند:
 
 ```bash
 # Check cache state
@@ -634,11 +632,11 @@ curl -X POST http://localhost:8000/cache/invalidate \
 curl -X POST http://localhost:8000/cache/clear
 ```
 
-Cache TTL and max size are controlled by `CACHE_TTL_SECONDS` and `CACHE_MAX_SIZE` in `.env`.
+TTL و حداکثر اندازه کش با `CACHE_TTL_SECONDS` و `CACHE_MAX_SIZE` در `.env` کنترل می‌شوند.
 
 ---
 
-## 13. Health check and monitoring
+## 13. بررسی سلامت و پایش
 
 ```bash
 curl http://localhost:8000/health
@@ -648,25 +646,25 @@ curl http://localhost:8000/health
 {
   "status": "ok",
   "database": true,
-  "ollama": true,
-  "model": "llama3"
+  "openai": true,
+  "model": "gpt-oss-20:F16"
 }
 ```
 
-| `status` | Meaning |
+| `status` | معنی |
 |---|---|
-| `ok` | Both SQL Server and Ollama are reachable |
-| `degraded` | One component is unreachable |
-| `down` | Neither component is reachable |
+| `ok` | هم SQL Server و هم endpoint مدل در دسترس هستند |
+| `degraded` | یکی از مؤلفه‌ها در دسترس نیست |
+| `down` | هیچ‌کدام از مؤلفه‌ها در دسترس نیستند |
 
-Query logs are written to `logs/query_history.jsonl` (one JSON object per line):
+لاگ کوئری‌ها در `logs/query_history.jsonl` نوشته می‌شود (هر خط یک شیء JSON):
 
 ```json
 {
   "timestamp": "2026-06-13T14:22:57",
   "question": "برترین مشتریان در 1402",
   "generated_sql": "SELECT TOP 10 ...",
-  "model_name": "llama3",
+  "model_name": "openai:gpt-oss-20:F16",
   "row_count": 10,
   "execution_time_seconds": 1.38,
   "status": "SUCCESS",
@@ -676,9 +674,9 @@ Query logs are written to `logs/query_history.jsonl` (one JSON object per line):
 
 ---
 
-## 14. Troubleshooting
+## 14. رفع اشکال
 
-### A table is not being retrieved
+### جدولی بازیابی نمی‌شود
 
 ```python
 # Check if the table exists in descriptions
@@ -693,11 +691,11 @@ print(SYNONYMS.get("کارگزار"))  # None → add it
 # python scripts/analyze_misses.py
 ```
 
-### SQL is invalid or references wrong tables
+### SQL نامعتبر است یا به جدول اشتباه اشاره می‌کند
 
-1. Add a few-shot example for that question pattern (`knowledge/examples.py`)
-2. Add the relevant business rule (`knowledge/business_rules.py`)
-3. Use a larger model: `ollama pull llama3.1:70b`
+1. برای آن الگوی سؤال یک مثال few-shot اضافه کنید (`knowledge/examples.py`)
+2. قانون تجاری مرتبط را اضافه یا سخت‌گیرانه‌تر کنید (`knowledge/business_rules.py`)
+3. از مدل بزرگتری که توسط endpoint سرو می‌شود استفاده کنید (برای مثال `gpt-oss-20:F16`)
 
 ### `RuntimeError: Database error`
 
@@ -715,24 +713,12 @@ with get_engine().connect() as c:
 ### `ModelUnavailableError` / `503`
 
 ```bash
-curl http://localhost:11434/api/tags   # check Ollama is running
-ollama list                            # check model is downloaded
+curl http://your-llm-host:8000/v1/models   # is the LLM endpoint reachable?
+# then verify OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY in .env
 ```
 
 ### `ValueError: Received empty SQL from model`
 
-- The model returned an out-of-scope response. Check `logs/query_history.jsonl` for status `OUT_OF_SCOPE`.
-- Add a matching few-shot example to guide the model.
-- Try a larger or more capable model.
-
----
-
----
-
-# آموزش Local SQL Agent
-
-[English ↑](#local-sql-agent--tutorial) | **فارسی**
-
----
-
-این آموزش به شیوه vignette نوشته شده: به جای فهرست کردن هر تابع، شما را از طریق وظایف واقعی — از نصب تا تشخیص مشکل — راهنمایی می‌کند. تا پایان اولین کوئری را اجرا کرده، یک entity جدید به knowledge base اضافه کرده، یک retrieval miss
+- مدل پاسخی خارج از دامنه برگردانده است. در `logs/query_history.jsonl` به دنبال وضعیت `OUT_OF_SCOPE` بگردید.
+- یک مثال few-shot متناسب برای هدایت مدل اضافه کنید.
+- از مدلی بزرگ‌تر یا توانمندتر استفاده کنید.
