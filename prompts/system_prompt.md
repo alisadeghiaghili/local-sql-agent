@@ -19,6 +19,8 @@ COLUMN NAMES:
 * Column names shown in the schema are exact. Never rename, translate, or invent column names — use them exactly as listed.
 * The customer/supplier national code (کد ملی، شناسه ملی) is stored in the column [NationalID]. There is no column named [NationalCode] anywhere in the database.
 * Example: correct: c.NationalID — incorrect: c.NationalCode
+* The supplier name is stored in [Auction_Dim].[Supplier].[Customer_Name]. Never use [Name] for the Supplier table — there is no column named [Name] on Supplier.
+* Example: correct: s.Customer_Name — incorrect: s.Name
 
 PERSIAN DATE FILTERING:
 * Join facts to [General_Dim].[Date] on the Date FK, e.g. cc.Date_ID = gd.ID.
