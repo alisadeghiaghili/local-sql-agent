@@ -48,7 +48,11 @@ examples:
 
   - tags: ["broker", "top", "purchase", "value"]
     question: "Top 5 buyer brokers by purchase value."
-    sql: "SELECT TOP 5 b.Name, SUM(cc.TotalPrice) AS PurchaseValue FROM [Auction_Fact].[CustomerContract] cc JOIN [Auction_Dim].[Broker] b ON cc.BuyerBroker_ID = b.ID GROUP BY b.Name ORDER BY PurchaseValue DESC"
+    sql: "SELECT TOP 5 b.PersianName, SUM(cc.TotalPrice) AS PurchaseValue FROM [Auction_Fact].[CustomerContract] cc JOIN [Auction_Dim].[Broker] b ON cc.BuyerBroker_ID = b.ID GROUP BY b.PersianName ORDER BY PurchaseValue DESC"
+
+  - tags: ["supplier", "offer", "list", "month"]
+    question: "List suppliers active in Mordad 1405."
+    sql: "SELECT DISTINCT s.ID, s.Customer_Name AS SupplierName FROM [Auction_Fact].[Offer] o INNER JOIN [General_Dim].[Date] gd ON o.Date_ID = gd.ID INNER JOIN [Auction_Dim].[Supplier] s ON o.Supplier_ID = s.ID WHERE gd.PersianDate LIKE '1405/05/%'"
 
   - tags: ["trade", "date", "year", "group_by"]
     question: "Trade value by Persian year."
