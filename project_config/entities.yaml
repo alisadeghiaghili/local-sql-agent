@@ -11,7 +11,7 @@ entities:
     aliases: ["کارگزار", "کارگزاران", "شرکت کارگزاری", "کارگزاری", "broker", "brokers"]
     table: "Broker"
   Supplier:
-    aliases: ["عرضه کننده", "عرضه\u200cکننده", "عرضه کنندان", "فروشنده", "فروشندان", "تامین کننده", "تامین\u200cکننده", "supplier", "suppliers", "seller", "vendor"]
+    aliases: ["عرضه کننده", "عرضه\u200cکننده", "عرضه کنندگان", "عرضه\u200cکنندگان", "عرضه کنندگانی", "فروشنده", "فروشندگان", "تامین کننده", "تامین\u200cکننده", "تامین کنندگان", "تامین\u200cکنندگان", "supplier", "suppliers", "seller", "vendor"]
     table: "Supplier"
   Symbol:
     aliases: ["نماد", "نماد معاملاتی", "کالا", "محصول", "محصولات", "commodity", "product", "products", "symbol", "trading symbol"]

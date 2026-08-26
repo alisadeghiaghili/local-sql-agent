@@ -5,7 +5,7 @@ class ExampleRetriever:
 
     QUESTION_TAGS = {
         "customer": ["مشتری", "مشتریان", "خریدار", "خریداران", "customer", "customers", "buyer", "buyers"],
-        "supplier": ["عرضه کننده", "عرضه‌کننده", "تامین کننده", "supplier", "suppliers"],
+        "supplier": ["عرضه کننده", "عرضه‌کننده", "عرضه کنندگان", "عرضه کنندگانی", "تامین کننده", "تامین‌کننده", "فروشنده", "فروشندگان", "supplier", "suppliers"],
         "broker": ["کارگزار", "کارگزاری", "broker", "brokers"],
         "symbol": ["نماد", "نمادها", "symbol", "symbols"],
         "ring": ["تالار", "رینگ", "ring"],
