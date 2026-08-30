@@ -249,8 +249,8 @@ class TestDeniedColumnsSeam:
     def test_denied_column_rejected(self):
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
-                "SELECT NationalCode FROM [Customer]",
-                denied_columns={"NationalCode"},
+                "SELECT NationalID FROM [Customer]",
+                denied_columns={"NationalID"},
             )
 
     def test_denied_column_check_is_case_insensitive(self):
@@ -263,18 +263,18 @@ class TestDeniedColumnsSeam:
     def test_denied_column_rejected_even_when_qualified(self):
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
-                "SELECT c.NationalCode FROM [Customer] c",
-                denied_columns={"NationalCode"},
+                "SELECT c.NationalID FROM [Customer] c",
+                denied_columns={"NationalID"},
             )
 
     def test_column_not_in_denylist_is_allowed(self):
         validate_sql(
             "SELECT Name FROM [Customer]",
-            denied_columns={"NationalCode"},
+            denied_columns={"NationalID"},
         )  # must not raise
 
     def test_no_denylist_means_no_denial(self):
-        validate_sql("SELECT NationalCode FROM [Customer]")  # must not raise
+        validate_sql("SELECT NationalID FROM [Customer]")  # must not raise
 
 
 class TestStarCannotBypassDeniedColumns:
@@ -287,14 +287,14 @@ class TestStarCannotBypassDeniedColumns:
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
                 "SELECT * FROM [Customer]",
-                denied_columns={"NationalCode"},
+                denied_columns={"NationalID"},
             )
 
     def test_qualified_star_expanded_and_rejected(self):
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
                 "SELECT c.* FROM [Customer] c",
-                denied_columns={"NationalCode"},
+                denied_columns={"NationalID"},
             )
 
     def test_bare_star_allowed_when_expansion_has_no_denied_column(self):
@@ -321,7 +321,7 @@ class TestStarCannotBypassDeniedColumns:
         outright rather than silently allowed through."""
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
-                "SELECT * FROM (SELECT NationalCode FROM [Customer]) z",
+                "SELECT * FROM (SELECT NationalID FROM [Customer]) z",
                 denied_columns={"SomeOtherColumn"},
             )
 
@@ -331,7 +331,7 @@ class TestStarCannotBypassDeniedColumns:
         bare-'*'-over-a-subquery case above, just via the qualified form."""
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
-                "SELECT z.* FROM (SELECT NationalCode FROM [Customer]) z",
+                "SELECT z.* FROM (SELECT NationalID FROM [Customer]) z",
                 denied_columns={"SomeOtherColumn"},
             )
 

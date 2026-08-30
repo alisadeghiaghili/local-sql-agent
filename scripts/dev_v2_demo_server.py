@@ -61,7 +61,7 @@ import session.engine as engine_module
 # ---------------------------------------------------------------------------
 
 _conn = sqlite3.connect(":memory:", check_same_thread=False)
-_conn.execute("CREATE TABLE Customer (ID INTEGER PRIMARY KEY, Name TEXT, NationalCode TEXT, IsActive INTEGER)")
+_conn.execute("CREATE TABLE Customer (ID INTEGER PRIMARY KEY, Name TEXT, NationalID TEXT, IsActive INTEGER)")
 _conn.execute("CREATE TABLE Ring (ID INTEGER PRIMARY KEY, Name TEXT, Code TEXT)")
 _conn.execute("CREATE TABLE Date (ID INTEGER PRIMARY KEY, PersianYear INTEGER)")
 _conn.execute(

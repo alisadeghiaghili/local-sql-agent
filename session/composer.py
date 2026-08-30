@@ -159,7 +159,7 @@ def strip_display_cap(sql: str) -> str:
     Examples
     --------
     >>> strip_display_cap("SELECT TOP 100 Name FROM Customer c ORDER BY Name")
-    'SELECT c.ID AS c_ID, c.Name AS c_Name, c.NationalCode AS c_NationalCode, c.IsActive AS c_IsActive FROM Customer AS c'
+    'SELECT c.ID AS c_ID, c.Name AS c_Name, c.NationalID AS c_NationalID, c.IsActive AS c_IsActive FROM Customer AS c'
 
     A previous turn's own aggregation is dropped along with its display
     cap -- the new question may need a column that never survived it:
@@ -205,7 +205,7 @@ def predicate_columns(previous_sql: str) -> list[str]:
     Examples
     --------
     >>> predicate_columns("SELECT TOP 5 Name FROM Customer c")
-    ['c_ID', 'c_Name', 'c_NationalCode', 'c_IsActive']
+    ['c_ID', 'c_Name', 'c_NationalID', 'c_IsActive']
     """
     try:
         statements = [s for s in sqlglot.parse(previous_sql, read=_DIALECT) if s is not None]
@@ -245,7 +245,7 @@ def build_capped_predicate(previous_sql: str, cap: int) -> str:
     Examples
     --------
     >>> build_capped_predicate("SELECT TOP 100 Name FROM Customer", cap=10000)
-    'SELECT TOP 10000 Customer.ID AS Customer_ID, Customer.Name AS Customer_Name, Customer.NationalCode AS Customer_NationalCode, Customer.IsActive AS Customer_IsActive FROM Customer'
+    'SELECT TOP 10000 Customer.ID AS Customer_ID, Customer.Name AS Customer_Name, Customer.NationalID AS Customer_NationalID, Customer.IsActive AS Customer_IsActive FROM Customer'
     """
     uncapped = strip_display_cap(previous_sql)
     return ensure_top(uncapped, cap)

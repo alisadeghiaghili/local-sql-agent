@@ -70,7 +70,7 @@ def _to_sqlite(sql: str) -> str:
 @pytest.fixture()
 def sqlite_conn():
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE Customer (ID INTEGER PRIMARY KEY, Name TEXT, NationalCode TEXT, IsActive INTEGER)")
+    conn.execute("CREATE TABLE Customer (ID INTEGER PRIMARY KEY, Name TEXT, NationalID TEXT, IsActive INTEGER)")
     conn.execute("CREATE TABLE Ring (ID INTEGER PRIMARY KEY, Name TEXT, Code TEXT)")
     conn.execute(
         "CREATE TABLE CustomerContract ("
