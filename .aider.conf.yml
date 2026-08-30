@@ -1,6 +1,0 @@
-openai-api-base: http://localhost:4000/v1
-openai-api-key: sk-local-1234
-model: claude-sonnet
-editor-model: claude-opus
-read:
-  - CONVENTIONS.md
