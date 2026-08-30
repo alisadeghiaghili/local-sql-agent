@@ -5,6 +5,25 @@ This module contains a single static class, :class:`PromptBuilder`, whose
 relationships, business rules, few-shot examples, and value filters — into
 a single structured string ready for the LLM backend.
 
+Two assembly paths, one gate
+-----------------------------
+As of Phase 2 (latency), ``build()`` no longer always re-retrieves and
+re-assembles prompt content per question. It picks one of two paths via
+:func:`prompt_engine.static_prefix.should_use_static_prefix`:
+
+* **Static path** (the default for today's 12-table schema) — a
+  byte-identical prefix (system prompt, full schema, all relationships,
+  all business rules, all metrics, all examples) built once and cached by
+  :mod:`prompt_engine.static_prefix`, followed by a small variable suffix
+  (detected filters, session context, the question). Identical prefix
+  bytes across requests is what lets llama.cpp/vLLM reuse its KV cache
+  instead of re-running prefill over the whole prompt every time —
+  ``docs/api-contract-v2.md`` §8.
+* **Retrieval path** (the scaling escape hatch) — the original
+  per-question behaviour: only the tables the six-retriever pipeline
+  matched go into the prompt. Used automatically once the knowledge base
+  grows past ``cfg.settings.prompt_retrieval_token_budget``.
+
 Typical usage::
 
     from retrieval.context_retriever import ContextRetriever
@@ -21,8 +40,9 @@ Typical usage::
 from __future__ import annotations
 
 from core.models import RetrievalContext
+from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
+from prompt_engine.templates import PROMPT_TEMPLATE, SUFFIX_TEMPLATE
 from schema_data.registry import SchemaRegistry
-from prompt_engine.templates import PROMPT_TEMPLATE
 
 
 class PromptBuilder:
@@ -33,13 +53,22 @@ class PromptBuilder:
 
     Design notes
     ------------
-    * ``selected_tables`` is derived from ``context.entities + context.facts``
-      via ``set()``; insertion order is **not** preserved at this step.  If
-      ordering matters downstream, use ``context.selected_tables`` instead
-      (which is order-preserving).
+    * :meth:`build` dispatches to :meth:`build_static` or
+      :meth:`_build_retrieval` based on
+      :func:`~prompt_engine.static_prefix.should_use_static_prefix` — see
+      the module docstring.
+    * :meth:`_build_retrieval` (the fallback path) uses
+      ``context.selected_tables`` — the order-preserving property on
+      :class:`~core.models.RetrievalContext` — rather than deduplicating
+      ``context.entities + context.facts`` with a bare ``set()``. A plain
+      ``set()`` does not preserve insertion order, which made table order
+      in the prompt vary between runs with the same input for no reason;
+      this was flagged in this module's own prior docstring but never
+      fixed until now.
     * :meth:`~schema_data.registry.SchemaRegistry.build_schema_context` is
       called with the deduplicated table list so the schema block contains
-      only the columns relevant to the question.
+      only the columns relevant to the question (retrieval path), or with
+      ``None`` for every table (static path).
     * Empty sections (no rules, no examples, no filters) produce empty strings
       rather than placeholder text — the template handles missing sections
       gracefully without printing ``"None"`` or ``"[]"``.
@@ -50,53 +79,61 @@ class PromptBuilder:
         question: str,
         system_prompt: str,
         context: RetrievalContext,
+        *,
+        session_context: str = "",
     ) -> str:
         """Build a complete prompt string for the LLM backend.
-
-        Combines system instructions, domain business rules, table schema,
-        JOIN relationships, value filters, few-shot examples, and the
-        question itself into a single string formatted by
-        :data:`~prompt_engine.templates.PROMPT_TEMPLATE`.
 
         Parameters
         ----------
         question:
             The original natural-language question in Persian or English.
-            Injected verbatim into the ``{question}`` placeholder of the
-            template.
         system_prompt:
             Domain-specific system instructions loaded from
-            ``prompts/system_prompt.md`` at server startup.  Injected into
-            the ``{system_prompt}`` placeholder.
+            ``prompts/system_prompt.md`` at server startup.
         context:
             Fully populated :class:`~core.models.RetrievalContext` produced
-            by :class:`~retrieval.context_retriever.ContextRetriever`.  An
-            empty context (no entities, no facts) produces a minimal prompt
-            that still contains the system instructions and the question.
+            by :class:`~retrieval.context_retriever.ContextRetriever`. Only
+            ``context.filters`` is used on the static path (see the module
+            docstring); every field is used on the retrieval fallback path.
+        session_context:
+            Prior-turn context for a conversational session (see
+            ``docs/api-contract-v2.md`` §8's "session context" block —
+            question, SQL, and result *column names* for the last
+            ``session_prompt_turns`` turns; never row data). Empty string
+            when there is no session, which is every call today —
+            sessions are not yet implemented. Always placed in the
+            variable suffix, never the static prefix.
 
         Returns
         -------
         str
-            A ready-to-send prompt string that contains the following
-            labelled sections (in template order):
-
-            1. **System prompt** — domain instructions and output format rules.
-            2. **Business rules** — domain-specific constraints relevant to the
-               question (one rule per paragraph, separated by blank lines).
-            3. **Schema** — table names, descriptions, and column definitions
-               for every selected table.
-            4. **Relationships** — JOIN SQL snippets for FK edges between the
-               selected tables (one clause per line).
-            5. **Filters** — concrete value filters extracted from the question
-               (e.g. ``Ring: تالار پتروشیمی``, ``PersianYear: 1402``).
-            6. **Examples** — few-shot ``Question / SQL`` pairs ranked by tag
-               overlap (separated by blank lines).
-            7. **Question** — the user's question, repeated at the end.
+            A ready-to-send prompt string.
 
         Examples
         --------
+        On the static path (today's schema), the prompt always contains
+        every known table and every configured example — ``context``'s own
+        ``entities``/``examples`` only matter on the retrieval fallback
+        path (see :meth:`_build_retrieval`):
+
         >>> from core.models import RetrievalContext
         >>> ctx = RetrievalContext(
+        ...     entities=["Customer"],
+        ...     facts=["Contract"],
+        ...     filters={"PersianYear": 1402},
+        ... )
+        >>> prompt = PromptBuilder.build("خرید مشتریان در ۱۴۰۲", "You are a T-SQL expert.", ctx)
+        >>> "Table: Customer" in prompt
+        True
+        >>> "1402" in prompt
+        True
+
+        Forcing the retrieval fallback path (a tiny token budget) makes the
+        prompt reflect ``context``'s own retrieved knowledge instead:
+
+        >>> from config import override_settings
+        >>> ctx2 = RetrievalContext(
         ...     entities=["Customer"],
         ...     facts=["Contract"],
         ...     relationships=["JOIN [Dim].[Customer] ON [Fact].[Contract].[CustID] = [Dim].[Customer].[CustID]"],
@@ -104,19 +141,85 @@ class PromptBuilder:
         ...     examples=[{"question": "Top buyers", "sql": "SELECT TOP 10 Name FROM Customer", "tags": ["customer"]}],
         ...     filters={"PersianYear": 1402},
         ... )
-        >>> prompt = PromptBuilder.build("خرید مشتریان در ۱۴۰۲", "You are a T-SQL expert.", ctx)
-        >>> "Customer" in prompt
-        True
-        >>> "1402" in prompt
-        True
-        >>> "Persian year" in prompt
-        True
-        >>> "Top buyers" in prompt
+        >>> with override_settings(prompt_retrieval_token_budget=1):
+        ...     fallback_prompt = PromptBuilder.build(
+        ...         "خرید مشتریان در ۱۴۰۲", "You are a T-SQL expert.", ctx2
+        ...     )
+        >>> "Top buyers" in fallback_prompt
         True
         """
-        selected_tables = list(
-            set(context.entities + context.facts)
+        if should_use_static_prefix(system_prompt):
+            return PromptBuilder.build_static(
+                question, system_prompt, context, session_context=session_context
+            )
+        return PromptBuilder._build_retrieval(
+            question, system_prompt, context, session_context=session_context
         )
+
+    @staticmethod
+    def build_static(
+        question: str,
+        system_prompt: str,
+        context: RetrievalContext,
+        *,
+        session_context: str = "",
+    ) -> str:
+        """Static-prefix path: cached prefix + a small variable suffix.
+
+        The prefix (system prompt, full schema, all relationships, all
+        business rules, all metrics, all examples) comes from
+        :func:`~prompt_engine.static_prefix.build_static_prefix`, which is
+        cached and therefore byte-identical across calls with the same
+        ``system_prompt`` — the whole point of this path (see module
+        docstring). Only ``context.filters``, ``session_context``, and
+        ``question`` vary.
+
+        Parameters
+        ----------
+        question, system_prompt, context, session_context:
+            As in :meth:`build`.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from core.models import RetrievalContext
+        >>> ctx = RetrievalContext(filters={"Ring": "تالار پتروشیمی"})
+        >>> p1 = PromptBuilder.build_static("q1", "You are a T-SQL expert.", ctx)
+        >>> p2 = PromptBuilder.build_static("q2", "You are a T-SQL expert.", ctx)
+        >>> p1[: p1.index("DETECTED FILTERS")] == p2[: p2.index("DETECTED FILTERS")]
+        True
+        >>> "تالار پتروشیمی" in p1
+        True
+        """
+        prefix = build_static_prefix(system_prompt)
+        filters = "\n".join(f"{key}: {value}" for key, value in context.filters.items())
+        suffix = SUFFIX_TEMPLATE.format(
+            filters=filters,
+            session_context=session_context,
+            question=question,
+        )
+        return prefix + suffix
+
+    @staticmethod
+    def _build_retrieval(
+        question: str,
+        system_prompt: str,
+        context: RetrievalContext,
+        *,
+        session_context: str = "",
+    ) -> str:
+        """Retrieval-fallback path: only the retrieved tables/rules/examples.
+
+        This is the original per-question prompt assembly, used once the
+        knowledge base is too large for :meth:`build_static` to be
+        economical (see module docstring). Kept fully functional — it is
+        not dead code, it is the scaling path for later phases with a
+        bigger schema.
+        """
+        selected_tables = context.selected_tables
 
         schema_context = SchemaRegistry.build_schema_context(selected_tables)
 

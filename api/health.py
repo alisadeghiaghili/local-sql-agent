@@ -1,4 +1,4 @@
-"""Health-check logic — probes the OpenAI-compatible LLM and the SQL Server database.
+"""Health-check logic — probes the OpenAI-compatible LLM endpoint and the SQL Server database.
 
 Exposed via ``GET /health``.  Returns a :class:`~api.models.HealthResponse`
 with an overall status of ``"ok"``, ``"degraded"``, or ``"down"`` plus
@@ -9,7 +9,7 @@ Typical usage::
     from api.health import check_health
 
     resp = check_health()
-    # HealthResponse(status='ok', openai=True, database=True, model='gpt-oss-20:F16')
+    # HealthResponse(status='ok', openai=True, database=True, model='gpt-oss-20b')
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ def check_health() -> HealthResponse:
 
     Runs two synchronous probes sequentially:
 
-    1. :func:`_ping_openai` — HTTP GET to ``<base_url>/models`` (5 s timeout).
+    1. :func:`_ping_openai` — HTTP GET to the configured OpenAI-compatible
+       endpoint's ``/models`` (5 s timeout).
     2. :func:`_ping_db` — ``SELECT 1`` via the shared SQLAlchemy engine.
 
     Combined worst-case latency is ~10 seconds (two back-to-back 5 s
@@ -52,12 +53,16 @@ def check_health() -> HealthResponse:
 
     Examples
     --------
-    >>> resp = check_health()          # doctest: +SKIP
-    >>> resp.status in ("ok", "degraded", "down")
+    Probing real dependencies needs a live endpoint and database, so the
+    call is skipped here — and so are the assertions about its result,
+    which would otherwise raise ``NameError`` on an unbound ``resp``.
+
+    >>> resp = check_health()                          # doctest: +SKIP
+    >>> resp.status in ("ok", "degraded", "down")      # doctest: +SKIP
     True
-    >>> isinstance(resp.openai, bool)
+    >>> isinstance(resp.openai, bool)                  # doctest: +SKIP
     True
-    >>> isinstance(resp.database, bool)
+    >>> isinstance(resp.database, bool)                # doctest: +SKIP
     True
     """
     openai_ok = _ping_openai()
@@ -79,10 +84,11 @@ def check_health() -> HealthResponse:
 
 
 def _ping_openai() -> bool:
-    """Return ``True`` if the OpenAI-compatible ``/models`` endpoint responds with HTTP 200.
+    """Return ``True`` if the configured endpoint's ``/models`` responds with HTTP 200.
 
-    The URL is ``cfg.settings.openai_base_url`` with ``/models`` appended,
-    authenticated with the configured Bearer token.
+    The base URL is ``cfg.settings.openai_base_url``; the configured
+    ``cfg.settings.openai_api_key`` (which may be empty — many self-hosted
+    OpenAI-compatible servers don't check it) is sent as a Bearer token.
 
     Timeout: 5 seconds.  Any exception (connection refused, DNS failure,
     non-200 status) is caught and causes the function to return ``False``
@@ -91,7 +97,8 @@ def _ping_openai() -> bool:
     Returns
     -------
     bool
-        ``True``  — the endpoint is reachable and ``/models`` returned HTTP 200.
+        ``True``  — the endpoint is reachable and ``/models`` returned
+        HTTP 200.
 
         ``False`` — unreachable, wrong status code, or any exception.
     """

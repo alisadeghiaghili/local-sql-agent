@@ -16,3 +16,13 @@ project_config/
 .mimocode/
 presentation
 
+# Real evaluation golden set / baselines (contains customer questions — never commit)
+eval_data/
+
+# Coverage artefacts
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor/tooling workspace
+.claude/

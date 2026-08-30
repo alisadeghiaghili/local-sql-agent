@@ -281,13 +281,22 @@ CI runs on every push via GitHub Actions (Python 3.13).
 
 ## Security model
 
-Every generated SQL query passes through `security/sql_guard.py` before execution:
+Every generated SQL query passes through `security/sql_guard.py` before execution.
+As of Phase 1, `validate_sql` is **parser-based** (via [sqlglot](https://sqlglot.com/),
+pinned to the `tsql` dialect), not a string blocklist — see the module's
+docstring for the full mechanism and `tests/test_sql_guard_bypass.py` for the
+bypasses/false-positives this replaced:
 
-- **Allowlist-only:** only `SELECT` and `WITH` are permitted as statement openers
-- **Blocklist:** `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `DELETE`, `UPDATE`, `INSERT`, `MERGE`, `EXECUTE`, `XP_`, `SP_` are rejected
-- **Injection guard:** stacked queries and `INFORMATION_SCHEMA` / `SYS.` access blocked
+- **Exactly one statement:** the query is parsed and rejected if it is not a single T-SQL statement — stacked statements are refused as a class, not by recognising each one's keyword
+- **Allowlist by AST node, not keyword:** only a `SELECT`/`WITH` root, or a top-level `UNION`/`INTERSECT`/`EXCEPT`, is permitted; `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`, `MERGE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`/`EXECUTE`, `SELECT ... INTO`, and `xp_*`/`sp_*`/`OPENROWSET`/`OPENQUERY`/`OPENDATASOURCE` are refused by node type or function name, wherever they appear in the tree
+- **Table allowlist, strictly enforced:** every table reference must resolve to `schema_data/columns.py::TABLE_COLUMNS` (case-insensitively, schema/db qualifier ignored) or be a CTE defined earlier in the same query — an unresolvable table (hallucinated, out-of-domain, or malicious) is refused outright, independent of whether the DB login is itself scoped to just these tables (see `docs/db-hardening.md`)
+- **Column allowlist, deliberately lenient:** every resolvable qualified column reference is checked against its table's known columns; an unqualified column, or one qualified by a CTE name or derived-table alias, is allowed rather than risk a false-positive rejection — this leniency applies to *columns* only, not table names
+- **Column-level ACL seam:** `validate_sql(sql, denied_columns=...)` refuses any query touching a named column, regardless of table — the foundation for future multi-tenant column policies; `*`/`alias.*` cannot be used to read around an active policy (it is expanded against its resolved table(s) and checked, or refused outright if it can't be resolved with confidence)
+- **No SQL comments:** any comment is refused outright because it is present — its content is never inspected for keywords, since scanning comment text would repeat the same substring-matching mistake this module was rewritten to fix, just in a new place
+- **Injection guard:** `INFORMATION_SCHEMA` / `SYS.` access blocked by AST node, not substring
 - **LIMIT→TOP:** SQL Server-incompatible `LIMIT n` is rewritten to `TOP n` before execution
-- **Row cap:** `MAX_ROWS_RETURNED` is enforced as a hard ceiling on every result set
+- **Row cap:** `MAX_ROWS_RETURNED` is enforced as a hard ceiling on every result set, and `database/executor.py` streams results rather than materialising the whole set client-side
+- **Defense in depth at the database layer:** `database/executor.py` runs every query inside a transaction that is always rolled back (never committed), with both a driver-level query timeout and `SET LOCK_TIMEOUT`; `docs/db-hardening.md` specifies the server-side login/DENY/Resource Governor hardening for the DBA to apply on top of this
 - **No hardcoded credentials:** all secrets via environment variables only
 
 ---
@@ -319,7 +328,7 @@ Every generated SQL query passes through `security/sql_guard.py` before executio
 | **Retrieval pipeline** | `retrieval/context_retriever.py` — orchestrates all six sub-retrievers into a single `RetrievalContext`; all six sub-retriever modules |
 | **Schema layer** | `schema_data/` — table definitions, column allowlist, FK relationship map, `SchemaRegistry`, TF-IDF bigram fallback retriever |
 | **Prompt engineering** | `prompt_engine/builder.py`, `prompt_engine/templates.py` — dynamic, context-aware prompt assembly |
-| **Validation & security** | `security/sql_guard.py`, `validation/` — multi-layer guard: SELECT-only enforcement, forbidden keyword blocklist, schema allowlist |
+| **Validation & security** | `security/sql_guard.py`, `validation/` — multi-layer, sqlglot-AST-based guard: single-statement + SELECT-only enforcement, forbidden node/function checks, schema table/column allowlist |
 | **Database** | `database/connection.py`, `database/executor.py` — SQLAlchemy singleton engine, query timeout, hard row cap |
 | **FastAPI service** | `api/` — `/query`, `/health`, `/cache` endpoints; `RequestLoggingMiddleware`; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Exports & logging** | `exporters/`, `app_logging/` — Excel/CSV/JSON exporters; rotating JSONL logger |

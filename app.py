@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # System prompt — loaded once at startup
 # ---------------------------------------------------------------------------
-_PROMPT_PATH = Path("prompts/system_prompt.md")
+# Resolved relative to this file, NOT the process's current working
+# directory — `python app.py` run from anywhere other than the repo root
+# used to silently fail to find the prompt.
+_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
 
 
 def _load_system_prompt() -> str:
@@ -125,6 +128,13 @@ def _print_results(df) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    try:
+        cfg.settings.validate()
+    except ValueError as exc:
+        logger.error("Invalid configuration: %s", exc)
+        print(f"\n❌ Configuration error: {exc}")
+        sys.exit(1)
+
     system_prompt = _load_system_prompt()
 
     print(_SEP)

@@ -47,9 +47,14 @@ def get_engine() -> Engine:
     ``max_overflow=20``
         Extra connections allowed under peak load above ``pool_size``.
         These connections are closed when the burst subsides.
-    ``fast_executemany=True``
-        pyodbc batch-insert optimisation.  Has no effect on SELECT queries
-        but is included for any future write operations during migrations.
+
+    This workload is SELECT-only (every query passes through
+    :func:`~security.sql_guard.validate_sql` first, and
+    :func:`database.executor.execute_sql` additionally runs every query
+    inside a transaction it always rolls back). ``fast_executemany`` — a
+    pyodbc *batch-insert* optimisation for ``executemany()`` calls — was
+    previously enabled here "for any future write operations"; it has no
+    effect on this workload and is not set.
 
     Returns
     -------
@@ -71,7 +76,6 @@ def get_engine() -> Engine:
         pool_recycle=3600,
         pool_size=10,
         max_overflow=20,
-        fast_executemany=True,
         echo=False,
     )
     return engine

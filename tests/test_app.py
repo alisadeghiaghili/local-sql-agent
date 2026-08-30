@@ -213,6 +213,21 @@ class TestEnforceRateLimit:
 # _load_system_prompt
 # ===========================================================================
 
+class TestPromptPathIsCwdIndependent:
+    """_PROMPT_PATH used to be Path("prompts/system_prompt.md") — relative
+    to whatever the current working directory happened to be at read
+    time, not to this module's own location. Running `python app.py`
+    (or importing app.py) from any directory other than the repo root
+    silently broke it (item 14)."""
+
+    def test_prompt_path_is_absolute(self):
+        assert app._PROMPT_PATH.is_absolute()
+
+    def test_prompt_path_resolves_regardless_of_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert app._PROMPT_PATH.exists()
+
+
 class TestLoadSystemPrompt:
     def test_returns_file_contents(self, tmp_path):
         prompt_file = tmp_path / "system_prompt.md"
@@ -234,6 +249,18 @@ class TestLoadSystemPrompt:
 
 class TestMainRepl:
     """Feed synthetic input lines and assert on stdout + side-effects."""
+
+    @pytest.fixture(autouse=True)
+    def _valid_settings(self):
+        """main() now validates config at startup (item 2) — give every
+        test in this class a non-placeholder configuration so that check
+        passes and the REPL behaviour under test is reached."""
+        with override_settings(
+            openai_model="test-model",
+            db_connection_url="mssql+pyodbc://test-host:1433/TestDB"
+            "?driver=ODBC+Driver+17+for+SQL+Server",
+        ):
+            yield
 
     def _run_main(
         self,
@@ -451,3 +478,28 @@ class TestMainRepl:
              patch.object(app, "_enforce_rate_limit"):
             app.main()
         assert "test-banner-model" in capsys.readouterr().out
+
+
+# ===========================================================================
+# main() fails fast on invalid configuration (item 2)
+# ===========================================================================
+
+class TestMainValidatesConfigAtStartup:
+    """cfg.settings.validate() was previously only ever called from tests
+    — running `python app.py` on an unfilled .env silently used the
+    hardcoded placeholder DB_CONNECTION_URL instead of failing fast."""
+
+    def test_exits_before_loading_prompt_when_db_url_is_placeholder(self, capsys):
+        with override_settings(
+            openai_model="llama3",
+            db_connection_url=(
+                "mssql+pyodbc://username@server:1433/Auction_DM"
+                "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
+            ),
+        ), patch.object(app, "_load_system_prompt", return_value="SYS") as mock_load_prompt, \
+             patch("builtins.input", side_effect=["exit"]):
+            with pytest.raises(SystemExit):
+                app.main()
+
+        mock_load_prompt.assert_not_called()
+        assert "Configuration error" in capsys.readouterr().out

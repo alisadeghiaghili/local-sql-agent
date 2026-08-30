@@ -1,30 +1,48 @@
 """Domain exception hierarchy and FastAPI exception handlers.
 
-Every failure in the pipeline raises one of the typed exceptions below.
-The handlers registered in ``register_handlers(app)`` translate them to
-consistent JSON error responses with the correct HTTP status code.
+The handlers registered in ``register_handlers(app)`` translate these
+typed exceptions into consistent JSON error responses with the correct
+HTTP status code.
 
 Exception map
 -------------
 
-  Layer            Exception                         HTTP
-  ───────────────  ────────────────────────────────  ────
-  Input validation  QuestionTooShortError             400
-                    QuestionTooLongError              400
-                    InvalidModeError                  400
-  Security         ForbiddenSQLError                 400
-                    InjectionAttemptError             400
-  Scope            OutOfScopeError                   422
-  LLM              ModelUnavailableError             503
-                    ModelTimeoutError                 504
-                    EmptySQLResponseError             502
-                    InvalidSQLResponseError           502
-  Database         DatabaseConnectionError           503
-                    QueryTimeoutError                 504
-                    QueryExecutionError               502
-  Overload         ServerOverloadError               503  (rate-limit / semaphore)
-  Catch-all        fastapi.RequestValidationError    422  (Pydantic)
-                    Exception                         500
+The ``raised`` column is deliberate: this table used to read as though
+every row were wired up, and five of them are not raised anywhere in
+production code. They are reserved slots in the hierarchy, exercised by
+``tests/test_errors.py`` and imported by ``api/runner.py``, kept so the
+taxonomy stays complete — but a reader should not infer from this table
+that the input-validation errors below are live. Pydantic currently
+rejects short, long and out-of-range input before the pipeline sees it,
+surfacing as ``RequestValidationError`` (422), not as a 400.
+
+  Layer             Exception                        HTTP  raised
+  ───────────────   ──────────────────────────────   ────  ──────
+  Input validation  QuestionTooShortError             400  no
+                    QuestionTooLongError              400  no
+                    InvalidModeError                  400  no
+  Security          ForbiddenSQLError                 400  yes
+                    InjectionAttemptError             400  no
+  Scope             OutOfScopeError                   422  yes
+  LLM               ModelUnavailableError             503  yes
+                    ModelTimeoutError                 504  yes
+                    EmptySQLResponseError             502  yes
+                    InvalidSQLResponseError           502  yes
+  Database          DatabaseConnectionError           503  yes
+                    QueryTimeoutError                 504  yes
+                    QueryExecutionError               502  yes
+  Overload          ServerOverloadError               503  no
+  Catch-all         fastapi.RequestValidationError    422  yes  (Pydantic)
+                    Exception                         500  yes
+
+``ServerOverloadError`` is a special case worth recording. It cannot
+simply be raised from the middleware: exceptions raised inside a
+``BaseHTTPMiddleware.dispatch`` propagate above the router, so FastAPI's
+``@app.exception_handler`` handlers never see them and the client gets a
+500 instead of a 503. ``RateLimitMiddleware`` and
+``ConcurrencyMiddleware`` therefore construct their JSON envelopes
+directly. That duplicates the shape built by ``_error_response`` here,
+which is a real drift risk — the two should share one builder.
 """
 
 from __future__ import annotations
@@ -124,7 +142,7 @@ class QueryExecutionError(NLQError):
 # ---------------------------------------------------------------------------
 
 class ModelUnavailableError(NLQError):
-    """Ollama / LLM backend is not reachable."""
+    """The configured LLM endpoint is not reachable."""
     http_status = status.HTTP_503_SERVICE_UNAVAILABLE
     error_code = "MODEL_UNAVAILABLE"
 
@@ -251,5 +269,23 @@ def register_handlers(app: FastAPI) -> None:
 
 
 def _get_request_id(request: Request) -> str:
-    """Return existing X-Request-ID header or generate a new one."""
+    """Return this request's id, preferring the id RequestIDMiddleware already stamped.
+
+    ``RequestIDMiddleware`` stores the id on ``request.state.request_id``
+    (echoing the client's ``X-Request-ID`` header if it supplied one,
+    otherwise minting a fresh one) *before* any route handler or
+    exception path runs, and later copies that same value onto the
+    ``X-Request-ID`` response header. Reading ``request.state`` first here
+    — instead of re-reading the header and minting an independent id when
+    absent — guarantees the id in an error body always matches the
+    response's ``X-Request-ID`` header, which is what operators actually
+    correlate against server logs.
+
+    The header and fresh-uuid fallbacks below only matter when something
+    bypasses ``RequestIDMiddleware`` entirely, e.g. a unit test that wires
+    up ``register_handlers()`` without the middleware.
+    """
+    state_request_id = getattr(request.state, "request_id", None)
+    if state_request_id:
+        return state_request_id
     return request.headers.get("x-request-id") or uuid.uuid4().hex[:12]

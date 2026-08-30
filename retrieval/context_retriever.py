@@ -57,7 +57,7 @@ class ContextRetriever:
         return RetrievalContext(
             entities=entities,
             facts=facts,
-            dimensions=entities,          # PromptBuilder reads .dimensions
+            dimensions=entities,          # kept for backward compat; PromptBuilder does NOT read this
             relationships=relationships,
             business_rules=rules,
             examples=examples,

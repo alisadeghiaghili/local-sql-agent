@@ -37,7 +37,12 @@ class RetrievalContext:
     """Fact tables (Contract, CustomerContract, Offer, …) relevant to the question."""
 
     dimensions: list[str] = field(default_factory=list)
-    """Alias of *entities* — PromptBuilder reads this field directly."""
+    """Alias of *entities*, populated by ``ContextRetriever`` for backward
+    compatibility. **Not** read by ``PromptBuilder`` — the builder derives
+    its table list from ``entities``/``facts``/``selected_tables`` only.
+    This field is a historical leftover kept so existing callers that read
+    ``context.dimensions`` directly are unaffected; new code should prefer
+    ``entities`` or ``selected_tables``."""
 
     # ── join layer ────────────────────────────────────────────────────────────
     relationships: list[str] = field(default_factory=list)
