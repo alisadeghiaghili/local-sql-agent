@@ -44,6 +44,15 @@ class QueryResponse(BaseModel):
     correction_attempts: int | None = None
     elapsed_seconds: float | None = None
     model: str | None = None
+    llm: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "docs/api-contract-v2.md §6 LLM status block (prompt_tokens, "
+            "prefix_cache_hit, timings, ...). The LLM endpoint returns this data on "
+            "every call; surfacing it here is what makes Phase 2's latency "
+            "work observable from the API response, not just the audit log."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

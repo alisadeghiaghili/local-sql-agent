@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>عامل هوشمند SQL — گفتگوی تحلیلی</title>
+<link rel="stylesheet" href="styles/fonts.css">
+<link rel="stylesheet" href="styles/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">SQL</span>
+    <div class="brand-text">
+      <h1>عامل هوشمند SQL</h1>
+      <p>پرسش به زبان فارسی ← SQL ← پاسخ، روی زیرساخت خودتان</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="mode-switch" id="mode-switch" role="group" aria-label="حالت اجرا">
+      <button class="mode-btn active" data-mode="simulated" id="mode-simulated" type="button">نمایشی</button>
+      <button class="mode-btn" data-mode="live" id="mode-live" type="button">زندهٔ API</button>
+    </div>
+    <div class="live-base-row" id="live-base-row" hidden>
+      <input type="text" id="live-base-input" dir="ltr" aria-label="نشانی بک‌اند" class="live-base-input">
+      <button class="live-base-connect" id="live-base-connect" type="button">اتصال</button>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="تغییر پوسته">
+      <span id="theme-toggle-icon" aria-hidden="true">🌓</span>
+      <span id="theme-toggle-label">پوسته</span>
+    </button>
+    <div class="health" id="health" role="status" aria-live="polite">
+      <span class="pill"><span class="dot dot-ok"></span>API</span>
+      <span class="pill"><span class="dot dot-ok"></span>LLM</span>
+      <span class="pill"><span class="dot dot-ok"></span>DB</span>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <div class="card composer">
+    <label class="card-title" for="question">پرسش خود را به زبان طبیعی بنویسید</label>
+    <div class="ask-row">
+      <textarea id="question" rows="2" placeholder="مثلاً «معاملات مشتری‌های تالار سیمان را نشان بده»" dir="auto"></textarea>
+      <button class="btn-ask" id="btn-ask" type="button">پرسش</button>
+    </div>
+    <div class="samples" id="samples">
+      <span class="samples-label">داستان نمونه:</span>
+      <!-- sample buttons injected by main.js from data.js SCENARIO -->
+    </div>
+    <div id="notice-area"></div>
+  </div>
+
+  <section id="transcript" aria-live="polite" aria-relevant="additions" aria-label="گفتگوی تحلیلی"></section>
+
+</main>
+
+<footer class="foot">
+  <span id="foot-mode">حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.</span>
+  <span id="foot-time"></span>
+</footer>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

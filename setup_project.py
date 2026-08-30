@@ -9,7 +9,7 @@ Usage
     python setup_project.py \\
         --db-url  "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\
         --llm-provider openai \\
-        --llm-model    gpt-oss-20:F16 \\
+        --llm-model    gpt-oss-20b \\
         --language     fa \\
         --output       project_config/ \\
         --review       interactive
@@ -874,7 +874,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- Setup LLM ----
     provider = args.llm_provider or os.getenv("WIZARD_LLM_PROVIDER", "openai")
-    model    = args.llm_model    or os.getenv("WIZARD_LLM_MODEL")
+    model    = args.llm_model    or os.getenv("WIZARD_LLM_MODEL",    "gpt-4o-mini")
     base_url = args.llm_base_url or os.getenv("WIZARD_LLM_BASE_URL") or None
 
     from llm.wizard_llm import WizardLLM

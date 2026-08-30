@@ -33,11 +33,30 @@ jobs:
           pip install pytest pytest-cov
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ eval/tests -v
+
+      # Doctests were never executed by CI, so the docstrings drifted from
+      # the code unnoticed: sql_guard carried a doctest that asserted the
+      # wrong CTE output, and two more (api/health, database/relationship_map)
+      # marked an assignment +SKIP while leaving the lines that used the
+      # variable live, so they raised NameError the moment they ran.
+      # Docstrings in this codebase are treated as contract, so run them.
+      - name: Run doctests
+        run: >-
+          pytest --doctest-modules -q
+          api llm security database core knowledge prompt_engine
+          retrieval schema_data logs exporters observability eval config.py
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.12'
-        run: pytest tests/ --cov --cov-report=term-missing --cov-report=xml
+        run: pytest tests/ eval/tests --cov --cov-report=term-missing --cov-report=xml
+
+      # Offline evaluation gate. Proves the harness, the guard and the
+      # fingerprinting still work end to end; it is NOT an accuracy
+      # measurement, because offline mode replays the golden set's own
+      # expected_sql (see eval/runner.py). Accuracy needs --live.
+      - name: Evaluation harness smoke run
+        run: python -m eval.cli run --golden eval_data.example/golden.jsonl
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'

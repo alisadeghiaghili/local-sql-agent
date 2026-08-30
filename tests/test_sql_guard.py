@@ -71,6 +71,14 @@ class TestCleanSql:
         result = clean_sql(raw)
         assert result.upper().startswith("SELECT DISTINCT TOP")
 
+    def test_limit_on_cte_query_targets_outer_select_not_inner(self):
+        """LIMIT->TOP conversion must land on the outer query, not the
+        CTE body -- landing inside the CTE would materialise only n rows
+        internally instead of capping the final result at n rows."""
+        raw = "WITH c AS (SELECT x FROM t) SELECT * FROM c LIMIT 5"
+        result = clean_sql(raw)
+        assert result == "WITH c AS (SELECT x FROM t) SELECT TOP 5 * FROM c"
+
     def test_raises_on_empty_input(self):
         with pytest.raises(ValueError, match="empty"):
             clean_sql("")
@@ -86,7 +94,7 @@ class TestCleanSql:
 
 class TestValidateSql:
     def test_valid_simple_select(self):
-        validate_sql("SELECT TOP 10 Name FROM [dbo].[Users]")  # no raise
+        validate_sql("SELECT TOP 10 Name FROM [Auction_Dim].[Customer]")  # no raise
 
     def test_valid_cte_query(self):
         validate_sql("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte")
@@ -161,6 +169,63 @@ class TestEnsureTop:
         sql    = "SELECT TOP 5 Name FROM [dbo].[T]"
         result = ensure_top(ensure_top(sql, 20), 20)
         assert result.upper().count("TOP") == 1
+
+    def test_lands_on_outer_select_not_inside_cte(self):
+        sql    = "WITH cte AS (SELECT 1) SELECT * FROM cte"
+        result = ensure_top(sql, 20)
+        assert result == "WITH cte AS (SELECT 1) SELECT TOP 20 * FROM cte"
+
+    def test_distinct_precedes_top(self):
+        sql    = "SELECT DISTINCT Name FROM Customer"
+        result = ensure_top(sql, 20)
+        assert result == "SELECT DISTINCT TOP 20 Name FROM Customer"
+
+    def test_caps_outer_query_when_only_subquery_has_top(self):
+        sql    = "SELECT * FROM (SELECT TOP 1 a FROM t) z"
+        result = ensure_top(sql, 10)
+        assert result == "SELECT TOP 10 * FROM (SELECT TOP 1 a FROM t) z"
+
+    def test_wraps_top_level_union(self):
+        sql    = "SELECT a FROM t1 UNION SELECT b FROM t2"
+        result = ensure_top(sql, 5)
+        assert result == (
+            "SELECT TOP 5 * FROM (SELECT a FROM t1 UNION SELECT b FROM t2) "
+            "AS _ensure_top_capped"
+        )
+        # The wrapped result is idempotent under a second call. (Not
+        # counting "TOP" substrings here: the wrapper alias itself
+        # contains "top", e.g. "_ensure_TOP_capped".)
+        assert ensure_top(result, 5) == result
+
+    def test_wraps_union_after_cte_without_touching_cte(self):
+        sql = "WITH cte AS (SELECT 1 AS n) SELECT a FROM cte UNION SELECT b FROM t2"
+        result = ensure_top(sql, 5)
+        assert result == (
+            "WITH cte AS (SELECT 1 AS n) SELECT TOP 5 * FROM "
+            "(SELECT a FROM cte UNION SELECT b FROM t2) AS _ensure_top_capped"
+        )
+
+    def test_raises_when_no_select_found(self):
+        with pytest.raises(ValueError):
+            ensure_top("not sql at all", 10)
+
+    def test_raises_for_union_with_top_level_order_by(self):
+        """Wrapping a UNION that also has a trailing ORDER BY in a derived
+        table would make that ORDER BY invalid T-SQL; correctly hoisting
+        it out requires a real parser (Phase 1), so this must fail loudly
+        instead of emitting broken SQL."""
+        sql = "SELECT a FROM t1 UNION SELECT b FROM t2 ORDER BY a"
+        with pytest.raises(ValueError):
+            ensure_top(sql, 5)
+
+    def test_order_by_inside_a_subquery_does_not_block_union_wrap(self):
+        """Only a top-level (paren depth 0) ORDER BY must trigger the
+        refusal above -- one that belongs to a branch's own subquery is
+        unrelated to the wrapper. (ORDER BY inside a derived table is
+        only valid T-SQL alongside TOP/OFFSET, hence the TOP 5 here.)"""
+        sql = "SELECT a FROM (SELECT TOP 5 x FROM t1 ORDER BY x) s UNION SELECT b FROM t2"
+        result = ensure_top(sql, 5)
+        assert result.startswith("SELECT TOP 5 * FROM (")
 
 
 # ---------------------------------------------------------------------------

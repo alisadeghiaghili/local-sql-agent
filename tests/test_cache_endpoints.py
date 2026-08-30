@@ -29,6 +29,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.models import QueryResponse
+from prompt_engine.static_prefix import prefix_version
+
+#: The `client` fixture below sets `server_module._system_prompt = "stub"`,
+#: so /cache/invalidate computes this same version when building its cache
+#: key (see api/server.py::cache_invalidate). Tests that pre-populate the
+#: cache directly (bypassing run_query, which would compute this itself)
+#: must store under the same version or the endpoint's removal will target
+#: a key that was never written.
+_STUB_VERSION = prefix_version("stub")
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +162,7 @@ class TestCacheClear:
 class TestCacheInvalidate:
     def test_returns_200_for_existing_entry(self, client):
         from api.query_cache import query_cache
-        query_cache.set("سوال", "full", _resp())
+        query_cache.set("سوال", "full", _resp(), prefix_version=_STUB_VERSION)
         resp = client.post("/cache/invalidate", json={"question": "سوال", "mode": "full"})
         assert resp.status_code == 200
 
@@ -163,9 +172,9 @@ class TestCacheInvalidate:
 
     def test_target_entry_removed(self, client):
         from api.query_cache import query_cache
-        query_cache.set("سوال", "full", _resp())
+        query_cache.set("سوال", "full", _resp(), prefix_version=_STUB_VERSION)
         client.post("/cache/invalidate", json={"question": "سوال", "mode": "full"})
-        assert query_cache.get("سوال", "full") is None
+        assert query_cache.get("سوال", "full", prefix_version=_STUB_VERSION) is None
 
     def test_other_entries_untouched(self, client):
         from api.query_cache import query_cache
@@ -174,7 +183,7 @@ class TestCacheInvalidate:
         query_cache.set("سوال الف", "full", r1)
         query_cache.set("سوال ب", "full", r2)
         client.post("/cache/invalidate", json={"question": "سوال الف", "mode": "full"})
-        assert query_cache.get("سوال ب", "full") is r2
+        assert query_cache.get("سوال ب", "full") == r2
 
     def test_different_mode_not_affected(self, client):
         from api.query_cache import query_cache
@@ -185,8 +194,8 @@ class TestCacheInvalidate:
 
     def test_stats_size_decrements_after_invalidate(self, client):
         from api.query_cache import query_cache
-        query_cache.set("سوال الف", "full", _resp("سوال الف"))
-        query_cache.set("سوال ب", "full", _resp("سوال ب"))
+        query_cache.set("سوال الف", "full", _resp("سوال الف"), prefix_version=_STUB_VERSION)
+        query_cache.set("سوال ب", "full", _resp("سوال ب"), prefix_version=_STUB_VERSION)
         client.post("/cache/invalidate", json={"question": "سوال الف", "mode": "full"})
         assert client.get("/cache/stats").json()["size"] == 1
 

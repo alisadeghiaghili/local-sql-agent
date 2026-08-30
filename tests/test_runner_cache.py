@@ -70,11 +70,12 @@ class TestFirstCallPopulatesCache:
     def test_cache_entry_created_after_success(self, mock_agent, mode):
         from api.runner import run_query
         from api.query_cache import query_cache
+        from prompt_engine.static_prefix import prefix_version
 
         mock_agent.run.return_value = _good_result()
         run_query("سوال", system_prompt="sp", mode=mode, interpret=False)
 
-        assert query_cache.get("سوال", mode) is not None
+        assert query_cache.get("سوال", mode, prefix_version=prefix_version("sp")) is not None
 
     @pytest.mark.parametrize("mode", ["result", "full"])
     def test_agent_run_called_exactly_once_on_first_call(self, mock_agent, mode):
@@ -92,14 +93,19 @@ class TestFirstCallPopulatesCache:
 
 class TestSecondCallHitsCache:
     @pytest.mark.parametrize("mode", ["result", "full"])
-    def test_second_call_returns_same_object(self, mock_agent, mode):
+    def test_second_call_returns_equal_but_independent_object(self, mock_agent, mode):
+        """Equal in value (same cached data) but NOT the same object --
+        the cache hands back a copy on every get() so that api/server.py
+        mutating response.elapsed_seconds on one call's result can never
+        leak into another call's cached entry."""
         from api.runner import run_query
 
         mock_agent.run.return_value = _good_result()
         r1 = run_query("سوال", system_prompt="sp", mode=mode, interpret=False)
         r2 = run_query("سوال", system_prompt="sp", mode=mode, interpret=False)
 
-        assert r1 is r2
+        assert r1 == r2
+        assert r1 is not r2
 
     @pytest.mark.parametrize("mode", ["result", "full"])
     def test_agent_run_not_called_on_second_request(self, mock_agent, mode):
@@ -133,7 +139,7 @@ class TestSqlModeBypassesCache:
         from api.query_cache import query_cache
 
         mock_agent._backend.generate.return_value = SIMPLE_SQL
-        with patch("api.runner._safe_generate_sql_only", return_value=SIMPLE_SQL):
+        with patch("api.runner._safe_generate_sql_only", return_value=(SIMPLE_SQL, {})):
             run_query("سوال", system_prompt="sp", mode="sql", interpret=False)
 
         assert query_cache.get("سوال", "sql") is None
@@ -143,7 +149,7 @@ class TestSqlModeBypassesCache:
         """Even on second identical SQL request, LLM is always called."""
         from api.runner import run_query
 
-        with patch("api.runner._safe_generate_sql_only", return_value=SIMPLE_SQL) as gen:
+        with patch("api.runner._safe_generate_sql_only", return_value=(SIMPLE_SQL, {})) as gen:
             run_query("سوال", system_prompt="sp", mode="sql")
             run_query("سوال", system_prompt="sp", mode="sql")
             assert gen.call_count == 2
@@ -155,20 +161,26 @@ class TestSqlModeBypassesCache:
 
 class TestInterpretTrueBypassesCache:
     def test_interpret_true_does_not_write_cache(self, mock_agent):
+        from llm.router import RouteResult
         from api.runner import run_query
         from api.query_cache import query_cache
 
         mock_agent.run.return_value = _good_result()
-        mock_agent._backend.generate.return_value = "summary"
+        mock_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="summary", structured=None, meta={}, provider="mock:stub", fallback_used=False,
+        )
         run_query("سوال", system_prompt="sp", mode="full", interpret=True)
 
         assert query_cache.get("سوال", "full") is None
 
     def test_interpret_true_calls_agent_on_every_request(self, mock_agent):
+        from llm.router import RouteResult
         from api.runner import run_query
 
         mock_agent.run.return_value = _good_result()
-        mock_agent._backend.generate.return_value = "summary"
+        mock_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="summary", structured=None, meta={}, provider="mock:stub", fallback_used=False,
+        )
         run_query("سوال", system_prompt="sp", mode="full", interpret=True)
         run_query("سوال", system_prompt="sp", mode="full", interpret=True)
 
@@ -214,7 +226,7 @@ class TestReconfigure:
                           row_count=0, model="test")
         query_cache.reconfigure(ttl_seconds=300, max_size=256)
         query_cache.set("سوال", "full", r)
-        assert query_cache.get("سوال", "full") is r  # sanity check
+        assert query_cache.get("سوال", "full") == r  # sanity check
 
         # Disable cache — reconfigure must also clear stale entries
         query_cache.reconfigure(ttl_seconds=0, max_size=256)
@@ -285,7 +297,7 @@ class TestHttpIntegration:
     def test_sql_mode_requests_never_cached_via_http(self, client, mock_agent):
         """Two identical sql-mode requests → _safe_generate_sql_only called twice."""
         with patch("api.runner._safe_generate_sql_only",
-                   return_value=SIMPLE_SQL) as gen:
+                   return_value=(SIMPLE_SQL, {})) as gen:
             client.post("/query", json={"question": "سوال", "mode": "sql"})
             client.post("/query", json={"question": "سوال", "mode": "sql"})
             assert gen.call_count == 2

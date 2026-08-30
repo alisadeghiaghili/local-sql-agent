@@ -160,8 +160,12 @@ def get_join_path(table_a: str, table_b: str) -> list[str]:
 
     Examples
     --------
+    Building the map needs a live database connection, so the call is
+    skipped here — and so is the line that inspects its result, which
+    would otherwise raise ``NameError`` on an unbound ``hints``.
+
     >>> hints = get_join_path("Contract", "Ring")  # doctest: +SKIP
-    >>> hints
+    >>> hints                                      # doctest: +SKIP
     ['JOIN Ring ON Contract.Ring_ID = Ring.ID']
     """
     mapping = get_relationship_map()
