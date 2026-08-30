@@ -616,10 +616,34 @@ def _safe_generate_sql_only(
 
     Exception-translation contract
     ------------------------------
-    The ``except`` clauses below are unchanged, and keeping them matching
-    is load-bearing: each switches on the ORIGINAL exception type
+    Every clause below switches on the ORIGINAL exception type
     (``ValueError("OUT_OF_SCOPE")``, ``requests.Timeout``,
-    ``requests.ConnectionError``, plain ``RuntimeError``). But
+    ``requests.ConnectionError``, plain ``RuntimeError``), and keeping
+    them matching :func:`_safe_run`'s is load-bearing: ``run_query``
+    documents that it raises only :class:`~api.errors.NLQError`
+    subclasses, so a clause that lets the original type escape breaks that
+    contract for this mode alone. The ``ValueError`` clause therefore
+    mirrors :func:`_safe_run`'s exactly — ``OUT_OF_SCOPE`` is the decline
+    sentinel, and *any other* ``ValueError`` becomes an
+    :class:`~api.errors.InvalidSQLResponseError` (502) rather than
+    propagating bare. It used to ``raise`` bare, which meant a real
+    non-sentinel ``ValueError`` — most concretely a
+    ``requests.exceptions.JSONDecodeError`` (it subclasses ``ValueError``)
+    from a remote provider's unretried ``resp.json()`` on a truncated or
+    non-JSON 200 body — reached the caller with no ``error_code`` and no
+    ``http_status``, was audited as ``INTERNAL_ERROR``, and was served as
+    a generic 500 that hid a model/transport problem behind a server bug.
+    ``result``/``full`` mode always mapped that same case to 502; the two
+    paths now agree. (``OllamaBackend`` never reaches here that way — it
+    catches ``JSONDecodeError`` as the ``RequestException`` it also is,
+    retries it, and exhausts into a ``RuntimeError``.)
+
+    The forbidden-keyword branch :func:`_safe_run` has in its own
+    ``ValueError`` clause is deliberately absent here: this function runs
+    the guard itself, in a separate ``try`` further down, so a guard
+    rejection can never surface at the llm stage.
+
+    But
     :meth:`~llm.router.LLMRouter._call_chain` wraps a chain-exhausted
     failure in one ``RuntimeError`` carrying the original exception as
     ``__cause__``, so it is unwrapped (``exc.__cause__ or exc``) and
@@ -675,10 +699,13 @@ def _safe_generate_sql_only(
         raw, llm_meta = route_result.text or "", route_result.meta
     except ValueError as exc:
         if str(exc) == "OUT_OF_SCOPE":
-            err = OutOfScopeError("This question is outside the Auction domain.")
-            _carry_exception_meta(exc, err)
-            raise err
-        raise
+            err: NLQError = OutOfScopeError("This question is outside the Auction domain.")
+        else:
+            err = InvalidSQLResponseError(
+                f"LLM response could not be parsed into valid SQL: {exc}"
+            )
+        _carry_exception_meta(exc, err)
+        raise err
     except _requests.Timeout as exc:
         raise ModelTimeoutError(
             "The LLM took too long to respond. Please try again.",
@@ -721,7 +748,7 @@ def _safe_generate_sql_only(
     except ValueError as exc:
         msg = str(exc)
         if "Forbidden keyword" in msg:
-            err: NLQError = ForbiddenSQLError(msg)
+            err = ForbiddenSQLError(msg)
         else:
             err = InvalidSQLResponseError(
                 f"LLM response could not be parsed into valid SQL: {msg}",

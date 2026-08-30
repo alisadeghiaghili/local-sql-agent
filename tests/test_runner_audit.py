@@ -329,6 +329,45 @@ class TestSqlOnlyModeAudit:
         rec = _records(audit_file)[0]
         assert rec["error_code"] == "INVALID_SQL_RESPONSE"
 
+    def test_non_sentinel_valueerror_from_llm_stage(self, audit_file):
+        """A non-sentinel ``ValueError`` raised at the *llm* stage (not the
+        guard stage, as ``test_invalid_sql_response`` covers) is translated
+        too, instead of escaping ``run_query`` bare.
+
+        ``run_query`` documents that it raises only ``NLQError`` subclasses.
+        A bare ``ValueError`` has no ``error_code`` and no ``http_status``,
+        so it fell through to ``run_query``'s generic ``except Exception``,
+        was audited as ``INTERNAL_ERROR``, and was served as a generic 500
+        that hid the real cause. ``result``/``full`` mode has always mapped
+        this same case to ``InvalidSQLResponseError`` via ``_safe_run``; the
+        two paths must not disagree.
+
+        The concrete live source is a remote provider's unretried
+        ``resp.json()`` on a truncated or non-JSON 200 body:
+        ``requests.exceptions.JSONDecodeError`` subclasses ``ValueError``
+        (``OllamaBackend`` is immune -- it catches that as the
+        ``RequestException`` it also is, retries, and exhausts into a
+        ``RuntimeError``). It is raised directly here rather than through a
+        real provider so the test stays a unit test of the translation
+        contract, with no HTTP layer to mock.
+        """
+        from api.runner import run_query
+        from api.errors import InvalidSQLResponseError, NLQError
+
+        backend = FakeMetaBackend([ValueError("model returned malformed JSON")])
+        with patch("api.runner.agent", _agent(backend)):
+            with pytest.raises(InvalidSQLResponseError) as excinfo:
+                run_query("سوال", system_prompt="sp", mode="sql",
+                          request_id="r_sql_llm_valueerror")
+
+        err = excinfo.value
+        assert isinstance(err, NLQError)
+        assert err.http_status == 502
+        assert "model returned malformed JSON" in str(err)
+
+        rec = _records(audit_file)[0]
+        assert rec["error_code"] == "INVALID_SQL_RESPONSE"  # not INTERNAL_ERROR
+
 
 # ---------------------------------------------------------------------------
 # sql-only mode is routed through LLMRouter, like the other two paths
