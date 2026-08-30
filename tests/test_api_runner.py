@@ -33,6 +33,7 @@ from api.errors import (
     QueryExecutionError,
 )
 from llm.base import SQLGenerationResult
+from llm.router import RouteResult
 
 SIMPLE_SQL = "SELECT TOP 5 * FROM [Auction_Dim].[Trade]"
 SIMPLE_DF  = pd.DataFrame({"TradeId": [1], "Price": [100]})
@@ -101,7 +102,6 @@ class TestRunQuerySuccess:
         patch_agent._router.generate_text_for_task.assert_not_called()
 
     def test_interpret_true_calls_generate_for_summary(self, patch_agent):
-        from llm.router import RouteResult
         from api.runner import run_query
 
         patch_agent.run.return_value = _good_result()
@@ -115,8 +115,9 @@ class TestRunQuerySuccess:
     def test_interpret_replaces_toman_with_rial(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "مجموع خرید ۱۲۰ میلیارد تومان بود."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="مجموع خرید ۱۲۰ میلیارد تومان بود.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == "مجموع خرید ۱۲۰ میلیارد ریال بود."
@@ -125,8 +126,9 @@ class TestRunQuerySuccess:
     def test_interpret_replaces_english_toman_with_rial(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "Total purchase value was 120 billion toman."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="Total purchase value was 120 billion toman.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == "Total purchase value was 120 billion Rial."
@@ -135,8 +137,9 @@ class TestRunQuerySuccess:
     def test_interpret_replaces_capitalized_toman_with_rial(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "Total value: 120 billion Toman, up 5% vs last year."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="Total value: 120 billion Toman, up 5% vs last year.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == (
@@ -147,8 +150,9 @@ class TestRunQuerySuccess:
     def test_interpret_adds_thousands_separators_ascii(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "مجموع خرید 12000000000 تومان در سال 1402 بود."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="مجموع خرید 12000000000 تومان در سال 1402 بود.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == (
@@ -158,8 +162,9 @@ class TestRunQuerySuccess:
     def test_interpret_adds_thousands_separators_persian_digits(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "ارزش کل ۱۲۰۰۰۰۰۰۰۰۰ ریال بود."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="ارزش کل ۱۲۰۰۰۰۰۰۰۰۰ ریال بود.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == "ارزش کل ۱۲,۰۰۰,۰۰۰,۰۰۰ ریال بود."
@@ -167,8 +172,9 @@ class TestRunQuerySuccess:
     def test_interpret_preserves_4_digit_years_and_formats_counts(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "در سال 1402 تعداد 32808 معامله ثبت شد."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="در سال 1402 تعداد 32808 معامله ثبت شد.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == (
@@ -179,8 +185,9 @@ class TestRunQuerySuccess:
     def test_interpret_normalizes_space_separated_number_to_commas(self, patch_agent):
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = (
-            "مجموع فروش 143\u202f066\u202f295\u202f130\u202f000 ریال بود."
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="مجموع فروش 143 066 295 130 000 ریال بود.",
+            structured=None, meta={}, provider="mock:stub", fallback_used=False,
         )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == (

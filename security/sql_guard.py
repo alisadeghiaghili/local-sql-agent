@@ -702,17 +702,17 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
 
     The optional column-level ACL seam:
 
-    >>> validate_sql("SELECT NationalCode FROM Customer", denied_columns={"NationalCode"})
+    >>> validate_sql("SELECT NationalID FROM Customer", denied_columns={"NationalID"})
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: denied column 'NationalCode'
+    ValueError: Forbidden keyword detected: denied column 'NationalID'
 
     ``*`` cannot be used to read around an active column policy:
 
-    >>> validate_sql("SELECT * FROM Customer", denied_columns={"NationalCode"})
+    >>> validate_sql("SELECT * FROM Customer", denied_columns={"NationalID"})
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: '*' would expose denied column(s): ['nationalcode']
+    ValueError: Forbidden keyword detected: '*' would expose denied column(s): ['nationalid']
     """
     if not sql or not sql.strip():
         raise ValueError("Empty SQL")
