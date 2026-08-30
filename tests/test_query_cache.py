@@ -27,32 +27,35 @@ class TestQueryCacheBasic:
         assert c.get("سوال", "full") is None
 
     def test_set_then_get_returns_response(self):
+        """get() returns an equal, but NOT the same, object as what was
+        stored (see TestQueryCacheReturnsIndependentCopies) -- compare by
+        value, not identity."""
         c = QueryCache(ttl_seconds=60, max_size=10)
         r = _resp()
         c.set("سوال", "full", r)
-        assert c.get("سوال", "full") is r
+        assert c.get("سوال", "full") == r
 
     def test_different_mode_is_separate_entry(self):
         c = QueryCache(ttl_seconds=60, max_size=10)
         r1, r2 = _resp(mode="full"), _resp(mode="result")
         c.set("سوال", "full", r1)
         c.set("سوال", "result", r2)
-        assert c.get("سوال", "full") is r1
-        assert c.get("سوال", "result") is r2
+        assert c.get("سوال", "full") == r1
+        assert c.get("سوال", "result") == r2
 
     def test_different_question_is_separate_entry(self):
         c = QueryCache(ttl_seconds=60, max_size=10)
         r1, r2 = _resp("سوال ۱"), _resp("سوال ۲")
         c.set("سوال ۱", "full", r1)
         c.set("سوال ۲", "full", r2)
-        assert c.get("سوال ۱", "full") is r1
-        assert c.get("سوال ۲", "full") is r2
+        assert c.get("سوال ۱", "full") == r1
+        assert c.get("سوال ۲", "full") == r2
 
     def test_question_stripped_before_keying(self):
         c = QueryCache(ttl_seconds=60, max_size=10)
         r = _resp()
         c.set("  سوال  ", "full", r)
-        assert c.get("سوال", "full") is r
+        assert c.get("سوال", "full") == r
 
 
 class TestQueryCacheTTL:
@@ -67,7 +70,7 @@ class TestQueryCacheTTL:
         c = QueryCache(ttl_seconds=300, max_size=10)
         r = _resp()
         c.set("سوال", "full", r)
-        assert c.get("سوال", "full") is r
+        assert c.get("سوال", "full") == r
 
     def test_expired_entry_increments_evictions(self):
         c = QueryCache(ttl_seconds=1, max_size=10)
@@ -97,6 +100,53 @@ class TestQueryCacheLRU:
         c.set("سوال 3", "full", _resp("سوال 3"))
         assert c.get("سوال 0", "full") is not None
         assert c.get("سوال 1", "full") is None
+
+
+class TestQueryCacheReturnsIndependentCopies:
+    """api/server.py does ``response.elapsed_seconds = ...`` on whatever
+    ``run_query()`` hands it back. On a cache hit that used to be the
+    exact ``QueryResponse`` instance stored inside the cache (get()
+    returned the stored reference directly), so every cache hit silently
+    rewrote the cached entry's timing -- and, more generally, made the
+    cache's internal storage an alias for an object the rest of the
+    request pipeline treats as freely mutable, shared across whichever
+    threads happen to hit the same cache key concurrently.
+
+    get() and set() must each hand back / store a ``model_copy()`` so the
+    object a caller can mutate is never the object still living inside
+    the cache.
+    """
+
+    def test_mutating_a_cache_hit_does_not_affect_the_stored_entry(self):
+        c = QueryCache(ttl_seconds=300, max_size=10)
+        original = _resp()
+        original.elapsed_seconds = 1.0
+        c.set("سوال", "full", original)
+
+        hit1 = c.get("سوال", "full")
+        hit1.elapsed_seconds = 999.0  # simulate api/server.py's post-hoc mutation
+
+        hit2 = c.get("سوال", "full")
+        assert hit2.elapsed_seconds != 999.0
+
+    def test_mutating_the_object_passed_to_set_does_not_affect_the_stored_entry(self):
+        """api/runner.py returns the SAME object it just handed to
+        set(), and api/server.py mutates it immediately afterwards on
+        every request (cache hit or miss) -- that must never reach the
+        cache's own storage either."""
+        c = QueryCache(ttl_seconds=300, max_size=10)
+        original = _resp()
+        c.set("سوال", "full", original)
+
+        original.elapsed_seconds = 999.0  # simulate the caller's own mutation
+
+        hit = c.get("سوال", "full")
+        assert hit.elapsed_seconds != 999.0
+
+    def test_get_returns_a_distinct_object_each_time(self):
+        c = QueryCache(ttl_seconds=300, max_size=10)
+        c.set("سوال", "full", _resp())
+        assert c.get("سوال", "full") is not c.get("سوال", "full")
 
 
 class TestQueryCacheDisabled:
@@ -170,12 +220,15 @@ class TestQueryCacheRunnerIntegration:
         calling agent.run."""
         import api.runner as runner_module
         from api.query_cache import query_cache
+        from prompt_engine.static_prefix import prefix_version
 
         cached_resp = QueryResponse(
             question="سوال", sql="SELECT 1", result=[{"n": 1}],
             row_count=1, model="test",
         )
-        query_cache.set("سوال", "full", cached_resp)
+        # run_query below is called with system_prompt="stub" -- store under
+        # the same prefix version it will look up with.
+        query_cache.set("سوال", "full", cached_resp, prefix_version=prefix_version("stub"))
 
         # Patch agent so any real LLM call raises instantly
         mock_agent = MagicMock()
@@ -185,7 +238,12 @@ class TestQueryCacheRunnerIntegration:
         with patch("api.runner.agent", mock_agent):
             result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
 
-        assert result is cached_resp
+        # Equal in value, but NOT the same object -- query_cache.get()
+        # returns a copy so the caller (which mutates elapsed_seconds)
+        # can never corrupt the cached entry. See
+        # TestQueryCacheReturnsIndependentCopies.
+        assert result == cached_resp
+        assert result is not cached_resp
         mock_agent.run.assert_not_called()
 
     def test_cache_miss_calls_agent_and_stores_result(self):
@@ -208,4 +266,5 @@ class TestQueryCacheRunnerIntegration:
             result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
 
         mock_agent.run.assert_called_once()
-        assert query_cache.get("سوال", "full") is result
+        from prompt_engine.static_prefix import prefix_version
+        assert query_cache.get("سوال", "full", prefix_version=prefix_version("stub")) == result

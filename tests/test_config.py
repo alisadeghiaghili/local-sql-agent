@@ -12,6 +12,9 @@ from config import Settings, get_settings, override_settings
 
 
 class TestSettings:
+    def test_default_openai_base_url(self):
+        assert Settings().openai_base_url == "https://api.openai.com/v1"
+
     def test_default_max_rows(self):
         assert Settings().max_rows_returned == 1000
 
@@ -36,36 +39,42 @@ class TestSettings:
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}):
             assert Settings().openai_api_key == "sk-test"
 
-    def test_validate_requires_openai_key(self):
-        s = Settings.__new__(Settings)
-        object.__setattr__(s, "openai_api_key", "")
-        object.__setattr__(s, "openai_model", "gpt-oss-20:F16")
-        object.__setattr__(s, "openai_base_url", "http://vllm:8000/v1")
-        object.__setattr__(s, "db_connection_url", "mssql+ok")
-        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-            s.validate()
-
     def test_frozen(self):
         with pytest.raises((AttributeError, TypeError)):
             Settings().openai_model = "x"  # type: ignore[misc]
 
     def test_validate_passes(self):
-        Settings().validate()
+        Settings(
+            openai_model="gpt-oss-20b",
+            db_connection_url="mssql+pyodbc://prod-db-host:1433/RealDB"
+            "?driver=ODBC+Driver+17+for+SQL+Server",
+        ).validate()
+
+    def test_validate_raises_for_factory_default_db_url(self):
+        """The bogus factory-default DB_CONNECTION_URL is a full connection
+        string, not a single token, so it is never an exact match against
+        any entry in the placeholder set and used to sail through
+        unnoticed. validate() must detect it by its placeholder host."""
+        s = Settings(
+            openai_model="gpt-oss-20b",
+            db_connection_url=(
+                "mssql+pyodbc://username@server:1433/Auction_DM"
+                "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
+            ),
+        )
+        with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
+            s.validate()
 
     def test_validate_raises_for_placeholder_model(self):
         s = Settings.__new__(Settings)
-        object.__setattr__(s, "openai_api_key", "sk-test")
         object.__setattr__(s, "openai_model", "change_me")
-        object.__setattr__(s, "openai_base_url", "http://vllm:8000/v1")
         object.__setattr__(s, "db_connection_url", "mssql+ok")
         with pytest.raises(ValueError, match="OPENAI_MODEL"):
             s.validate()
 
     def test_validate_raises_for_empty_url(self):
         s = Settings.__new__(Settings)
-        object.__setattr__(s, "openai_api_key", "sk-test")
-        object.__setattr__(s, "openai_model", "gpt-oss-20:F16")
-        object.__setattr__(s, "openai_base_url", "http://vllm:8000/v1")
+        object.__setattr__(s, "openai_model", "gpt-oss:20b")
         object.__setattr__(s, "db_connection_url", "")
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
@@ -91,6 +100,72 @@ class TestSettings:
         with patch.dict(os.environ, {"CACHE_TTL_SECONDS": "0"}):
             s = Settings()
             assert s.cache_ttl_seconds == 0
+
+
+class TestEndpointTrustSettings:
+    """``llm_trusted`` is a tri-state (None/True/False) settings field --
+    see llm/trust.py and llm/endpoints.py for how it's consumed."""
+
+    def test_unset_is_none(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LLM_TRUSTED", None)
+            assert Settings().llm_trusted is None
+
+    def test_env_true(self):
+        with patch.dict(os.environ, {"LLM_TRUSTED": "true"}):
+            assert Settings().llm_trusted is True
+
+    def test_env_false(self):
+        with patch.dict(os.environ, {"LLM_TRUSTED": "false"}):
+            assert Settings().llm_trusted is False
+
+    def test_default_llm_provider_is_openai(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LLM_PROVIDER", None)
+            assert Settings().llm_provider == "openai"
+
+    def test_default_llm_endpoints_json_is_empty(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LLM_ENDPOINTS", None)
+            assert Settings().llm_endpoints_json == ""
+
+    def test_default_llm_routes_json_is_empty(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LLM_ROUTES", None)
+            assert Settings().llm_routes_json == ""
+
+
+class TestDotenvLoading:
+    """config.py must load .env itself — python app.py / uvicorn must not
+    silently run on defaults just because setup_project.py is the only
+    place that calls load_dotenv()."""
+
+    def test_env_file_is_loaded_on_import(self, tmp_path):
+        """A fresh interpreter, cwd'd into a directory with a .env file,
+        must see config.settings pick up the .env value with no other
+        setup — reproduces `python app.py` / `uvicorn api.server:app`."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENAI_MODEL=dotenv-test-model\n", encoding="utf-8")
+
+        repo_root = Path(__file__).resolve().parent.parent
+        child_env = dict(os.environ)
+        child_env.pop("OPENAI_MODEL", None)  # don't let the real shell shadow .env
+        child_env["PYTHONPATH"] = str(repo_root)
+
+        result = subprocess.run(
+            [sys.executable, "-c", "import config; print(config.settings.openai_model)"],
+            cwd=str(tmp_path),
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "dotenv-test-model"
 
 
 class TestGetSettings:

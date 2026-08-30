@@ -1,7 +1,7 @@
 """TDD tests for POST /query and GET /health.
 
 All external dependencies (LLM backend, DB executor) are replaced by
-injected mocks — no Ollama or SQL Server required.
+injected mocks — no live LLM endpoint or SQL Server required.
 
 Key fixture design
 ------------------
@@ -49,7 +49,7 @@ def _ok_response(**overrides):
         row_count=2,
         correction_attempts=1,
         elapsed_seconds=0.1,
-        model="openai:gpt-oss-20:F16",
+        model="openai:gpt-oss-20b",
     )
     defaults.update(overrides)
     return QueryResponse(**defaults)
@@ -135,10 +135,10 @@ class TestQueryModes:
 
     def test_model_name_echoed(self, app_and_client):
         _, client, mock_run = app_and_client
-        mock_run.return_value = _ok_response(model="openai:gpt-oss-20:F16")
+        mock_run.return_value = _ok_response(model="openai:gpt-oss-20b")
         resp = client.post("/query", json={"question": VALID_Q})
         assert resp.status_code == 200
-        assert resp.json()["model"] == "openai:gpt-oss-20:F16"
+        assert resp.json()["model"] == "openai:gpt-oss-20b"
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ class TestHealth:
         assert body["openai"] is True
         assert body["database"] is True
 
-    def test_llm_down_degraded(self):
+    def test_openai_down_degraded(self):
         resp = self._make_health_resp(False, True)
         assert resp.json()["status"] == "degraded"
         assert resp.json()["openai"] is False
@@ -227,6 +227,97 @@ class TestHealth:
         assert resp.json()["status"] == "down"
 
     def test_health_never_blocked_by_overload(self, app_and_client):
+        # check_health MUST be patched here. The app_and_client fixture mocks
+        # run_query but not the health probes, so without this patch each of
+        # the 20 requests below ran the real _ping_db(), which tries to
+        # resolve the default connection URL's literal host "server" and
+        # blocks on DNS/ODBC login timeout for ~21s. That single test cost
+        # ~420s and was, on its own, essentially the entire runtime of the
+        # whole suite.
+        #
+        # The test is about the concurrency limiter never gating /health, so
+        # the probe results are irrelevant to what it asserts.
         _, client, _ = app_and_client
-        for _ in range(20):
-            assert client.get("/health").status_code == 200
+        healthy = HealthResponse(
+            status="ok", openai=True, database=True, model="test-model"
+        )
+        with patch("api.health.check_health", return_value=healthy):
+            for _ in range(20):
+                assert client.get("/health").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# lifespan() fails fast on invalid configuration (item 2)
+# ---------------------------------------------------------------------------
+
+class TestLifespanValidatesConfig:
+    """cfg.settings.validate() must run at ASGI startup — mirrors the same
+    fail-fast check app.py's REPL entry point performs (item 2). Driven
+    directly (not through TestClient) since the other fixtures in this
+    file deliberately bypass lifespan."""
+
+    def test_raises_when_db_url_is_placeholder(self):
+        import asyncio
+
+        import api.server as server_module
+        from config import override_settings
+
+        async def _start():
+            async with server_module.lifespan(server_module.app):
+                pass  # pragma: no cover - must not be reached
+
+        with override_settings(
+            openai_model="llama3",
+            db_connection_url=(
+                "mssql+pyodbc://username@server:1433/Auction_DM"
+                "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="[Cc]onfiguration"):
+                asyncio.run(_start())
+
+
+# ---------------------------------------------------------------------------
+# _PROMPT_PATH must not depend on CWD; empty _system_prompt must fail loudly
+# (item 14)
+# ---------------------------------------------------------------------------
+
+class TestPromptPathIsCwdIndependent:
+    """_PROMPT_PATH used to be Path("prompts/system_prompt.md") -- relative
+    to whatever the current working directory happened to be, not to this
+    module's own location. Running uvicorn from any directory other than
+    the repo root silently broke it."""
+
+    def test_prompt_path_is_absolute(self):
+        import api.server as server_module
+        assert server_module._PROMPT_PATH.is_absolute()
+
+    def test_prompt_path_resolves_regardless_of_cwd(self, tmp_path, monkeypatch):
+        import api.server as server_module
+        monkeypatch.chdir(tmp_path)
+        assert server_module._PROMPT_PATH.exists()
+
+
+class TestEmptySystemPromptFailsLoudly:
+    """If lifespan never runs (e.g. this app is served without the ASGI
+    lifespan protocol), _system_prompt silently stays "" and every
+    request would prompt the model with no system instructions at all --
+    a serious behaviour change on our end that would otherwise leave no
+    trace beyond quietly worse answers. /query must refuse loudly
+    instead."""
+
+    def test_query_fails_loudly_when_system_prompt_never_loaded(self):
+        import api.server as server_module
+        import api.runner as runner_module
+
+        original = server_module._system_prompt
+        server_module._system_prompt = ""  # simulate lifespan never running
+        try:
+            with patch.object(runner_module, "run_query") as mock_run:
+                client = TestClient(server_module.app, raise_server_exceptions=False)
+                resp = client.post("/query", json={"question": VALID_Q})
+        finally:
+            server_module._system_prompt = original
+
+        assert resp.status_code >= 500
+        mock_run.assert_not_called()

@@ -1,0 +1,26 @@
+/* Vazirmatn — bundled locally, no CDN dependency (offline-venue requirement,
+ * see web/README.md "Font"). Two static weights are vendored as woff2:
+ * Regular (400) and Bold (700). Vazirmatn's own font-weight axis covers the
+ * full 100-900 range in its variable build; we only ship the two weights the
+ * UI actually uses, and let the browser synthesize italics (none used here).
+ *
+ * Fallback chain: if the woff2 files are ever missing (e.g. this directory
+ * was copied without web/assets/fonts/), the browser silently falls through
+ * to "Segoe UI" / Tahoma, which render Persian adequately on Windows but
+ * without Vazirmatn's Persian-specific metrics and glyph shaping. */
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("../assets/fonts/Vazirmatn-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("../assets/fonts/Vazirmatn-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}

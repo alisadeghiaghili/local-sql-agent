@@ -14,3 +14,11 @@ build/
 project_config/
 presentation
 
+# Real evaluation golden set / baselines (contains customer questions — never commit)
+eval_data/
+
+# Coverage artefacts
+.coverage
+.coverage.*
+htmlcov/
+

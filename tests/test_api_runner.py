@@ -98,15 +98,19 @@ class TestRunQuerySuccess:
         from api.runner import run_query
         patch_agent.run.return_value = _good_result()
         run_query("test", system_prompt="", mode="full", interpret=False)
-        patch_agent._backend.generate.assert_not_called()
+        patch_agent._router.generate_text_for_task.assert_not_called()
 
     def test_interpret_true_calls_generate_for_summary(self, patch_agent):
+        from llm.router import RouteResult
         from api.runner import run_query
+
         patch_agent.run.return_value = _good_result()
-        patch_agent._backend.generate.return_value = "summary text"
+        patch_agent._router.generate_text_for_task.return_value = RouteResult(
+            text="summary text", structured=None, meta={}, provider="mock:stub", fallback_used=False,
+        )
         resp = run_query("test", system_prompt="", mode="full", interpret=True)
         assert resp.interpretation == "summary text"
-        patch_agent._backend.generate.assert_called_once()
+        patch_agent._router.generate_text_for_task.assert_called_once()
 
     def test_interpret_replaces_toman_with_rial(self, patch_agent):
         from api.runner import run_query
