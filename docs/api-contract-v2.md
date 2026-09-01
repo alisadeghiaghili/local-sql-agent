@@ -333,3 +333,122 @@ Deliberately excluded, with reasons:
   a reason to survive a deploy; adding a store now is unbacked complexity.
 - **Agentic multi-step planning inside a turn.** That is Phase 6, tier T3.
   A session is turn-level state, not an agent loop — do not conflate them.
+
+---
+
+## 11. Authentication (Phase 8)
+
+`POST /query` runs model-generated T-SQL against the production warehouse.
+Before this phase, none of the ten HTTP routes had any caller identity
+whatsoever — this section closes that gap.
+
+### 11.1 Scheme
+
+Named API keys, not JWT/OIDC. This is an on-prem tool with no IdP
+dependency available today, and what auth actually needs to provide is **a
+principal identity** — something to key the cache on, own a session, and
+name in the audit trail. API keys deliver that with no new infrastructure,
+and leave a clean seam for OIDC later: only the resolver in `security/auth.py`
+would need to change; `Principal` and every downstream consumer (the SQL
+guard's `denied_columns`, the cache scope key, session ownership, the audit
+trail) stay exactly as they are.
+
+```python
+@dataclass(frozen=True)
+class Principal:
+    id: str                                # stable, short, in every audit record
+    name: str                              # human label for logs
+    denied_columns: tuple[str, ...] = ()   # feeds security.sql_guard's existing ACL seam
+```
+
+Transport is `Authorization: Bearer <key>` only — `X-API-Key` and every
+other transport are deliberately unsupported, so there is exactly one way
+in to reason about.
+
+Configuration is `API_KEYS_JSON`, a JSON array of
+`{"id", "name", "key_sha256", "denied_columns"?}` objects. Only the
+SHA-256 hex digest of a key is ever stored — never the raw key. Comparison
+is `hmac.compare_digest`, walking every configured key with no early exit
+on a prefix match. Plain SHA-256, not bcrypt/argon2, is correct here: those
+exist to slow brute-force guessing of a *low-entropy human password*, and a
+key minted by `scripts/issue_api_key.py` (`secrets.token_urlsafe(32)`, 256
+bits of entropy) is not that. Issue a key with:
+
+```
+python scripts/issue_api_key.py --id analyst-1 --name "Jane Analyst"
+```
+
+It prints the raw key **once**, to stdout only — never to a file or log —
+plus the `API_KEYS_JSON` entry to paste into config.
+
+### 11.2 Fail closed
+
+`AUTH_REQUIRED` defaults to `true`. If it is `true` and `API_KEYS_JSON`
+resolves to zero configured keys, `api/server.py`'s `lifespan` raises
+`RuntimeError` — the server refuses to start with a front door nobody could
+ever open, the same fail-closed precedent already applied to a placeholder
+`DB_CONNECTION_URL`.
+
+`AUTH_REQUIRED=false` is a deliberate escape hatch (local development, or a
+deployment that already sits behind its own perimeter auth). It logs a
+`WARNING` on **every** startup, not just the first — a silently disabled
+front door is the bug this phase exists to fix, so it must never be quiet
+in the logs.
+
+### 11.3 Route matrix
+
+| Route | Auth |
+|---|---|
+| `GET /health` | Open — liveness probes. `model` is omitted from the response when unauthenticated; a probe does not need the model name. |
+| `POST /query`, `POST /query/stream` | Required |
+| `GET /cache/stats`, `POST /cache/clear`, `POST /cache/invalidate` | Required |
+| all four `/v2/sessions*` routes | Required |
+| `/docs`, `/openapi.json`, `/redoc` | Required by default (`APP_DOCS_PUBLIC=false`) |
+
+A missing or invalid key on a protected route returns `401` with the
+existing error envelope (§ above tables), `error.code = "UNAUTHENTICATED"`,
+and a `WWW-Authenticate: Bearer` header.
+
+### 11.4 Cache isolation
+
+Naively appending the principal id to the cache key
+(`(prefix_version, question, mode, principal_id)`) would be correct but
+throws away all cross-user cache sharing — a real latency regression on a
+shared org tool where most questions repeat. Instead the cache keys on a
+**scope key**:
+
+```
+scope_key = sha256(":".join(sorted(principal.denied_columns)) or "all").hexdigest()[:16]
+```
+
+Two principals with identical data visibility share cache entries safely;
+two with different visibility can never collide. Every all-access principal
+(the common case) shares one scope key, so today's hit rates are preserved.
+Implemented in `security.auth.scope_key`, threaded through
+`api.query_cache.QueryCache`'s question- and SQL-keyed stores alike.
+
+### 11.5 Session ownership
+
+A `/v2/sessions` session records the `owner_id` of the principal that
+created it (`session.store.SessionRecord.owner_id`). `GET`/`DELETE
+/v2/sessions/{sid}` and `POST .../turns` return `404`, never `403`, for a
+non-owner — a `403` would itself confirm the session exists to a caller
+who has no business knowing that. A session created with no principal at
+all (`AUTH_REQUIRED=false`) has `owner_id=None` and stays reachable by
+anyone, matching pre-Phase-8 behaviour.
+
+### 11.6 Rate limiting
+
+`RateLimitMiddleware` buckets per IP by default, which is one shared bucket
+for an entire organisation behind a proxy. `AuthMiddleware` resolves the
+caller's `Principal` and stashes it on `request.state.principal` earlier in
+the middleware stack (before `RateLimitMiddleware` runs); the rate limiter
+then keys its bucket on `principal:<id>` for an authenticated request,
+falling back to the pre-Phase-8 IP-based key otherwise.
+
+### 11.7 Audit
+
+`observability.audit.AuditRecord` carries `principal_id` on every query —
+the field that makes the audit trail an actual "who ran this" record. The
+existing hard rule is unchanged and unweakened: no result row values are
+ever written to the audit log, only column names.

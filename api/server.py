@@ -27,9 +27,10 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
@@ -37,6 +38,7 @@ import api.v2_routes as v2_routes
 # Only register_handlers is needed here: the typed exceptions are raised in
 # api/runner.py and translated to responses by the handlers that
 # register_handlers() attaches, so this module never names them.
+from api.auth import AuthMiddleware, get_principal_if_any, require_principal
 from api.errors import register_handlers
 from api.middleware import RequestIDMiddleware, RateLimitMiddleware, ConcurrencyMiddleware
 from api.models import (
@@ -47,6 +49,7 @@ from api.models import (
     CacheInvalidateRequest,
 )
 from api.query_cache import query_cache
+from security.auth import ApiKeyConfigError, Principal, load_api_keys
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +111,35 @@ async def lifespan(app: FastAPI):
         cfg.settings.validate()
     except ValueError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc
+
+    # ── Phase 8: fail closed on authentication config ──────────────────────
+    # Mirrors the db_connection_url precedent immediately above: a broken
+    # or absent auth configuration must stop the server from starting at
+    # all, not be discovered later as every caller gets a 401 nobody can
+    # fix without a redeploy.
+    try:
+        configured_keys = load_api_keys()
+    except ApiKeyConfigError as exc:
+        raise RuntimeError(f"Invalid API_KEYS_JSON: {exc}") from exc
+
+    if cfg.settings.auth_required and not configured_keys:
+        raise RuntimeError(
+            "AUTH_REQUIRED is true but API_KEYS_JSON has no configured keys "
+            "-- refusing to start a server that requires authentication "
+            "nobody could ever satisfy. Set API_KEYS_JSON (see "
+            "scripts/issue_api_key.py) or explicitly set AUTH_REQUIRED=false."
+        )
+    if not cfg.settings.auth_required:
+        # Logged on EVERY startup (not deduplicated) -- a deliberately
+        # disabled front door must never be quiet in the logs. See
+        # config.py's Settings.auth_required docstring.
+        logger.warning(
+            "AUTH_REQUIRED=false -- this server is accepting unauthenticated "
+            "requests on every route except the ones that were already open. "
+            "This is a deliberate escape hatch and must not be used in a "
+            "production deployment."
+        )
+
     if not _PROMPT_PATH.exists():
         raise RuntimeError(f"System prompt not found: {_PROMPT_PATH}")
     _system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -119,19 +151,30 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# docs_url/redoc_url/openapi_url are disabled here and re-registered by hand
+# below (Phase 8) so they can sit behind the same Depends(require_principal)
+# as every other non-/health route -- FastAPI's auto-registered docs routes
+# have no dependency-injection seam of their own.
 app = FastAPI(
     title="Auction NLQ Engine",
     description="Natural-language \u2192 SQL \u2192 Results API for Auction_DM.",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # --- Middleware (order matters: outer → inner) ---
 # 1. ConcurrencyMiddleware  — innermost: applied after rate-limit passes
-# 2. RateLimitMiddleware    — per-IP token-bucket (429 on excess)
-# 3. RequestIDMiddleware    — stamps X-Request-ID first so all downstream
+# 2. RateLimitMiddleware    — per-IP (or per-principal) token-bucket (429 on excess)
+# 3. AuthMiddleware         — resolves request.state.principal (Phase 8) --
+#                              must run before RateLimitMiddleware so it can
+#                              bucket on principal id, and after RequestID so
+#                              its own logging can carry the request id
+# 4. RequestIDMiddleware    — stamps X-Request-ID first so all downstream
 #                              middleware can log it
-# 4. CORSMiddleware         — outermost: a preflight OPTIONS request must
+# 5. CORSMiddleware         — outermost: a preflight OPTIONS request must
 #                              get CORS headers even when every other
 #                              layer would otherwise reject it
 #
@@ -139,6 +182,7 @@ app = FastAPI(
 # add_middleware() call becomes the outermost layer.
 app.add_middleware(ConcurrencyMiddleware)
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(RequestIDMiddleware)
 
 # CORS: default-restrictive (docs/api-contract-v2.md §9 / web/README.md).
@@ -163,6 +207,38 @@ register_handlers(app)
 
 
 # ---------------------------------------------------------------------------
+# API documentation — gated the same as every other route (Phase 8)
+# ---------------------------------------------------------------------------
+# /docs, /redoc, and /openapi.json describe exactly what an authenticated
+# caller can do to production data; publishing that to an unauthenticated
+# network is itself a disclosure. Registered by hand (docs_url=None etc.
+# above) because FastAPI's auto-registered docs routes have no
+# dependency-injection seam to attach Depends(require_principal) to.
+# APP_DOCS_PUBLIC=true is the explicit opt-out for a deployment that
+# already sits behind its own perimeter auth.
+
+def _require_docs_access(request: Request) -> None:
+    if cfg.settings.app_docs_public:
+        return
+    require_principal(request)
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_json(_: None = Depends(_require_docs_access)) -> JSONResponse:
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_docs(_: None = Depends(_require_docs_access)):
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{app.title} - Docs")
+
+
+@app.get("/redoc", include_in_schema=False)
+def redoc_docs(_: None = Depends(_require_docs_access)):
+    return get_redoc_html(openapi_url="/openapi.json", title=f"{app.title} - ReDoc")
+
+
+# ---------------------------------------------------------------------------
 # POST /query
 # ---------------------------------------------------------------------------
 
@@ -180,7 +256,9 @@ register_handlers(app)
         504: {"description": "LLM inference or query execution timed out"},
     },
 )
-async def query(req: QueryRequest, request: Request) -> QueryResponse:
+async def query(
+    req: QueryRequest, request: Request, principal: Principal = Depends(require_principal),
+) -> QueryResponse:
     import time
     start = time.perf_counter()
 
@@ -213,6 +291,7 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:
         mode=req.mode,
         interpret=req.interpret,
         request_id=request_id,
+        principal=principal,
     )
 
     response.elapsed_seconds = round(time.perf_counter() - start, 3)
@@ -223,7 +302,9 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:
 # POST /query/stream — SSE, docs/api-contract-v2.md §7 event shape
 # ---------------------------------------------------------------------------
 
-async def _query_event_stream(req: QueryRequest, request_id: str | None):
+async def _query_event_stream(
+    req: QueryRequest, request_id: str | None, principal: Principal,
+):
     """Yield SSE events for one query, per contract §7's event names.
 
     Perceived latency matters as much as measured latency for a streaming
@@ -258,6 +339,7 @@ async def _query_event_stream(req: QueryRequest, request_id: str | None):
             mode=req.mode,
             interpret=req.interpret,
             request_id=request_id,
+            principal=principal,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the client as an SSE error event
         code = getattr(exc, "error_code", "INTERNAL_ERROR")
@@ -284,10 +366,12 @@ async def _query_event_stream(req: QueryRequest, request_id: str | None):
     summary="Same as POST /query, streamed as Server-Sent Events (contract §7)",
     tags=["query"],
 )
-async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse:
+async def query_stream(
+    req: QueryRequest, request: Request, principal: Principal = Depends(require_principal),
+) -> StreamingResponse:
     request_id = getattr(request.state, "request_id", None)
     return StreamingResponse(
-        _query_event_stream(req, request_id),
+        _query_event_stream(req, request_id, principal),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -297,10 +381,29 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 # GET /health
 # ---------------------------------------------------------------------------
 
-@app.get("/health", response_model=HealthResponse, summary="Liveness check")
-def health() -> HealthResponse:
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    response_model_exclude_none=True,
+    summary="Liveness check",
+)
+def health(request: Request) -> HealthResponse:
+    """Always open (no credentials required) -- liveness probes need it.
+
+    Phase 8: a probe hitting this endpoint with no credentials at all
+    does not need the model name, and publishing it to an unauthenticated
+    caller is a small but real disclosure -- so ``model`` is only included
+    when the caller presented a valid API key (``request.state.principal``
+    is set by ``AuthMiddleware``, which runs regardless of whether this
+    route itself requires auth). ``response_model_exclude_none=True``
+    means an unauthenticated caller's response omits the ``model`` key
+    entirely rather than sending it as ``null``.
+    """
     from api.health import check_health
-    return check_health()
+    response = check_health()
+    if get_principal_if_any(request) is None:
+        response.model = None
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +416,7 @@ def health() -> HealthResponse:
     summary="Return current cache metrics",
     tags=["cache"],
 )
-def cache_stats() -> CacheStatsResponse:
+def cache_stats(principal: Principal = Depends(require_principal)) -> CacheStatsResponse:
     """Return hits, misses, size, evictions, and enabled flag."""
     s = query_cache.stats()
     return CacheStatsResponse(**s)
@@ -325,7 +428,7 @@ def cache_stats() -> CacheStatsResponse:
     summary="Flush the entire query-result cache",
     tags=["cache"],
 )
-def cache_clear() -> CacheStatsResponse:
+def cache_clear(principal: Principal = Depends(require_principal)) -> CacheStatsResponse:
     """Evict all cached responses.  Returns a snapshot of stats *before* clearing."""
     snapshot = query_cache.stats()
     query_cache.clear()
@@ -339,7 +442,9 @@ def cache_clear() -> CacheStatsResponse:
     tags=["cache"],
     responses={404: {"description": "Entry not found in cache"}},
 )
-def cache_invalidate(req: CacheInvalidateRequest) -> CacheStatsResponse:
+def cache_invalidate(
+    req: CacheInvalidateRequest, principal: Principal = Depends(require_principal),
+) -> CacheStatsResponse:
     """Remove the cached response for a specific (question, mode) pair.
 
     Returns 404 if the entry does not exist.

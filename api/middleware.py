@@ -3,9 +3,18 @@
 Middleware stack (outer → inner)
 --------------------------------
 1. RequestIDMiddleware   — stamps every request with X-Request-ID
-2. RateLimitMiddleware   — per-IP token-bucket rate limiter (429)
-3. ConcurrencyMiddleware — rejects requests when MAX_CONCURRENT_REQUESTS
+2. AuthMiddleware         — resolves ``request.state.principal`` from the
+                            ``Authorization`` header (``api/auth.py`` — Phase 8).
+                            Runs before RateLimitMiddleware so the limiter can
+                            bucket on principal id instead of IP.
+3. RateLimitMiddleware   — per-IP (or per-principal — see below) token-bucket
+                            rate limiter (429)
+4. ConcurrencyMiddleware — rejects requests when MAX_CONCURRENT_REQUESTS
                             active requests are already in flight (503)
+
+See ``api/server.py``'s own middleware-registration comment for the exact
+``add_middleware()`` call order that produces this stack (Starlette
+applies it in reverse).
 
 Rate-limit tuning (env vars)
 -----------------------------
@@ -16,6 +25,12 @@ TRUSTED_PROXY_IPS     — comma-separated IPs allowed to supply X-Forwarded-For
                         / X-Real-IP for rate-limiting            (default: empty)
 RATE_LIMIT_MAX_TRACKED_IPS — max distinct client buckets kept in memory at
                         once, LRU-evicted beyond this            (default: 10000)
+
+Bucket identity (Phase 8): a request with a principal resolved by
+``AuthMiddleware`` buckets on ``principal:<id>`` instead of IP, so callers
+behind a shared proxy (or NAT) each get their own allowance instead of
+exhausting one shared-IP bucket for the whole organisation. An
+unauthenticated request still buckets on IP, exactly as before this phase.
 
 Example: RATE_LIMIT_REQUESTS=30 RATE_LIMIT_WINDOW_SEC=60 RATE_LIMIT_BURST=5
   → allows 30 req/min sustained, with a burst of up to 5 extra tokens.
@@ -205,8 +220,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return real_ip.strip()
         return direct_ip
 
-    def _consume(self, ip: str) -> tuple[bool, float]:
-        """Try to consume one token for *ip*.
+    def _bucket_key(self, request: Request) -> str:
+        """The rate-limit bucket identity for *request* (Phase 8).
+
+        Behind a shared proxy, every caller's ``request.client.host`` is
+        the same proxy address — bucketing on IP alone would then put the
+        whole organisation in one bucket. When ``api.auth.AuthMiddleware``
+        (which must run before this middleware — see ``api/server.py``'s
+        middleware ordering) has resolved a principal for this request,
+        key on that principal's id instead; an unauthenticated request
+        (missing/invalid key, or ``AUTH_REQUIRED=false`` with no key
+        presented) falls back to the IP-based key exactly as before this
+        phase.
+        """
+        principal = getattr(request.state, "principal", None)
+        if principal is not None:
+            return f"principal:{principal.id}"
+        return f"ip:{self._client_ip(request)}"
+
+    def _consume(self, bucket_key: str) -> tuple[bool, float]:
+        """Try to consume one token for *bucket_key* (an IP- or principal-keyed identity).
 
         Returns
         -------
@@ -216,16 +249,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """
         now = time.monotonic()
         with self._lock:
-            bucket = self._buckets.get(ip)
+            bucket = self._buckets.get(bucket_key)
             if bucket is None:
                 if len(self._buckets) >= self._max_tracked_ips:
                     self._buckets.popitem(last=False)  # evict least-recently-seen
                 # Stamp last_refill with *this* call's `now` so a fresh
                 # bucket's first `elapsed` is exactly 0.0, never negative.
                 bucket = _Bucket(tokens=self._capacity, last_refill=now)
-                self._buckets[ip] = bucket
+                self._buckets[bucket_key] = bucket
             else:
-                self._buckets.move_to_end(ip)
+                self._buckets.move_to_end(bucket_key)
 
             # Refill tokens proportional to elapsed time
             elapsed = now - bucket.last_refill
@@ -250,15 +283,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
 
-        ip = self._client_ip(request)
-        allowed, retry_after = self._consume(ip)
+        key = self._bucket_key(request)
+        allowed, retry_after = self._consume(key)
 
         if not allowed:
             request_id = getattr(request.state, "request_id", "")
             logger.warning(
-                "[%s] Rate limit exceeded for IP %s — retry in %.1fs",
+                "[%s] Rate limit exceeded for %s — retry in %.1fs",
                 request_id,
-                ip,
+                key,
                 retry_after,
             )
             return JSONResponse(

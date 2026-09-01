@@ -262,7 +262,7 @@ class TestHttpIntegration:
     """
 
     @pytest.fixture()
-    def client(self, mock_agent):
+    def client(self, mock_agent, auth_settings):
         """Build a fresh TestClient with cache enabled (TTL 300s)."""
         from fastapi.testclient import TestClient
         from api.query_cache import query_cache
@@ -273,7 +273,9 @@ class TestHttpIntegration:
         server_module._system_prompt = "stub system prompt"
 
         # api.server.app is the FastAPI instance — app.py is the CLI REPL
-        return TestClient(server_module.app, raise_server_exceptions=False)
+        return TestClient(
+            server_module.app, raise_server_exceptions=False, headers=auth_settings,
+        )
 
     def test_second_http_request_does_not_call_agent_again(self, client, mock_agent):
         payload = {"question": "چند معامله امروز؟", "mode": "full"}

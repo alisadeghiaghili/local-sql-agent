@@ -21,10 +21,12 @@ import json
 import logging
 import threading
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 import config as cfg
+from api.auth import require_principal
+from security.auth import Principal
 from session.engine import TurnEngine
 from session.models import (
     AskTurnRequest,
@@ -33,7 +35,7 @@ from session.models import (
     SessionTranscriptResponse,
     Turn,
 )
-from session.store import SessionNotFoundError, SessionStore
+from session.store import SessionNotFoundError, SessionRecord, SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,22 @@ def _reset_for_testing() -> None:
         _turn_engine = None
 
 
+def _require_owned_session(record: SessionRecord, principal: Principal) -> None:
+    """Raise 404 (never 403) if *record* is owned by someone else (Phase 8).
+
+    ``record.owner_id is None`` covers a session created with no
+    principal at all (``AUTH_REQUIRED=false``) — treated as unrestricted
+    rather than "owned by nobody", so it stays reachable. A 403 would
+    itself confirm the session's existence to a caller who has no
+    business knowing that; 404 is indistinguishable from "never
+    existed"/"expired", exactly what a cross-principal probe should see.
+    """
+    if record.owner_id is not None and record.owner_id != principal.id:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown or expired session: {record.session_id!r}",
+        )
+
+
 def _require_system_prompt() -> str:
     if not _system_prompt:
         raise RuntimeError(
@@ -103,8 +121,8 @@ def _require_system_prompt() -> str:
 
 
 @router.post("/sessions", response_model=CreateSessionResponse, status_code=201)
-def create_session() -> CreateSessionResponse:
-    record = get_session_store().create()
+def create_session(principal: Principal = Depends(require_principal)) -> CreateSessionResponse:
+    record = get_session_store().create(owner_id=principal.id)
     expires_at = None
     if cfg.settings.session_ttl_seconds > 0:
         # Best-effort wall-clock estimate for the client; TTL bookkeeping
@@ -127,11 +145,14 @@ def create_session() -> CreateSessionResponse:
 
 
 @router.get("/sessions/{session_id}", response_model=SessionTranscriptResponse)
-def get_session(session_id: str) -> SessionTranscriptResponse:
+def get_session(
+    session_id: str, principal: Principal = Depends(require_principal),
+) -> SessionTranscriptResponse:
     try:
         record = get_session_store().require(session_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
     return SessionTranscriptResponse(
         session_id=record.session_id,
         created_at=record.created_at.isoformat(),
@@ -145,8 +166,15 @@ def get_session(session_id: str) -> SessionTranscriptResponse:
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str) -> None:
-    get_session_store().delete(session_id)  # idempotent -- deleting an unknown id is not an error
+def delete_session(session_id: str, principal: Principal = Depends(require_principal)) -> None:
+    # Idempotent -- deleting an unknown id is not an error, and stays that
+    # way here: a session owned by someone else behaves exactly like an
+    # unknown one (204, not deleted, not a 403 confirming it exists).
+    record = get_session_store().get(session_id)
+    if record is None:
+        return
+    _require_owned_session(record, principal)
+    get_session_store().delete(session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +182,7 @@ def delete_session(session_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _ask_turn_bounded(session_id: str, question: str) -> Turn:
+async def _ask_turn_bounded(session_id: str, question: str, principal: Principal) -> Turn:
     """Run the (blocking) turn engine off the event loop.
 
     Mirrors ``api/server.py``'s ``_run_query_bounded`` — ``TurnEngine.ask``
@@ -165,26 +193,35 @@ async def _ask_turn_bounded(session_id: str, question: str) -> Turn:
         record = get_session_store().require(session_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
     system_prompt = _require_system_prompt()
-    return await asyncio.to_thread(get_turn_engine().ask, record, question, system_prompt)
+    return await asyncio.to_thread(
+        get_turn_engine().ask, record, question, system_prompt,
+        denied_columns=principal.denied_columns,
+    )
 
 
 @router.post("/sessions/{session_id}/turns", response_model=None)
-async def ask_turn(session_id: str, req: AskTurnRequest, request: Request):
+async def ask_turn(
+    session_id: str,
+    req: AskTurnRequest,
+    request: Request,
+    principal: Principal = Depends(require_principal),
+):
     if request.query_params.get("stream") in ("1", "true"):
         return StreamingResponse(
-            _turn_event_stream(session_id, req.question),
+            _turn_event_stream(session_id, req.question, principal),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return await _ask_turn_bounded(session_id, req.question)
+    return await _ask_turn_bounded(session_id, req.question, principal)
 
 
 def _sse_event(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
-async def _turn_event_stream(session_id: str, question: str):
+async def _turn_event_stream(session_id: str, question: str, principal: Principal):
     """Yield SSE events per contract §7.
 
     Known limitation (mirrors ``api/server.py::_query_event_stream``):
@@ -196,7 +233,7 @@ async def _turn_event_stream(session_id: str, question: str):
     """
     yield _sse_event("stage", {"stage": "plan", "state": "start"})
     try:
-        turn = await _ask_turn_bounded(session_id, question)
+        turn = await _ask_turn_bounded(session_id, question, principal)
     except HTTPException as exc:
         yield _sse_event("error", {"code": "SESSION_NOT_FOUND", "message": str(exc.detail)})
         return
@@ -239,11 +276,17 @@ async def _turn_event_stream(session_id: str, question: str):
 
 
 @router.patch("/sessions/{session_id}/turns/{turn_id}/assumptions", response_model=Turn)
-async def patch_assumptions(session_id: str, turn_id: str, req: PatchAssumptionsRequest) -> Turn:
+async def patch_assumptions(
+    session_id: str,
+    turn_id: str,
+    req: PatchAssumptionsRequest,
+    principal: Principal = Depends(require_principal),
+) -> Turn:
     try:
         record = get_session_store().require(session_id)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
 
     target = get_session_store().find_turn(record, turn_id)
     if target is None:
@@ -257,4 +300,5 @@ async def patch_assumptions(session_id: str, turn_id: str, req: PatchAssumptions
         target.question,
         system_prompt,
         assumption_overrides=overrides,
+        denied_columns=principal.denied_columns,
     )

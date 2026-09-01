@@ -130,6 +130,12 @@ class AuditRecord:
     columns:
         Column **names** selected by the query, or ``None``. Never row
         values — see the module docstring.
+    principal_id:
+        The authenticated caller's :class:`~security.auth.Principal.id`
+        (Phase 8), or ``None`` for a query with no principal at all (the
+        CLI/REPL path, or a pre-Phase-8-shaped direct call). This is the
+        field that makes the audit trail an actual audit trail — "who
+        ran this query" — rather than just a log of what happened.
 
     Raises
     ------
@@ -184,6 +190,7 @@ class AuditRecord:
     timings: dict[str, int] = field(default_factory=dict)
     llm: dict[str, Any] | None = None
     columns: list[str] | None = None
+    principal_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -210,6 +217,7 @@ class AuditRecord:
             "timings":        self.timings,
             "llm":            self.llm,
             "columns":        self.columns,
+            "principal_id":   self.principal_id,
         }
 
 

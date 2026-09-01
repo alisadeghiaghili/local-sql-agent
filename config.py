@@ -337,6 +337,45 @@ class Settings:
     --structured``) demonstrates it does not regress accuracy — see the
     Phase 2 report for whether that evaluation has been run yet."""
 
+    # ── Phase 8: API-key authentication ─────────────────────────────────────
+    api_keys_json: str = field(
+        default_factory=lambda: os.getenv("API_KEYS_JSON", "")
+    )
+    """JSON array of ``{"id", "name", "key_sha256", "denied_columns"?}``
+    objects — the deployment's configured API keys. Only the SHA-256 hex
+    digest of a key is ever stored here, never the raw key itself; issue
+    new keys with ``scripts/issue_api_key.py``. Parsed at call time by
+    :func:`security.auth.load_api_keys`, per this module's
+    read-through-``cfg.settings``-at-call-time convention. Empty (the
+    default) means no caller can authenticate — see :attr:`auth_required`
+    for what that implies at startup."""
+
+    auth_required: bool = field(
+        default_factory=lambda: os.getenv("AUTH_REQUIRED", "true").lower()
+        not in ("0", "false", "no")
+    )
+    """Whether every non-``/health`` route requires a valid API key.
+    Defaults to ``True`` — this is a fail-closed system, not a fail-open
+    one. Setting this to ``False`` is a deliberate escape hatch (local
+    development, an isolated network with its own perimeter security)
+    that ``api/server.py``'s ``lifespan`` logs a ``WARNING`` for on
+    *every* startup, not just the first, so a silently-disabled front
+    door is never quiet in the logs. When ``True`` and :attr:`api_keys_json`
+    resolves to zero configured keys, ``lifespan`` raises ``RuntimeError``
+    instead of starting a server nobody could ever authenticate to."""
+
+    app_docs_public: bool = field(
+        default_factory=lambda: os.getenv("APP_DOCS_PUBLIC", "false").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``False`` (the default), ``/docs``, ``/redoc``, and
+    ``/openapi.json`` require the same authentication as every other
+    non-``/health`` route — the generated API documentation describes
+    exactly what a caller can do to production data, which is not
+    something to publish to an unauthenticated network. Set ``True`` to
+    serve them without credentials (e.g. a deployment that already sits
+    behind its own perimeter auth)."""
+
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 

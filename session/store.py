@@ -53,6 +53,17 @@ class SessionRecord:
     last_active: float  # monotonic seconds — TTL bookkeeping only
     turns: list[Turn] = field(default_factory=list)
     memory: dict[str, TurnMemory] = field(default_factory=dict)
+    owner_id: str | None = None
+    """The :class:`~security.auth.Principal.id` that created this session
+    (Phase 8), or ``None`` for a session created with no principal at all
+    (``AUTH_REQUIRED=false``, or a pre-Phase-8-shaped direct call).
+    ``None`` is treated as "no ownership restriction" by the v2 routes'
+    ownership check — never as "owned by nobody" in a way that would
+    make the session unreachable. A non-``None`` owner that doesn't
+    match the requesting principal makes the session behave as if it
+    does not exist (404, never 403 — see ``api/v2_routes.py``): a 403
+    would itself confirm the session's existence to a caller who has no
+    business knowing that."""
 
     def last_turn(self) -> Turn | None:
         """The most recently added turn, or ``None`` for a brand-new session."""
@@ -94,14 +105,22 @@ class SessionStore:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def create(self) -> SessionRecord:
-        """Create and register a new, empty session."""
+    def create(self, owner_id: str | None = None) -> SessionRecord:
+        """Create and register a new, empty session.
+
+        Parameters
+        ----------
+        owner_id:
+            The creating principal's id (Phase 8), or ``None`` — see
+            :attr:`SessionRecord.owner_id`.
+        """
         now = time.monotonic()
         session_id = f"s_{uuid.uuid4().hex[:10]}"
         record = SessionRecord(
             session_id=session_id,
             created_at=datetime.now(timezone.utc),
             last_active=now,
+            owner_id=owner_id,
         )
         with self._lock:
             while len(self._sessions) >= self._max_size:

@@ -155,6 +155,9 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000
 | `CACHE_MAX_SIZE` | `256` | Maximum number of cached query results |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
+| `API_KEYS_JSON` | *(empty)* | JSON array of `{"id","name","key_sha256","denied_columns"?}` — see [Authentication](#authentication-phase-8) |
+| `AUTH_REQUIRED` | `true` | Fail-closed auth gate; `false` is a logged escape hatch |
+| `APP_DOCS_PUBLIC` | `false` | Serve `/docs` `/redoc` `/openapi.json` without credentials |
 
 ---
 
@@ -168,10 +171,15 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000
 | `POST` | `/cache/invalidate` | Remove a specific cached entry |
 | `POST` | `/cache/clear` | Flush the entire cache |
 
+All routes above, plus the `/v2/sessions*` conversational endpoints (see
+`docs/api-contract-v2.md`), require `Authorization: Bearer <key>` except
+`GET /health` — see [Authentication](#authentication-phase-8).
+
 **Error taxonomy:**
 
 | Exception | HTTP | When |
 |---|---|---|
+| `UnauthenticatedError` | 401 | Missing/invalid API key on a protected route |
 | `OutOfScopeError` | 422 | Question is outside the domain |
 | `ModelTimeoutError` | 504 | LLM request timed out |
 | `ModelUnavailableError` | 503 | LLM endpoint unreachable after all retries |
@@ -222,7 +230,8 @@ local-sql-agent/
 │   ├── query_cache.py        #   thread-safe TTL + LRU cache
 │   ├── models.py             #   Pydantic request/response models
 │   ├── errors.py             #   NLQError hierarchy → HTTP handlers
-│   ├── middleware.py         #   correlation ID + latency headers
+│   ├── middleware.py         #   correlation ID + latency headers + rate limiting
+│   ├── auth.py               #   AuthMiddleware + require_principal (Phase 8)
 │   └── health.py             #   /health — DB + LLM endpoint probes
 ├── knowledge/                # ★ Domain knowledge (edit to extend)
 │   ├── aliases.py            #   RING_ALIASES + SYNONYMS
@@ -252,13 +261,15 @@ local-sql-agent/
 │   ├── wizard_llm.py         #   OpenAI-compatible backend (retries + back-off)
 │   └── base.py               #   LLMBackend ABC
 ├── security/
-│   └── sql_guard.py          #   clean_sql / validate_sql / ensure_top
+│   ├── sql_guard.py          #   clean_sql / validate_sql / ensure_top
+│   └── auth.py               #   Principal, API-key resolution, cache scope key (Phase 8)
 ├── database/
 │   ├── connection.py         #   SQLAlchemy engine singleton
 │   └── executor.py           #   timeout + row cap enforcement
 ├── exporters/                # Excel / CSV / JSON exporters
 ├── scripts/
-│   └── analyze_misses.py     #   offline retrieval miss diagnostics
+│   ├── analyze_misses.py     #   offline retrieval miss diagnostics
+│   └── issue_api_key.py      #   mint a new API key (Phase 8)
 ├── docs/
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
@@ -298,6 +309,42 @@ bypasses/false-positives this replaced:
 - **Row cap:** `MAX_ROWS_RETURNED` is enforced as a hard ceiling on every result set, and `database/executor.py` streams results rather than materialising the whole set client-side
 - **Defense in depth at the database layer:** `database/executor.py` runs every query inside a transaction that is always rolled back (never committed), with both a driver-level query timeout and `SET LOCK_TIMEOUT`; `docs/db-hardening.md` specifies the server-side login/DENY/Resource Governor hardening for the DBA to apply on top of this
 - **No hardcoded credentials:** all secrets via environment variables only
+
+### Authentication (Phase 8)
+
+Every route except `GET /health` requires a named API key, sent as
+`Authorization: Bearer <key>`. `X-API-Key` and every other transport are
+deliberately not supported — one way in is one thing to reason about.
+
+- **Named API keys, not JWT/OIDC:** this is an on-prem tool with no IdP
+  dependency; what auth actually needs to provide is a principal identity to
+  key the cache on, own a session, and name in the audit trail. See
+  `docs/api-contract-v2.md`'s authentication section for the full rationale.
+- **Never store raw keys:** `API_KEYS_JSON` holds only each key's SHA-256 hex
+  digest (`security/auth.py`). Issue a new key with `python
+  scripts/issue_api_key.py --id <id> --name <name>` — it prints the raw key
+  **once**, never to a file or log.
+- **Fail closed:** with `AUTH_REQUIRED=true` (the default) and no keys
+  configured, the server refuses to start rather than run with a front door
+  nobody can open. `AUTH_REQUIRED=false` is a deliberate escape hatch that
+  logs a `WARNING` on every startup, not just the first.
+- **Cache isolation without losing cache sharing:** the query cache
+  partitions on a hash of each principal's `denied_columns` (`security.auth.scope_key`),
+  not on principal id directly — two principals with identical data
+  visibility still share entries (preserving today's hit rates), while two
+  with different visibility can never collide.
+- **Column-level ACL:** a key's `denied_columns` feeds straight into
+  `security/sql_guard.py`'s existing `denied_columns` seam — no new
+  enforcement machinery, just the first thing that populates it.
+- **Sessions are owned:** a `/v2/sessions` session belongs to the principal
+  that created it; a non-owner gets `404`, never `403` — a `403` would itself
+  confirm the session exists to a caller who has no business knowing that.
+- **Rate limiting keys on principal, not just IP:** behind a shared proxy,
+  IP-only bucketing would put the whole organisation in one bucket; an
+  authenticated caller gets their own.
+- **`/docs` / `/redoc` / `/openapi.json` require auth too** (`APP_DOCS_PUBLIC=false`
+  by default) — the generated API documentation describes exactly what an
+  authenticated caller can do to production data.
 
 ---
 

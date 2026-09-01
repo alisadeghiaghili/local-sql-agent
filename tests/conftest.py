@@ -21,10 +21,49 @@ takes precedence and they are unaffected.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Iterator
 from unittest.mock import patch
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Phase 8: shared test API key
+# ---------------------------------------------------------------------------
+# AUTH_REQUIRED defaults to True (fail-closed -- see config.py), so any test
+# that builds a TestClient against api.server.app now needs real credentials
+# to reach a protected route, exactly like a real caller would. This is one
+# principal, reused across every test that opts in via the `auth_settings`
+# fixture below, rather than each test module inventing its own key.
+TEST_PRINCIPAL_ID = "test-suite-principal"
+#: >= security.auth.MIN_KEY_LENGTH (32) chars -- an ordinary, if fixed, token.
+TEST_API_KEY_RAW = "test-suite-shared-api-key-0123456789abcdef"
+TEST_API_KEY_SHA256 = hashlib.sha256(TEST_API_KEY_RAW.encode("utf-8")).hexdigest()
+TEST_API_KEYS_JSON = json.dumps([
+    {"id": TEST_PRINCIPAL_ID, "name": "Test Suite Principal", "key_sha256": TEST_API_KEY_SHA256},
+])
+#: Header a TestClient should send to authenticate as TEST_PRINCIPAL_ID.
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_KEY_RAW}"}
+
+
+@pytest.fixture()
+def auth_settings() -> Iterator[dict[str, str]]:
+    """``AUTH_REQUIRED=true`` with one usable key, active for this test.
+
+    The suite mostly exercises route *behaviour*, not the auth gate
+    itself (that is ``tests/test_auth.py``'s job) -- so rather than
+    disabling ``AUTH_REQUIRED`` for those tests, which would leave the
+    gate completely untested on every one of those paths, this fixture
+    gives them a real, valid principal to authenticate as, exactly like
+    a real caller would. Yields the ``Authorization`` header a
+    ``TestClient`` should send (pass it as ``TestClient(..., headers=...)``
+    so every request the client makes carries it automatically).
+    """
+    from config import override_settings
+
+    with override_settings(auth_required=True, api_keys_json=TEST_API_KEYS_JSON):
+        yield dict(AUTH_HEADERS)
 
 
 def _refuse_real_engine(*args: Any, **kwargs: Any) -> Any:
