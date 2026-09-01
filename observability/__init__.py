@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Observability package — audit trail and per-stage telemetry.
 
 This package is Phase 0-C of the planned refactor: it builds the audit and

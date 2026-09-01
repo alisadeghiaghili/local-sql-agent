@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Simple web front-end for the local SQL agent.
 
 Usage (from this folder)::
@@ -36,6 +38,9 @@ import db
 import i18n
 from agent import OUTPUT_DIR, answer_question
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.provenance import log_startup_notice  # noqa: E402
+
 WEBAPP_DIR = Path(__file__).resolve().parent
 SECRET_KEY_FILE = WEBAPP_DIR / ".secret_key"
 
@@ -61,6 +66,7 @@ def _secret_key() -> str:
 
 
 def create_app() -> Flask:
+    log_startup_notice()
     db.init_db()
     app = Flask(__name__)
     app.secret_key = _secret_key()

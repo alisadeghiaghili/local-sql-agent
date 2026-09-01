@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for llm/base.py's default generate_with_meta_segments / generate_structured.
 
 These are the "no native support" fallback paths every backend gets for

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for api/runner.py::_interpret's data-governance gate (Phase 2 task 5).
 
 Exit criterion 8: "_interpret's row data is provably gated when an

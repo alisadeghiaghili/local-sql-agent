@@ -358,6 +358,35 @@ deliberately not supported — one way in is one thing to reason about.
 - 📌 Derivative works must retain [`LICENSE`](LICENSE) and include:
   > *Based on Local SQL Agent by Ali Sadeghi Aghili — https://github.com/alisadeghiaghili/local-sql-agent*
 
+Read the terms carefully rather than assuming either extreme: BUSL-1.1 is
+neither all-rights-reserved nor open source. **Copying, modifying and
+redistributing are permitted.** What is not permitted without a written
+agreement is **production use of any kind** — including internal production
+use inside a company. Deploying this to serve real users or real business
+data is production use whether or not money changes hands.
+
+### Where the terms are stated
+
+| File | Audience |
+|---|---|
+| [`LICENSE`](LICENSE) | The terms themselves |
+| [`NOTICE`](NOTICE) | Attribution block a derivative work must carry |
+| [`AGENTS.md`](AGENTS.md) | AI coding assistants and agents reading this repo |
+| [`llms.txt`](llms.txt) | Crawlers and training pipelines |
+| `SPDX-License-Identifier` header | Every `.py` file — travels with a single copied file |
+| `core/provenance.py` | The start-up banner, logged on every run |
+
+`tests/test_license_headers.py` fails if a new source file lands without the
+header, or if any of those files is deleted. `tests/test_provenance_notice.py`
+fails if the start-up notice stops being emitted — an unchecked notice is one
+that quietly disappears.
+
+The banner is a log line, not a licence check: it does not refuse to start,
+degrade, or phone home when files are missing. A kill switch keyed on a
+file's presence is a production outage waiting for the first container build
+that excludes `*.md`, and it would land on whoever is on call rather than on
+an infringer.
+
 ---
 
 ## Contributors

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Named LLM endpoints and per-task fallback routes, built from :mod:`config`.
 
 The trivial case — one endpoint for every task — needs no configuration

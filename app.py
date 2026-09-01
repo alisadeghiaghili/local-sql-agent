@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Auction NLQ Engine — interactive REPL entry point.
 
 Usage::
@@ -25,6 +27,7 @@ from llm.wizard_llm import generate_sql
 from logs.logger import save_log
 from logs.query_log import QueryLog
 from security.sql_guard import validate_sql
+from core.provenance import log_startup_notice
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -128,6 +131,8 @@ def _print_results(df) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    log_startup_notice()
+
     try:
         cfg.settings.validate()
     except ValueError as exc:

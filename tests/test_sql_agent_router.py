@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """SQLAgent's SQL-generation hot path routed through llm.router.LLMRouter.
 
 Closes the Phase 2 debt: "the LLM router is built, tested, and routes no

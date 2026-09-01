@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Build the ``docs/api-contract-v2.md`` §6 ``llm`` status block.
 
 An OpenAI-compatible chat-completions response carries token counts under

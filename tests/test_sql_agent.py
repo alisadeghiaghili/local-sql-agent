@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """TDD tests for llm/sql_agent.py — SQLAgent + self-correction loop.
 
 All LLM and DB calls are replaced by injected stubs so tests are:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Proves the sql_guard exception taxonomy actually changes correction-loop
 BEHAVIOUR, not just internal classification.
 

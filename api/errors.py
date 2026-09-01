@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Domain exception hierarchy and FastAPI exception handlers.
 
 The handlers registered in ``register_handlers(app)`` translate these

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Health-check logic — probes the OpenAI-compatible LLM endpoint and the SQL Server database.
 
 Exposed via ``GET /health``.  Returns a :class:`~api.models.HealthResponse`

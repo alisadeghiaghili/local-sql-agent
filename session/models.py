@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Pydantic models for the v2 conversational API — ``docs/api-contract-v2.md`` §4.
 
 Mirrors ``api/models.py``'s conventions (Pydantic ``BaseModel``, explicit

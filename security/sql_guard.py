@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """SQL safety layer — clean, validate, and cap generated SQL queries.
 
 Three public functions form a processing pipeline that every model-generated

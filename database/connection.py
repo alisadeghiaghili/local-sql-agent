@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """SQLAlchemy engine factory for Auction_DM.
 
 Provides a single cached :class:`~sqlalchemy.engine.Engine` instance shared

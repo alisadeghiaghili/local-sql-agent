@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Schema registry — single source of truth for table/column metadata.
 
 Provides :class:`SchemaRegistry` with two public methods:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """End-to-end tests for ``session.engine.TurnEngine`` — the §2 correctness proof.
 
 Runs the exit-criteria three-turn scenario (Q1 fresh, Q2 refines via CTE,

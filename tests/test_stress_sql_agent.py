@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 import time
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed

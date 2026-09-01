@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Run a golden set of :class:`~eval.models.GoldenCase` through the pipeline.
 
 This module never talks to a database or an LLM by itself.  Instead it

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Principal identity and API-key authentication — Phase 8.
 
 This module is deliberately framework-agnostic: it knows nothing about

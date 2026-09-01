@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Integration-level tests for the full pipeline.
 
 All external I/O (LLM HTTP, SQL Server) is replaced by mocks.

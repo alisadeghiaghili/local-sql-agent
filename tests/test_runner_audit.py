@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for the observability wiring inside ``api/runner.py`` (Debt 1).
 
 Exercises the REAL pipeline end to end (a fake backend implementing

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """TDD tests for POST /query and GET /health.
 
 All external dependencies (LLM backend, DB executor) are replaced by

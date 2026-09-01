@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """SQLite persistence for the web app: users + query logs.
 
 The database file lives next to this module (``webapp/app.db``) and is

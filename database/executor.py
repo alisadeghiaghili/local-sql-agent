@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Execute a validated SQL query and return a pandas DataFrame.
 
 All errors raised while acquiring the engine, opening a connection, or

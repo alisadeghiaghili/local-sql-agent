@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Classify a turn's ``basis`` (§2, §4) — fresh, or refining a prior turn.
 
 This module owns the one decision the whole phase hinges on: does the new

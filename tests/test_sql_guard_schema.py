@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Schema-allowlist regression tests for security/sql_guard.py.
 
 Phase 1 added a table/column allowlist to ``validate_sql`` (see its module

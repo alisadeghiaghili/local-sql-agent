@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """ASGI-layer wiring for API-key authentication — Phase 8.
 
 :mod:`security.auth` is framework-agnostic (``Principal``, key parsing,

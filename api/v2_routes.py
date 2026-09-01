@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """v2 conversational session endpoints — ``docs/api-contract-v2.md`` §3, §7.
 
 Mounted onto ``api/server.py``'s ``app`` via ``app.include_router(router)``.

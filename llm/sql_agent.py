@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """LLM-agnostic SQL agent with self-correction.
 
 Pipeline (every attempt, first and corrections alike)

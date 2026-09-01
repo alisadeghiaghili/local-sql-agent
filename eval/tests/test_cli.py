@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Unit tests for eval/cli.py.
 
 Only offline-mode paths are exercised here — ``--live`` requires a real

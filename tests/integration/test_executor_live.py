@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Opt-in integration tests proving Phase 1's ``database/executor.py`` /
 ``database/connection.py`` claims against a REAL SQL Server.
 

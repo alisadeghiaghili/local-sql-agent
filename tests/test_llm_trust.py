@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for llm/trust.py — default per-endpoint trust resolution."""
 
 from __future__ import annotations
