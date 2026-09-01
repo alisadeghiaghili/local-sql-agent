@@ -570,8 +570,16 @@ def _carry_exception_meta(src: Exception, dst: NLQError) -> None:
     ``injected_top``
         Set alongside ``candidate_sql`` on an execution failure — the row
         cap that was actually applied to the query that failed.
+    ``attempt``
+        Set by ``SQLAgent.run``'s guard except-clauses — how many
+        generation calls this request actually cost before giving up: 1
+        for a :class:`~security.sql_guard.PolicyRejection` (never
+        retried), or ``max_corrections + 1`` for a
+        :class:`~security.sql_guard.CorrectableRejection` that never
+        passed the guard. Lets a caller report the honest count instead
+        of assuming the full correction budget was always spent.
     """
-    for attr in ("llm_meta", "candidate_sql", "injected_top"):
+    for attr in ("llm_meta", "candidate_sql", "injected_top", "attempt"):
         value = getattr(src, attr, None)
         if value is not None:
             setattr(dst, attr, value)
@@ -785,7 +793,16 @@ def _safe_generate_sql_only(
             validate_sql(sql, denied_columns=denied_columns)
     except ValueError as exc:
         msg = str(exc)
-        if "Forbidden keyword" in msg:
+        # Whether this is an outright refusal (400) or merely unusable
+        # output (502) is ``security.sql_guard.SqlGuardRejection``'s own
+        # ``is_refusal`` attribute -- a SEPARATE axis from the
+        # Correctable/PolicyRejection split (see its docstring): every
+        # PolicyRejection is a refusal, but so is an unknown-table
+        # CorrectableRejection, so neither the exception's class nor a
+        # substring of its message ("Forbidden keyword" happened to open
+        # most, but not all, refusal messages -- e.g. "System catalogue
+        # forbidden: ...") is the right thing to switch on.
+        if getattr(exc, "is_refusal", False):
             err = ForbiddenSQLError(msg)
         else:
             err = InvalidSQLResponseError(
@@ -846,7 +863,10 @@ def _safe_run(
         msg = str(exc)
         if msg == "OUT_OF_SCOPE":
             err: NLQError = OutOfScopeError("This question is outside the Auction domain.")
-        elif "Forbidden keyword" in msg:
+        elif getattr(exc, "is_refusal", False):
+            # See the identical branch in _safe_generate_sql_only for why
+            # this switches on SqlGuardRejection.is_refusal and not a
+            # "Forbidden keyword" substring test.
             err = ForbiddenSQLError(msg)
         else:
             err = InvalidSQLResponseError(

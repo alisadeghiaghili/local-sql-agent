@@ -44,7 +44,7 @@ jobs:
       - name: Run doctests
         run: >-
           pytest --doctest-modules -q
-          api llm security database core knowledge prompt_engine
+          api llm security session database core knowledge prompt_engine
           retrieval schema_data logs exporters observability eval config.py
 
       - name: Run tests with coverage

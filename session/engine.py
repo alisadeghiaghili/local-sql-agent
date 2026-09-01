@@ -51,7 +51,13 @@ from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
 from retrieval.context_retriever import ContextRetriever
-from security.sql_guard import clean_sql, ensure_top, extract_touched_tables, validate_sql
+from security.sql_guard import (
+    PolicyRejection,
+    clean_sql,
+    ensure_top,
+    extract_touched_tables,
+    validate_sql,
+)
 
 from session import ambiguity
 from session.composer import (
@@ -641,6 +647,23 @@ class TurnEngine:
                     validate_sql(cleaned, denied_columns=denied_columns)
                     capped = ensure_top(cleaned, cfg.settings.default_top_n)
                     injected_top = cfg.settings.default_top_n if capped != cleaned else None
+            except PolicyRejection as exc:
+                # No re-prompt can fix this (a forbidden statement, a
+                # denied column, ...) -- the policy behind it is not in
+                # the prompt, so every further correction round would
+                # just spend another LLM round trip to reach this exact
+                # same rejection. Return the SAME outcome the
+                # correction_round == max_corrections branch below would
+                # have produced, immediately, on the very first
+                # occurrence -- see security.sql_guard's module docstring
+                # for the taxonomy this relies on.
+                last_error = str(exc)
+                return _GenOutcome(
+                    guard=GuardVerdict(verdict="rejected", rule=last_error),
+                    result=TurnResult(),
+                    warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
+                    llm_status=llm_status,
+                )
             except ValueError as exc:
                 last_error = str(exc)
                 last_sql = None
