@@ -29,12 +29,29 @@ were retried; a validation failure (bad syntax, an unknown table, a
 forbidden keyword — the most common small-model mistake) aborted the run
 immediately with no correction attempt at all.
 
-The loop aborts as soon as execution succeeds or the attempt cap is hit.
-On the final failed attempt the last exception (``ValueError`` for a
-validation failure, ``RuntimeError`` for an execution failure) is
-re-raised so the caller (app.py / api/runner.py) can log and translate it
-normally. ``OUT_OF_SCOPE`` is the one exception this loop never retries —
-it's a terminal signal from the model, not a fixable mistake.
+Not every guard rejection is retried, though: ``security.sql_guard`` now
+raises one of two typed ``ValueError`` subclasses (see its module
+docstring). A :class:`~security.sql_guard.CorrectableRejection` (bad
+syntax, an unknown table, ...) keeps looping exactly as described above.
+A :class:`~security.sql_guard.PolicyRejection` (a forbidden statement, a
+denied column, ...) breaks out of the loop immediately instead — the
+policy that caused it is not in the prompt, so re-prompting the model
+cannot change the outcome, and doing so anyway would spend
+``max_corrections`` extra LLM round trips just to reach the exact same
+rejection a second, third, and fourth time. The raised exception and the
+returned :class:`SQLGenerationResult` (were the call to succeed on a later
+round, which it structurally cannot after this) are unaffected either way
+— a caller switching on message text, as ``api/runner.py`` does, sees no
+difference.
+
+The loop aborts as soon as execution succeeds, a ``PolicyRejection`` is
+hit, or the attempt cap is reached. On the final failed attempt (or the
+first ``PolicyRejection``, whichever comes first) the last exception
+(``ValueError`` for a validation failure, ``RuntimeError`` for an
+execution failure) is re-raised so the caller (app.py / api/runner.py)
+can log and translate it normally. ``OUT_OF_SCOPE`` is the one exception
+this loop never retries — it's a terminal signal from the model, not a
+fixable mistake.
 
 Prefix invariance (why correction text never touches ``static_prefix``)
 -------------------------------------------------------------------------
@@ -73,7 +90,10 @@ Design notes
   into this loop: it was already bounded at ``max_corrections + 1`` total
   generation calls (by the execution-failure retry path alone);
   validation failures now consume rounds from that same existing budget
-  instead of bypassing it via an immediate raise.
+  instead of bypassing it via an immediate raise. A
+  :class:`~security.sql_guard.PolicyRejection` is the one case that exits
+  well below that bound — exactly one generation call, regardless of
+  ``max_corrections`` — since no later round could ever do better.
 * :meth:`run` calls :meth:`~llm.router.LLMRouter.generate_for_task`, which
   wraps a chain-exhausted failure in one ``RuntimeError`` with the
   original backend exception as ``__cause__`` (see ``llm/router.py``).
@@ -104,7 +124,7 @@ from llm.base import LLMBackend, SQLGenerationResult
 from llm.router import LLMRouter, PromptSegments, TaskType, build_prompt_segments
 from observability.timing import StageTimer
 from retrieval.context_retriever import ContextRetriever
-from security.sql_guard import clean_sql, ensure_top, validate_sql
+from security.sql_guard import PolicyRejection, clean_sql, ensure_top, validate_sql
 
 logger = logging.getLogger(__name__)
 
@@ -243,10 +263,17 @@ class SQLAgent:
         Both a guard failure (bad syntax, unknown table, forbidden
         keyword — ``ValueError`` from ``clean_sql``/``validate_sql``) and
         a database execution failure (``RuntimeError``) are corrected in
-        the SAME loop, sharing the same ``max_corrections`` budget. Each
-        later round's prompt includes every prior round's correction
-        prompt, not just the most recent, so the model has the full
-        history of what it already tried.
+        the SAME loop, sharing the same ``max_corrections`` budget — with
+        one exception: a guard failure that is a
+        :class:`~security.sql_guard.PolicyRejection` (a forbidden
+        statement, a denied column, ...) is never retried, since the
+        policy behind it isn't in the prompt and no re-prompt can change
+        it; it raises immediately instead of consuming the rest of the
+        budget on rounds that would only repeat the identical rejection.
+        A :class:`~security.sql_guard.CorrectableRejection` keeps looping
+        exactly as before. Each later round's prompt includes every prior
+        round's correction prompt, not just the most recent, so the model
+        has the full history of what it already tried.
 
         Parameters
         ----------
@@ -365,6 +392,31 @@ class SQLAgent:
             try:
                 with _stage(timer, "guard"):
                     sql, injected_top = self._clean_validate_cap(raw, denied_columns=denied_columns)
+            except PolicyRejection as exc:
+                # The guard rejected this SQL for a reason no re-prompt can
+                # fix (a forbidden statement, a denied column, ...) -- the
+                # policy that caused it is not in the prompt, so every
+                # further correction round would just spend another LLM
+                # round trip to reach this exact same rejection. Break out
+                # immediately, on the very first occurrence, with the SAME
+                # outcome the final-attempt branch below produces (attempt
+                # still 1, candidate_sql already attached by
+                # _clean_validate_cap) -- see security.sql_guard's module
+                # docstring for the taxonomy this relies on.
+                last_error = str(exc)
+                logger.warning(
+                    "SQL failed validation (attempt %d): %s -- policy rejection, aborting without retry",
+                    attempt,
+                    last_error,
+                )
+                exc.llm_meta = llm_meta  # type: ignore[attr-defined]
+                # How many generation attempts this request actually cost
+                # -- 1 here, always, regardless of max_corrections -- so a
+                # caller further up (api/runner.py's audit trail) can
+                # report the honest count instead of implying the full
+                # budget was spent chasing an unfixable rejection.
+                exc.attempt = attempt  # type: ignore[attr-defined]
+                raise
             except ValueError as exc:
                 last_error = str(exc)
                 logger.warning(
@@ -374,6 +426,7 @@ class SQLAgent:
                 )
                 if correction_round == self._max_corrections:
                     exc.llm_meta = llm_meta  # type: ignore[attr-defined]
+                    exc.attempt = attempt  # type: ignore[attr-defined]
                     # _clean_validate_cap already attached candidate_sql
                     # (see its docstring) -- nothing further to add here.
                     raise

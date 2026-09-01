@@ -23,6 +23,8 @@ import pandas as pd
 import pytest
 import requests
 
+from security.sql_guard import PolicyRejection
+
 from api.errors import (
     OutOfScopeError,
     ForbiddenSQLError,
@@ -202,7 +204,16 @@ class TestRunQuerySuccess:
 class TestExceptionTranslation:
     @pytest.mark.parametrize("exc,expected_nlq", [
         (ValueError("OUT_OF_SCOPE"),                   OutOfScopeError),
-        (ValueError("Forbidden keyword detected: DROP"), ForbiddenSQLError),
+        # PolicyRejection, not a bare ValueError: since the guard grew its
+        # rejection taxonomy, the runner decides 400-vs-502 from the
+        # exception's is_refusal attribute rather than by looking for
+        # "Forbidden keyword" in the message. A bare ValueError carrying
+        # that text is no longer reachable in production -- every raise
+        # site in security/sql_guard.py raises a typed subclass -- and a
+        # genuinely unexpected ValueError *should* surface as 502 rather
+        # than be dressed up as a security refusal on the strength of its
+        # wording.
+        (PolicyRejection("Forbidden keyword detected: DROP"), ForbiddenSQLError),
         (requests.Timeout(),                           ModelTimeoutError),
         (requests.ConnectionError(),                   ModelUnavailableError),
         (RuntimeError("Ollama unreachable"),           ModelUnavailableError),

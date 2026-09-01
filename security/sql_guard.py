@@ -17,6 +17,26 @@ Typical usage::
     validate_sql(sql)           # raises ValueError if the query is unsafe
     sql = ensure_top(sql, 100)  # adds TOP 100 if missing
 
+Every rejection raised by any of the three functions above is one of two
+:class:`ValueError` subclasses, not a bare ``ValueError`` — every existing
+``except ValueError`` call site across the codebase still catches them
+unchanged, but a caller that cares (the self-correction loops in
+``llm/sql_agent.py`` and ``session/engine.py``) can tell them apart:
+
+* :class:`CorrectableRejection` — a malformed-but-fixable candidate (bad
+  syntax, a literal ``LIMIT``, an empty response, a hallucinated table or
+  column name, a disallowed comment, ...). A corrected re-prompt can
+  plausibly produce different, valid SQL, so this is retried exactly as
+  before.
+* :class:`PolicyRejection` — the query is categorically out of bounds
+  regardless of phrasing (a forbidden statement type or keyword, a
+  system-catalogue reference, a denied column, ...). No re-prompt can
+  change that outcome, since the policy that caused it is not part of the
+  prompt — retrying would only spend another LLM round trip to reach the
+  exact same rejection, so both correction loops stop immediately instead.
+
+Each raise site below is annotated with which of the two it uses and why.
+
 ``validate_sql`` — parser-based, not a string blocklist
 ---------------------------------------------------------
 Earlier versions of this module checked forbidden keywords with a substring
@@ -131,6 +151,110 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from schema_data.columns import TABLE_COLUMNS
+
+# ---------------------------------------------------------------------------
+# Exception taxonomy
+# ---------------------------------------------------------------------------
+#
+# Every rejection this module raises is a ``ValueError`` subclass, split
+# into two flavours a caller that cares can switch on without inspecting
+# message text -- specifically the self-correction loops in
+# ``llm/sql_agent.py`` and ``session/engine.py``, which previously
+# re-prompted the model up to ``max_corrections`` times for EVERY
+# rejection alike, including ones no re-prompt could ever fix (a denied
+# column, a forbidden statement type -- the policy that caused the
+# rejection is not in the prompt, so the model has no way to produce a
+# different outcome). Each blocked request used to cost
+# ``max_corrections + 1`` LLM round trips and return the same rejection it
+# would have returned immediately.
+
+
+class SqlGuardRejection(ValueError):
+    """Base class for every rejection this module raises.
+
+    Subclasses :class:`ValueError` so every existing ``except ValueError``
+    call site across the codebase (``api/``, ``llm/``, ``session/``,
+    ``app.py``, and the test suite) keeps working unchanged -- this is a
+    backward-compatible refinement of the exception type, not a new one
+    replacing it.
+
+    Two INDEPENDENT axes are modelled on this hierarchy, and a caller must
+    not conflate them:
+
+    * **Can a retry help?** -- the class itself
+      (:class:`CorrectableRejection` vs. :class:`PolicyRejection`), which
+      the two self-correction loops (``llm/sql_agent.py``,
+      ``session/engine.py``) switch on to decide whether to keep
+      re-prompting.
+    * **Is this a refusal, or unusable output?** -- :attr:`is_refusal`,
+      which a caller translating to an HTTP status (``api/runner.py``)
+      switches on instead: ``True`` means "the query was syntactically
+      fine but we refuse to run it" (400 ``FORBIDDEN_SQL``); ``False``
+      means "nothing usable came out of the pipeline" (502
+      ``INVALID_SQL_RESPONSE``).
+
+    These two axes do not line up one-to-one. Every :class:`PolicyRejection`
+    is necessarily a refusal (the class sets :attr:`is_refusal` to
+    ``True`` for the whole class), but an unknown-table rejection is a
+    counter-example on the :class:`CorrectableRejection` side: a retry
+    can plausibly fix it (name a real table), yet it is *also* a refusal
+    -- the table-allowlist violation, not the SQL's shape, is why it was
+    rejected -- so that one raise site flips :attr:`is_refusal` to
+    ``True`` on the specific instance despite its class default. Encoding
+    the HTTP-status axis as a substring test on the message
+    (``"Forbidden keyword" in str(exc)``) was the bug this attribute
+    replaces: it happened to match most refusals only because their
+    messages were written to start with that phrase, and silently
+    mis-mapped the ones that weren't (``"System catalogue forbidden: ..."``
+    had no such guarantee).
+    """
+
+    #: ``True`` if this rejection should be reported as an outright
+    #: refusal (e.g. HTTP 400) rather than unusable model output (e.g.
+    #: HTTP 502). Default ``False`` here; see the class docstring above
+    #: for how :class:`PolicyRejection` and the unknown-table raise site
+    #: override it.
+    is_refusal: bool = False
+
+
+class CorrectableRejection(SqlGuardRejection):
+    """A rejection a corrected re-prompt can plausibly resolve.
+
+    Raised for a malformed-but-fixable candidate: a syntax error, a
+    MySQL-style ``LIMIT``, an empty or non-SQL response, a hallucinated
+    table or column name, or this module's own inability to safely inject
+    a row cap. A model told what went wrong and asked to try again can
+    plausibly produce different, valid SQL on the next attempt -- this is
+    exactly today's self-correction behaviour, preserved by this class.
+
+    ``is_refusal`` stays ``False`` (this class's inherited default) for
+    every raise site except one: an unknown table is *also* a refusal (a
+    table-allowlist violation, not merely unusable SQL), so that specific
+    instance has ``is_refusal`` set to ``True`` -- see its raise site in
+    :func:`validate_sql` for the reasoning.
+    """
+
+
+class PolicyRejection(SqlGuardRejection):
+    """A rejection no re-prompt can resolve, because the answer is "no".
+
+    Raised when the *query itself* is categorically out of bounds
+    regardless of how it is phrased: a forbidden statement type or
+    keyword, a system-catalogue reference, a denied column, or any other
+    construct this module refuses on principle rather than for being
+    malformed. A caller's correction loop should treat this as terminal
+    and stop re-prompting immediately: the policy that caused the
+    rejection is not in the prompt, so a retry cannot change the outcome
+    -- it would only spend an extra LLM round trip to reach the exact
+    same rejection.
+
+    Every instance is also a refusal by definition -- there is no
+    PolicyRejection that is merely "unusable output" -- so ``is_refusal``
+    is fixed ``True`` for the whole class.
+    """
+
+    is_refusal = True
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -478,9 +602,16 @@ def clean_sql(raw: str) -> str:
 
     Raises
     ------
-    ValueError
+    CorrectableRejection
+        A :class:`ValueError` subclass (see the module docstring's
+        exception taxonomy):
+
         * If *raw* is empty or whitespace-only.
         * If no ``SELECT`` / ``WITH`` keyword is found after fence extraction.
+
+        Both are re-promptable — an empty or non-SQL response is exactly
+        the kind of mistake a corrected retry can fix — so neither is a
+        :class:`PolicyRejection`.
 
     Examples
     --------
@@ -505,22 +636,22 @@ def clean_sql(raw: str) -> str:
     >>> clean_sql("")
     Traceback (most recent call last):
         ...
-    ValueError: Received empty SQL from model
+    security.sql_guard.CorrectableRejection: Received empty SQL from model
 
     >>> clean_sql("No SQL here at all.")
     Traceback (most recent call last):
         ...
-    ValueError: No SELECT / CTE found in model response: 'No SQL here at all.'
+    security.sql_guard.CorrectableRejection: No SELECT / CTE found in model response: 'No SQL here at all.'
     """
     if not raw or not raw.strip():
-        raise ValueError("Received empty SQL from model")
+        raise CorrectableRejection("Received empty SQL from model")
 
     fence_match = _FENCE_RE.search(raw)
     sql = fence_match.group(1) if fence_match else raw
 
     start = _SELECT_START_RE.search(sql)
     if not start:
-        raise ValueError(f"No SELECT / CTE found in model response: {sql[:200]!r}")
+        raise CorrectableRejection(f"No SELECT / CTE found in model response: {sql[:200]!r}")
     sql = sql[start.start():].strip()
 
     if _LIMIT_RE.search(sql):
@@ -624,12 +755,25 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
     Raises
     ------
     ValueError
-        With a human-readable message describing the specific violation.
-        Messages for a security-relevant rejection (forbidden statement
-        kind, dangerous function, denied column, ...) contain the substring
-        ``"Forbidden keyword"`` — callers (see ``api/runner.py``) rely on
-        that substring to distinguish a security block from an ordinary
-        malformed-SQL error.
+        Always one of the two typed subclasses below (never a bare
+        ``ValueError``), with a human-readable message describing the
+        specific violation. Messages for a security-relevant rejection
+        (forbidden statement kind, dangerous function, denied column, ...)
+        contain the substring ``"Forbidden keyword"`` — callers (see
+        ``api/runner.py``) rely on that substring to distinguish a
+        security block from an ordinary malformed-SQL error.
+    CorrectableRejection
+        A malformed-but-fixable candidate a corrected re-prompt can
+        plausibly resolve: bad syntax, a literal ``LIMIT``, an unresolvable
+        table or column name, or a disallowed comment.
+    PolicyRejection
+        A candidate no re-prompt can resolve because the query itself is
+        categorically out of bounds: a forbidden statement type or nested
+        construct, a system-catalogue reference, or a denied column. The
+        two self-correction loops (``llm/sql_agent.py``,
+        ``session/engine.py``) stop retrying immediately on this one
+        rather than spending the rest of their ``max_corrections`` budget
+        re-asking a model that has no way to change the outcome.
 
     Examples
     --------
@@ -638,37 +782,37 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
     >>> validate_sql("")
     Traceback (most recent call last):
         ...
-    ValueError: Empty SQL
+    security.sql_guard.CorrectableRejection: Empty SQL
 
     >>> validate_sql("DELETE FROM Contract")
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: DELETE
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: DELETE
 
     >>> validate_sql("DROP TABLE Contract")
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: DROP
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: DROP
 
     >>> validate_sql("UPDATE Contract SET Price = 0")
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: UPDATE
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: UPDATE
 
     >>> validate_sql("SELECT Price FROM Contract; DROP TABLE Contract")
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: DROP
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: DROP
 
     >>> validate_sql("SELECT * FROM INFORMATION_SCHEMA.TABLES")
     Traceback (most recent call last):
         ...
-    ValueError: System catalogue forbidden: INFORMATION_SCHEMA
+    security.sql_guard.PolicyRejection: System catalogue forbidden: INFORMATION_SCHEMA
 
     >>> validate_sql("SELECT * FROM Contract LIMIT 10")
     Traceback (most recent call last):
         ...
-    ValueError: LIMIT is not valid T-SQL — use TOP instead
+    security.sql_guard.CorrectableRejection: LIMIT is not valid T-SQL — use TOP instead
 
     A column name that merely *contains* a legacy blocklist substring is no
     longer a false positive (contrast ``tests/test_sql_guard_bypass.py``,
@@ -681,7 +825,7 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
     >>> validate_sql("SELECT * INTO NewTbl FROM Contract")
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: INTO
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: INTO
 
     A table this module does not recognise is refused, even though it
     starts with an otherwise-harmless ``SELECT`` — this does not depend on
@@ -691,56 +835,58 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
     >>> validate_sql("SELECT * FROM HR_Payroll")
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: unknown table 'HR_Payroll' is not in the schema allowlist
+    security.sql_guard.CorrectableRejection: Forbidden keyword detected: unknown table 'HR_Payroll' is not in the schema allowlist
 
     A comment is refused outright, regardless of what it says:
 
     >>> validate_sql("SELECT Price FROM Contract -- looks harmless")
     Traceback (most recent call last):
         ...
-    ValueError: SQL comments are not allowed: a comment is not executable SQL syntax, so its content is never inspected for keywords -- the comment itself is refused outright.
+    security.sql_guard.CorrectableRejection: SQL comments are not allowed: a comment is not executable SQL syntax, so its content is never inspected for keywords -- the comment itself is refused outright.
 
     The optional column-level ACL seam:
 
     >>> validate_sql("SELECT NationalID FROM Customer", denied_columns={"NationalID"})
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: denied column 'NationalID'
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: denied column 'NationalID'
 
     ``*`` cannot be used to read around an active column policy:
 
     >>> validate_sql("SELECT * FROM Customer", denied_columns={"NationalID"})
     Traceback (most recent call last):
         ...
-    ValueError: Forbidden keyword detected: '*' would expose denied column(s): ['nationalid']
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: '*' would expose denied column(s): ['nationalid']
     """
     if not sql or not sql.strip():
-        raise ValueError("Empty SQL")
+        raise CorrectableRejection("Empty SQL")
 
     if _LIMIT_RE.search(sql):
-        raise ValueError("LIMIT is not valid T-SQL — use TOP instead")
+        raise CorrectableRejection("LIMIT is not valid T-SQL — use TOP instead")
 
     try:
         raw_statements = sqlglot.parse(sql, read=_DIALECT)
     except SqlglotError as exc:
-        raise ValueError(f"SQL syntax error: {exc}") from exc
+        raise CorrectableRejection(f"SQL syntax error: {exc}") from exc
 
     statements = [stmt for stmt in raw_statements if stmt is not None]
     if not statements:
-        raise ValueError("Empty SQL")
+        raise CorrectableRejection("Empty SQL")
 
     if len(statements) > 1:
-        # Prefer naming the specific offending statement kind when one of
-        # the extra statements is recognisably dangerous (matches the
-        # pre-Phase-1 message shape for these cases); fall back to a
-        # generic message when every statement individually looks benign
-        # (e.g. "SELECT 1; SELECT 2") — stacking is refused as a class
-        # regardless.
+        # Stacking is refused as a class regardless of content -- a known
+        # SQL-injection bypass vector, not a formatting mistake a retry
+        # could plausibly avoid by chance -- so both branches below are a
+        # PolicyRejection. Prefer naming the specific offending statement
+        # kind when one of the extra statements is recognisably dangerous
+        # (matches the pre-Phase-1 message shape for these cases); fall
+        # back to a generic message when every statement individually
+        # looks benign (e.g. "SELECT 1; SELECT 2").
         for stmt in statements:
             label = _forbidden_label(stmt)
             if label is not None:
-                raise ValueError(f"Forbidden keyword detected: {label}")
-        raise ValueError(
+                raise PolicyRejection(f"Forbidden keyword detected: {label}")
+        raise PolicyRejection(
             "Forbidden keyword detected: multiple SQL statements are not "
             f"allowed ({len(statements)} statements found)"
         )
@@ -749,9 +895,9 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
 
     root_label = _forbidden_label(tree)
     if root_label is not None:
-        raise ValueError(f"Forbidden keyword detected: {root_label}")
+        raise PolicyRejection(f"Forbidden keyword detected: {root_label}")
     if not isinstance(tree, _ALLOWED_ROOT_TYPES):
-        raise ValueError(
+        raise PolicyRejection(
             "Forbidden keyword detected: only SELECT / WITH / set-operation "
             f"queries are allowed, got {type(tree).__name__}"
         )
@@ -761,33 +907,37 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
     for node in tree.walk():
         label = _forbidden_label(node)
         if label is not None:
-            raise ValueError(f"Forbidden keyword detected: {label}")
+            raise PolicyRejection(f"Forbidden keyword detected: {label}")
 
         # A comment is refused because it is present, not for what it
         # says — scanning its text for keywords would just relocate the
         # substring-matching mistake this module exists to get away from
         # (see the module docstring). This intentionally does not reuse
         # the "Forbidden keyword" phrasing: no keyword was found, the
-        # comment itself is the thing being refused.
+        # comment itself is the thing being refused. Classified as
+        # CorrectableRejection, not PolicyRejection: unlike a denied
+        # column or a forbidden statement, nothing about the *question*
+        # is out of bounds here -- the model can drop the comment and
+        # answer the exact same question on the very next attempt.
         if node.comments:
-            raise ValueError(
+            raise CorrectableRejection(
                 "SQL comments are not allowed: a comment is not "
                 "executable SQL syntax, so its content is never inspected "
                 "for keywords -- the comment itself is refused outright."
             )
 
         if isinstance(node, exp.Anonymous) and _is_dangerous_identifier(node.name or ""):
-            raise ValueError(f"Forbidden keyword detected: {(node.name or '').upper()}")
+            raise PolicyRejection(f"Forbidden keyword detected: {(node.name or '').upper()}")
 
         if isinstance(node, exp.Table):
             raw_name = node.name
             if _is_dangerous_identifier(raw_name or ""):
-                raise ValueError(f"Forbidden keyword detected: {raw_name.upper()}")
+                raise PolicyRejection(f"Forbidden keyword detected: {raw_name.upper()}")
             db = (node.db or "").upper()
             if db in _SYSTEM_SCHEMAS:
-                raise ValueError(f"System catalogue forbidden: {db}")
+                raise PolicyRejection(f"System catalogue forbidden: {db}")
             if not db and raw_name.upper() in _SYSTEM_SCHEMAS:
-                raise ValueError(f"System catalogue forbidden: {raw_name.upper()}")
+                raise PolicyRejection(f"System catalogue forbidden: {raw_name.upper()}")
 
             # Table allowlist: unlike the column check below, this is not
             # lenient. A raw_name of "" (an exp.Anonymous table-valued
@@ -797,10 +947,21 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
             # TABLE_COLUMNS anyway once it does something real.
             if raw_name and raw_name.lower() not in cte_names:
                 if _TABLE_LOOKUP.get(raw_name.lower()) is None:
-                    raise ValueError(
+                    # CorrectableRejection: a hallucinated or misspelled
+                    # table name is exactly the kind of small-model mistake
+                    # a retry can plausibly fix by naming a real table --
+                    # unlike a denied column, nothing here says the
+                    # question itself may not be asked. It is, however,
+                    # STILL a refusal on the other axis (is_refusal): the
+                    # allowlist violation, not the SQL's shape, is why this
+                    # was rejected, so this specific instance overrides the
+                    # class default -- see SqlGuardRejection's docstring.
+                    exc = CorrectableRejection(
                         f"Forbidden keyword detected: unknown table "
                         f"'{raw_name}' is not in the schema allowlist"
                     )
+                    exc.is_refusal = True
+                    raise exc
 
     denied = frozenset(c.upper() for c in denied_columns) if denied_columns else frozenset()
     alias_map = _collect_table_alias_map(tree, cte_names)
@@ -810,7 +971,7 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
         if not name or name == "*":
             continue
         if name.upper() in denied:
-            raise ValueError(f"Forbidden keyword detected: denied column '{name}'")
+            raise PolicyRejection(f"Forbidden keyword detected: denied column '{name}'")
 
         qualifier = (col.table or "").lower()
         if not qualifier:
@@ -826,13 +987,20 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
             # the allowlist above.)
             continue
         if name.lower() not in _COLUMNS_BY_TABLE[canonical]:
-            raise ValueError(f"Unknown column '{name}' on table '{canonical}'")
+            # CorrectableRejection: same reasoning as the unknown-table
+            # case above -- a hallucinated column name, plausibly fixed
+            # by a retry that names a real one.
+            raise CorrectableRejection(f"Unknown column '{name}' on table '{canonical}'")
 
     if denied:
         # "*" must not be usable to silently read around an active
         # column-denial policy -- expand it against whatever it resolves
         # to and check the expansion, or refuse it outright if it can't be
-        # resolved with confidence (see _resolve_star_tables).
+        # resolved with confidence (see _resolve_star_tables). Both
+        # branches enforce the same denied-column policy as the named-
+        # column check above, so both are PolicyRejection: no rewrite of
+        # the query can make the underlying question answerable without
+        # touching the denied column.
         for star in tree.find_all(exp.Star):
             parent = star.parent
             if isinstance(parent, exp.Column) and parent.table:
@@ -844,7 +1012,7 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
                 ref_label = "*"
 
             if table_names is None:
-                raise ValueError(
+                raise PolicyRejection(
                     f"Forbidden keyword detected: cannot verify whether "
                     f"'{ref_label}' exposes a denied column -- name the "
                     "columns explicitly instead of using '*'"
@@ -857,7 +1025,7 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
                 if col.upper() in denied
             )
             if exposed_denied:
-                raise ValueError(
+                raise PolicyRejection(
                     f"Forbidden keyword detected: '{ref_label}' would "
                     f"expose denied column(s): {exposed_denied}"
                 )
@@ -980,8 +1148,8 @@ def ensure_top(sql: str, n: int = 100) -> str:
     reproduce the input text exactly, e.g. it adds explicit aliases and
     re-spaces operators). Where this function cannot construct correct SQL
     (an arbitrarily-nested case, or hoisting a ``UNION``'s trailing
-    ``ORDER BY`` outside the wrapper), it raises :class:`ValueError` rather
-    than silently return an unsafe or invalid query.
+    ``ORDER BY`` outside the wrapper), it raises :class:`CorrectableRejection`
+    rather than silently return an unsafe or invalid query.
 
     Parameters
     ----------
@@ -1001,7 +1169,12 @@ def ensure_top(sql: str, n: int = 100) -> str:
 
     Raises
     ------
-    ValueError
+    CorrectableRejection
+        A :class:`ValueError` subclass (see the module docstring's
+        exception taxonomy) — neither case below is a policy refusal of
+        the question, just a structural limit of this function's regex
+        scanner, so a differently-shaped retry can plausibly get past it:
+
         * If no top-level ``SELECT`` can be found at all.
         * If *sql* is a top-level ``UNION``/``INTERSECT``/``EXCEPT`` that
           also has a top-level ``ORDER BY`` — wrapping it in a derived
@@ -1030,7 +1203,12 @@ def ensure_top(sql: str, n: int = 100) -> str:
     """
     matches = _top_level_select_matches(sql)
     if not matches:
-        raise ValueError(
+        # CorrectableRejection: this is a mismatch between the regex-based
+        # scanner here and what validate_sql's parser already accepted as
+        # a well-formed query -- not a policy call about the question
+        # itself, so a differently-structured (but still valid) retry can
+        # plausibly get past it.
+        raise CorrectableRejection(
             f"ensure_top: no top-level SELECT found in {sql[:200]!r} — "
             "refusing to guess where to inject TOP"
         )
@@ -1043,7 +1221,11 @@ def ensure_top(sql: str, n: int = 100) -> str:
         prefix = sql[: matches[0].start()]
         body = sql[matches[0].start():]
         if _has_top_level_order_by(body):
-            raise ValueError(
+            # CorrectableRejection: same reasoning as above -- a query
+            # shaped without a top-level ORDER BY on the set operation
+            # would sail through, so this is a fixable structural
+            # limitation of this function, not a refusal of the question.
+            raise CorrectableRejection(
                 "ensure_top: cannot safely cap a UNION/INTERSECT/EXCEPT "
                 "query that also has a top-level ORDER BY without a full "
                 "SQL parser (wrapping it in a derived table would make "
