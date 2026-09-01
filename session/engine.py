@@ -271,6 +271,7 @@ class TurnEngine:
         *,
         request_id: str | None = None,
         assumption_overrides: dict[str, str] | None = None,
+        denied_columns: tuple[str, ...] | None = None,
     ) -> Turn:
         """Answer *question* in the context of *record*, and record one audit entry.
 
@@ -290,6 +291,12 @@ class TurnEngine:
             before generation; each overridden field's resulting
             assumption is re-sourced as ``"question"`` (the user now
             explicitly said so). ``None`` for an ordinary ``POST turns``.
+        denied_columns:
+            The caller's :class:`~security.auth.Principal.denied_columns`
+            (Phase 8) — threaded through to every
+            :func:`~security.sql_guard.validate_sql` call this turn makes,
+            in both the CTE-refinement and the fresh-generation path.
+            ``None`` (the default) applies no column restriction.
 
         Returns
         -------
@@ -317,12 +324,12 @@ class TurnEngine:
         if basis_decision.kind == "refines" and basis_decision.composition == "cte":
             outcome, resolved_question, ambiguity_block, memory_filters = self._handle_cte_refinement(
                 question, system_prompt, previous_turn, basis_decision,
-                session_context_text, timer, assumption_overrides,
+                session_context_text, timer, assumption_overrides, denied_columns,
             )
         else:
             outcome, resolved_question, ambiguity_block, memory_filters = self._handle_generative(
                 question, system_prompt, context, basis_decision,
-                session_context_text, timer, assumption_overrides,
+                session_context_text, timer, assumption_overrides, denied_columns,
             )
 
         basis = Basis(
@@ -379,6 +386,7 @@ class TurnEngine:
         session_context_text: str,
         timer: StageTimer,
         assumption_overrides: dict[str, str] | None,
+        denied_columns: tuple[str, ...] | None = None,
     ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object]]:
         assumptions = ambiguity.assumptions_for_cte_refinement(
             question, basis_decision.inherited_filters
@@ -447,7 +455,7 @@ class TurnEngine:
         try:
             with timer.stage("guard"):
                 composed = compose_refinement_sql(previous_turn.sql, raw_outer, cap)
-                validate_sql(composed)
+                validate_sql(composed, denied_columns=denied_columns)
                 capped = ensure_top(composed, cfg.settings.default_top_n)
                 injected_top = cfg.settings.default_top_n if capped != composed else None
         except (CompositionError, ValueError) as exc:
@@ -519,6 +527,7 @@ class TurnEngine:
         session_context_text: str,
         timer: StageTimer,
         assumption_overrides: dict[str, str] | None,
+        denied_columns: tuple[str, ...] | None = None,
     ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object]]:
         is_carry_forward = basis_decision.kind == "refines"
         merged_filters: dict[str, object] = dict(basis_decision.inherited_filters)
@@ -571,11 +580,14 @@ class TurnEngine:
             question, system_prompt, ctx, session_context=session_context_text,
         )
 
-        outcome = self._generate_validate_execute(segments, system_prompt, timer)
+        outcome = self._generate_validate_execute(
+            segments, system_prompt, timer, denied_columns=denied_columns,
+        )
         return outcome, resolved_question, ambiguity_block, merged_filters
 
     def _generate_validate_execute(
         self, segments: PromptSegments, system_prompt: str, timer: StageTimer,
+        *, denied_columns: tuple[str, ...] | None = None,
     ) -> _GenOutcome:
         static_prefix_tokens = static_prefix_token_estimate(system_prompt)
         last_error: str | None = None
@@ -626,7 +638,7 @@ class TurnEngine:
             try:
                 with timer.stage("guard"):
                     cleaned = clean_sql(raw)
-                    validate_sql(cleaned)
+                    validate_sql(cleaned, denied_columns=denied_columns)
                     capped = ensure_top(cleaned, cfg.settings.default_top_n)
                     injected_top = cfg.settings.default_top_n if capped != cleaned else None
             except ValueError as exc:

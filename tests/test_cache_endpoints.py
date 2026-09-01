@@ -64,10 +64,12 @@ def _clear_cache():
 
 
 @pytest.fixture()
-def client():
+def client(auth_settings):
     import api.server as server_module
     server_module._system_prompt = "stub"
-    return TestClient(server_module.app, raise_server_exceptions=False)
+    return TestClient(
+        server_module.app, raise_server_exceptions=False, headers=auth_settings,
+    )
 
 
 # ---------------------------------------------------------------------------

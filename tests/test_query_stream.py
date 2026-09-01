@@ -33,13 +33,15 @@ def _ok_response(**overrides) -> QueryResponse:
 
 
 @pytest.fixture()
-def app_and_client():
+def app_and_client(auth_settings):
     import api.runner as runner_module
     import api.server as server_module
 
     server_module._system_prompt = "stub system prompt"
     with patch.object(runner_module, "run_query") as mock_run:
-        client = TestClient(server_module.app, raise_server_exceptions=False)
+        client = TestClient(
+            server_module.app, raise_server_exceptions=False, headers=auth_settings,
+        )
         yield server_module.app, client, mock_run
 
 

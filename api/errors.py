@@ -18,6 +18,7 @@ surfacing as ``RequestValidationError`` (422), not as a 400.
 
   Layer             Exception                        HTTP  raised
   ───────────────   ──────────────────────────────   ────  ──────
+  Auth              UnauthenticatedError              401  yes
   Input validation  QuestionTooShortError             400  no
                     QuestionTooLongError              400  no
                     InvalidModeError                  400  no
@@ -72,6 +73,23 @@ class NLQError(Exception):
         super().__init__(message)
         self.message = message
         self.detail = detail  # extra context for logs (never sent to client)
+
+
+# ---------------------------------------------------------------------------
+# 401 Unauthorized
+# ---------------------------------------------------------------------------
+
+class UnauthenticatedError(NLQError):
+    """Missing or invalid credentials on a route that requires them.
+
+    ``register_handlers``'s ``nlq_error_handler`` special-cases this
+    exception to also attach a ``WWW-Authenticate: Bearer`` header — the
+    one piece of the 401 response ``_error_response``'s generic envelope
+    builder doesn't carry, since no other error in this hierarchy needs
+    it.
+    """
+    http_status = status.HTTP_401_UNAUTHORIZED
+    error_code = "UNAUTHENTICATED"
 
 
 # ---------------------------------------------------------------------------
@@ -220,13 +238,16 @@ def register_handlers(app: FastAPI) -> None:
         )
         if exc.detail:
             logger.debug("[%s] detail: %s", request_id, exc.detail)
-        return _error_response(
+        response = _error_response(
             request,
             exc.http_status,
             exc.error_code,
             exc.message,
             request_id,
         )
+        if isinstance(exc, UnauthenticatedError):
+            response.headers["WWW-Authenticate"] = "Bearer"
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(

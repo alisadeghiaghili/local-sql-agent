@@ -23,7 +23,7 @@ SIMPLE_DF = pd.DataFrame({"CustomerName": ["A", "B"]})
 
 
 @pytest.fixture()
-def client_and_engine():
+def client_and_engine(auth_settings):
     server_module._system_prompt = "stub system prompt"
     v2_routes._system_prompt = "stub system prompt"
     v2_routes._reset_for_testing()
@@ -34,7 +34,9 @@ def client_and_engine():
     )
     v2_routes._turn_engine = engine  # bypass the lazy singleton for this test
 
-    client = TestClient(server_module.app, raise_server_exceptions=False)
+    client = TestClient(
+        server_module.app, raise_server_exceptions=False, headers=auth_settings,
+    )
     yield client, engine
     v2_routes._reset_for_testing()
 

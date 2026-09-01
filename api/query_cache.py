@@ -144,13 +144,13 @@ class QueryCache:
     def __init__(self, ttl_seconds: int = 300, max_size: int = 256) -> None:
         self._ttl = ttl_seconds
         self._max_size = max_size
-        self._store: OrderedDict[tuple[str, str, str], _CacheEntry] = OrderedDict()
-        # Secondary index: (prefix_version, mode, normalised_sql) -> entry.
+        self._store: OrderedDict[tuple[str, str, str, str], _CacheEntry] = OrderedDict()
+        # Secondary index: (prefix_version, mode, normalised_sql, scope_key) -> entry.
         # Populated alongside `_store` by set() when `sql` is supplied, so a
         # DIFFERENT question that happens to generate the SAME SQL can reuse
         # the execution result (see api/runner.py's sql_cache_lookup hook
         # passed into SQLAgent.run) without hitting the database again.
-        self._sql_store: OrderedDict[tuple[str, str, str], _CacheEntry] = OrderedDict()
+        self._sql_store: OrderedDict[tuple[str, str, str, str], _CacheEntry] = OrderedDict()
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
@@ -166,20 +166,24 @@ class QueryCache:
         return self._ttl > 0
 
     @staticmethod
-    def _question_key(question: str, mode: str, prefix_version: str) -> tuple[str, str, str]:
-        return (prefix_version, _normalize_question(question), mode)
+    def _question_key(
+        question: str, mode: str, prefix_version: str, scope_key: str = "",
+    ) -> tuple[str, str, str, str]:
+        return (prefix_version, _normalize_question(question), mode, scope_key)
 
     @staticmethod
-    def _sql_key(sql: str, mode: str, prefix_version: str) -> tuple[str, str, str]:
+    def _sql_key(
+        sql: str, mode: str, prefix_version: str, scope_key: str = "",
+    ) -> tuple[str, str, str, str]:
         # SQL is not natural-language text, so only whitespace collapsing
         # applies -- Persian-digit/letter folding would be meaningless (and
         # potentially wrong: a literal N'١٤٠٢' string value should not be
         # rewritten).
         normalized = _WHITESPACE_RE.sub(" ", sql).strip()
-        return (prefix_version, normalized, mode)
+        return (prefix_version, normalized, mode, scope_key)
 
     def get(
-        self, question: str, mode: str, *, prefix_version: str = ""
+        self, question: str, mode: str, *, prefix_version: str = "", scope_key: str = "",
     ) -> QueryResponse | None:
         """Return a copy of the cached response, or ``None`` (miss / expired / disabled).
 
@@ -201,15 +205,24 @@ class QueryCache:
             constructing a bare ``QueryCache``) — a knowledge-base change
             then relies on an explicit ``clear()`` instead of automatic
             invalidation.
+        scope_key:
+            The caller's cache-partition key (see
+            :func:`security.auth.scope_key`) — two callers with
+            identical scope keys share entries; different scope keys can
+            never collide, even for the same question/mode/prefix.
+            Defaults to ``""``, a single shared partition, for callers
+            that don't scope their cache (e.g. tests constructing a bare
+            ``QueryCache``, or any caller with no authenticated
+            principal at all).
         """
         if not self.enabled:
             return None
 
-        key = self._question_key(question, mode, prefix_version)
+        key = self._question_key(question, mode, prefix_version, scope_key)
         return self._get_from(self._store, key)
 
     def get_by_sql(
-        self, sql: str, mode: str, *, prefix_version: str = ""
+        self, sql: str, mode: str, *, prefix_version: str = "", scope_key: str = "",
     ) -> QueryResponse | None:
         """Look up a cached response by generated SQL text instead of question.
 
@@ -219,17 +232,19 @@ class QueryCache:
         (e.g. to rebuild a ``pandas.DataFrame``) rather than returning this
         object to the client directly — it reflects whichever question
         generated it first, not the caller's own question.
+
+        See :meth:`get` for *scope_key*.
         """
         if not self.enabled:
             return None
 
-        key = self._sql_key(sql, mode, prefix_version)
+        key = self._sql_key(sql, mode, prefix_version, scope_key)
         return self._get_from(self._sql_store, key)
 
     def _get_from(
         self,
-        store: OrderedDict[tuple[str, str, str], _CacheEntry],
-        key: tuple[str, str, str],
+        store: OrderedDict[tuple[str, str, str, str], _CacheEntry],
+        key: tuple[str, str, str, str],
     ) -> QueryResponse | None:
         now = time.monotonic()
         with self._lock:
@@ -256,8 +271,9 @@ class QueryCache:
         *,
         prefix_version: str = "",
         sql: str | None = None,
+        scope_key: str = "",
     ) -> None:
-        """Store a copy of *response* under ``(prefix_version, question, mode)``.
+        """Store a copy of *response* under ``(prefix_version, question, mode, scope_key)``.
 
         Storing ``response.model_copy()`` rather than *response* itself
         matters just as much as copying in :meth:`get`: the caller
@@ -275,11 +291,13 @@ class QueryCache:
         sql:
             The generated SQL text for this response, if known. When
             given, the response is ALSO indexed under
-            ``(prefix_version, sql, mode)`` so a different question that
-            later generates the same SQL can reuse it (see
+            ``(prefix_version, sql, mode, scope_key)`` so a different
+            question that later generates the same SQL can reuse it (see
             :meth:`get_by_sql`). ``None`` (the default) skips SQL
             indexing — e.g. there is nothing meaningful to index for an
             empty/failed generation.
+        scope_key:
+            See :meth:`get`.
         """
         if not self.enabled:
             return
@@ -288,14 +306,22 @@ class QueryCache:
         expires_at = time.monotonic() + self._ttl
 
         with self._lock:
-            self._set_in(self._store, self._question_key(question, mode, prefix_version), stored, expires_at)
+            self._set_in(
+                self._store,
+                self._question_key(question, mode, prefix_version, scope_key),
+                stored, expires_at,
+            )
             if sql:
-                self._set_in(self._sql_store, self._sql_key(sql, mode, prefix_version), stored, expires_at)
+                self._set_in(
+                    self._sql_store,
+                    self._sql_key(sql, mode, prefix_version, scope_key),
+                    stored, expires_at,
+                )
 
     def _set_in(
         self,
-        store: OrderedDict[tuple[str, str, str], _CacheEntry],
-        key: tuple[str, str, str],
+        store: OrderedDict[tuple[str, str, str, str], _CacheEntry],
+        key: tuple[str, str, str, str],
         stored: QueryResponse,
         expires_at: float,
     ) -> None:
@@ -310,7 +336,9 @@ class QueryCache:
 
         store[key] = _CacheEntry(stored, expires_at)
 
-    def invalidate(self, question: str, mode: str, *, prefix_version: str = "") -> bool:
+    def invalidate(
+        self, question: str, mode: str, *, prefix_version: str = "", scope_key: str = "",
+    ) -> bool:
         """Remove a specific question-keyed entry.  Returns True if it was present.
 
         Does not remove the corresponding SQL-keyed entry (if any) — that
@@ -318,7 +346,7 @@ class QueryCache:
         generated the same SQL, and this call has no way to know whether
         the caller wants that shared entry gone too.
         """
-        key = self._question_key(question, mode, prefix_version)
+        key = self._question_key(question, mode, prefix_version, scope_key)
         with self._lock:
             if key in self._store:
                 del self._store[key]

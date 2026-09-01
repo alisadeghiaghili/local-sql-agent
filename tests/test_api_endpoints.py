@@ -60,13 +60,18 @@ def _ok_response(**overrides):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def app_and_client():
+def app_and_client(auth_settings):
     """App with lifespan skipped and run_query fully mocked.
 
     Patches
     -------
     - api.server._system_prompt  → stub string (skips file-system load)
     - api.runner.run_query       → MagicMock (controls every response)
+
+    ``auth_settings`` (tests/conftest.py) configures a valid test API key
+    and is baked into the client's default headers, so every request this
+    client makes authenticates as that principal -- exactly like a real
+    caller, since AUTH_REQUIRED defaults to true (Phase 8).
     """
     import api.server as server_module
     import api.runner as runner_module
@@ -76,7 +81,9 @@ def app_and_client():
 
     with patch.object(runner_module, "run_query") as mock_run:
         # Build a *new* TestClient without triggering lifespan events
-        client = TestClient(server_module.app, raise_server_exceptions=False)
+        client = TestClient(
+            server_module.app, raise_server_exceptions=False, headers=auth_settings,
+        )
         yield server_module.app, client, mock_run
 
 
@@ -306,7 +313,7 @@ class TestEmptySystemPromptFailsLoudly:
     trace beyond quietly worse answers. /query must refuse loudly
     instead."""
 
-    def test_query_fails_loudly_when_system_prompt_never_loaded(self):
+    def test_query_fails_loudly_when_system_prompt_never_loaded(self, auth_settings):
         import api.server as server_module
         import api.runner as runner_module
 
@@ -314,7 +321,9 @@ class TestEmptySystemPromptFailsLoudly:
         server_module._system_prompt = ""  # simulate lifespan never running
         try:
             with patch.object(runner_module, "run_query") as mock_run:
-                client = TestClient(server_module.app, raise_server_exceptions=False)
+                client = TestClient(
+                    server_module.app, raise_server_exceptions=False, headers=auth_settings,
+                )
                 resp = client.post("/query", json={"question": VALID_Q})
         finally:
             server_module._system_prompt = original

@@ -100,6 +100,8 @@ from observability.llm_status import build_llm_status
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
+from security.auth import Principal
+from security.auth import scope_key as _scope_key_of
 from security.sql_guard import extract_touched_tables
 
 logger = logging.getLogger(__name__)
@@ -200,6 +202,7 @@ def run_query(
     mode: Literal["sql", "result", "full"] = "full",
     interpret: bool = False,
     request_id: str | None = None,
+    principal: Principal | None = None,
 ) -> QueryResponse:
     """Full pipeline with typed error translation and query-result caching.
 
@@ -222,6 +225,21 @@ def run_query(
         log lines for the same request. ``None`` (e.g. a caller outside an
         HTTP request, such as a direct unit test) falls back to a freshly
         minted id, so the audit record is still well-formed.
+    principal:
+        The authenticated caller (Phase 8), or ``None`` for a caller with
+        no principal at all (the CLI/REPL path in ``webapp/agent.py``, or
+        any pre-Phase-8 direct test call). Feeds three things: the query
+        cache's partition key (see ``security.auth.scope_key`` and
+        ``api/query_cache.py``'s module docstring) — ``None`` uses the
+        cache's own default (unscoped) partition, exactly this
+        function's pre-Phase-8 behaviour, so existing non-HTTP callers
+        are unaffected — ``principal_id`` on the audit record, and
+        ``principal.denied_columns``, threaded through to every
+        :func:`~security.sql_guard.validate_sql` call this request makes
+        (via :func:`_safe_run`/:func:`_safe_generate_sql_only`) so a
+        column-restricted principal's SQL is actually rejected for
+        touching a denied column, not just partitioned into its own
+        cache scope.
 
     Raises
     ------
@@ -244,6 +262,16 @@ def run_query(
     # knowledge-base change invalidates stale entries by construction -- see
     # api/query_cache.py's module docstring and Phase 2 task 6.
     cache_prefix_version = _prefix_version_of(system_prompt)
+    # Cache-partition key (Phase 8): "" (the cache's own unscoped default)
+    # when no principal is known at all, so every pre-Phase-8 caller keeps
+    # sharing the single partition it always has. A real principal always
+    # gets a real scope key -- including an all-access one, which still
+    # partitions away from the unscoped "" default used by non-HTTP callers.
+    cache_scope = _scope_key_of(principal) if principal is not None else ""
+    # Column-level ACL (Phase 8): the seam security.sql_guard.validate_sql
+    # has always accepted but that, before this phase, nothing populated.
+    # None (no principal) applies no restriction -- pre-Phase-8 behaviour.
+    denied_columns = principal.denied_columns if principal is not None else None
 
     # Mutable state accumulated for the audit record regardless of which
     # path this request takes (success, cache hit, or any error below).
@@ -266,7 +294,9 @@ def run_query(
         # ── cache lookup (result / full, no interpret) ─────────────────────
         use_cache = (mode in ("result", "full")) and not interpret
         if use_cache:
-            cached = query_cache.get(question, mode, prefix_version=cache_prefix_version)
+            cached = query_cache.get(
+                question, mode, prefix_version=cache_prefix_version, scope_key=cache_scope,
+            )
             if cached is not None:
                 logger.debug("Cache HIT  question=%.60s mode=%s", question, mode)
                 audit_tier = "T0"
@@ -282,7 +312,9 @@ def run_query(
 
         # ── sql-only mode: generate without executing ──────────────────────
         if mode == "sql":
-            sql, llm_meta = _safe_generate_sql_only(_agent, question, system_prompt, timer)
+            sql, llm_meta = _safe_generate_sql_only(
+                _agent, question, system_prompt, timer, denied_columns=denied_columns,
+            )
             audit_sql = sql
             audit_guard["tables_touched"] = _touched_or_none(sql)
             # ensure_top is never applied in this mode (no execution, no
@@ -302,11 +334,13 @@ def run_query(
         sql_cache_lookup = None
         if use_cache:
             sql_cache_lookup = functools.partial(
-                _rows_from_sql_cache, mode=mode, prefix_version=cache_prefix_version
+                _rows_from_sql_cache,
+                mode=mode, prefix_version=cache_prefix_version, scope_key=cache_scope,
             )
 
         df, result = _safe_run(
-            _agent, question, system_prompt, timer, sql_cache_lookup=sql_cache_lookup
+            _agent, question, system_prompt, timer,
+            sql_cache_lookup=sql_cache_lookup, denied_columns=denied_columns,
         )
         rows: list[dict] = df.to_dict(orient="records")
 
@@ -341,7 +375,7 @@ def run_query(
         if use_cache:
             query_cache.set(
                 question, mode, response,
-                prefix_version=cache_prefix_version, sql=result.sql,
+                prefix_version=cache_prefix_version, sql=result.sql, scope_key=cache_scope,
             )
             logger.debug("Cache SET  question=%.60s mode=%s", question, mode)
 
@@ -394,6 +428,7 @@ def run_query(
             timings=timer.snapshot(),
             llm=audit_llm,
             columns=audit_columns,
+            principal_id=principal.id if principal is not None else None,
         )
 
 
@@ -555,6 +590,7 @@ def _write_audit(
     timings: dict[str, int],
     llm: dict[str, Any] | None,
     columns: list[str] | None,
+    principal_id: str | None = None,
 ) -> None:
     """Build and persist one :class:`~observability.audit.AuditRecord`.
 
@@ -588,6 +624,7 @@ def _write_audit(
             timings=timings,
             llm=llm,
             columns=columns,
+            principal_id=principal_id,
         )
         save_audit_record(record)
     except Exception:  # noqa: BLE001 — auditing must never fail a user's query
@@ -600,6 +637,7 @@ def _write_audit(
 
 def _safe_generate_sql_only(
     agent: SQLAgent, question: str, system_prompt: str, timer: StageTimer,
+    *, denied_columns: tuple[str, ...] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Generate SQL without executing it (``mode="sql"``), translating errors.
 
@@ -744,7 +782,7 @@ def _safe_generate_sql_only(
     try:
         with timer.stage("guard"):
             sql = clean_sql(raw)
-            validate_sql(sql)
+            validate_sql(sql, denied_columns=denied_columns)
     except ValueError as exc:
         msg = str(exc)
         if "Forbidden keyword" in msg:
@@ -763,7 +801,9 @@ def _safe_generate_sql_only(
     return sql, llm_meta
 
 
-def _rows_from_sql_cache(sql: str, mode: str, prefix_version: str) -> pd.DataFrame | None:
+def _rows_from_sql_cache(
+    sql: str, mode: str, prefix_version: str, scope_key: str = "",
+) -> pd.DataFrame | None:
     """SQLAgent's ``sql_cache_lookup`` hook: reuse a result cached under *sql*.
 
     Consulted by :meth:`~llm.sql_agent.SQLAgent.run` right before it would
@@ -780,7 +820,7 @@ def _rows_from_sql_cache(sql: str, mode: str, prefix_version: str) -> pd.DataFra
         which case :meth:`SQLAgent.run` falls through to a real execution,
         exactly as if this hook were never supplied.
     """
-    cached = query_cache.get_by_sql(sql, mode, prefix_version=prefix_version)
+    cached = query_cache.get_by_sql(sql, mode, prefix_version=prefix_version, scope_key=scope_key)
     if cached is None or cached.result is None:
         return None
     return pd.DataFrame(cached.result)
@@ -793,11 +833,13 @@ def _safe_run(
     timer: StageTimer,
     *,
     sql_cache_lookup=None,
+    denied_columns: tuple[str, ...] | None = None,
 ):
     """Run SQLAgent and translate every exception to a typed NLQError."""
     try:
         return agent.run(
-            question, system_prompt, timer=timer, sql_cache_lookup=sql_cache_lookup
+            question, system_prompt, timer=timer, sql_cache_lookup=sql_cache_lookup,
+            denied_columns=denied_columns,
         )
 
     except ValueError as exc:

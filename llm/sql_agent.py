@@ -93,7 +93,7 @@ Design notes
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
@@ -236,6 +236,7 @@ class SQLAgent:
         *,
         timer: StageTimer | None = None,
         sql_cache_lookup: Callable[[str], pd.DataFrame | None] | None = None,
+        denied_columns: Iterable[str] | None = None,
     ) -> tuple[pd.DataFrame, SQLGenerationResult]:
         """Answer *question* and return ``(DataFrame, SQLGenerationResult)``.
 
@@ -274,6 +275,13 @@ class SQLAgent:
             through to ``execute_fn`` as before. See
             ``api/runner.py``'s ``_sql_cache_lookup`` for how the cache
             key is built (prefix-version + mode + SQL text).
+        denied_columns:
+            Column names the caller's :class:`~security.auth.Principal`
+            must never see (Phase 8) -- threaded straight through to every
+            :func:`~security.sql_guard.validate_sql` call this method
+            makes, on the first attempt and every correction round alike.
+            ``None`` (the default) applies no column restriction, exactly
+            this method's pre-Phase-8 behaviour.
 
         Raises
         ------
@@ -356,7 +364,7 @@ class SQLAgent:
 
             try:
                 with _stage(timer, "guard"):
-                    sql, injected_top = self._clean_validate_cap(raw)
+                    sql, injected_top = self._clean_validate_cap(raw, denied_columns=denied_columns)
             except ValueError as exc:
                 last_error = str(exc)
                 logger.warning(
@@ -418,7 +426,9 @@ class SQLAgent:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _clean_validate_cap(self, raw: str) -> tuple[str, int | None]:
+    def _clean_validate_cap(
+        self, raw: str, *, denied_columns: Iterable[str] | None = None,
+    ) -> tuple[str, int | None]:
         """clean_sql + validate_sql + ensure_top.  May raise ValueError.
 
         Returns
@@ -444,7 +454,7 @@ class SQLAgent:
             exc.candidate_sql = None  # type: ignore[attr-defined]
             raise
         try:
-            validate_sql(sql)
+            validate_sql(sql, denied_columns=denied_columns)
         except ValueError as exc:
             exc.candidate_sql = sql  # type: ignore[attr-defined]
             raise
