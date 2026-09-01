@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Error-path coverage for ``session.engine.TurnEngine`` not exercised by
 ``tests/test_session_engine.py``'s happy-path §2 proof.
 

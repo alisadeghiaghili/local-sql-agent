@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Schema auto-discovery module.
 
 Inspects a live database via SQLAlchemy and extracts table metadata,

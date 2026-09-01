@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 #: Static, byte-identical prefix built once per system-prompt version by
 #: ``prompt_engine.static_prefix.build_static_prefix`` and reused across every
 #: request — see ``docs/api-contract-v2.md`` §8. Section order matters: it is

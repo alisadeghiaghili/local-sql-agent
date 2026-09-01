@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Conftest for the opt-in, live-database integration suite.
 
 ``tests/conftest.py``'s ``_no_real_database`` autouse fixture refuses any

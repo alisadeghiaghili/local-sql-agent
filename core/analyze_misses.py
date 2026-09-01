@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Analyse a JSONL query log and report tables that were referenced in
 generated SQL but never retrieved by the retrieval pipeline.
 

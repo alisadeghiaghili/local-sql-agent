@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Endpoint trust — whether an LLM endpoint may see schema/business-rule/row data.
 
 Before the OpenAI-only refactor, :mod:`llm.router` decided this by

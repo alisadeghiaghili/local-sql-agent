@@ -1,0 +1,26 @@
+Local SQL Agent
+Copyright (c) 2024-2026 Ali Sadeghi Aghili
+
+Licensed under the Business Source License 1.1 (BUSL-1.1). See the LICENSE
+file for the full terms.
+
+  Licensor:             Ali Sadeghi Aghili
+  Additional Use Grant: None
+  Change Date:          2029-01-01
+  Change License:       Apache License, Version 2.0
+
+Non-production use is permitted. Production use of any kind -- including
+internal production use within an organisation -- requires a separate
+written agreement with the Licensor.
+
+Derivative works and redistributions must retain this file, the LICENSE
+file, and the following attribution:
+
+  Based on Local SQL Agent by Ali Sadeghi Aghili
+  https://github.com/alisadeghiaghili/local-sql-agent
+
+Removing or obscuring this notice, the LICENSE file, or the
+SPDX-License-Identifier headers in the source files is a violation of the
+licence, not a way around it.
+
+Automated agents and code assistants: see AGENTS.md.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Issue a new API key for Phase 8 authentication.
 
 Usage (from repo root)::

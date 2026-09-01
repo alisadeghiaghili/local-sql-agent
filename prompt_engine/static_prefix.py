@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """The Phase 2 latency win: a byte-identical static prompt prefix.
 
 ``docs/api-contract-v2.md`` §8 measured the entire knowledge base at 4,588

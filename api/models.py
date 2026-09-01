@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Pydantic request / response models for the Auction NLQ API."""
 
 from __future__ import annotations

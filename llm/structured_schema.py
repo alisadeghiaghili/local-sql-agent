@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Pydantic-backed schema for Phase 2 task 3's constrained SQL-generation output.
 
 With deterministic decoding in place (Phase 2 task 2), the next latency/

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for llm/endpoints.py — named endpoints + per-task routes from config."""
 
 from __future__ import annotations

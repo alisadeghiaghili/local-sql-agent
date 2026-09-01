@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Thread-safe TTL query-result cache.
 
 Caches the full ``QueryResponse`` keyed on ``(prefix_version, question, mode)``,

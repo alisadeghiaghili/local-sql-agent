@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Abstract base for all LLM backends.
 
 To add a new backend (OpenAI, Anthropic, vLLM, …) implement ``LLMBackend``

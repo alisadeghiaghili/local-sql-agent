@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Aggregate a list of :class:`~eval.models.CaseResult` into an :class:`~eval.models.EvalReport`.
 
 :func:`build_report` computes every summary statistic the evaluation

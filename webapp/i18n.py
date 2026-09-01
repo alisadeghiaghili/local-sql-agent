@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Lightweight EN/FA localization for the web app.
 
 Language is stored in the Flask session (``session["lang"]``); the UI strings

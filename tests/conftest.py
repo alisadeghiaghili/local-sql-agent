@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Shared pytest configuration.
 
 The suite had no ``conftest.py`` at all, which is how a single test came to

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Unit tests for api/health.py — the OpenAI-compatible /models probe + DB ping.
 
 api/test_api_endpoints.py::TestHealth exercises the endpoint with

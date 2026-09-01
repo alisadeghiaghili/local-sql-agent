@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Phase 3 — conversation, session memory, and declared assumptions.
 
 See ``docs/api-contract-v2.md`` for the frozen contract this package

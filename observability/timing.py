@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Per-stage timing collection matching ``docs/api-contract-v2.md`` §4.
 
 The contract's ``Turn.timings`` field has an exact, fixed shape::

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Hybrid table retriever: TF-IDF scoring + synonym expansion + always-include rules.
 
 This module is the canonical TF-IDF fallback engine used by EntityRetriever

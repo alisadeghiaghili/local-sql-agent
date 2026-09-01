@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for llm/wizard_llm.py — openai + mock only.
 
 The Ollama-specific and Anthropic transports are gone (see

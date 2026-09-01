@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """The API audit record and its (never-fails) JSONL writer.
 
 Closes the audit gap described in the package docstring: today

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Contract tests for prompts/system_prompt.md, few_shots.md, business_glossary.md.
 
 Philosophy

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Persist an :class:`~eval.models.EvalReport` as a baseline and gate CI on regressions.
 
 Workflow

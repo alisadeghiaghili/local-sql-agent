@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Export a DataFrame to a timestamped Excel file.
 
 Output directory defaults to ``exports/`` (configurable via EXPORT_DIR env var).

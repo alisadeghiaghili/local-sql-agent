@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Verify a deployed environment matches what this codebase assumes.
 
 Usage (from repo root, against whatever ``.env`` / real environment

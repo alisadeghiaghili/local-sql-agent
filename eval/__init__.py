@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Offline/online evaluation harness for the NL->SQL engine.
 
 This package measures **execution accuracy** — whether a generated SQL

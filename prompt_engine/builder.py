@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Assemble the final LLM prompt from retrieval context and schema.
 
 This module contains a single static class, :class:`PromptBuilder`, whose

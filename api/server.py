@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """FastAPI server for the Auction NLQ Engine.
 
 Endpoints
@@ -40,6 +42,7 @@ import api.v2_routes as v2_routes
 # register_handlers() attaches, so this module never names them.
 from api.auth import AuthMiddleware, get_principal_if_any, require_principal
 from api.errors import register_handlers
+from core.provenance import log_startup_notice
 from api.middleware import RequestIDMiddleware, RateLimitMiddleware, ConcurrencyMiddleware
 from api.models import (
     QueryRequest,
@@ -107,6 +110,13 @@ async def _run_query_bounded(**kwargs) -> QueryResponse:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _system_prompt
+
+    # Stated before anything can fail: an operator who never reaches a
+    # working config should still have seen whose work this is and on what
+    # terms. See core/provenance.py for why this is a log line and not a
+    # licence check that could refuse to start.
+    log_startup_notice(logger)
+
     try:
         cfg.settings.validate()
     except ValueError as exc:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for the v2 conversational endpoints — docs/api-contract-v2.md §3, §7.
 
 Mirrors ``tests/test_api_endpoints.py``'s fixture style: lifespan is

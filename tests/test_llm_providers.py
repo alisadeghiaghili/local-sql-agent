@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for llm/providers.py — the OpenAI-compatible transport + MockBackend.
 
 Every HTTP call is mocked (``requests.post``/``requests.get``); nothing

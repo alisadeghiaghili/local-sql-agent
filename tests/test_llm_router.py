@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for llm/router.py — TaskType routing, fallback chains, and governance.
 
 Exit criteria this file is directly responsible for:

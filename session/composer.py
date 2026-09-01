@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """§2 refinement composer — "among those" implemented as Reading B, not A.
 
 Two hard requirements from ``docs/api-contract-v2.md`` §2 govern every

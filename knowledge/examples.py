@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Lazy loader for examples config.
 
 Variables are loaded from project_config/examples.yaml on first access.

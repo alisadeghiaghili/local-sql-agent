@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Phase 8 — authentication: the ten required contracts from the spec.
 
 Covers, in order:

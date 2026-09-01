@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Tests for POST /query/stream (SSE) and the bounded async pipeline (Phase 2 task 4).
 
 Mirrors tests/test_api_endpoints.py's fixture pattern: run_query is patched
