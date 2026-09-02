@@ -25,7 +25,12 @@ Design
   effect, so a knowledge-base change (a business rule edited, a table
   added) invalidates old entries by construction — they simply become
   unreachable under the new version's keys, rather than requiring an
-  explicit flush that's easy to forget.
+  explicit flush that's easy to forget. The question-keyed store's
+  prefix component additionally carries
+  ``core.persian.NORMALIZER_VERSION`` (see ``_QUESTION_KEY_NAMESPACE``)
+  for the same reason: a change to the Persian-folding rules must not
+  let an old entry collide with a new one that now normalises
+  differently.
 
 Usage::
 
@@ -50,41 +55,34 @@ from typing import NamedTuple
 
 import config as cfg
 from api.models import QueryResponse
+from core.persian import NORMALIZER_VERSION, normalize_for_matching
 
 # ---------------------------------------------------------------------------
 # Question normalisation
 # ---------------------------------------------------------------------------
 
-#: Persian digits (U+06F0-06F9) and Arabic-Indic digits (U+0660-0669) mapped
-#: to ASCII 0-9, so "۱۴۰۲" and "١٤٠٢" and "1402" all normalise to the same
-#: cache key.
-_DIGIT_MAP = {
-    **{chr(0x06F0 + i): str(i) for i in range(10)},  # Persian
-    **{chr(0x0660 + i): str(i) for i in range(10)},   # Arabic-Indic
-}
-_DIGIT_TABLE = str.maketrans(_DIGIT_MAP)
-
-#: Zero-width non-joiner (U+200C) — common inside Persian compound words
-#: (می‌خواهم) but irrelevant to cache-key equality; stripped outright.
-_ZWNJ = "‌"
-
-#: Arabic-form letters folded to their Persian equivalents: ي (U+064A) -> ی
-#: (U+06CC), ك (U+0643) -> ک (U+06A9). Both spellings are common in
-#: Persian text depending on input method/keyboard.
-_LETTER_MAP = {"ي": "ی", "ك": "ک"}
-_LETTER_TABLE = str.maketrans(_LETTER_MAP)
-
 _WHITESPACE_RE = re.compile(r"\s+")
+
+#: Folded into the question-keyed store's prefix_version component (see
+#: `_question_key`) so a normaliser upgrade that changes
+#: normalize_for_matching's output cannot let an entry written under the
+#: old folding rules collide with one written under the new rules.
+#: A version bump therefore causes a one-off mass cache miss for every
+#: in-flight entry the moment it deploys -- that is intended, not a bug:
+#: the alternative is silently serving an answer keyed on the wrong
+#: notion of "same question".
+_QUESTION_KEY_NAMESPACE = f"persian-norm-v{NORMALIZER_VERSION}"
 
 
 def _normalize_question(question: str) -> str:
     """Fold a question to a canonical form for cache-key equality.
 
-    Applies, in order: Persian/Arabic-Indic digit folding, ZWNJ removal,
-    ي/ك → ی/ک letter folding, whitespace collapsing, ASCII lowercasing, and
-    stripping. None of this changes the *meaning* of the question — it only
-    removes differences a user would never notice when phrasing the exact
-    same request twice.
+    Delegates the actual folding to :func:`core.persian.normalize_for_matching`
+    -- the same function every other Persian-text-matching call site in this
+    codebase now uses, so two spellings of the same question can never hash
+    to different cache keys while also being treated as different questions
+    by, say, the value retriever's filter extraction. See that module's
+    docstring for exactly what folds.
 
     Parameters
     ----------
@@ -110,7 +108,9 @@ def _normalize_question(question: str) -> str:
     Disabled via ``Settings.cache_normalize_questions=False``, only
     whitespace is stripped (the pre-Phase-2 behaviour) — kept as an
     escape hatch in case aggressive folding ever proves wrong for a
-    specific deployment's data:
+    specific deployment's data. This switch affects the cache's key
+    only -- it has no effect on :func:`core.persian.normalize_for_matching`
+    itself, which every other call site keeps using unconditionally:
 
     >>> from config import override_settings
     >>> with override_settings(cache_normalize_questions=False):
@@ -119,11 +119,7 @@ def _normalize_question(question: str) -> str:
     """
     if not cfg.settings.cache_normalize_questions:
         return question.strip()
-    text = question.translate(_DIGIT_TABLE)
-    text = text.replace(_ZWNJ, "")
-    text = text.translate(_LETTER_TABLE)
-    text = _WHITESPACE_RE.sub(" ", text).strip()
-    return text.lower()
+    return normalize_for_matching(question)
 
 
 class _CacheEntry(NamedTuple):
@@ -171,7 +167,12 @@ class QueryCache:
     def _question_key(
         question: str, mode: str, prefix_version: str, scope_key: str = "",
     ) -> tuple[str, str, str, str]:
-        return (prefix_version, _normalize_question(question), mode, scope_key)
+        # _QUESTION_KEY_NAMESPACE rides along with prefix_version (the
+        # existing invalidation channel) rather than becoming a fifth
+        # tuple element, so a normaliser-version change invalidates old
+        # entries the exact same way a knowledge-base change does.
+        versioned_prefix = f"{prefix_version}|{_QUESTION_KEY_NAMESPACE}"
+        return (versioned_prefix, _normalize_question(question), mode, scope_key)
 
     @staticmethod
     def _sql_key(

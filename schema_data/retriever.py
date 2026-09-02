@@ -9,9 +9,9 @@ and FactRetriever when alias/pattern matching returns no results.
 from __future__ import annotations
 
 import math
-import unicodedata
 from functools import lru_cache
 
+from core.persian import normalize_for_matching
 from knowledge.aliases import SYNONYMS
 from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
 
@@ -22,8 +22,15 @@ _BIGRAM_MULTIPLIER: float = 1.5
 
 
 def _normalise(text: str) -> str:
-    """NFC-normalise and strip Zero-Width Non-Joiners."""
-    return unicodedata.normalize("NFC", text).replace("\u200c", "")
+    """Fold *text* to the codebase's canonical Persian matching form.
+
+    Delegates to :func:`core.persian.normalize_for_matching` (digit folding,
+    Arabic-form letter folding, ZWNJ stripping, whitespace collapsing, ASCII
+    lowercasing) instead of the NFC-only fold this module used before
+    unification -- callers already lowercase again after this, so the
+    added lowercasing here is harmless.
+    """
+    return normalize_for_matching(text)
 
 
 _ALWAYS_INCLUDE: dict[str, list[str]] = {

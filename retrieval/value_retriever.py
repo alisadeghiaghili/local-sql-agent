@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 import re
+from core.persian import normalize_compact, normalize_for_matching
 from knowledge.aliases import RING_ALIASES
-
-# Translates Persian (۰-۹) and Arabic-Indic (٠-٩) digits to ASCII so years
-# like ۱۴۰۲ or ١٤٠٢ are matched.
-_DIGIT_TRANSLATION = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 # Full Shamsi date 'YYYY/MM/DD' or 'YYYY-MM-DD' (digits in any script). The
 # lookarounds reuse the extract_year convention and block matches inside digit
@@ -35,9 +32,14 @@ class ValueRetriever:
 
     @staticmethod
     def extract_ring(question: str):
+        # normalize_for_matching so an alias/question pair that differs only
+        # by ي/ك vs ی/ک or ZWNJ still matches -- otherwise the same ring
+        # could be recognised for one spelling of a question and missed for
+        # another, spelling-equivalent one.
+        q = normalize_for_matching(question)
         for canonical_name, aliases in RING_ALIASES.items():
             for alias in aliases:
-                if alias in question:
+                if normalize_for_matching(alias) in q:
                     return canonical_name
         return None
 
@@ -45,44 +47,39 @@ class ValueRetriever:
     def extract_year(question: str):
         # Lookarounds instead of \b: \b is Unicode-aware and Persian letters
         # adjacent to digits would suppress the word boundary.
-        match = re.search(r"(?<!\d)(13\d{2}|14\d{2})(?!\d)", question.translate(_DIGIT_TRANSLATION))
+        match = re.search(r"(?<!\d)(13\d{2}|14\d{2})(?!\d)", normalize_for_matching(question))
         return int(match.group(1)) if match else None
-
-    @staticmethod
-    def _normalize(text: str) -> str:
-        """Strip ZWNJ and spaces so 'چهار شنبه' / 'چهارشنبه' / 'چهارشنبه' match alike."""
-        return text.replace("\u200c", "").replace(" ", "")
 
     @classmethod
     def extract_month_name(cls, question: str) -> str | None:
-        q = cls._normalize(question)
+        q = normalize_compact(question)
         for name in PERSIAN_MONTHS:
-            if cls._normalize(name) in q:
+            if normalize_compact(name) in q:
                 return name
         return None
 
     @classmethod
     def extract_day_of_week(cls, question: str) -> int | None:
-        q = cls._normalize(question)
+        q = normalize_compact(question)
         # Longest names first so e.g. "یکشنبه" matches before its substring "شنبه".
         for name, day_number in sorted(
             PERSIAN_DAYS_OF_WEEK.items(), key=lambda kv: len(kv[0]), reverse=True
         ):
-            if cls._normalize(name) in q:
+            if normalize_compact(name) in q:
                 return day_number
         return None
 
     @classmethod
     def extract_season_name(cls, question: str) -> str | None:
-        q = cls._normalize(question)
+        q = normalize_compact(question)
         for name in PERSIAN_SEASONS:
-            if cls._normalize(name) in q:
+            if normalize_compact(name) in q:
                 return name
         return None
 
     @staticmethod
     def extract_persian_date(question: str) -> str | None:
-        match = _PERSIAN_DATE_RE.search(question.translate(_DIGIT_TRANSLATION))
+        match = _PERSIAN_DATE_RE.search(normalize_for_matching(question))
         if not match:
             return None
         year, month, day = (int(g) for g in match.groups())
