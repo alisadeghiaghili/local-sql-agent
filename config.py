@@ -378,6 +378,83 @@ class Settings:
     serve them without credentials (e.g. a deployment that already sits
     behind its own perimeter auth)."""
 
+    # ── Phase 5b: deterministic value resolution ────────────────────────────
+    resolve_value_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("RESOLVE_VALUE_TIMEOUT_SECONDS", "2.0"))
+    )
+    """Per-(table, column) deadline for ``retrieval.value_resolver.resolve_value``'s
+    database round trip. Deliberately much tighter than
+    :attr:`query_timeout_seconds` (which bounds a full analytic query) —
+    this is a small lookup on the critical path *before* SQL generation
+    even starts, so a breach falls back to the no-match path (see
+    ``resolve_value``'s docstring) rather than blocking the request for as
+    long as a real query is allowed to run."""
+
+    resolve_value_cache_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("RESOLVE_VALUE_CACHE_TTL_SECONDS", "300"))
+    )
+    """How long (seconds) a cached entity-value resolution stays valid.
+    ``<= 0`` disables the cache. Dimension tables (customers, brokers,
+    symbols, ...) change slowly, so this can reasonably sit much longer
+    than an individual request without serving stale data in practice."""
+
+    resolve_value_cache_max_size: int = field(
+        default_factory=lambda: int(os.getenv("RESOLVE_VALUE_CACHE_MAX_SIZE", "512"))
+    )
+    """Maximum number of distinct ``(mention, table, column, scope_key)``
+    resolutions kept in memory before LRU eviction — mirrors
+    :attr:`cache_max_size`'s discipline for the unrelated query-result
+    cache."""
+
+    dimension_vocabulary_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("DIMENSION_VOCABULARY_TTL_SECONDS", "3600"))
+    )
+    """How long (seconds) a small dimension's prefetched value set
+    (``retrieval.dimension_vocabulary``) is served without triggering a
+    refresh. Unlike :attr:`resolve_value_cache_ttl_seconds`, this is
+    **not** a per-request latency knob and, since the stale-while-revalidate
+    redesign, it is **not an expiry either**: a cached value past this TTL
+    is still served (a stale trading-hall or commodity name beats no name
+    at all) while a background refresh for it is triggered — see that
+    module's docstring's "Stale-while-revalidate, warmed lazily" section.
+    ``<= 0`` makes every read stale immediately (a background refresh
+    fires on every match that consults it, rate-limited on failure by
+    :data:`retrieval.dimension_vocabulary._BACKGROUND_REFRESH_BACKOFF_SECONDS`),
+    which is the closest this module comes to "disabled" — it still stores
+    and serves whatever was last fetched rather than discarding it."""
+
+    dimension_vocabulary_warm_on_startup: bool = field(
+        default_factory=lambda: os.getenv(
+            "DIMENSION_VOCABULARY_WARM_ON_STARTUP", "false",
+        ).lower() in ("1", "true", "yes")
+    )
+    """When ``True``, ``api/server.py``'s ``lifespan`` calls
+    ``retrieval.dimension_vocabulary.warm_all`` once during startup, before
+    the server begins accepting requests.
+
+    Its meaning changed with the stale-while-revalidate redesign: the
+    vocabulary cache is no longer inert without this flag — a cold or
+    stale entry now self-heals via a background refresh triggered from the
+    request path itself (never awaited, so no request blocks on it; see
+    ``retrieval.dimension_vocabulary``'s module docstring). This flag is
+    now a pure **optimisation**: it pre-pays the very first cold-cache miss
+    for each dimension at startup instead of leaving it to whichever
+    request happens to ask about that dimension first. A deployment that
+    never sets this still gets working, self-healing dimension resolution
+    — just with one extra miss per dimension after each restart, and (per
+    the TTL note above) after each TTL expiry regardless.
+
+    Defaults to ``False`` so this codebase's test suite — which builds a
+    ``TestClient(app)`` against no live database in dozens of existing
+    tests, and whose ``lifespan`` has made zero database calls up to this
+    phase — is unaffected until an operator deliberately opts in for a
+    real deployment. A warm-up failure (e.g. the database is unreachable
+    at startup) is logged as a warning, never raised — unlike the
+    auth/config checks above this one, an empty vocabulary cache degrades
+    every dimension it would have covered to "no match" (this phase's
+    universal safe-miss behaviour), not a server that cannot start at
+    all."""
+
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 

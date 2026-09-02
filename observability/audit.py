@@ -138,6 +138,16 @@ class AuditRecord:
         CLI/REPL path, or a pre-Phase-8-shaped direct call). This is the
         field that makes the audit trail an actual audit trail — "who
         ran this query" — rather than just a log of what happened.
+    resolved_columns:
+        ``"Table.Column"`` strings (Phase 5b) naming every allowlisted
+        dimension column ``retrieval.value_resolver.resolve_value``
+        queried while answering this turn — e.g. ``["Customer.Name"]`` —
+        or ``None`` when no database-backed value resolution happened.
+        Column *identifiers* only, never the resolved value itself: this
+        field carries exactly the same "record that it happened and
+        against which column, never what came back" guarantee
+        :attr:`columns` already enforces for result columns, and
+        :meth:`__post_init__` rejects it the same way.
 
     Raises
     ------
@@ -193,6 +203,7 @@ class AuditRecord:
     llm: dict[str, Any] | None = None
     columns: list[str] | None = None
     principal_id: str | None = None
+    resolved_columns: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -202,6 +213,14 @@ class AuditRecord:
                         "AuditRecord.columns must contain column-name strings "
                         f"only, never row values; got {type(col).__name__} at "
                         f"index {i}"
+                    )
+        if self.resolved_columns is not None:
+            for i, col in enumerate(self.resolved_columns):
+                if not isinstance(col, str):
+                    raise TypeError(
+                        "AuditRecord.resolved_columns must contain "
+                        "'Table.Column' identifier strings only, never "
+                        f"resolved values; got {type(col).__name__} at index {i}"
                     )
 
     def as_dict(self) -> dict[str, Any]:
@@ -220,6 +239,7 @@ class AuditRecord:
             "llm":            self.llm,
             "columns":        self.columns,
             "principal_id":   self.principal_id,
+            "resolved_columns": self.resolved_columns,
         }
 
 

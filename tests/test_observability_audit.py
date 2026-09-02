@@ -206,3 +206,45 @@ class TestSaveAuditRecord:
             save_audit_record(_record(request_id="r_1"))
             save_audit_record(_record(request_id="r_1"))  # same length request_id
         assert (tmp_path / "audit_log.jsonl.1").exists()
+
+
+class TestResolvedColumnsNeverCarryRowValues:
+    """Phase 5b's hard rule: the audit trail may record that a database-
+    backed value resolution happened, and against which column, but must
+    never gain the resolved row value itself. ``resolved_columns`` follows
+    the exact "names, never values" discipline ``columns`` already
+    enforces (see the module docstring's two hard rules).
+    """
+
+    _POISON = "زهرا نادری؛ کدملی ۰۰۱۲۳۴۵۶۷۸؛ افشا نشود"
+
+    def test_resolved_columns_round_trip_as_identifiers(self):
+        record = _record(resolved_columns=["Customer.Name", "Symbol.Commodity_Symbol"])
+        d = record.as_dict()
+        assert d["resolved_columns"] == ["Customer.Name", "Symbol.Commodity_Symbol"]
+
+    def test_a_non_string_entry_is_rejected_not_silently_stored(self):
+        """Same structural guard as ``columns``: nothing on this dataclass
+        can hold row *data* (a tuple, a dict, ...) at all -- only a plain
+        identifier string is ever accepted."""
+        with pytest.raises(TypeError, match="resolved_columns"):
+            _record(resolved_columns=["Customer.Name", ("Customer", self._POISON)])
+
+    def test_poison_value_never_appears_anywhere_in_the_serialised_record(self):
+        """Construct a realistic resolved-query record the way
+        ``retrieval.value_resolver.resolve_value`` actually populates this
+        field -- question, SQL, and ``resolved_columns`` all naming only
+        tables/columns, never a resolved value -- and prove the poison
+        value, which never legitimately reaches this dataclass through any
+        real call site, does not leak into the serialised record through
+        any field either."""
+        record = _record(
+            question="مشتری فولاد مبارکه چند قرارداد دارد؟",
+            resolved_columns=["Customer.Name"],
+        )
+        serialised = json.dumps(record.as_dict(), ensure_ascii=False)
+        assert self._POISON not in serialised
+
+    def test_defaults_to_none_when_no_resolution_happened(self):
+        d = _record().as_dict()
+        assert d["resolved_columns"] is None
