@@ -42,7 +42,15 @@ from __future__ import annotations
 
 import pytest
 
+from schema_data.columns import TABLE_COLUMNS
 from security.sql_guard import clean_sql, ensure_top, validate_sql
+
+#: A table name picked dynamically from whatever schema is loaded (real or
+#: project_config.example/), rather than a hardcoded real one -- the three
+#: cases below are about a COLUMN name or a string literal, not the table,
+#: so they must not incidentally trip on a placeholder table that doesn't
+#: resolve (see each test's own docstring).
+_ANY_KNOWN_TABLE = next(iter(TABLE_COLUMNS))
 
 
 # ---------------------------------------------------------------------------
@@ -192,17 +200,17 @@ class TestSubstringFalsePositives:
     """
 
     def test_exp_date_column_rejected_due_to_xp_substring(self):
-        """'EXP_DATE' contains 'XP_' as a substring. The table is a real
-        one (Contract, from schema_data/columns.py) -- Phase 1 added a
-        real table allowlist, and this case is about the column name, not
-        the table, so it must not incidentally trip on an unrelated
+        """'EXP_DATE' contains 'XP_' as a substring. The table is a known
+        one (from whichever schema is loaded) -- Phase 1 added a real
+        table allowlist, and this case is about the column name, not the
+        table, so it must not incidentally trip on an unrecognised
         placeholder table."""
-        validate_sql("SELECT EXP_DATE FROM Contract")
+        validate_sql(f"SELECT EXP_DATE FROM {_ANY_KNOWN_TABLE}")
 
     def test_resp_code_column_rejected_due_to_sp_substring(self):
-        """'RESP_CODE' contains 'SP_' as a substring. Real table, same
+        """'RESP_CODE' contains 'SP_' as a substring. Known table, same
         reasoning as above."""
-        validate_sql("SELECT RESP_CODE FROM Contract")
+        validate_sql(f"SELECT RESP_CODE FROM {_ANY_KNOWN_TABLE}")
 
 
 class TestKeywordInsideStringLiteralFalsePositive:
@@ -213,9 +221,9 @@ class TestKeywordInsideStringLiteralFalsePositive:
     """
 
     def test_drop_inside_string_literal_is_not_a_drop_statement(self):
-        """Real table (Contract) -- this case is about the string literal,
-        not the table name."""
-        sql = "SELECT * FROM Contract WHERE Note = N'please DROP the box'"
+        """Known table (whichever schema is loaded) -- this case is about
+        the string literal, not the table name."""
+        sql = f"SELECT * FROM {_ANY_KNOWN_TABLE} WHERE Note = N'please DROP the box'"
         validate_sql(sql)
 
 

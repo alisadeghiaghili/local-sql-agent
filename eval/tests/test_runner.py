@@ -31,9 +31,18 @@ from eval.runner import (
     run_case,
     run_golden_set,
 )
+from schema_data.columns import TABLE_COLUMNS
 
 SIMPLE_DF = pd.DataFrame({"n": [3]})
 SIMPLE_FP = fingerprint_dataframe(SIMPLE_DF)
+
+#: A table name picked dynamically from whatever schema is loaded (real or
+#: project_config.example/) -- Phase 1's validate_sql enforces a table
+#: allowlist against schema_data/columns.py, and this fixture is exercised
+#: through the real offline pipeline (run_case -> validate_sql), so "T" (or
+#: any other placeholder) would be guard-rejected. Which known table is
+#: used does not matter to any test in this module.
+_ANY_KNOWN_TABLE = next(iter(TABLE_COLUMNS))
 
 
 def _success_case(**overrides) -> GoldenCase:
@@ -41,10 +50,7 @@ def _success_case(**overrides) -> GoldenCase:
         id="c1",
         question="how many?",
         tags=["count"],
-        # A real table (Phase 1's validate_sql now enforces a table
-        # allowlist against schema_data/columns.py -- "T" is not one of
-        # the 12 known tables and would be guard-rejected).
-        expected_sql="SELECT COUNT(*) AS n FROM Contract",
+        expected_sql=f"SELECT COUNT(*) AS n FROM {_ANY_KNOWN_TABLE}",
         expected_fingerprint=SIMPLE_FP,
     )
     defaults.update(overrides)

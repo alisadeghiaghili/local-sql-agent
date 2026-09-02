@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from retrieval.value_retriever import ValueRetriever
 
 
@@ -128,7 +130,14 @@ class TestExtractPersianDate:
 
 
 class TestRetrieve:
+    """"تالار پتروشیمی" only resolves to its full display name through the
+    REAL project_config/aliases.yaml's ring_aliases -- project_config.example/
+    ships different, generic ring names, so the four tests below that
+    reference it are marked domain_data and skip when it is in effect (see
+    the repo-root conftest.py). The other tests in this class use no real
+    alias data and are unaffected."""
 
+    @pytest.mark.domain_data
     def test_extracts_ring_year_month_day(self):
         filters = ValueRetriever.retrieve(
             "خرید مشتریان در تالار پتروشیمی اردیبهشت 1402 پنجشنبه"
@@ -140,10 +149,12 @@ class TestRetrieve:
             "PersianDayOfWeek": 6,
         }
 
+    @pytest.mark.domain_data
     def test_no_date_terms_returns_ring_only(self):
         filters = ValueRetriever.retrieve("بیشترین خرید در تالار سیمان")
         assert filters == {"Ring": "تالار سیمان"}
 
+    @pytest.mark.domain_data
     def test_extracts_ring_year_month_day_with_persian_digits(self):
         filters = ValueRetriever.retrieve(
             "خرید مشتریان در تالار پتروشیمی اردیبهشت ۱۴۰۲ پنجشنبه"
@@ -155,6 +166,7 @@ class TestRetrieve:
             "PersianDayOfWeek": 6,
         }
 
+    @pytest.mark.domain_data
     def test_extracts_season_with_ring_and_year(self):
         filters = ValueRetriever.retrieve(
             "بیشترین حجم معامله در تالار پتروشیمی در فصل بهار ۱۴۰۲"
@@ -169,6 +181,7 @@ class TestRetrieve:
         filters = ValueRetriever.retrieve("معاملات 1402/05/15")
         assert filters == {"PersianDate": "1402/05/15"}
 
+    @pytest.mark.domain_data
     def test_full_date_with_ring(self):
         filters = ValueRetriever.retrieve("معاملات در تالار پتروشیمی 1402/05/15")
         assert filters == {"Ring": "تالار پتروشیمی و فرآورده های نفتی", "PersianDate": "1402/05/15"}

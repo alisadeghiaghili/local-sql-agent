@@ -38,6 +38,20 @@ import pytest
 from schema_data.columns import TABLE_COLUMNS
 from security.sql_guard import validate_sql
 
+#: A table (and one of its columns) picked dynamically from whatever
+#: schema is loaded (real or project_config.example/), rather than a
+#: hardcoded real name -- most cases below are about the GUARD's behaviour
+#: (does it validate / reject / allow), not about any specific table or
+#: column, so they must not incidentally depend on a real name that a
+#: generic example schema does not define.
+_ANY_TABLE = next(iter(TABLE_COLUMNS))
+_ANY_COLUMN = next(iter(TABLE_COLUMNS[_ANY_TABLE]))
+
+#: A second, distinct known table -- for the representative-join case,
+#: which needs two tables, not one.
+_OTHER_TABLE = next(t for t in TABLE_COLUMNS if t != _ANY_TABLE)
+_OTHER_COLUMN = next(iter(TABLE_COLUMNS[_OTHER_TABLE]))
+
 
 # ---------------------------------------------------------------------------
 # Zero false positives across the whole real schema
@@ -76,30 +90,42 @@ class TestRealSchemaColumnsValidate:
 
 
 class TestRealSchemaJoinsValidate:
-    """A representative join across fact/dim tables, mirroring the shape of
-    real generated SQL (see eval_data.example/golden.jsonl), must validate."""
+    """A representative join across two tables, mirroring the shape of
+    real generated SQL (see eval_data.example/golden.jsonl), must validate.
+    validate_sql checks table/column ALLOWLIST membership, not join
+    semantics, so any two known tables and any of their own columns
+    exercise exactly the same guard logic as a semantically real FK join."""
 
-    def test_contract_joined_to_symbol(self):
+    def test_two_known_tables_joined(self):
         sql = (
-            "SELECT TOP 5 s.Commodity_PersianName, SUM(c.TotalPrice) AS TotalValue "
-            "FROM [Contract] c JOIN [Symbol] s ON c.Symbol_ID = s.ID "
-            "GROUP BY s.Commodity_PersianName ORDER BY TotalValue DESC"
+            f"SELECT TOP 5 s.{_OTHER_COLUMN}, SUM(c.{_ANY_COLUMN}) AS TotalValue "
+            f"FROM [{_ANY_TABLE}] c JOIN [{_OTHER_TABLE}] s "
+            f"ON c.{_ANY_COLUMN} = s.{_OTHER_COLUMN} "
+            f"GROUP BY s.{_OTHER_COLUMN} ORDER BY TotalValue DESC"
         )
         validate_sql(sql)  # must not raise
 
     def test_order_reserved_word_table_with_date_join(self):
         """`Order` and `Date` are both T-SQL reserved words -- bracketed
-        identifiers must still resolve to their TABLE_COLUMNS entries."""
+        identifiers must still resolve to their TABLE_COLUMNS entries. Both
+        table names are deliberately present in
+        project_config.example/schema.yaml too (see its own header
+        comment) so this reserved-word case keeps being exercised under
+        either configuration; only the specific COLUMN names are derived
+        from whichever schema is actually loaded, since the real and
+        example schemas don't share column names."""
+        order_col = next(iter(TABLE_COLUMNS["Order"]))
+        date_col = next(iter(TABLE_COLUMNS["Date"]))
         sql = (
-            "SELECT COUNT(*) AS OrderCount FROM [Order] o "
-            "JOIN [Date] d ON o.Date_ID = d.ID WHERE d.PersianYear = 1402"
+            f"SELECT COUNT(*) AS OrderCount FROM [Order] o "
+            f"JOIN [Date] d ON o.{order_col} = d.{date_col}"
         )
         validate_sql(sql)  # must not raise
 
     def test_cte_over_real_table_validates(self):
         sql = (
-            "WITH active_customers AS (SELECT ID, Name FROM [Customer] WHERE IsActive = 1) "
-            "SELECT TOP 10 Name FROM active_customers"
+            f"WITH active_rows AS (SELECT {_ANY_COLUMN} FROM [{_ANY_TABLE}]) "
+            f"SELECT TOP 10 {_ANY_COLUMN} FROM active_rows"
         )
         validate_sql(sql)  # must not raise
 
@@ -167,7 +193,7 @@ class TestUnknownColumnOnKnownTableIsRejected:
 
     def test_typo_column_on_real_table_rejected(self):
         with pytest.raises(ValueError, match="Unknown column"):
-            validate_sql("SELECT c.NotARealColumn FROM [Contract] c")
+            validate_sql(f"SELECT c.NotARealColumn FROM [{_ANY_TABLE}] c")
 
     def test_error_message_is_not_classified_as_a_security_block(self):
         """An unknown-column typo is a semantic error, not an attack -- its
@@ -175,7 +201,7 @@ class TestUnknownColumnOnKnownTableIsRejected:
         that substring to route security rejections to ForbiddenSQLError
         rather than InvalidSQLResponseError)."""
         with pytest.raises(ValueError) as exc_info:
-            validate_sql("SELECT c.NotARealColumn FROM [Contract] c")
+            validate_sql(f"SELECT c.NotARealColumn FROM [{_ANY_TABLE}] c")
         assert "Forbidden keyword" not in str(exc_info.value)
 
 
@@ -189,11 +215,11 @@ class TestUnresolvableColumnReferencesAreAllowed:
     for why an unresolvable table gets the opposite treatment."""
 
     def test_derived_table_alias_column_allowed(self):
-        sql = "SELECT z.TotalPrice FROM (SELECT TotalPrice FROM [Contract]) z"
+        sql = f"SELECT z.{_ANY_COLUMN} FROM (SELECT {_ANY_COLUMN} FROM [{_ANY_TABLE}]) z"
         validate_sql(sql)  # must not raise
 
     def test_cte_alias_qualified_column_allowed(self):
-        sql = "WITH cte AS (SELECT ID AS n FROM [Customer]) SELECT cte.n FROM cte"
+        sql = f"WITH cte AS (SELECT {_ANY_COLUMN} AS n FROM [{_ANY_TABLE}]) SELECT cte.n FROM cte"
         validate_sql(sql)  # must not raise
 
     def test_unqualified_column_on_real_table_allowed_even_if_misspelled(self):
@@ -202,7 +228,7 @@ class TestUnresolvableColumnReferencesAreAllowed:
         regardless of whether it turns out to be real. This is the
         pre-existing column leniency; it is unaffected by the table
         allowlist becoming strict."""
-        validate_sql("SELECT ThisColumnDoesNotExist FROM [Contract]")  # must not raise
+        validate_sql(f"SELECT ThisColumnDoesNotExist FROM [{_ANY_TABLE}]")  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -288,15 +314,15 @@ class TestStarCannotBypassDeniedColumns:
     def test_bare_star_expanded_and_rejected_when_it_would_expose_denied_column(self):
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
-                "SELECT * FROM [Customer]",
-                denied_columns={"NationalID"},
+                f"SELECT * FROM [{_ANY_TABLE}]",
+                denied_columns={_ANY_COLUMN},
             )
 
     def test_qualified_star_expanded_and_rejected(self):
         with pytest.raises(ValueError, match="Forbidden keyword"):
             validate_sql(
-                "SELECT c.* FROM [Customer] c",
-                denied_columns={"NationalID"},
+                f"SELECT c.* FROM [{_ANY_TABLE}] c",
+                denied_columns={_ANY_COLUMN},
             )
 
     def test_bare_star_allowed_when_expansion_has_no_denied_column(self):

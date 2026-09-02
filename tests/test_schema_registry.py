@@ -13,7 +13,8 @@ from schema_data.relationships import RELATIONSHIPS
 class TestSchemaRegistry:
 
     def test_context_is_string(self):
-        ctx = SchemaRegistry.build_context(("Contract",))
+        table = next(iter(TABLE_COLUMNS))
+        ctx = SchemaRegistry.build_context((table,))
         assert isinstance(ctx, str)
         assert len(ctx) > 0
 
@@ -36,10 +37,10 @@ class TestSchemaRegistry:
             assert table in ctx
 
     def test_multiple_tables_included(self):
-        ctx = SchemaRegistry.build_context(("Customer", "Contract", "Date"))
-        assert "Customer" in ctx
-        assert "Contract" in ctx
-        assert "Date" in ctx
+        tables = sorted(TABLE_COLUMNS)[:3]
+        ctx = SchemaRegistry.build_context(tuple(tables))
+        for table in tables:
+            assert table in ctx
 
     def test_unknown_table_silently_skipped(self):
         ctx = SchemaRegistry.build_context(("NonExistentTable",))

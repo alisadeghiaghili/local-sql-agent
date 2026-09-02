@@ -779,7 +779,7 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
 
     Examples
     --------
-    >>> validate_sql("SELECT TOP 10 * FROM Contract")   # passes silently
+    >>> validate_sql("SELECT TOP 10 * FROM Customer")   # passes silently
 
     >>> validate_sql("")
     Traceback (most recent call last):
@@ -820,7 +820,7 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
     longer a false positive (contrast ``tests/test_sql_guard_bypass.py``,
     which documents this as a bug at the pre-Phase-1 baseline):
 
-    >>> validate_sql("SELECT EXP_DATE FROM Contract")   # passes silently
+    >>> validate_sql("SELECT EXP_DATE FROM Customer")   # passes silently
 
     ``SELECT ... INTO`` is a write disguised as a read:
 
@@ -848,17 +848,17 @@ def validate_sql(sql: str, *, denied_columns: Iterable[str] | None = None) -> No
 
     The optional column-level ACL seam:
 
-    >>> validate_sql("SELECT NationalID FROM Customer", denied_columns={"NationalID"})
+    >>> validate_sql("SELECT Name FROM Customer", denied_columns={"Name"})
     Traceback (most recent call last):
         ...
-    security.sql_guard.PolicyRejection: Forbidden keyword detected: denied column 'NationalID'
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: denied column 'Name'
 
     ``*`` cannot be used to read around an active column policy:
 
-    >>> validate_sql("SELECT * FROM Customer", denied_columns={"NationalID"})
+    >>> validate_sql("SELECT * FROM Customer", denied_columns={"Name"})
     Traceback (most recent call last):
         ...
-    security.sql_guard.PolicyRejection: Forbidden keyword detected: '*' would expose denied column(s): ['nationalid']
+    security.sql_guard.PolicyRejection: Forbidden keyword detected: '*' would expose denied column(s): ['name']
     """
     if not sql or not sql.strip():
         raise CorrectableRejection("Empty SQL")
@@ -1070,18 +1070,18 @@ def extract_touched_tables(sql: str) -> list[str]:
 
     Examples
     --------
-    >>> extract_touched_tables("SELECT * FROM Contract")
-    ['Contract']
+    >>> extract_touched_tables("SELECT * FROM Customer")
+    ['Customer']
 
     >>> extract_touched_tables(
-    ...     "SELECT c.Name FROM Customer c JOIN Contract t ON t.CustomerId = c.Id"
+    ...     "SELECT c.Name FROM Customer c JOIN [Order] o ON o.CustomerId = c.Id"
     ... )
-    ['Contract', 'Customer']
+    ['Customer', 'Order']
 
     A CTE reference is not a table:
 
-    >>> extract_touched_tables("WITH cte AS (SELECT * FROM Contract) SELECT * FROM cte")
-    ['Contract']
+    >>> extract_touched_tables("WITH cte AS (SELECT * FROM Customer) SELECT * FROM cte")
+    ['Customer']
 
     Unparsable or table-free SQL degrades to an empty list, never raises:
 

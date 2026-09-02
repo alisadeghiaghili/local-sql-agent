@@ -17,8 +17,29 @@ from scripts.analyze_misses import (
     Miss,
     _build_report,
     _candidate_tokens,
+    _split_tokens,
     _tables_in_sql,
     analyse,
+)
+from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
+from knowledge.aliases import SYNONYMS
+
+#: Two distinct, real (or example) table names -- picked dynamically from
+#: whatever schema_data.tables.TABLE_DESCRIPTIONS actually holds, rather
+#: than hardcoded real IME names, so these tests exercise the SAME
+#: `_tables_in_sql` regex-matching logic under any configured schema.
+_TABLE_A, _TABLE_B = sorted(TABLES)[:2]
+
+#: A token guaranteed to already be present in _KNOWN_TOKENS (built from
+#: table descriptions) -- see scripts/analyze_misses.py's module docstring.
+_KNOWN_DESCRIPTION_TOKEN = next(
+    tok for text in TABLES.values() for tok in _split_tokens(text) if len(tok) > 1
+)
+
+#: Same, but sourced from a synonym KEY rather than a table description --
+#: covers the other branch of _candidate_tokens's "already covered" check.
+_KNOWN_SYNONYM_KEY_TOKEN = next(
+    tok for key in SYNONYMS for tok in _split_tokens(key) if len(tok) > 1
 )
 
 
@@ -27,22 +48,22 @@ from scripts.analyze_misses import (
 # ---------------------------------------------------------------------------
 
 class TestTablesInSql:
-    def test_detects_contract(self):
-        sql = "SELECT TOP 10 * FROM [Auction_Fact].[Contract]"
-        assert "Contract" in _tables_in_sql(sql)
+    def test_detects_a_known_table(self):
+        sql = f"SELECT TOP 10 * FROM [{_TABLE_A}]"
+        assert _TABLE_A in _tables_in_sql(sql)
 
-    def test_detects_customer(self):
-        sql = "SELECT Name FROM [Auction_Dim].[Customer]"
-        assert "Customer" in _tables_in_sql(sql)
+    def test_detects_a_schema_qualified_known_table(self):
+        sql = f"SELECT Name FROM [dbo].[{_TABLE_A}]"
+        assert _TABLE_A in _tables_in_sql(sql)
 
     def test_detects_join(self):
         sql = (
-            "SELECT c.Name FROM [Auction_Dim].[Customer] c "
-            "JOIN [Auction_Fact].[Contract] ct ON c.CustomerID = ct.CustomerID"
+            f"SELECT a.Name FROM [dbo].[{_TABLE_A}] a "
+            f"JOIN [dbo].[{_TABLE_B}] b ON a.ID = b.ID"
         )
         result = _tables_in_sql(sql)
-        assert "Customer" in result
-        assert "Contract" in result
+        assert _TABLE_A in result
+        assert _TABLE_B in result
 
     def test_unknown_table_not_included(self):
         sql = "SELECT * FROM [dbo].[NonExistentTable]"
@@ -62,14 +83,16 @@ class TestCandidateTokens:
         assert candidates == []
 
     def test_filters_existing_description_tokens(self):
-        # 'مشتری' is already in Customer description
-        candidates = _candidate_tokens("مشتری")
-        assert "مشتری" not in candidates
+        # Any token already present in some table's description, whichever
+        # schema is loaded, must be filtered out.
+        candidates = _candidate_tokens(_KNOWN_DESCRIPTION_TOKEN)
+        assert _KNOWN_DESCRIPTION_TOKEN not in candidates
 
     def test_filters_existing_synonym_keys(self):
-        # 'بهار' is already a synonym key
-        candidates = _candidate_tokens("بهار")
-        assert "بهار" not in candidates
+        # Any token that is itself a synonym key, whichever aliases.yaml
+        # is loaded, must be filtered out.
+        candidates = _candidate_tokens(_KNOWN_SYNONYM_KEY_TOKEN)
+        assert _KNOWN_SYNONYM_KEY_TOKEN not in candidates
 
     def test_returns_novel_tokens(self):
         # A completely new domain word not in descriptions or synonyms
@@ -121,15 +144,17 @@ class TestAnalyse:
         assert result == []
 
     def test_detects_miss_when_table_not_retrieved(self, tmp_path):
-        # Use a question that is very unlikely to retrieve 'Bank'
+        # A question with no real vocabulary overlap retrieves nothing
+        # (fallback=False), so ANY known table referenced in the SQL --
+        # picked dynamically, not a hardcoded real name -- is a miss.
+        table = sorted(TABLES)[0]
         log = self._write_log(tmp_path, [{
             "status":        "SUCCESS",
             "question":      "چیز بسیار نامشناس",
-            "generated_sql": "SELECT * FROM [Auction_Dim].[Bank]",
+            "generated_sql": f"SELECT * FROM [{table}]",
         }])
         result = analyse(log)
-        # Bank should be in the missing list
-        assert any("Bank" in m.missing for m in result)
+        assert any(table in m.missing for m in result)
 
     def test_miss_includes_candidate_tokens(self, tmp_path):
         log = self._write_log(tmp_path, [{
