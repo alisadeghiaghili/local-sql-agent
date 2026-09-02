@@ -25,6 +25,31 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+
+# ---------------------------------------------------------------------------
+# Rate limit, raised for the suite before anything imports api.middleware
+# ---------------------------------------------------------------------------
+# api/middleware.py reads RATE_LIMIT_* from the environment at import time,
+# and every authenticated test shares one principal (see auth_settings
+# below), so the whole suite runs through a single token bucket. At the
+# production default -- 60 requests per 60s plus a burst of 10 -- a suite
+# issuing well over a thousand authenticated requests in ~15 seconds
+# exhausts that bucket and starts getting 429s.
+#
+# Those 429s do not look like rate limiting when they land: a test reads
+# resp.json()["session_id"] and gets a KeyError, because the body is an
+# error envelope. It presented as an intermittent order-dependent flake
+# (~1 in 10-30 local runs) and as a deterministic CI failure, CI running
+# the suite about twice as fast and so giving the bucket less time to
+# refill. It cost a long time to find, hence this comment.
+#
+# Set here rather than in the CI workflow so a local run and CI behave
+# identically. Must run before api.middleware is first imported -- conftest
+# loads before any test module, and nothing above imports api.
+os.environ.setdefault("RATE_LIMIT_REQUESTS", "1000000")
+os.environ.setdefault("RATE_LIMIT_BURST", "1000")
+
 from typing import Any, Iterator
 from unittest.mock import patch
 
