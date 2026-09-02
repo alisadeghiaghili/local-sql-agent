@@ -29,6 +29,17 @@ import os
 import sys
 from pathlib import Path
 
+# Directory names this tool will never write to, regardless of --output-dir:
+# the live, git-ignored config an app instance actually runs on, and the
+# committed template CI runs against. A draft may contain real sample values
+# fetched straight from the warehouse (see SchemaInspector.draft_schema_yaml's
+# warning) -- silently overwriting either of these would mean a tool that can
+# widen the SQL guard's allowlist, or leak live data into a tracked file,
+# with no human review step in between. This is enforced here, not merely
+# documented, precisely because it must hold even if a caller mistypes
+# --output-dir.
+_PROTECTED_DIR_NAMES = ("project_config", "project_config.example")
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -92,6 +103,29 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _guard_output_dir(output_dir: Path) -> None:
+    """Refuse to run if *output_dir* resolves to a protected directory.
+
+    Checked against the current working directory (where this tool is
+    normally invoked from, the repo root) so ``--output-dir project_config``
+    is caught regardless of what the caller's shell happens to expand it to.
+    """
+    resolved = output_dir.resolve()
+    for name in _PROTECTED_DIR_NAMES:
+        if resolved == Path(name).resolve():
+            print(
+                f"ERROR: --output-dir must not be '{name}'.\n"
+                "Generated drafts may contain real sample values fetched from "
+                "your warehouse and must never silently overwrite the live "
+                "config directory or the committed project_config.example/ "
+                "template used by CI. Write to a scratch directory (default: "
+                "project_config_draft/) and copy files across by hand, after "
+                "review, once you are satisfied with them.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
+
 def _write_or_print(path: Path, content: str, dry_run: bool) -> None:
     if dry_run:
         print(f"\n{'=' * 70}")
@@ -125,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     output_dir = Path(args.output_dir)
+    _guard_output_dir(output_dir)
 
     # Deferred import so the module stays importable without DB deps installed
     from database.schema_inspector import SchemaInspector
@@ -160,10 +195,12 @@ def main(argv: list[str] | None = None) -> int:
     entities_yaml      = inspector.draft_entities_yaml(snapshot)
     aliases_yaml       = inspector.draft_aliases_yaml(snapshot)
     relationships_yaml = inspector.draft_relationships_yaml(snapshot)
+    schema_yaml        = inspector.draft_schema_yaml(snapshot)
 
     _write_or_print(output_dir / "entities.yaml",      entities_yaml,      args.dry_run)
     _write_or_print(output_dir / "aliases.yaml",       aliases_yaml,       args.dry_run)
     _write_or_print(output_dir / "relationships.yaml", relationships_yaml, args.dry_run)
+    _write_or_print(output_dir / "schema.yaml",        schema_yaml,        args.dry_run)
 
     print("", file=sys.stderr)
     print("Done.", file=sys.stderr)
