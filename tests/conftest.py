@@ -130,3 +130,60 @@ def _no_real_database() -> Iterator[None]:
             yield
     finally:
         get_engine.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_dimension_refresh() -> Iterator[None]:
+    """Disable ``retrieval.dimension_vocabulary``'s background self-healing
+    refresh for every test, and restore it afterwards.
+
+    Phase 5b's stale-while-revalidate redesign makes a cold or stale
+    dimension-vocabulary lookup trigger a background refresh against the
+    real database by default (see that module's docstring). Left enabled
+    here, an ordinary route test that mentions any of ``Ring``/``Currency``/
+    ``Broker``/``DeliveryPlace``/``Symbol`` -- ordinary questions do -- would
+    spin up a background thread reaching ``database.connection.create_engine``
+    on every single such test, since the vocabulary cache starts cold and
+    nothing in this suite warms it. ``_no_real_database`` above turns that
+    into a caught, logged ``AssertionError`` rather than a ~21s hang, but a
+    background thread quietly doing that on every cold lookup during
+    ordinary tests is still exactly the class of hidden-async-work problem
+    that produced this phase's one real test flake elsewhere (a leaked
+    ``time.sleep`` in a different module's shared thread pool -- see
+    ``tests/test_value_resolver.py``). Disabling the trigger here keeps the
+    whole suite's dimension-vocabulary reads synchronous and silent: a
+    cold/stale lookup still returns immediately (no candidates, or stale
+    candidates) but launches nothing.
+
+    ``tests/test_dimension_vocabulary.py``'s background-refresh tests
+    re-enable this locally, always with an injected ``execute_fn`` and
+    always inside a ``try/finally`` that restores the disabled state
+    before the test ends.
+
+    Restores whatever value was in effect *before* this fixture ran
+    (``is_background_refresh_enabled()``), not a hardcoded ``True``. A
+    hardcoded restore was the actual, observed cause of a real-database
+    connection attempt during a full-suite run: this fixture and the
+    per-class fixture in ``TestBackgroundRefresh`` both run with function
+    scope, so for a test in that class this one's setup runs first
+    (leaving the flag ``False``), the class fixture's setup then flips it
+    to ``True`` for the test body, and teardown unwinds in the opposite
+    order -- the class fixture's teardown restores ``False`` first, and
+    only THEN does this fixture's own teardown run. A hardcoded
+    ``set_background_refresh_enabled(True)`` here would stomp that back to
+    ``True`` regardless, leaving it wrong for every subsequent test until
+    another ``TestBackgroundRefresh`` test happened to reset it -- a
+    window in which an ordinary test's cold vocabulary lookup would
+    launch a real background thread. Save/restore make each fixture
+    responsible only for the value it actually changed.
+    """
+    from retrieval.dimension_vocabulary import (
+        is_background_refresh_enabled, set_background_refresh_enabled,
+    )
+
+    previous = is_background_refresh_enabled()
+    set_background_refresh_enabled(False)
+    try:
+        yield
+    finally:
+        set_background_refresh_enabled(previous)

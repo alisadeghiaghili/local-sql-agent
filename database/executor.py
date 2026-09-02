@@ -27,6 +27,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+from typing import Sequence
 
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
@@ -35,6 +36,54 @@ import config as cfg
 from database.connection import get_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
+    """Shared implementation behind :func:`execute_sql` and
+    :func:`execute_sql_params` — see :func:`execute_sql`'s docstring for the
+    full behaviour contract (timeout, lock timeout, rollback-only
+    transaction, streaming, row cap). The only difference between the two
+    public entry points is whether *params* is ``None`` (plain
+    :meth:`~sqlalchemy.engine.Connection.exec_driver_sql` call) or a bound
+    parameter sequence passed straight through to the DBAPI driver.
+    """
+    timeout_seconds = cfg.settings.query_timeout_seconds
+    timeout_ms = timeout_seconds * 1_000
+
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            # Connection.execution_options() mutates and returns the same
+            # Connection, so this rebinding does not change what __exit__
+            # closes -- see database.connection.get_engine's docstring for
+            # why this workload is SELECT-only and streaming is safe here.
+            conn = conn.execution_options(stream_results=True)
+
+            raw_conn = conn.connection.dbapi_connection
+            if raw_conn is not None:
+                raw_conn.timeout = timeout_seconds
+
+            conn.exec_driver_sql(f"SET LOCK_TIMEOUT {int(timeout_ms)}")
+
+            transaction = conn.begin()
+            try:
+                if params is None:
+                    result = conn.exec_driver_sql(sql)
+                else:
+                    result = conn.exec_driver_sql(sql, params)
+                rows = result.fetchmany(cfg.settings.max_rows_returned)
+                columns = list(result.keys())
+            finally:
+                # Always roll back, never commit -- see the "Read-only
+                # transaction" behaviour note above.
+                transaction.rollback()
+    except SQLAlchemyError as exc:
+        logger.error("SQL execution failed: %s", exc)
+        raise RuntimeError(f"Database error: {exc}") from exc
+
+    df = pd.DataFrame(rows, columns=columns)
+    logger.debug("Query returned %d rows, %d columns", len(df), len(df.columns))
+    return df
 
 
 def execute_sql(sql: str) -> pd.DataFrame:
@@ -125,40 +174,59 @@ def execute_sql(sql: str) -> pd.DataFrame:
         ...
     RuntimeError: Database error: ...
     """
-    timeout_seconds = cfg.settings.query_timeout_seconds
-    timeout_ms = timeout_seconds * 1_000
+    return _execute(sql, None)
 
-    try:
-        engine = get_engine()
-        with engine.connect() as conn:
-            # Connection.execution_options() mutates and returns the same
-            # Connection, so this rebinding does not change what __exit__
-            # closes -- see database.connection.get_engine's docstring for
-            # why this workload is SELECT-only and streaming is safe here.
-            conn = conn.execution_options(stream_results=True)
 
-            raw_conn = conn.connection.dbapi_connection
-            if raw_conn is not None:
-                raw_conn.timeout = timeout_seconds
+def execute_sql_params(sql: str, params: Sequence[object]) -> pd.DataFrame:
+    """Execute a **parameterised** *sql* string against Auction_DM.
 
-            conn.exec_driver_sql(f"SET LOCK_TIMEOUT {int(timeout_ms)}")
+    The one, parameterised sibling of :func:`execute_sql` — added so a
+    caller that must build a query from user-supplied text (the Phase 5b
+    value resolver, ``retrieval.value_resolver.resolve_value``) never has
+    to interpolate that text into the SQL string itself. Every protection
+    :func:`execute_sql` provides (driver-level timeout, ``SET
+    LOCK_TIMEOUT``, a transaction that is always rolled back and never
+    committed, streamed/row-capped results) applies identically here — this
+    is the *same* execution path, not a second, weaker one; see
+    :func:`execute_sql`'s docstring for the full behaviour contract.
 
-            transaction = conn.begin()
-            try:
-                result = conn.exec_driver_sql(sql)
-                rows = result.fetchmany(cfg.settings.max_rows_returned)
-                columns = list(result.keys())
-            finally:
-                # Always roll back, never commit -- see the "Read-only
-                # transaction" behaviour note above.
-                transaction.rollback()
-    except SQLAlchemyError as exc:
-        logger.error("SQL execution failed: %s", exc)
-        raise RuntimeError(f"Database error: {exc}") from exc
+    Parameters
+    ----------
+    sql:
+        A T-SQL string containing ``?`` placeholders (qmark style, what
+        pyodbc expects) for every bound value. Must still be a query this
+        codebase's own callers built from a **fixed template** — this
+        function does no validation of *sql* itself (unlike
+        :func:`execute_sql`'s callers, which are expected to have already
+        run :func:`~security.sql_guard.validate_sql`); the caller's
+        obligation here is instead to never format *sql* with untrusted
+        text in the first place.
+    params:
+        Positional bind values, passed straight through to the DBAPI
+        driver's ``execute(sql, parameters)`` — never interpolated into
+        *sql* by this function or by anything it calls.
 
-    df = pd.DataFrame(rows, columns=columns)
-    logger.debug("Query returned %d rows, %d columns", len(df), len(df.columns))
-    return df
+    Returns
+    -------
+    pandas.DataFrame
+        Same shape/behaviour as :func:`execute_sql`'s return value.
+
+    Raises
+    ------
+    RuntimeError
+        Same wrapping behaviour as :func:`execute_sql`.
+
+    Examples
+    --------
+    >>> df = execute_sql_params(
+    ...     "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] "
+    ...     "WHERE [Name] LIKE ?",
+    ...     (10, "%foo%"),
+    ... )  # doctest: +SKIP
+    >>> isinstance(df, pd.DataFrame)  # doctest: +SKIP
+    True
+    """
+    return _execute(sql, params)
 
 
 # Backward-compatible alias used by tests that monkeypatch

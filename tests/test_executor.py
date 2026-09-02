@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
-from database.executor import execute_sql
+from database.executor import execute_sql, execute_sql_params
 
 
 def _make_engine_mock(rows, columns):
@@ -171,3 +171,71 @@ class TestExecuteSql:
                 execute_sql("SELECT 1")
         result = _conn(engine).exec_driver_sql.return_value
         result.fetchmany.assert_called_once_with(42)
+
+
+class TestExecuteSqlParams:
+    """The Phase 5b parameterised sibling of execute_sql.
+
+    Same mocked-engine discipline as TestExecuteSql above -- this proves
+    execute_sql_params is the SAME execution path (same timeout, same
+    rollback-only transaction, same row cap) with one addition: params are
+    passed straight through to exec_driver_sql, never folded into the SQL
+    string.
+    """
+
+    def test_passes_params_to_exec_driver_sql_unmodified(self):
+        engine = _make_engine_mock([("شرکت فولاد مبارکه اصفهان",)], ["Name"])
+        with patch("database.executor.get_engine", return_value=engine):
+            df = execute_sql_params(
+                "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] WHERE [Name] LIKE ?",
+                (10, "%مبارکه%"),
+            )
+        assert list(df["Name"]) == ["شرکت فولاد مبارکه اصفهان"]
+        conn = _conn(engine)
+        # The query call (not the SET LOCK_TIMEOUT call) must have been
+        # made with exactly (sql, params) -- two positional args, params
+        # untouched.
+        query_call = next(
+            c for c in conn.exec_driver_sql.call_args_list if "LOCK_TIMEOUT" not in c.args[0]
+        )
+        assert query_call.args == (
+            "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] WHERE [Name] LIKE ?",
+            (10, "%مبارکه%"),
+        )
+
+    def test_wraps_sqlalchemy_error_in_runtime_error(self):
+        engine = MagicMock()
+        engine.connect.side_effect = OperationalError("conn", {}, Exception("fail"))
+        with patch("database.executor.get_engine", return_value=engine):
+            with pytest.raises(RuntimeError, match="Database error"):
+                execute_sql_params("SELECT ? ", (1,))
+
+    def test_transaction_is_started_and_rolled_back_on_success(self):
+        engine = _make_engine_mock([], ["x"])
+        with patch("database.executor.get_engine", return_value=engine):
+            execute_sql_params("SELECT ?", (1,))
+        conn = _conn(engine)
+        conn.begin.assert_called_once()
+        conn.begin.return_value.rollback.assert_called_once()
+        conn.begin.return_value.commit.assert_not_called()
+
+    def test_driver_level_query_timeout_is_set(self):
+        engine = _make_engine_mock([], ["x"])
+        from config import override_settings
+        with patch("database.executor.get_engine", return_value=engine):
+            with override_settings(query_timeout_seconds=45, max_rows_returned=100):
+                execute_sql_params("SELECT ?", (1,))
+        conn = _conn(engine)
+        assert conn.connection.dbapi_connection.timeout == 45
+
+    def test_respects_max_rows_setting(self):
+        engine = _make_engine_mock([], ["x"])
+        from config import override_settings
+        with patch("database.executor.get_engine", return_value=engine):
+            with override_settings(query_timeout_seconds=60, max_rows_returned=7):
+                execute_sql_params("SELECT ?", (1,))
+        result = _conn(engine).exec_driver_sql.return_value
+        result.fetchmany.assert_called_once_with(7)
+
+    def test_execute_sql_params_is_a_distinct_callable_from_execute_sql(self):
+        assert execute_sql_params is not execute_sql

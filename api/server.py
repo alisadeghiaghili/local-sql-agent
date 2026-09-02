@@ -158,6 +158,27 @@ async def lifespan(app: FastAPI):
     # prompt is handed across explicitly here instead.
     v2_routes._system_prompt = _system_prompt
     logger.info("System prompt loaded (%d chars)", len(_system_prompt))
+
+    # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
+    # Opt-in (see Settings.dimension_vocabulary_warm_on_startup) so this
+    # codebase's DB-less test suite is unaffected by default. This call
+    # happens BEFORE `yield` -- under the ASGI lifespan protocol no request
+    # is served until this coroutine yields, so "the first request must not
+    # block on a database round trip" holds by construction: the round
+    # trips happen here, on zero in-flight requests, not during a request.
+    # A failure is a warning, not fatal -- an empty vocabulary cache
+    # degrades every dimension it covers to "no match" (this phase's
+    # universal safe-miss behaviour), which is not a reason to refuse to
+    # start the server at all.
+    if cfg.settings.dimension_vocabulary_warm_on_startup:
+        from retrieval.dimension_vocabulary import warm_all
+
+        try:
+            counts = warm_all()
+            logger.info("dimension_vocabulary: startup warm-up complete: %s", counts)
+        except Exception as exc:  # noqa: BLE001 - a cold cache degrades gracefully, startup must not fail
+            logger.warning("dimension_vocabulary: startup warm-up failed: %s", exc)
+
     yield
 
 

@@ -25,6 +25,10 @@ filters        : concrete filter values extracted from the question
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from session.models import Clarification
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,20 @@ class RetrievalContext:
     --------
     {"Ring": "تالار پتروشیمی", "PersianYear": 1402}
     """
+
+    # ── Phase 5b: database-backed value resolution ─────────────────────────
+    value_clarifications: list["Clarification"] = field(default_factory=list)
+    """Ambiguous-entity clarifications from
+    ``retrieval.value_resolver.resolve_value`` -- populated only when a
+    database-backed resolution found *several* candidate values and
+    therefore deliberately did NOT write anything into :attr:`filters` (see
+    that function's docstring: an ambiguous match is never silently
+    picked). Empty in the overwhelmingly common case (no ambiguous
+    resolution this turn). **Not** read by ``PromptBuilder`` today -- kept
+    here, like :attr:`dimensions`, as the seam a future caller (the v2
+    session engine's own ``session.models.Ambiguity`` block) can read from,
+    without ``RetrievalContext`` needing a new shape when that wiring
+    lands."""
 
     # ── convenience ──────────────────────────────────────────────────────────
     @property
