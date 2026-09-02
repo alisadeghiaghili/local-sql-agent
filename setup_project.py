@@ -730,11 +730,12 @@ def step7_validate(output_dir: Path, log: dict) -> None:
     """Run a quick smoke test against the knowledge layer."""
     console.rule("[bold blue]Step 7: Validation[/bold blue]" if _RICH else "Step 7: Validation")
 
-    import importlib, sys as _sys
-    # Point knowledge layer at our output dir
+    # Point the knowledge layer at our output dir for the duration of this
+    # step, via the same Settings.project_config_dir seam every other
+    # consumer reads through (config.override_settings) rather than poking
+    # a module-private attribute directly.
     import knowledge.config_loader as cl
-    original_dir = cl._PROJECT_CONFIG_DIR
-    cl._PROJECT_CONFIG_DIR = output_dir
+    from config import override_settings
 
     results: dict[str, str] = {}
     loaders = [
@@ -744,17 +745,16 @@ def step7_validate(output_dir: Path, log: dict) -> None:
         ("examples.yaml",       cl.load_examples),
     ]
 
-    for fname, loader_fn in loaders:
-        if not (output_dir / fname).exists():
-            results[fname] = "skipped (file not written)"
-            continue
-        try:
-            loader_fn()
-            results[fname] = "OK"
-        except Exception as exc:  # noqa: BLE001
-            results[fname] = f"FAILED: {exc}"
-
-    cl._PROJECT_CONFIG_DIR = original_dir
+    with override_settings(project_config_dir=str(output_dir)):
+        for fname, loader_fn in loaders:
+            if not (output_dir / fname).exists():
+                results[fname] = "skipped (file not written)"
+                continue
+            try:
+                loader_fn()
+                results[fname] = "OK"
+            except Exception as exc:  # noqa: BLE001
+                results[fname] = f"FAILED: {exc}"
 
     for fname, status in results.items():
         colour = "green" if status == "OK" else "yellow" if "skipped" in status else "red"
@@ -767,16 +767,15 @@ def step7_validate(output_dir: Path, log: dict) -> None:
     rule_count    = 0
     example_count = 0
     try:
-        cl._PROJECT_CONFIG_DIR = output_dir
-        ec = cl.load_entities()
-        entity_count = len(ec.entities)
-        rc = cl.load_business_rules()
-        rule_count = len(rc.rules)
-        ex = cl.load_examples()
-        example_count = len(ex.examples)
-        cl._PROJECT_CONFIG_DIR = original_dir
+        with override_settings(project_config_dir=str(output_dir)):
+            ec = cl.load_entities()
+            entity_count = len(ec.entities)
+            rc = cl.load_business_rules()
+            rule_count = len(rc.rules)
+            ex = cl.load_examples()
+            example_count = len(ex.examples)
     except Exception:  # noqa: BLE001
-        cl._PROJECT_CONFIG_DIR = original_dir
+        pass
 
     console.print(
         f"\n  [bold green]Setup complete.[/bold green] "
