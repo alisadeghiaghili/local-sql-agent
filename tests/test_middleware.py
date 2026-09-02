@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -557,3 +558,58 @@ class TestRateLimitFreshBucketNoRounding:
 
         assert client.get("/limited").status_code == 200
         assert client.get("/limited").status_code == 429
+
+
+class TestRateLimitBucketPairsPrincipalAndIp:
+    """The bucket key must combine principal and IP, not use either alone.
+
+    Phase 8 moved this limiter from per-IP to per-principal to stop a
+    shared proxy putting a whole organisation in one bucket. That traded
+    one collapse for another: an organisation fronting this API with a
+    single web UI gives that UI one service key, so every user of it lands
+    in one bucket again.
+
+    The failure mode is nasty because a 429 does not look like rate
+    limiting downstream -- callers reading ``resp.json()["session_id"]``
+    get a KeyError from an error envelope. It surfaced as an intermittent
+    "flaky test" and as a deterministic CI failure, and took a long time
+    to trace.
+    """
+
+    @staticmethod
+    def _key(mw, *, principal_id: str | None, ip: str) -> str:
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.client.host = ip
+        request.headers = {}
+        request.state.principal = (
+            None if principal_id is None else SimpleNamespace(id=principal_id)
+        )
+        return mw._bucket_key(request)
+
+    def test_same_key_different_ips_do_not_share_a_bucket(self):
+        """One service key used by many clients: the common deployment."""
+        mw = RateLimitMiddleware(app=MagicMock())
+        a = self._key(mw, principal_id="web-ui", ip="10.0.0.7")
+        b = self._key(mw, principal_id="web-ui", ip="10.0.0.8")
+        assert a != b
+
+    def test_same_ip_different_principals_do_not_share_a_bucket(self):
+        """Per-user keys behind one proxy: the case Phase 8 set out to fix."""
+        mw = RateLimitMiddleware(app=MagicMock())
+        a = self._key(mw, principal_id="analyst-a", ip="10.0.0.1")
+        b = self._key(mw, principal_id="analyst-b", ip="10.0.0.1")
+        assert a != b
+
+    def test_identical_principal_and_ip_share_one_bucket(self):
+        """Genuinely indistinguishable traffic still shares a bucket."""
+        mw = RateLimitMiddleware(app=MagicMock())
+        a = self._key(mw, principal_id="web-ui", ip="10.0.0.7")
+        b = self._key(mw, principal_id="web-ui", ip="10.0.0.7")
+        assert a == b
+
+    def test_unauthenticated_falls_back_to_ip_only(self):
+        mw = RateLimitMiddleware(app=MagicMock())
+        key = self._key(mw, principal_id=None, ip="10.0.0.9")
+        assert key == "ip:10.0.0.9"

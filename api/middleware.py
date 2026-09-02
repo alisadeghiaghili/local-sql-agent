@@ -225,20 +225,35 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _bucket_key(self, request: Request) -> str:
         """The rate-limit bucket identity for *request* (Phase 8).
 
-        Behind a shared proxy, every caller's ``request.client.host`` is
-        the same proxy address — bucketing on IP alone would then put the
-        whole organisation in one bucket. When ``api.auth.AuthMiddleware``
-        (which must run before this middleware — see ``api/server.py``'s
-        middleware ordering) has resolved a principal for this request,
-        key on that principal's id instead; an unauthenticated request
-        (missing/invalid key, or ``AUTH_REQUIRED=false`` with no key
-        presented) falls back to the IP-based key exactly as before this
-        phase.
+        Keyed on the **pair** (principal, ip) when the caller is
+        authenticated, because either half alone collapses in a real
+        deployment:
+
+        * **IP alone.** Behind a shared proxy every caller's
+          ``request.client.host`` is the same proxy address, so the whole
+          organisation shares one bucket.
+        * **Principal alone.** An organisation that fronts this API with
+          one web UI issues that UI a single service key — so every user
+          of it shares one bucket. This was the shape shipped in Phase 8,
+          and it traded the first collapse for the second rather than
+          fixing it. The test suite made it visible: 1800+ requests under
+          a single test principal exhausted one bucket and produced
+          intermittent 429s that looked like unrelated test flakiness.
+
+        The pair separates per-user keys behind one proxy *and* distinct
+        clients sharing one service key. One shared key behind one proxy
+        still collapses, but that traffic is genuinely indistinguishable.
+
+        ``api.auth.AuthMiddleware`` must run before this middleware — see
+        ``api/server.py``'s middleware ordering. An unauthenticated
+        request (missing/invalid key, or ``AUTH_REQUIRED=false`` with no
+        key presented) falls back to the IP-only key.
         """
+        ip = self._client_ip(request)
         principal = getattr(request.state, "principal", None)
         if principal is not None:
-            return f"principal:{principal.id}"
-        return f"ip:{self._client_ip(request)}"
+            return f"principal:{principal.id}|ip:{ip}"
+        return f"ip:{ip}"
 
     def _consume(self, bucket_key: str) -> tuple[bool, float]:
         """Try to consume one token for *bucket_key* (an IP- or principal-keyed identity).
