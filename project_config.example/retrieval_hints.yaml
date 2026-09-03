@@ -1,0 +1,66 @@
+# retrieval_hints.yaml — TEMPLATE (copy to project_config/retrieval_hints.yaml and fill in real data)
+#
+# Retrieval heuristics for schema_data/retriever.py and
+# retrieval/{entity,fact}_retriever.py.
+#
+# fact_tables:    table names treated as fact/transaction tables (as
+#                 opposed to dimension tables) by the two-tier retrievers.
+#                 Must be a subset of schema.yaml's table names.
+# always_include: table -> list of trigger phrases. If a question contains
+#                 one of these (as whitespace-separated tokens, or as a
+#                 substring of the normalised, space-joined question), the
+#                 table is force-included in schema_data.retriever's result
+#                 with the maximum score. This is a retrieval heuristic,
+#                 not schema metadata -- it can name a table independently
+#                 of whichever schema.yaml happens to be loaded.
+# fact_patterns:  table -> list of keywords tried first (fast substring
+#                 match) by retrieval/fact_retriever.py before it falls
+#                 back to the shared TF-IDF engine.
+#
+# This template mirrors project_config.example/schema.yaml's example
+# tables (Order is the only fact/transaction table there) and uses
+# English-only trigger phrases -- add your own language's synonyms the
+# same way project_config.example/aliases.yaml does.
+
+fact_tables:
+  - "Order"
+
+always_include:
+  Date:
+    - "date"
+    - "year"
+    - "month"
+    - "season"
+    - "week"
+    - "spring"
+    - "summer"
+    - "autumn"
+    - "winter"
+    - "quarterly"
+    - "monthly"
+    - "yearly"
+    - "annual"
+    - "period"
+  Order:
+    - "order"
+    - "purchase order"
+    - "request"
+  Ring:
+    - "ring"
+    - "trading hall"
+    - "trading ring"
+    - "channel"
+  Broker:
+    - "broker"
+    - "agent"
+    - "seller broker"
+    - "buyer broker"
+  Supplier:
+    - "supplier"
+    - "suppliers"
+    - "seller"
+
+fact_patterns:
+  Order:
+    - "order"
+    - "purchase order"

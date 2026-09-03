@@ -145,13 +145,10 @@ _ALLOWED_MODULE_CONSTANTS = {
         "out of scope: LLM retry backoff base -- follow-up"
     ),
     "llm/sql_agent.py::MAX_CORRECTION_ATTEMPTS": (
-        "out of scope: SQL self-correction retry cap, duplicated (see "
-        "session/engine.py's own copy below) rather than shared -- "
-        "follow-up should resolve both the tuning move and the duplication"
-    ),
-    "session/engine.py::MAX_CORRECTION_ATTEMPTS": (
-        "out of scope: mirrors llm/sql_agent.py's constant of the same "
-        "name -- follow-up"
+        "out of scope: SQL self-correction retry cap. The duplication into "
+        "session/engine.py has been resolved -- that module now imports "
+        "this constant instead of redefining it. Moving it into "
+        "config.Settings remains a separate, still out-of-scope decision"
     ),
     "schema_data/retriever.py::_TOP_N": (
         "out of scope: TF-IDF retrieval result cap -- follow-up"

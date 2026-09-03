@@ -27,6 +27,13 @@ from __future__ import annotations
 
 from datetime import date
 
+from knowledge.session_policy import (
+    DEFAULT_SCOPE_CLARIFICATION_PROMPT,
+    DEFAULT_SCOPE_FIELD_NAME,
+    DEFAULT_SCOPE_FILTER_KEY,
+    DEFAULT_SCOPE_LABEL,
+    DEFAULT_SCOPE_OPTIONS,
+)
 from session.models import Assumption, Clarification
 
 # ---------------------------------------------------------------------------
@@ -42,13 +49,9 @@ _MEASURE_CUES: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 DEFAULT_MEASURE: str = "ارزش ریالی معامله"
-DEFAULT_RING: str = "همهٔ تالارها"
 
 MEASURE_OPTIONS: tuple[str, ...] = (
     "ارزش ریالی معامله", "حجم معامله", "تعداد قرارداد",
-)
-RING_OPTIONS: tuple[str, ...] = (
-    "همهٔ تالارها", "تالار سیمان", "تالار فلزات", "تالار پتروشیمی",
 )
 
 RANK_WORDS: tuple[str, ...] = ("برتر", "بیشترین", "کمترین", "بالاترین", "top", "best")
@@ -172,18 +175,22 @@ def assumptions_for_fresh(
     assumptions: list[Assumption] = []
     clarifications: list[Clarification] = []
 
-    if "Ring" in filters:
-        ring_value = str(filters["Ring"])
+    if DEFAULT_SCOPE_FILTER_KEY in filters:
+        ring_value = str(filters[DEFAULT_SCOPE_FILTER_KEY])
         ring_source = "question"
     else:
-        ring_value = DEFAULT_RING
+        ring_value = DEFAULT_SCOPE_LABEL
         ring_source = "default"
         clarifications.append(
             Clarification(
-                field="ring", prompt="منظور کدام تالار است؟", options=list(RING_OPTIONS),
+                field=DEFAULT_SCOPE_FIELD_NAME,
+                prompt=DEFAULT_SCOPE_CLARIFICATION_PROMPT,
+                options=list(DEFAULT_SCOPE_OPTIONS),
             )
         )
-    assumptions.append(Assumption(field="ring", value=ring_value, source=ring_source))
+    assumptions.append(
+        Assumption(field=DEFAULT_SCOPE_FIELD_NAME, value=ring_value, source=ring_source)
+    )
 
     measure_value, measure_source = resolve_measure(question)
     assumptions.append(Assumption(field="measure", value=measure_value, source=measure_source))
@@ -199,6 +206,20 @@ def assumptions_for_fresh(
         assumptions.append(Assumption(field="period", value=period_label, source="default"))
 
     return assumptions, clarifications, True
+
+
+#: Internal filter-key -> the display field name contract examples use.
+#: The default-scope entry is warehouse policy (see
+#: knowledge.session_policy); ``PersianYear``/``period`` is a fixed engine
+#: mapping, not something project_config/session_policy.yaml governs.
+_FIELD_DISPLAY_NAMES: dict[str, str] = {
+    DEFAULT_SCOPE_FILTER_KEY: DEFAULT_SCOPE_FIELD_NAME,
+    "PersianYear": "period",
+}
+
+
+def _display_field(key: str) -> str:
+    return _FIELD_DISPLAY_NAMES.get(key, key.lower())
 
 
 def assumptions_for_cte_refinement(
@@ -224,7 +245,7 @@ def assumptions_for_cte_refinement(
     measure_value, measure_source = resolve_measure(question)
     assumptions.append(Assumption(field="measure", value=measure_value, source=measure_source))
     for key, value in inherited_filters.items():
-        field_name = {"Ring": "ring", "PersianYear": "period"}.get(key, key.lower())
+        field_name = _display_field(key)
         assumptions.append(Assumption(field=field_name, value=str(value), source="session"))
     return assumptions
 
@@ -240,6 +261,6 @@ def assumptions_for_carry_forward(
     """
     assumptions: list[Assumption] = []
     for key, value in inherited_filters.items():
-        field_name = {"Ring": "ring", "PersianYear": "period"}.get(key, key.lower())
+        field_name = _display_field(key)
         assumptions.append(Assumption(field=field_name, value=str(value), source="session"))
     return assumptions

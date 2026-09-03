@@ -13,6 +13,7 @@ from functools import lru_cache
 
 from core.persian import normalize_for_matching
 from knowledge.aliases import SYNONYMS
+from knowledge.retrieval_hints import ALWAYS_INCLUDE
 from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
 
 _TOP_N: int = 6
@@ -33,51 +34,15 @@ def _normalise(text: str) -> str:
     return normalize_for_matching(text)
 
 
-_ALWAYS_INCLUDE: dict[str, list[str]] = {
-    "Date": [
-        "تاریخ", "سال", "ماه", "فصل", "هفته", "روز",
-        "بهار", "تابستان", "پاییز", "زمستان",
-        "دوره", "دورهای", "دوره‌ای",
-        "سالیانه", "ماهانه", "هفتگی", "روزانه",
-        "date", "year", "month", "season", "week",
-        "spring", "summer", "autumn", "winter",
-        "quarterly", "monthly", "yearly", "annual", "period",
-    ],
-    "Contract": [
-        "معامله", "قرارداد", "حجم", "ارزش",
-        "trade", "contract", "deal", "volume", "value",
-    ],
-    "CustomerContract": [
-        "خرید", "خریدار", "خرید مشتری",
-        "purchase", "buyer", "customer purchase",
-    ],
-    "Offer": [
-        "عرضه", "عرضهکننده", "عرضهکنندگان", "عرضه کالا", "کالا",
-        "offer", "supply", "listing",
-    ],
-    "Order": [
-        "سفارش", "سفارش خرید", "درخواست",
-        "order", "purchase order",
-    ],
-    "Ring": [
-        "تالار", "رینگ", "پتروشیمی", "کیش", "فلزات",
-        "کشاورزی", "نفتی", "خرد", "طلا", "سیمان", "خودرو",
-        "ring", "trading hall", "trading ring",
-    ],
-    "Broker": [
-        "کارگزار", "کارگزار خریدار", "کارگزار فروشنده",
-        "Broker", "seller broker", "buyer broker"
-    ],
-    "Supplier": [
-        "عرضهکننده", "عرضهکنندگان", "عرضه کننده", "عرضه کنندگان",
-        "تامینکننده", "تامینکنندگان", "تامین کننده", "تامین کنندگان",
-        "فروشنده", "فروشندگان", "supplier", "suppliers", "seller",
-    ],
-}
-
+#: Table -> forced-match trigger-phrase map, loaded from
+#: ``project_config/retrieval_hints.yaml`` (see
+#: :mod:`knowledge.retrieval_hints`). A retrieval heuristic, not schema
+#: metadata -- it can name a table independently of whichever
+#: ``schema.yaml`` happens to be loaded (see :func:`_forced_tables` and
+#: ``tests/test_retriever.py::TestRetrieveTables::test_all_returned_names_are_valid_tables``).
 _ALWAYS_INCLUDE_NORMALISED: dict[str, list[str]] = {
     table: [_normalise(s).lower() for s in signals]
-    for table, signals in _ALWAYS_INCLUDE.items()
+    for table, signals in ALWAYS_INCLUDE.items()
 }
 
 

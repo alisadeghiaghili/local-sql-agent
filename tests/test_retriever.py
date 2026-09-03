@@ -16,11 +16,22 @@ class TestRetrieveTables:
         assert isinstance(result, list)
         assert len(result) > 0
 
+    @pytest.mark.domain_data
     def test_returns_at_most_top_n(self):
+        """Needs the real Persian trigger phrases in
+        project_config/retrieval_hints.yaml's always_include (قرارداد ->
+        Contract, خرید -> CustomerContract) to force enough distinct
+        matches that the ranked-and-sliced branch (capped at 6) runs
+        instead of the fallback-to-all-tables branch; the generic English
+        example config's tables number fewer than 6 anyway."""
         result = retrieve_tables("قرارداد مشتری خرید")
         assert len(result) <= 6
 
+    @pytest.mark.domain_data
     def test_relevant_table_for_contract(self):
+        """Needs a real 'Contract' fact table -- project_config.example's
+        retrieval_hints.yaml/schema.yaml only ships 'Order' as a fact
+        table."""
         result = retrieve_tables("contract trade")
         assert "Contract" in result
 
@@ -40,11 +51,17 @@ class TestRetrieveTables:
         result = retrieve_tables("xyzzy foobar nonexistent_word_12345")
         assert set(result) == set(TABLES.keys())
 
+    @pytest.mark.domain_data
     def test_bigram_boosts_customer_contract(self):
+        """Needs a real 'CustomerContract' fact table -- absent from
+        project_config.example/schema.yaml."""
         result = retrieve_tables("خرید مشتری")
         assert "CustomerContract" in result
 
+    @pytest.mark.domain_data
     def test_offer_table_matched(self):
+        """Needs a real 'Offer' fact table -- absent from
+        project_config.example/schema.yaml."""
         result = retrieve_tables("عرضه کالا offer")
         assert "Offer" in result
 
@@ -102,7 +119,10 @@ class TestRetrieveTables:
         result = retrieve_tables("گزارش دورهای سه ماهه")
         assert "Date" in result
 
+    @pytest.mark.domain_data
     def test_contract_included_via_hacjm(self):
+        """Needs a real 'Contract' fact table -- absent from
+        project_config.example/schema.yaml."""
         result = retrieve_tables("حجم معاملات در تالار پتروشیمی")
         assert "Contract" in result
 
@@ -110,11 +130,19 @@ class TestRetrieveTables:
         result = retrieve_tables("حجم معامله در تالار پتروشیمی")
         assert "Ring" in result
 
+    @pytest.mark.domain_data
     def test_customer_contract_included_for_purchase_question(self):
+        """Needs a real 'CustomerContract' fact table -- absent from
+        project_config.example/schema.yaml."""
         result = retrieve_tables("خرید مشتری ارزش")
         assert "CustomerContract" in result
 
+    @pytest.mark.domain_data
     def test_complex_query_includes_date_contract_ring(self):
+        """Needs a real 'Contract' fact table -- absent from
+        project_config.example/schema.yaml (Date and Ring alone would pass
+        under the example config too, via always_include's English
+        trigger words and the fallback-to-all-tables path respectively)."""
         result = retrieve_tables("بیشترین حجم معامله در تالار پتروشیمی در فصل بهار")
         assert "Date" in result
         assert "Contract" in result

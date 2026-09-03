@@ -132,6 +132,35 @@ class MetricsConfig(BaseModel):
     metrics: dict[str, MetricDefinition]
 
 
+class DefaultScopeConfig(BaseModel):
+    filter_key: str
+    field_name: str
+    default_label: str
+    options: list[str]
+    clarification_prompt: str
+
+
+class SessionPolicyConfig(BaseModel):
+    default_scope: DefaultScopeConfig
+
+
+class RetrievalHintsConfig(BaseModel):
+    fact_tables: list[str]
+    always_include: dict[str, list[str]]
+    fact_patterns: dict[str, list[str]]
+
+    @field_validator("always_include", "fact_patterns", mode="before")
+    @classmethod
+    def _ensure_list_values(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            for key, val in v.items():
+                if not isinstance(val, list):
+                    raise ValueError(
+                        f"Value for key '{key}' must be a list, got {type(val).__name__}"
+                    )
+        return v
+
+
 # ---------------------------------------------------------------------------
 # Typed loader functions
 # ---------------------------------------------------------------------------
@@ -168,3 +197,11 @@ def load_examples() -> ExamplesConfig:
 
 def load_metrics() -> MetricsConfig:
     return _load_validated("metrics.yaml", MetricsConfig)  # type: ignore[return-value]
+
+
+def load_retrieval_hints() -> RetrievalHintsConfig:
+    return _load_validated("retrieval_hints.yaml", RetrievalHintsConfig)  # type: ignore[return-value]
+
+
+def load_session_policy() -> SessionPolicyConfig:
+    return _load_validated("session_policy.yaml", SessionPolicyConfig)  # type: ignore[return-value]

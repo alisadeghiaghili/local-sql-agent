@@ -11,9 +11,8 @@ Strategy (two-tier):
 from __future__ import annotations
 
 from knowledge.entities import ENTITIES
+from knowledge.retrieval_hints import FACT_TABLES as _FACT_TABLES
 from schema_data.retriever import retrieve_tables
-
-_FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
 
 
 class EntityRetriever:

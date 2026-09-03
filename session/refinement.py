@@ -32,6 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from knowledge.session_policy import DEFAULT_SCOPE_FIELD_NAME, DEFAULT_SCOPE_FILTER_KEY
 from session.models import Turn
 from session.store import TurnMemory
 
@@ -101,7 +102,13 @@ class BasisDecision:
 
 
 #: Internal filter-key -> the display field name contract examples use.
-_FIELD_DISPLAY_NAMES: dict[str, str] = {"Ring": "ring", "PersianYear": "period"}
+#: The default-scope entry is warehouse policy (see
+#: knowledge.session_policy); ``PersianYear``/``period`` is a fixed engine
+#: mapping, not something project_config/session_policy.yaml governs.
+_FIELD_DISPLAY_NAMES: dict[str, str] = {
+    DEFAULT_SCOPE_FILTER_KEY: DEFAULT_SCOPE_FIELD_NAME,
+    "PersianYear": "period",
+}
 
 
 def _display_field(key: str) -> str:
