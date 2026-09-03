@@ -113,6 +113,32 @@ class TestAskTurn:
             "total_ms", "plan_ms", "prompt_ms", "llm_ms", "guard_ms", "execute_ms", "interpret_ms",
         }
 
+    def test_truncated_response_reports_length_not_stop(self, client_and_engine):
+        """The session path's own copy of the "every call site hardcoded
+        finish_reason='stop'" gap: a response the backend flagged as cut
+        off by the token limit must read "length" in the turn's llm block,
+        not "stop" -- exactly what a truncated response silently reading
+        as a clean success would hide from a week of production logs."""
+        client, _ = client_and_engine
+
+        class _TruncatedBackend:
+            name = "truncated"
+
+            def generate_with_meta_segments(self, segments):
+                return SIMPLE_SQL, {
+                    "finish_reason": "length", "endpoint_status": 200, "attempts": 1,
+                }
+
+        v2_routes._turn_engine = TurnEngine(
+            router=LLMRouter(default_chain=[_TruncatedBackend()]),
+            execute_fn=lambda sql: SIMPLE_DF.copy(),
+        )
+        sid = client.post("/v2/sessions").json()["session_id"]
+        resp = client.post(f"/v2/sessions/{sid}/turns", json={"question": "لیست مشتریان"})
+        assert resp.status_code == 200
+        turn = resp.json()
+        assert turn["llm"]["finish_reason"] == "length"
+
     def test_a_turn_never_surfaces_as_an_http_error_status(self, client_and_engine):
         """§5: a turn-level failure is data in the response body (200 + Turn.error),
         never an HTTP error status -- that would defeat "answer, then declare"."""

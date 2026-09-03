@@ -123,6 +123,32 @@ def _agent(backend: LLMBackend, execute_fn=_execute_ok, max_corrections: int = 0
     return SQLAgent(backend=backend, execute_fn=execute_fn, max_corrections=max_corrections)
 
 
+class FakeBackendWithFinishReason(LLMBackend):
+    """Like :class:`FakeMetaBackend`, but lets a test control the exact
+    ``meta`` dict (``finish_reason``, ``reasoning_detected``, ...) a real
+    :class:`~llm.providers.OpenAIBackend` response would have produced --
+    :class:`FakeMetaBackend` always synthesises a bare ``_raw_meta()`` with
+    no ``finish_reason`` key at all, so it cannot exercise "the real value
+    was derived from a response, not the caller's hardcoded literal".
+    """
+
+    def __init__(self, response: str, meta: dict, model: str = "fake-model") -> None:
+        self._response = response
+        self._meta = meta
+        self._model = model
+        self._retries = 3
+
+    @property
+    def name(self) -> str:
+        return f"openai:{self._model}"
+
+    def generate(self, prompt: str) -> str:
+        return self._response
+
+    def generate_with_meta(self, prompt: str):
+        return self._response, dict(self._meta)
+
+
 # ---------------------------------------------------------------------------
 # Success path
 # ---------------------------------------------------------------------------
@@ -191,6 +217,118 @@ class TestSuccessPathAudit:
         records = _records(audit_file)
         assert len(records) == 1
         assert records[0]["request_id"]  # non-empty fallback id was minted
+
+
+# ---------------------------------------------------------------------------
+# finish_reason derivation — the gap this phase exists to close: every call
+# site used to hardcode "stop" regardless of what the response said.
+# ---------------------------------------------------------------------------
+
+class TestFinishReasonInAuditTrail:
+    def _meta(self, finish_reason: str, reasoning_detected: bool = False) -> dict:
+        return {
+            "raw": {"usage": {"prompt_tokens": 100, "completion_tokens": 20}},
+            "endpoint_status": 200,
+            "attempts": 1,
+            "finish_reason": finish_reason,
+            "reasoning_detected": reasoning_detected,
+        }
+
+    def test_truncated_response_reports_length_not_stop(self, audit_file):
+        """Test 1 (full mode): a response the backend flagged as cut off by
+        the token limit must read "length" in the audit trail, not "stop"
+        -- the exact misdiagnosis (truncation reading as a clean success)
+        the LLM observability gap allowed."""
+        from api.runner import run_query
+
+        backend = FakeBackendWithFinishReason(SIMPLE_SQL, self._meta("length"))
+        with patch("api.runner.agent", _agent(backend)):
+            run_query("سوال", system_prompt="sp", mode="full", request_id="r_length_full")
+
+        rec = _records(audit_file)[0]
+        assert rec["llm"]["finish_reason"] == "length"
+
+    def test_truncated_response_reports_length_in_sql_only_mode_too(self, audit_file):
+        """Test 1 (sql-only mode): the other of the two hardcoded "stop"
+        call sites in api/runner.py."""
+        from api.runner import run_query
+
+        backend = FakeBackendWithFinishReason(SIMPLE_SQL, self._meta("length"))
+        with patch("api.runner.agent", _agent(backend)):
+            run_query("سوال", system_prompt="sp", mode="sql", request_id="r_length_sql")
+
+        rec = _records(audit_file)[0]
+        assert rec["llm"]["finish_reason"] == "length"
+
+    def test_content_filter_is_not_coerced_to_error(self, audit_file):
+        """Test 3: an unanticipated-by-the-original-contract value
+        (content_filter is real, but wasn't one of the original four) must
+        be represented as itself, never silently turned into "error" --
+        that would make a moderation block indistinguishable from a dead
+        endpoint."""
+        from api.runner import run_query
+
+        backend = FakeBackendWithFinishReason(SIMPLE_SQL, self._meta("content_filter"))
+        with patch("api.runner.agent", _agent(backend)):
+            run_query("سوال", system_prompt="sp", mode="sql", request_id="r_content_filter")
+
+        rec = _records(audit_file)[0]
+        assert rec["llm"]["finish_reason"] == "content_filter"
+        assert rec["llm"]["finish_reason"] != "error"
+
+    def test_transport_failure_still_reports_error_regardless_of_meta(self, audit_file):
+        """Test 2: a total transport failure -- no response ever arrived --
+        must still report "error", the existing mapping this phase must
+        not weaken. There is no real finish_reason to derive here (no
+        response body exists at all), so the hardcoded "error" branch is
+        deliberately NOT routed through finish_reason_from_meta."""
+        from api.runner import run_query
+        from api.errors import ModelUnavailableError
+
+        backend = FakeMetaBackend([RuntimeError("OpenAI-compatible endpoint unreachable")])
+        with patch("api.runner.agent", _agent(backend)):
+            with pytest.raises(ModelUnavailableError):
+                run_query("سوال", system_prompt="sp", mode="sql", request_id="r_transport_fail")
+
+        rec = _records(audit_file)[0]
+        assert rec["llm"]["finish_reason"] == "error"
+
+    def test_reasoning_detected_is_surfaced_in_the_status_block(self, audit_file):
+        """Test 4: a reasoning-polluted response must be reported as such
+        in the llm status block, not just present as a generic parse
+        failure."""
+        from api.runner import run_query
+
+        backend = FakeBackendWithFinishReason(
+            SIMPLE_SQL, self._meta("stop", reasoning_detected=True),
+        )
+        with patch("api.runner.agent", _agent(backend)):
+            run_query("سوال", system_prompt="sp", mode="sql", request_id="r_reasoning")
+
+        rec = _records(audit_file)[0]
+        assert rec["llm"]["reasoning_detected"] is True
+
+    def test_reasoning_polluted_parse_failure_message_says_so(self, audit_file):
+        """A reasoning-only response (no SQL at all) fails clean_sql's "No
+        SELECT / CTE found" check -- the exact failure mode the task
+        description calls out as looking like model incompetence. With
+        reasoning_detected set, the resulting InvalidSQLResponseError
+        message must say so instead of presenting as an unexplained parse
+        failure."""
+        from api.runner import run_query
+        from api.errors import InvalidSQLResponseError
+
+        backend = FakeBackendWithFinishReason(
+            "The user is asking about customers, so I should first check the schema...",
+            self._meta("stop", reasoning_detected=True),
+        )
+        with patch("api.runner.agent", _agent(backend)):
+            with pytest.raises(InvalidSQLResponseError) as exc_info:
+                run_query("سوال", system_prompt="sp", mode="sql", request_id="r_reasoning_fail")
+
+        assert "reasoning" in str(exc_info.value.message).lower()
+        rec = _records(audit_file)[0]
+        assert rec["llm"]["reasoning_detected"] is True
 
 
 # ---------------------------------------------------------------------------

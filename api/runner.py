@@ -98,7 +98,7 @@ from llm.base import LLMBackend
 from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record
-from observability.llm_status import build_llm_status
+from observability.llm_status import build_llm_status, finish_reason_from_meta
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
@@ -183,9 +183,13 @@ _GUARD_REJECTED_ERRORS: frozenset[type[NLQError]] = frozenset({
 
 # NLQErrors reached only after the model produced a genuine (if unusable)
 # response — i.e. the LLM call itself completed, so the audit "llm" block's
-# finish_reason is "stop" rather than "error". Anything NOT in this set
+# finish_reason is derived from that real response (see
+# finish_reason_from_meta) instead of "error" -- typically "stop", but a
+# response cut off by the token limit correctly reads "length" here too,
+# not just a re-purposed "stop". Anything NOT in this set
 # (ModelUnavailableError, ModelTimeoutError, and any future addition) is
-# treated as a transport-level failure -- finish_reason "error".
+# treated as a transport-level failure -- finish_reason "error", regardless
+# of meta (there is no real response to read it from).
 _LLM_COMPLETED_ERRORS: frozenset[type[NLQError]] = frozenset({
     OutOfScopeError,
     ForbiddenSQLError,
@@ -322,7 +326,8 @@ def run_query(
             # ensure_top is never applied in this mode (no execution, no
             # row cap to enforce) -- injected_top correctly stays None.
             audit_llm = _llm_status_block(
-                llm_meta, _agent._backend, finish_reason="stop",
+                llm_meta, _agent._backend,
+                finish_reason=finish_reason_from_meta(llm_meta),
                 static_prefix_tokens=static_prefix_tokens,
             )
             return QueryResponse(
@@ -353,7 +358,8 @@ def run_query(
         audit_guard["injected_top"] = result.injected_top
         audit_llm = _llm_status_block(
             result.llm_meta, _agent._backend,
-            finish_reason="stop", corrections=max(result.attempt - 1, 0),
+            finish_reason=finish_reason_from_meta(result.llm_meta),
+            corrections=max(result.attempt - 1, 0),
             static_prefix_tokens=static_prefix_tokens,
         )
 
@@ -392,7 +398,22 @@ def run_query(
             audit_guard["rule"] = exc.error_code
         elif isinstance(exc, OutOfScopeError):
             audit_guard["rule"] = "OUT_OF_SCOPE"
-        finish_reason = "stop" if error_type in _LLM_COMPLETED_ERRORS else "error"
+        # A genuine model response completed the LLM stage (the model DID
+        # answer -- the SQL just turned out to be unusable, guard-rejected,
+        # or the downstream execution/out-of-scope path failed afterward),
+        # so its own finish_reason is real and worth reading: a response
+        # that got cut off by the token limit must read "length", not
+        # "stop", even though it went on to fail for an unrelated reason --
+        # that distinction is exactly what tells an operator "raise
+        # llm_num_predict" apart from "the model is bad at SQL". A total
+        # transport failure (NOT in _LLM_COMPLETED_ERRORS) never reached
+        # the model at all, so there is no real finish_reason to read --
+        # "error" stays hardcoded for that case, deliberately not run
+        # through finish_reason_from_meta.
+        if error_type in _LLM_COMPLETED_ERRORS:
+            finish_reason = finish_reason_from_meta(getattr(exc, "llm_meta", None))
+        else:
+            finish_reason = "error"
         audit_llm = _llm_status_block_for_error(
             exc, _agent._backend, finish_reason, static_prefix_tokens=static_prefix_tokens,
         )
@@ -523,7 +544,30 @@ def _llm_status_block(
         provider=meta.get("provider"),
         fallback_used=bool(meta.get("fallback_used", False)),
         total_ms=meta.get("total_ms"),
+        reasoning_detected=bool(meta.get("reasoning_detected", False)),
     )
+
+
+def _reasoning_pollution_note(llm_meta: dict[str, Any] | None) -> str:
+    """A short prefix for a parse-failure message when the response looks
+    like the model answered on its reasoning channel instead of with SQL.
+
+    Reads ``llm_meta["reasoning_detected"]`` -- set by
+    :meth:`~llm.providers.OpenAIBackend.generate_with_meta` (see its
+    ``reasoning_detected`` meta field) -- and, when set, turns a bare
+    "No SELECT / CTE found in model response" (``security.sql_guard.clean_sql``)
+    from reading as the model being bad at SQL into an accurate diagnosis:
+    a reasoning-capable endpoint (the deployment target, gpt-oss, emits one)
+    likely reasoned instead of answering, which is a protocol/prompt issue,
+    not a competence one. Returns ``""`` (a no-op prefix) otherwise, so an
+    ordinary parse failure is unaffected.
+    """
+    if llm_meta and llm_meta.get("reasoning_detected"):
+        return (
+            "Model response appears to carry reasoning/chain-of-thought text "
+            "instead of a final SQL answer -- "
+        )
+    return ""
 
 
 def _llm_status_block_for_error(
@@ -808,6 +852,7 @@ def _safe_generate_sql_only(
             err = ForbiddenSQLError(msg)
         else:
             err = InvalidSQLResponseError(
+                f"{_reasoning_pollution_note(llm_meta)}"
                 f"LLM response could not be parsed into valid SQL: {msg}",
                 detail=raw[:500],
             )
@@ -872,6 +917,7 @@ def _safe_run(
             err = ForbiddenSQLError(msg)
         else:
             err = InvalidSQLResponseError(
+                f"{_reasoning_pollution_note(getattr(exc, 'llm_meta', None))}"
                 f"LLM response could not be parsed into valid SQL: {msg}"
             )
         _carry_exception_meta(exc, err)

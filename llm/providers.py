@@ -50,6 +50,119 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 _OUT_OF_SCOPE_SENTINEL = "OUT_OF_SCOPE"
 
+#: ``finish_reason`` values an OpenAI-compatible ``/chat/completions``
+#: response can carry that this project's contract already names 1:1 (see
+#: ``observability.llm_status._VALID_FINISH_REASONS``). Anything else is
+#: preserved, not discarded -- see :func:`_normalize_finish_reason`.
+_KNOWN_FINISH_REASONS = frozenset({"stop", "length", "content_filter", "tool_calls"})
+
+#: Field names, across OpenAI-compatible servers this project has seen
+#: documented, that carry a model's reasoning/chain-of-thought text
+#: separately from its final answer in ``content``. Never verified against
+#: a live gpt-oss endpoint -- see the module docstring and
+#: :func:`_extract_reasoning_text`.
+_REASONING_FIELD_NAMES = ("reasoning_content", "reasoning", "thinking", "thought")
+
+#: Literal markers that show up in ``content`` itself when a server's
+#: OpenAI-compatible shim fails to separate a model's reasoning channel out
+#: of its response -- gpt-oss's own "harmony" response format uses
+#: ``<|channel|>``/``<|start|>``/``<|message|>`` control tokens, and several
+#: other reasoning models (and the servers that front them) use a
+#: ``<think>...</think>`` block. Kept intentionally narrow (literal,
+#: well-known markers only) so this never misfires on an ordinary SQL
+#: response -- see :func:`_content_carries_reasoning_markers`.
+_REASONING_MARKER_RE = re.compile(
+    r"<\|channel\|>\s*analysis|<\|start\|>assistant<\|channel\|>|<think>", re.IGNORECASE,
+)
+
+
+def _normalize_finish_reason(raw_reason: Any) -> str:
+    """Map a raw OpenAI-compatible ``finish_reason`` onto this project's contract.
+
+    ``"stop"``/``"length"`` -- the two values the original four-value
+    contract (``stop | length | schema_violation | error``) already named --
+    pass through unchanged. ``"content_filter"`` (a moderation block) and
+    ``"tool_calls"`` (the model tried to call a function instead of
+    answering) are real values several OpenAI-compatible servers emit that
+    the original contract didn't anticipate; this project's contract now
+    recognises them too (see ``observability/llm_status.py``'s
+    ``_VALID_FINISH_REASONS`` and ``docs/api-contract-v2.md`` §6) rather
+    than collapsing them into the generic ``"error"`` bucket, which would
+    make a moderation block indistinguishable, in a week of audit logs,
+    from a dead endpoint.
+
+    Anything else -- a server-specific string this project has never seen,
+    or a missing/non-string ``finish_reason`` field entirely -- is
+    preserved behind an ``"other:"`` prefix instead of being discarded or
+    forced into ``"error"``: the whole point of deriving this value at all
+    is that an operator reading the log should see what the endpoint
+    actually said, not a value this module made up because it didn't
+    recognise the real one. A missing/absent value becomes ``"other:none"``
+    for the same reason: silently defaulting it to ``"stop"`` would claim a
+    complete, successful generation that was never confirmed.
+
+    Examples
+    --------
+    >>> _normalize_finish_reason("stop")
+    'stop'
+    >>> _normalize_finish_reason("length")
+    'length'
+    >>> _normalize_finish_reason("content_filter")
+    'content_filter'
+    >>> _normalize_finish_reason("tool_calls")
+    'tool_calls'
+    >>> _normalize_finish_reason("eos_token")
+    'other:eos_token'
+    >>> _normalize_finish_reason(None)
+    'other:none'
+    """
+    if isinstance(raw_reason, str) and raw_reason in _KNOWN_FINISH_REASONS:
+        return raw_reason
+    label = raw_reason if isinstance(raw_reason, str) and raw_reason.strip() else "none"
+    return f"other:{label}"
+
+
+def _extract_reasoning_text(message: Any) -> str:
+    """Best-effort extraction of a model's reasoning text from *message*.
+
+    Several OpenAI-compatible servers expose a model's chain-of-thought
+    under a field separate from ``content`` -- most commonly
+    ``reasoning_content`` (vLLM's DeepSeek-R1-style convention, also used by
+    some gpt-oss deployments), sometimes ``reasoning`` or
+    ``thinking``/``thought`` on other community servers. This project has
+    never been tested against a live gpt-oss endpoint (see the module
+    docstring), so this check only reads well-known field names and never
+    guesses at new ones.
+
+    Used purely for *detection* -- see :meth:`OpenAIBackend.generate_with_meta`:
+    the real ``content`` field is always what is returned as the model's
+    answer. This function's result is never substituted for it; silently
+    stripping reasoning prose and hoping what remains is SQL would turn a
+    diagnosable protocol mismatch into a mysterious accuracy problem.
+    """
+    if not isinstance(message, dict):
+        return ""
+    for key in _REASONING_FIELD_NAMES:
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _content_carries_reasoning_markers(content: str) -> bool:
+    """True when *content* itself contains raw reasoning-channel markup.
+
+    Some servers -- notably a gpt-oss deployment whose OpenAI-compatible
+    shim doesn't fully separate the model's own "harmony" response format
+    into distinct fields -- can leak internal channel markers
+    (``<|channel|>analysis``, ...) or a ``<think>...</think>`` block
+    straight into ``content`` instead of a separate reasoning field. Never
+    verified against a live endpoint (see the module docstring); kept
+    intentionally narrow (literal, well-known markers only) so it never
+    misfires on an ordinary SQL response.
+    """
+    return bool(content) and bool(_REASONING_MARKER_RE.search(content))
+
 
 def _strip_fences(text: str) -> str:
     """Remove the outermost markdown code fence from *text*, if present."""
@@ -281,6 +394,20 @@ class OpenAIBackend(LLMBackend):
           OpenAI-compatible response carries no server-side timing of its
           own for :func:`~observability.llm_status.build_llm_status` to
           read.
+        * ``"finish_reason"`` — the response's ``choices[0].finish_reason``,
+          mapped onto this project's contract by
+          :func:`_normalize_finish_reason`: ``"stop"``/``"length"`` pass
+          through, ``"content_filter"``/``"tool_calls"`` are recognised
+          too, and anything else is preserved as ``"other:<raw>"`` rather
+          than being discarded. Never hardcoded — this is what lets a
+          caller tell a truncated response (``"length"``) from a genuinely
+          complete one (``"stop"``) instead of both reading as success.
+        * ``"reasoning_detected"`` — ``True`` when the response appears to
+          carry a model's reasoning/chain-of-thought text (see
+          :func:`_extract_reasoning_text` and
+          :func:`_content_carries_reasoning_markers`) rather than, or in
+          addition to, a final answer. Detection only; ``raw`` is always
+          ``content`` itself, never the reasoning text.
 
         On the ``OUT_OF_SCOPE`` sentinel, *meta* is attached to the raised
         ``ValueError`` as an ``llm_meta`` attribute (rather than lost),
@@ -312,16 +439,33 @@ class OpenAIBackend(LLMBackend):
                 )
                 resp.raise_for_status()
                 body: dict[str, Any] = resp.json()
-                raw: str = str(
-                    body.get("choices", [{}])[0].get("message", {}).get("content", "")
-                ).strip()
+                choice: dict[str, Any] = (body.get("choices") or [{}])[0]
+                message: dict[str, Any] = choice.get("message") or {}
+                raw: str = str(message.get("content", "")).strip()
                 logger.debug("OpenAI raw (attempt %d): %.300s", attempt, raw)
+
+                # Reasoning-channel detection (see module docstring's note
+                # on the gpt-oss deployment target and the helpers above):
+                # never substituted for `raw` -- only ever used to flag the
+                # response as suspect, in `meta`, so a downstream "No
+                # SELECT / CTE found" rejection reads as a protocol
+                # mismatch instead of the model looking incompetent at SQL.
+                reasoning_text = _extract_reasoning_text(message)
+                reasoning_detected = bool(reasoning_text) or _content_carries_reasoning_markers(raw)
+                if reasoning_detected:
+                    logger.warning(
+                        "OpenAI response (attempt %d) appears to carry reasoning-channel "
+                        "text rather than a final answer; excerpt: %.200s",
+                        attempt, reasoning_text or raw,
+                    )
 
                 meta: dict[str, Any] = {
                     "raw": body,
                     "endpoint_status": resp.status_code,
                     "attempts": attempt,
                     "total_ms": round((time.monotonic() - start) * 1000),
+                    "finish_reason": _normalize_finish_reason(choice.get("finish_reason")),
+                    "reasoning_detected": reasoning_detected,
                 }
 
                 if raw.strip().upper() == _OUT_OF_SCOPE_SENTINEL:
@@ -377,8 +521,22 @@ class OpenAIBackend(LLMBackend):
         )
         resp.raise_for_status()
         body = resp.json()
-        text = body["choices"][0]["message"]["content"]
-        meta = {"raw": body, "endpoint_status": resp.status_code, "attempts": 1, "structured_output": True}
+        choice: dict[str, Any] = (body.get("choices") or [{}])[0]
+        text = choice["message"]["content"]
+        # A schema-constrained decode can still be cut off by max_tokens
+        # (a half-emitted JSON object) -- derive finish_reason the same way
+        # generate_with_meta does rather than assuming "stop" here too, for
+        # the same reason: json.loads(text) below would already raise on a
+        # truncated body, but if a future caller catches that and falls
+        # back to *meta*, it must not read "structured_output: True" next
+        # to a finish_reason that silently claims a clean completion.
+        meta = {
+            "raw": body,
+            "endpoint_status": resp.status_code,
+            "attempts": 1,
+            "structured_output": True,
+            "finish_reason": _normalize_finish_reason(choice.get("finish_reason")),
+        }
         return json.loads(text), meta
 
     def test_connection(self) -> bool:

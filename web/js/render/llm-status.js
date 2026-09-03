@@ -16,9 +16,20 @@ function statusPillForFinishReason(reason) {
   switch (reason) {
     case "stop": return { cls: "good", label: "پایان طبیعی (stop)" };
     case "length": return { cls: "warn", label: "قطع به‌دلیل محدودیت طول (length)" };
+    case "content_filter": return { cls: "critical", label: "مسدود توسط فیلتر محتوا (content_filter)" };
+    case "tool_calls": return { cls: "warn", label: "فراخوانی ابزار به‌جای پاسخ (tool_calls)" };
     case "schema_violation": return { cls: "critical", label: "نقض ساختار خروجی (schema_violation)" };
     case "error": return { cls: "critical", label: "خطا (error)" };
-    default: return { cls: "neutral", label: reason ? String(reason) : "نامشخص" };
+    default:
+      // Covers the "other:<raw>" passthrough (see
+      // observability/llm_status.py) for a finish_reason this project has
+      // never seen before -- shown as-is (neutral, not hidden) rather than
+      // silently falling back to "نامشخص" the way a truly missing value
+      // does, so an operator can still see exactly what the endpoint said.
+      if (typeof reason === "string" && reason.startsWith("other:")) {
+        return { cls: "neutral", label: `مقدار ناشناخته (${reason})` };
+      }
+      return { cls: "neutral", label: reason ? String(reason) : "نامشخص" };
   }
 }
 
@@ -81,6 +92,14 @@ export function renderLlmStatus(llm) {
 
   const finishInfo = statusPillForFinishReason(llm.finish_reason);
   head.appendChild(pillEl(finishInfo.cls, finishInfo.label));
+
+  // The deployment target (gpt-oss) emits a reasoning channel; when the
+  // response looks like it landed there instead of a final answer, this
+  // is what turns a would-be generic parse-failure into a diagnosable
+  // protocol mismatch (see observability/llm_status.py's docstring).
+  if (llm.reasoning_detected) {
+    head.appendChild(pillEl("warn", "پاسخ حاوی متن استدلال مدل (reasoning)"));
+  }
 
   if (llm.attempts > 1) {
     const flag = document.createElement("span");

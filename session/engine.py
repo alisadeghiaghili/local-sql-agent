@@ -48,7 +48,7 @@ from llm.router import (
     build_prompt_segments,
 )
 from observability.audit import AuditRecord, save_audit_record
-from observability.llm_status import build_llm_status
+from observability.llm_status import build_llm_status, finish_reason_from_meta
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
@@ -452,12 +452,14 @@ class TurnEngine:
             endpoint=route_result.meta.get("endpoint"),
             trusted=bool(route_result.meta.get("trusted", False)),
             endpoint_status=route_result.meta.get("endpoint_status", 200),
-            attempts=route_result.meta.get("attempts", 1), finish_reason="stop",
+            attempts=route_result.meta.get("attempts", 1),
+            finish_reason=finish_reason_from_meta(route_result.meta),
             structured_output=bool(route_result.meta.get("structured_output", False)),
             static_prefix_tokens=static_prefix_token_estimate(system_prompt),
             temperature=cfg.settings.llm_temperature, seed=cfg.settings.llm_seed,
             provider=route_result.provider, fallback_used=route_result.fallback_used,
             total_ms=route_result.meta.get("total_ms"),
+            reasoning_detected=bool(route_result.meta.get("reasoning_detected", False)),
         )
 
         try:
@@ -625,13 +627,15 @@ class TurnEngine:
                 endpoint=route_result.meta.get("endpoint"),
                 trusted=bool(route_result.meta.get("trusted", False)),
                 endpoint_status=route_result.meta.get("endpoint_status", 200),
-                attempts=route_result.meta.get("attempts", 1), finish_reason="stop",
+                attempts=route_result.meta.get("attempts", 1),
+                finish_reason=finish_reason_from_meta(route_result.meta),
                 structured_output=bool(route_result.meta.get("structured_output", False)),
                 static_prefix_tokens=static_prefix_tokens,
                 temperature=cfg.settings.llm_temperature, seed=cfg.settings.llm_seed,
                 total_ms=route_result.meta.get("total_ms"),
                 corrections=correction_round,
                 provider=route_result.provider, fallback_used=route_result.fallback_used,
+                reasoning_detected=bool(route_result.meta.get("reasoning_detected", False)),
             )
 
             if not raw.strip():
