@@ -210,7 +210,7 @@ class Settings:
 
     # ── JSONL log rotation ──────────────────────────────────────────────────
     log_max_bytes: int = field(
-        default_factory=lambda: int(os.getenv("LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+        default_factory=lambda: int(os.getenv("LOG_MAX_BYTES", str(50 * 1024 * 1024)))
     )
     """Size cap (bytes) for a JSONL log file (``query_log.jsonl``,
     ``audit_log.jsonl``) before it is rotated. ``<= 0`` disables rotation
@@ -220,15 +220,44 @@ class Settings:
     previously read directly via ``os.getenv`` in ``logs/logger.py``
     because ``config.py`` was locked by concurrent work when that module
     was written; it is free now, so the field lives here like every other
-    setting."""
+    setting.
+
+    Raised from ``10 MiB`` alongside :attr:`log_backup_count` below —
+    together they bound how much audit history a rotation can ever discard
+    (see that field's docstring for the arithmetic and the incident that
+    prompted it). Raise this further on a deployment with materially higher
+    traffic than the ~1 KB/record this project has actually observed;
+    lower it only if disk space is the tighter constraint than audit
+    history, which for a compliance/analysis log is rarely the right
+    trade."""
 
     log_backup_count: int = field(
-        default_factory=lambda: int(os.getenv("LOG_BACKUP_COUNT", "5"))
+        default_factory=lambda: int(os.getenv("LOG_BACKUP_COUNT", "20"))
     )
     """Number of rotated log backups to retain. ``<= 0`` keeps no history
     (the file is cleared in place instead of shifted to ``.1`` on
     rotation). See :attr:`log_max_bytes` for why this lives here rather
-    than behind a direct ``os.getenv`` call."""
+    than behind a direct ``os.getenv`` call.
+
+    Raised from ``5`` together with :attr:`log_max_bytes`'s five-fold
+    increase (``10 MiB -> 50 MiB``): a first production deployment's
+    ``audit_log.jsonl`` is the only source this project has ever had for
+    real accuracy/latency numbers, and losing its earliest records to a
+    rotation nobody was watching would be silent and unrecoverable —
+    there is no second chance at "the first week". Observed audit records
+    average roughly 1 KB each (per-stage timings, the full ``llm`` status
+    block, guard verdict); the old ``10 MiB x 5`` = 50 MiB ceiling (about
+    50,000 records total) could plausibly be exhausted within the first
+    production week by traffic well short of anything unusual, especially
+    stacked on top of whatever pre-deployment dev/test traffic already
+    shares the same file. The new ``50 MiB x 20`` = 1 GiB ceiling (on the
+    order of a million records) is not "unbounded" — a genuinely runaway
+    write loop still eventually rotates its oldest history away rather
+    than filling the disk forever — but comfortably outlasts any real
+    single-organisation deployment's first weeks. Reassess this number
+    once real production volume is known; do not simply raise it further
+    "to be safe" without knowing the actual record rate, since that trades
+    away the runaway-growth backstop for no measured benefit."""
 
     # ── Phase 2: static prompt prefix / prefix-cache latency win ────────────
     prompt_retrieval_token_budget: int = field(
@@ -433,6 +462,80 @@ class Settings:
     until the golden-set evaluation (``python -m eval.cli run --live
     --structured``) demonstrates it does not regress accuracy — see the
     Phase 2 report for whether that evaluation has been run yet."""
+
+    # ── Deployment readiness: per-(principal, ip) rate limiting ─────────────
+    # Previously ``api/middleware.py``'s own module-level ``os.getenv()``
+    # reads, evaluated once at that module's import time -- which is why
+    # ``tests/conftest.py`` had to set these env vars *before* anything
+    # imported ``api.middleware`` at all (see that file's own comment).
+    # Moved here so the values are read through ``cfg.settings`` at call
+    # time like every other tuning knob (see this module's "Three layers,
+    # not two" section) -- ``RateLimitMiddleware.__init__`` now resolves
+    # them itself when it is actually constructed, so
+    # ``config.override_settings(rate_limit_requests=...)`` reaches a
+    # middleware instance built with no explicit constructor kwargs, not
+    # just one a test hand-configures. See ``api/middleware.py``'s module
+    # docstring for why the *shared* ``api.server.app`` instance still
+    # needs its generous test-suite value in place before the first
+    # request of a whole pytest session, not merely "at some point before
+    # a given test" -- Starlette builds and caches that app's middleware
+    # stack exactly once, on the first request it ever serves.
+    rate_limit_requests: int = field(
+        default_factory=lambda: int(os.getenv("RATE_LIMIT_REQUESTS", "600"))
+    )
+    """Sustained request allowance per :attr:`rate_limit_window_seconds`,
+    per rate-limit bucket (see :attr:`rate_limit_burst` for capacity above
+    this, and ``api.middleware.RateLimitMiddleware._bucket_key`` for what a
+    "bucket" is).
+
+    Raise this if legitimate traffic is getting 429s under normal use
+    (more concurrent analysts, or a UI that legitimately fires several
+    requests per interaction); lower it if a single caller should be
+    throttled harder than this — e.g. a deployment that expects only a
+    handful of analysts and wants a tighter ceiling on a misbehaving
+    client or a scripting mistake.
+
+    Old default was ``60`` — chosen back when the bucket was keyed on raw
+    IP alone. In the shape this product actually ships in (one web UI,
+    one shared service key, ten-plus analysts sitting behind it), the
+    bucket key becomes ``principal:<id>|ip:<ip>`` (see
+    ``RateLimitMiddleware._bucket_key``'s docstring) but a single web UI
+    still means every analyst using it shares **one IP** too — so ``60``
+    req/min was, in practice, 60 requests per minute for the *entire
+    organisation*, not per analyst. Ten people each asking one question
+    every few seconds blew through it. ``600`` (10 req/sec sustained)
+    assumes up to roughly 30 analysts each firing an interactive query —
+    a human clicking "ask" every few seconds, not a batch client — at
+    once: 30 analysts x one request every 3s is exactly 600/min. A
+    deployment with a different expected head-count should raise or
+    lower this proportionally rather than trust the default blindly."""
+
+    rate_limit_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))
+    )
+    """Length (seconds) of the sliding window :attr:`rate_limit_requests`
+    refills over. Unchanged from the original default (``60``) — the
+    *rate* (:attr:`rate_limit_requests` per this many seconds) is what
+    needed raising for real deployment traffic, not the window length
+    itself; a shorter window makes the same requests/window ratio bursts
+    tighter over any sub-window, a longer one loosens it, but ``60`` is a
+    reasonable "per minute" unit for a human operator reading a 429 body
+    to reason about either way."""
+
+    rate_limit_burst: int = field(
+        default_factory=lambda: int(os.getenv("RATE_LIMIT_BURST", "40"))
+    )
+    """Extra tokens above :attr:`rate_limit_requests` a bucket can spend
+    instantly (bucket capacity = ``rate_limit_requests + rate_limit_burst``
+    — see ``api.middleware.RateLimitMiddleware``). Old default was ``10``.
+    Raised to ``40`` alongside :attr:`rate_limit_requests`'s five-fold
+    increase so the burst allowance scales with it — enough to absorb a
+    web UI firing a handful of parallel calls on one page load (e.g. an
+    initial dashboard fetch) without immediately eating into the
+    sustained rate, while staying far short of "unlimited": a genuinely
+    runaway or scripted caller still exhausts 640 tokens (600 + 40) in
+    well under a minute at any real request rate and starts getting 429s,
+    it just is not punished for one legitimate burst."""
 
     # ── Phase 8: API-key authentication ─────────────────────────────────────
     api_keys_json: str = field(

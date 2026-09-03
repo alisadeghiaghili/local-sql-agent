@@ -4,6 +4,12 @@ __pycache__/
 *.pyc
 *.pyo
 logs/*.jsonl
+# Rotated backups (logs/logger.py::_rotate -- query_log.jsonl.1, .2, ...,
+# audit_log.jsonl.1, .2, ...) do NOT match "logs/*.jsonl" above (their
+# name ends in ".<N>", not ".jsonl") and were being left untracked-but-
+# not-ignored -- one `git add -A` away from committing real user
+# questions and generated SQL from the audit trail. Match them explicitly.
+logs/*.jsonl.*
 *.db
 .venv/
 dist/

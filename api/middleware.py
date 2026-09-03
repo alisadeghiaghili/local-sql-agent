@@ -18,15 +18,30 @@ See ``api/server.py``'s own middleware-registration comment for the exact
 ``add_middleware()`` call order that produces this stack (Starlette
 applies it in reverse).
 
-Rate-limit tuning (env vars)
------------------------------
-RATE_LIMIT_REQUESTS   — number of requests allowed per window  (default: 60)
-RATE_LIMIT_WINDOW_SEC — sliding window size in seconds          (default: 60)
-RATE_LIMIT_BURST      — max instantaneous burst above the base  (default: 10)
-TRUSTED_PROXY_IPS     — comma-separated IPs allowed to supply X-Forwarded-For
-                        / X-Real-IP for rate-limiting            (default: empty)
+Rate-limit tuning
+------------------
+``RATE_LIMIT_REQUESTS`` / ``RATE_LIMIT_WINDOW_SEC`` / ``RATE_LIMIT_BURST``
+are ``config.Settings`` fields (:attr:`~config.Settings.rate_limit_requests`,
+:attr:`~config.Settings.rate_limit_window_seconds`,
+:attr:`~config.Settings.rate_limit_burst`) as of the deployment-readiness
+pass — see that module for their current defaults and the reasoning behind
+them (the short version: the old ``60``/``60``/``10`` defaults meant one
+whole organisation sharing one service key got 60 requests per minute
+*total*, not per analyst). ``RateLimitMiddleware.__init__`` resolves them
+itself, read through ``cfg.settings`` **at construction time** (not at this
+module's import time, and not baked into the class's own default-parameter
+values) — see the docstring on that class for exactly why, and see
+``config.Settings.rate_limit_requests``'s own docstring for why the
+*shared* ``api.server.app`` instance still needs the test-suite override in
+place before the whole pytest session's first request, not just "before
+some test runs".
+
+TRUSTED_PROXY_IPS          — comma-separated IPs allowed to supply
+                             X-Forwarded-For / X-Real-IP for rate-limiting
+                             (env var, not a Settings field; default: empty)
 RATE_LIMIT_MAX_TRACKED_IPS — max distinct client buckets kept in memory at
-                        once, LRU-evicted beyond this            (default: 10000)
+                             once, LRU-evicted beyond this (env var, not a
+                             Settings field; default: 10000)
 
 Bucket identity (Phase 8): a request with a principal resolved by
 ``AuthMiddleware`` buckets on ``principal:<id>`` instead of IP, so callers
@@ -34,8 +49,10 @@ behind a shared proxy (or NAT) each get their own allowance instead of
 exhausting one shared-IP bucket for the whole organisation. An
 unauthenticated request still buckets on IP, exactly as before this phase.
 
-Example: RATE_LIMIT_REQUESTS=30 RATE_LIMIT_WINDOW_SEC=60 RATE_LIMIT_BURST=5
-  → allows 30 req/min sustained, with a burst of up to 5 extra tokens.
+Example: RATE_LIMIT_REQUESTS=600 RATE_LIMIT_WINDOW_SEC=60 RATE_LIMIT_BURST=40
+  → allows 600 req/min sustained per (principal, ip) bucket, with a burst
+  of up to 40 extra tokens — see config.Settings.rate_limit_requests for
+  the reasoning behind these numbers.
 
 TRUSTED_PROXY_IPS is empty by default, meaning X-Forwarded-For / X-Real-IP
 are never trusted and the rate limiter always keys on the raw TCP peer
@@ -73,10 +90,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MAX_CONCURRENT: int = int(os.getenv("MAX_CONCURRENT_REQUESTS", "10"))
-_RATE_REQUESTS: int = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
-_RATE_WINDOW: float = float(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))
-_RATE_BURST: int = int(os.getenv("RATE_LIMIT_BURST", "10"))
 _MAX_TRACKED_IPS: int = int(os.getenv("RATE_LIMIT_MAX_TRACKED_IPS", "10000"))
+
+# RATE_LIMIT_REQUESTS / RATE_LIMIT_WINDOW_SEC / RATE_LIMIT_BURST are
+# deliberately NOT read here as module-level constants (contrast
+# _MAX_CONCURRENT / _MAX_TRACKED_IPS just above, which are out of this
+# change's scope) -- they now live on config.Settings
+# (rate_limit_requests / rate_limit_window_seconds / rate_limit_burst) and
+# are read through cfg.settings at RateLimitMiddleware construction time
+# instead, so config.override_settings() reaches a middleware instance
+# built with no explicit constructor kwargs. See that class's __init__ and
+# config.Settings' own fields for the full reasoning.
 
 # IPs allowed to supply X-Forwarded-For / X-Real-IP for rate-limit purposes
 # — i.e. known reverse proxies sitting in front of this server. Empty by
@@ -154,11 +178,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     ----------
     requests_per_window:
         Sustained request allowance (tokens refilled over *window_seconds*).
+        ``None`` (the default) reads :attr:`config.Settings.rate_limit_requests`
+        through ``cfg.settings`` **at construction time** — i.e. when this
+        middleware is actually instantiated (Starlette builds
+        ``api.server.app``'s middleware stack lazily, on its first request,
+        and caches the result for the app's lifetime — see
+        :attr:`config.Settings.rate_limit_requests`'s own docstring for why
+        that matters for the shared test-suite app). Passing an explicit
+        int (as most of this module's own tests do, and as any deployment
+        overriding the env-derived default in code rather than via
+        ``RATE_LIMIT_REQUESTS`` would) always wins over ``cfg.settings``.
     window_seconds:
-        Length of the refill window in seconds.
+        Length of the refill window in seconds. ``None`` reads
+        :attr:`config.Settings.rate_limit_window_seconds` the same way.
     burst:
         Extra tokens above the sustained rate that a client can spend
-        instantly (capacity = requests_per_window + burst).
+        instantly (capacity = requests_per_window + burst). ``None`` reads
+        :attr:`config.Settings.rate_limit_burst` the same way.
     trusted_proxies:
         IPs whose ``X-Forwarded-For`` / ``X-Real-IP`` headers are honoured
         for rate-limiting. Any direct client whose TCP peer address is
@@ -182,13 +218,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: ASGIApp,
-        requests_per_window: int = _RATE_REQUESTS,
-        window_seconds: float = _RATE_WINDOW,
-        burst: int = _RATE_BURST,
+        requests_per_window: int | None = None,
+        window_seconds: float | None = None,
+        burst: int | None = None,
         trusted_proxies: frozenset[str] = _TRUSTED_PROXIES,
         max_tracked_ips: int = _MAX_TRACKED_IPS,
     ) -> None:
         super().__init__(app)
+        # Resolved through cfg.settings HERE, at construction time, rather
+        # than via Python default-parameter values (which would be baked
+        # in once, at this module's own import time -- exactly the
+        # import-time-capture problem this whole change moves away from).
+        # A caller passing an explicit value always wins; None means "ask
+        # cfg.settings right now".
+        if requests_per_window is None or window_seconds is None or burst is None:
+            if requests_per_window is None:
+                requests_per_window = cfg.settings.rate_limit_requests
+            if window_seconds is None:
+                window_seconds = cfg.settings.rate_limit_window_seconds
+            if burst is None:
+                burst = cfg.settings.rate_limit_burst
         self._requests_per_window: int = requests_per_window
         self._capacity: float = requests_per_window + burst
         self._refill_rate: float = requests_per_window / window_seconds  # tokens / second
@@ -317,10 +366,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "error": {
                         "code": "RATE_LIMIT_EXCEEDED",
                         "message": (
-                            f"Too many requests. "
+                            f"Rate limit exceeded (this is a client throttling "
+                            f"response, not a query or model failure). "
                             f"Allowed {self._requests_per_window} requests per "
-                            f"{int(self._window)}s window. "
-                            f"Retry in {retry_after:.1f}s."
+                            f"{int(self._window)}s window for this caller. "
+                            f"Retry after {retry_after:.1f}s."
                         ),
                         "request_id": request_id,
                         "path": str(request.url.path),
