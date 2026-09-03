@@ -9,9 +9,21 @@
  *
  * No fabricated results: on any failure we throw or return a tagged error
  * object; we never synthesize a fake Turn to paper over an unreachable API.
+ *
+ * Authentication (Phase 8, docs/api-contract-v2.md §11): every route here
+ * except GET /health requires `Authorization: Bearer <key>`. The key comes
+ * from apikey.js (one per analyst, stored in that analyst's own browser —
+ * see that module's docstring for why a single baked-in key is wrong for
+ * this UI) and is attached in exactly one place, `_fetchV2`, so every v2
+ * call site inherits it automatically. `health()` attaches it too when one
+ * is already stored (it unlocks the `model` field — see api/server.py's
+ * `/health` handler) but never requires it: liveness probes must keep
+ * working with no credentials at all.
  */
 
 "use strict";
+
+import { getApiKey } from "./apikey.js";
 
 /* ── Contract types (JSDoc only, no runtime effect) ───────────────────
  * Mirrors docs/api-contract-v2.md §4 and §6 so editors can typecheck
@@ -116,6 +128,31 @@ export class ApiError extends Error {
   }
 }
 
+/** A 401: missing or invalid API key. Distinguished from a generic
+ * ApiError so the UI can show "your key was rejected, enter a new one"
+ * and re-prompt instead of a generic error banner (docs/api-contract-v2.md
+ * §11.3 — the server returns the same UNAUTHENTICATED code whether the
+ * key was never sent or was sent and rejected, so this UI does not try to
+ * tell those two cases apart either). */
+export class UnauthorizedError extends ApiError {
+  constructor(message) {
+    super(message, 401);
+    this.name = "UnauthorizedError";
+  }
+}
+
+/** A 429: client-side rate limiting, not a query or model failure — see
+ * api/middleware.py's RateLimitMiddleware. Carries the structured fields
+ * from the error body (`retry_after_seconds`) so the UI can surface a
+ * useful, specific message instead of a generic error. */
+export class RateLimitError extends ApiError {
+  constructor(message, retryAfterSeconds) {
+    super(message, 429);
+    this.name = "RateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
 export class Api {
   /** @param {string} baseUrl */
   constructor(baseUrl) {
@@ -124,16 +161,32 @@ export class Api {
 
   /* ── Health ──────────────────────────────────────────────────────── */
   /* Reads the REAL field names from api/models.py::HealthResponse
-   * (status, ollama, database, model) — the old demo read `h.openai`,
-   * which does not exist on this response and made the LLM pill
-   * permanently wrong in live mode. Fixed here. */
+   * (status, openai, database, model). This drifted once already: an
+   * earlier revision of this file read `h.openai` when the backend's
+   * field was actually named `ollama`, then the backend was refactored
+   * to a single OpenAI-compatible provider (commit 59dbc77) and the
+   * field went back to `openai` — but this file had since been "fixed"
+   * to read `h.ollama` against that now-superseded name, so it silently
+   * went stale again and the LLM pill was permanently wrong in live mode
+   * a second time. Reads `h.openai` here, matching the field that
+   * actually exists on the response today. */
   async health(timeoutMs = 4000) {
-    const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    // Unauthenticated by design (docs/api-contract-v2.md §11.3 — GET
+    // /health is the one route that stays open with no key at all, so a
+    // liveness probe never depends on auth being configured correctly).
+    // A key IS attached when one happens to be stored, purely so an
+    // already-authenticated analyst sees the real `model` field instead
+    // of it being omitted for "anonymous" callers (api/server.py's
+    // `/health` handler) — its absence must never break this call.
+    const headers = {};
+    const key = getApiKey();
+    if (key) headers["Authorization"] = `Bearer ${key}`;
+    const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs), headers });
     if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
     const h = await res.json();
     return {
       api: true,
-      llm: !!h.ollama,
+      llm: !!h.openai,
       db: !!h.database,
       status: h.status,
       model: h.model || null,
@@ -219,13 +272,29 @@ export class Api {
     return res.json();
   }
 
-  /** Wraps fetch for /v2/* endpoints: a 404 is promoted to
-   * V2NotSupportedError so callers can degrade to simulated mode instead of
-   * showing a generic error. */
+  /** Wraps fetch for every /v2/* endpoint. All of these routes require
+   * auth (docs/api-contract-v2.md §11.3), so this is the single place
+   * that attaches `Authorization: Bearer <key>` — every v2 call site
+   * (createSession, getSession, deleteSession, askTurn, askTurnStreaming,
+   * patchAssumptions) goes through here and inherits it automatically.
+   *
+   * A 404 is promoted to V2NotSupportedError so callers can degrade to
+   * simulated mode instead of showing a generic error. A 401 and a 429
+   * are promoted to their own typed errors (see above) so the UI can
+   * treat "your key was rejected" and "you're being rate-limited" as the
+   * distinct, actionable situations they are instead of a generic error
+   * banner. */
   async _fetchV2(path, init) {
     let res;
+    const headers = { ...(init && init.headers) };
+    const key = getApiKey();
+    if (key) headers["Authorization"] = `Bearer ${key}`;
     try {
-      res = await fetch(`${this.baseUrl}${path}`, { signal: AbortSignal.timeout(60000), ...init });
+      res = await fetch(`${this.baseUrl}${path}`, {
+        signal: AbortSignal.timeout(60000),
+        ...init,
+        headers,
+      });
     } catch (err) {
       throw new ApiError(`Network error calling ${path}: ${err.message}`, 0);
     }
@@ -234,15 +303,37 @@ export class Api {
         `${this.baseUrl} does not implement ${path} — the v2 conversational API is not deployed on this backend yet.`,
       );
     }
+    if (res.status === 401) {
+      const body = await _safeJson(res);
+      throw new UnauthorizedError(body?.error?.message || body?.detail || "Missing or invalid API key.");
+    }
+    if (res.status === 429) {
+      const body = await _safeJson(res);
+      const message = body?.error?.message || body?.detail || `HTTP 429 calling ${path}`;
+      const retryAfterSeconds = body?.error?.retry_after_seconds ?? null;
+      throw new RateLimitError(message, retryAfterSeconds);
+    }
     if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try {
-        const j = await res.json();
-        detail = j.detail || detail;
-      } catch { /* keep status-only detail */ }
+      const body = await _safeJson(res);
+      // The real error envelope (api/errors.py::_error_response) nests
+      // the message under `error.message`, not a top-level `detail` —
+      // `j.detail` alone (the previous shape of this fallback) never
+      // actually matched it, so every non-2xx response rendered as a
+      // bare "HTTP <status>" regardless of what the server said.
+      const detail = body?.error?.message || body?.detail || `HTTP ${res.status}`;
       throw new ApiError(detail, res.status);
     }
     return res;
+  }
+}
+
+/** Best-effort JSON body read that never throws — an error response body
+ * is not guaranteed to be valid JSON (or present at all). */
+async function _safeJson(res) {
+  try {
+    return await res.json();
+  } catch {
+    return null;
   }
 }
 

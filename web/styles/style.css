@@ -238,6 +238,23 @@ button { font-family: inherit; }
 }
 .live-base-connect:hover { background: rgba(255, 255, 255, .12); }
 
+.live-key-row { display: flex; gap: 6px; align-items: center; }
+.live-key-status {
+  font-size: 11.5px; font-weight: 600; color: #cbd5e1; white-space: nowrap;
+}
+.live-key-status.set { color: var(--status-good); }
+.live-key-status.unset { color: var(--status-warn); }
+.live-key-input {
+  min-width: 0; width: 180px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); color: #fff;
+}
+.live-key-input::placeholder { color: #cbd5e1; }
+.live-key-save, .live-key-clear {
+  border: 1px solid rgba(255, 255, 255, .3); border-radius: 8px;
+  background: transparent; color: #e2e8f0; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.live-key-save:hover, .live-key-clear:hover { background: rgba(255, 255, 255, .12); }
+
 .theme-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255, 255, 255, .08);

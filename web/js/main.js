@@ -13,7 +13,8 @@
 
 import { SCENARIO, SCENARIO_MATCH_HINTS } from "./data.js";
 import { state, loadPersisted, persistTheme, persistBaseUrl, applyTheme, addTurn, findTurn } from "./state.js";
-import { Api, V2NotSupportedError, ApiError } from "./api.js";
+import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError } from "./api.js";
+import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
 import { createTurnCard } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 
@@ -57,6 +58,45 @@ function wireTopbar() {
     api = new Api(state.baseUrl);
     refreshHealth();
   });
+
+  $("live-key-save").addEventListener("click", () => {
+    const val = $("live-key-input").value;
+    if (!val.trim()) return;
+    setApiKey(val);
+    $("live-key-input").value = "";
+    updateKeyStatus();
+    showNotice("ok", "کلید API ذخیره شد — این کلید فقط در همین مرورگر نگه‌داری می‌شود.");
+    refreshHealth();
+  });
+
+  $("live-key-clear").addEventListener("click", () => {
+    clearApiKey();
+    $("live-key-input").value = "";
+    updateKeyStatus();
+    showNotice("warn", "کلید API حذف شد. برای پرسیدن سؤال در حالت زندهٔ API باید دوباره یک کلید وارد کنید.");
+  });
+  updateKeyStatus();
+}
+
+/* ── API key status pill (topbar) ─────────────────────────────────── */
+function updateKeyStatus() {
+  const el = $("live-key-status");
+  if (hasApiKey()) {
+    el.textContent = "کلید: ذخیره شده ✓";
+    el.className = "live-key-status set";
+  } else {
+    el.textContent = "کلید: تنظیم نشده";
+    el.className = "live-key-status unset";
+  }
+}
+
+/** Reveal the key row, focus its input, and explain why — used both on
+ * first live use and after a 401 (see handleLiveError). Never puts the
+ * key itself, or any prior value, into the input or this message. */
+function promptForApiKey(message) {
+  $("live-key-row").hidden = false;
+  showNotice("warn", message);
+  $("live-key-input").focus();
 }
 
 function updateThemeLabel() {
@@ -71,6 +111,8 @@ function setMode(mode, opts = {}) {
   $("mode-live").classList.toggle("active", mode === "live");
   $("live-base-row").hidden = mode !== "live";
   $("live-base-input").value = state.baseUrl;
+  $("live-key-row").hidden = mode !== "live";
+  updateKeyStatus();
 
   const foot = $("foot-mode");
   if (mode === "simulated") {
@@ -271,6 +313,15 @@ async function ensureLiveSession() {
 }
 
 async function askLive(q) {
+  // First use (or after a clear/401): prompt before even attempting the
+  // network call, rather than let an entirely predictable 401 round-trip
+  // happen first. A stale/revoked key is still caught below, reactively,
+  // by the UnauthorizedError branch of handleLiveError.
+  if (!hasApiKey()) {
+    promptForApiKey("برای پرسیدن سؤال در حالت زندهٔ API، ابتدا کلید API خود را وارد کنید (از مدیر سامانه بگیرید).");
+    return;
+  }
+
   let sessionId;
   try {
     sessionId = await ensureLiveSession();
@@ -356,6 +407,17 @@ async function askLive(q) {
       handleLiveError(err);
       return;
     }
+    // 401 (key revoked mid-session) and 429 (throttled on the turns call
+    // itself, even though session creation above succeeded) both get the
+    // same distinguishable, actionable notice as everywhere else in live
+    // mode — not left to render as a generic TRANSPORT_ERROR inside the
+    // turn card, which is exactly the "staring at a spinner" failure mode
+    // this branch exists to avoid.
+    if (err instanceof UnauthorizedError || err instanceof RateLimitError) {
+      document.getElementById(`turn-${working.turn_id}`)?.remove();
+      handleLiveError(err);
+      return;
+    }
     working.error = { code: "TRANSPORT_ERROR", message: err.message };
     rebuild();
   }
@@ -376,6 +438,28 @@ function handleLiveError(err) {
   if (err instanceof V2NotSupportedError) {
     showNotice("warn", "بک‌اند نسخهٔ گفتگویی v2 را هنوز پشتیبانی نمی‌کند (404 روی /v2/sessions). حالت به «نمایشی» بازگردانده شد.");
     setMode("simulated");
+    return;
+  }
+  // 401: distinguished from a generic ApiError so a rejected/expired key
+  // never just sits there as an unexplained error — the stored key is
+  // cleared and the analyst is re-prompted immediately (never shown the
+  // key itself, only this message).
+  if (err instanceof UnauthorizedError) {
+    clearApiKey();
+    promptForApiKey("کلید API رد شد یا نامعتبر است — لطفاً یک کلید جدید وارد کنید.");
+    return;
+  }
+  // 429: client-side rate limiting, not a query or model failure — see
+  // api/middleware.py's RateLimitMiddleware. Surfaced with its own
+  // wording (and the retry-after it carries) instead of the generic
+  // "backend error" banner, which is exactly what let this exact
+  // response get misread as a query failure once already (see this
+  // branch's PR description).
+  if (err instanceof RateLimitError) {
+    const retry = err.retryAfterSeconds != null
+      ? `${Math.max(1, Math.ceil(err.retryAfterSeconds))} ثانیهٔ دیگر`
+      : "چند لحظهٔ دیگر";
+    showNotice("warn", `محدودیت نرخ درخواست (این خطای محدودسازی سمت کلاینت است، نه خطای پرسش یا مدل) — ${retry} دوباره امتحان کنید. ${err.message}`);
     return;
   }
   if (err instanceof ApiError) {
