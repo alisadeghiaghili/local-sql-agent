@@ -60,6 +60,38 @@ database and a keyword-dispatching stub model — see that file's docstring.
 It is manual-verification tooling only, not a substitute for testing
 against a real model/database.
 
+### Authentication (Phase 8)
+
+Every route the real backend serves requires `Authorization: Bearer <key>`
+except `GET /health` (`docs/api-contract-v2.md` §11). This UI does **not**
+ship a key — it is a static file served straight to the browser, and
+anything embedded in it at serve time is readable by anyone who opens dev
+tools. Instead:
+
+- The first time you ask a question in **زندهٔ API** mode, the UI reveals
+  a "کلید API" field in the top bar and asks you to enter your key. Get
+  your key from whoever administers this deployment — they issue it with
+  `scripts/issue_api_key.py`, one per analyst.
+- The key is saved in this browser's `localStorage` (via `js/apikey.js`)
+  and sent as `Authorization: Bearer <key>` on every authenticated call.
+  It is never logged, never put in a URL, and never echoed back in an
+  error message. `GET /health` works with no key at all; if one happens
+  to be stored it is sent anyway, which is what unlocks the `model` field
+  in the health pill's tooltip.
+- **Every analyst needs their own key**, not one shared key pasted into
+  everyone's browser. Sharing a key defeats the point of Phase 8's
+  per-caller identity: `observability/audit.py`'s audit trail attributes
+  by `principal_id`, and `api/middleware.py`'s rate limiter buckets on
+  `(principal, ip)` — one shared key collapses both back into "the whole
+  office looks like one caller", which is exactly the shape a shared
+  service key had before this UI existed.
+- A `401` (missing or rejected key) clears the stored key and re-prompts
+  with "کلید API رد شد یا نامعتبر است" instead of a generic error. A
+  `429` is shown as a rate-limit notice, not a query/model failure — the
+  server's error body says so explicitly and this UI passes that through.
+- Change or clear your key any time from the same "کلید API" field in the
+  top bar (visible whenever **زندهٔ API** mode is active).
+
 **As of Phase 3, the backend implements `/v2/*`** (`api/v2_routes.py`,
 mounted onto `api/server.py`) — sessions, turns (including `?stream=1`
 SSE), and `PATCH .../assumptions` are real endpoints backed by
@@ -70,11 +102,15 @@ isn't there:
 
 - `GET /health` is called to populate the three status pills (API / LLM /
   DB). `web/js/api.js` reads the *real* field names from
-  `api/models.py::HealthResponse` — `status`, `ollama`, `database`, `model`.
-  (The single-shot reference demo this UI was styled after had a real bug
-  here: it read `h.openai`, a field that does not exist on the response, so
-  the LLM pill was permanently wrong in live mode. That bug is not repeated
-  here.)
+  `api/models.py::HealthResponse` — `status`, `openai`, `database`, `model`.
+  This field name has drifted (and been silently wrong here) twice: the
+  original reference demo read `h.openai` when the backend field was
+  actually `ollama`; a later fix switched this file to `h.ollama`; the
+  backend was then refactored to a single OpenAI-compatible provider and
+  the field went back to `openai`, which this file did not track until
+  the web-UI-auth pass caught it. If the LLM pill ever looks permanently
+  wrong again in live mode, check this field name against
+  `api/models.py::HealthResponse` first.
 - Asking a question calls `POST /v2/sessions`. Against an OLDER backend
   build without v2 support this would return `404`, which `web/js/api.js`
   promotes to a `V2NotSupportedError`; the UI shows a clear warning —
@@ -112,7 +148,8 @@ web/
 ├── js/
 │   ├── main.js              # bootstrap, ask flow, simulated/live dispatch
 │   ├── state.js             # app state + localStorage (theme, base URL)
-│   ├── api.js                # live-mode transport (contract §3, §6, §7)
+│   ├── api.js                # live-mode transport (contract §3, §6, §7, §11)
+│   ├── apikey.js              # per-analyst API key storage (contract §11)
 │   ├── data.js                # SCENARIO: the six synthetic sample turns
 │   └── render/
 │       ├── turn.js            # composes one full turn card
@@ -162,5 +199,8 @@ sample turn:
 - Simulated mode never claims to have executed a real query; the footer and
   a persistent notice always say which mode is active.
 - Live mode never synthesizes a Turn to hide a missing or failing backend
-  endpoint — every failure path (404, network error, transport error) shows
-  an explicit notice.
+  endpoint — every failure path (404, network error, transport error, 401,
+  429) shows an explicit notice.
+- No API key is ever embedded in the served files — each analyst enters
+  their own, kept only in their own browser's `localStorage`. See
+  "Authentication" above.

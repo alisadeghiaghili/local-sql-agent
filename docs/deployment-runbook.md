@@ -15,24 +15,32 @@ below is ordered so each step is verified before the next depends on it.
 
 Every route except `GET /health` requires a named API key
 (`Authorization: Bearer <key>` — see `README.md`'s "Authentication" section
-and `docs/api-contract-v2.md`). Issue one per real caller (the web UI's own
-service identity counts as one caller) rather than sharing a single key
-across unrelated integrations — the audit trail and the rate limiter both
-key on principal id, so more keys means better attribution, not more work.
+and `docs/api-contract-v2.md`). Issue one **per analyst**, not one shared
+key for the web UI as a whole — the audit trail and the rate limiter both
+key on principal id (`observability/audit.py`, `api/middleware.py`'s
+`(principal, ip)` bucket), so one shared key behind one UI host makes every
+analyst's traffic look like a single caller and collapses everyone into one
+rate-limit bucket. `web/` (the static UI under `web/README.md`) is built
+for this: each analyst enters their own key once, in their own browser, on
+first use — the UI never ships or bakes in a key of its own.
 
 ```bash
-python scripts/issue_api_key.py --id analyst-desk --name "Trading Desk UI"
+python scripts/issue_api_key.py --id analyst-1 --name "Jane Analyst"
 ```
 
-This prints the raw key **once** — copy it immediately into your secrets
-manager (a password manager, a deployment secret store, anywhere except
-git). It also prints the `API_KEYS_JSON` array entry to paste into step 2.
-If it is lost, issue a new one; there is no way to recover the old one from
-`key_sha256` alone (that is the point — see `security/auth.py`'s module
-docstring).
+This prints the raw key **once** — hand it to that analyst directly (a
+password manager share, or read aloud/typed by hand — never a group
+channel or a shared doc) so they can paste it into the web UI's "کلید API"
+field themselves; do not also collect it back into your own secrets
+manager unless you specifically intend to be able to act as that analyst.
+It also prints the `API_KEYS_JSON` array entry to paste into step 2.
+If a key is lost, issue that analyst a new one; there is no way to recover
+the old one from `key_sha256` alone (that is the point — see
+`security/auth.py`'s module docstring).
 
-Repeat for every real caller/UI, appending each entry to the same
-`API_KEYS_JSON` array (`[{"id": ...}, {"id": ...}]`).
+Repeat for every analyst who will use the UI, plus one more for any other
+real caller/integration, appending each entry to the same `API_KEYS_JSON`
+array (`[{"id": ...}, {"id": ...}]`).
 
 ## 2. Set the environment
 
