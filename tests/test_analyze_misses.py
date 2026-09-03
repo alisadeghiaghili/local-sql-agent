@@ -134,10 +134,12 @@ class TestAnalyse:
         assert result == []
 
     def test_no_miss_when_all_tables_retrieved(self, tmp_path):
-        # Ring is retrieved for 'تالار'
+        # "ring" is one of Ring's project_config(.example)/retrieval_hints.yaml
+        # always_include trigger words in both the real and example config,
+        # so it force-matches under either.
         log = self._write_log(tmp_path, [{
             "status":        "SUCCESS",
-            "question":      "تالار",
+            "question":      "ring",
             "generated_sql": "SELECT TOP 5 * FROM [Auction_Dim].[Ring]",
         }])
         result = analyse(log)

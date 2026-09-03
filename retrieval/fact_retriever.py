@@ -10,17 +10,8 @@ Strategy (two-tier):
 
 from __future__ import annotations
 
+from knowledge.retrieval_hints import FACT_PATTERNS, FACT_TABLES as _FACT_TABLES
 from schema_data.retriever import retrieve_tables
-
-_FACT_TABLES = {"Contract", "CustomerContract", "Offer", "Order", "TalarLog"}
-
-FACT_PATTERNS: dict[str, list[str]] = {
-    "CustomerContract": ["خرید", "purchase", "customer purchase", "خریدار"],
-    "Contract": ["معامله", "معاملات", "قرارداد", "trade", "sales"],
-    "Offer": ["عرضه", "offer", "supply"],
-    "Order": ["سفارش", "order"],
-    "TalarLog": ["لاگ", "گزارش عملیات"],
-}
 
 
 class FactRetriever:
