@@ -28,14 +28,35 @@ import json
 import os
 
 # ---------------------------------------------------------------------------
-# Rate limit, raised for the suite before anything imports api.middleware
+# Rate limit, raised for the suite before config.Settings is ever built
 # ---------------------------------------------------------------------------
-# api/middleware.py reads RATE_LIMIT_* from the environment at import time,
-# and every authenticated test shares one principal (see auth_settings
-# below), so the whole suite runs through a single token bucket. At the
-# production default -- 60 requests per 60s plus a burst of 10 -- a suite
-# issuing well over a thousand authenticated requests in ~15 seconds
-# exhausts that bucket and starts getting 429s.
+# RATE_LIMIT_REQUESTS / RATE_LIMIT_BURST are config.Settings fields now
+# (config.Settings.rate_limit_requests / rate_limit_burst -- deployment-
+# readiness pass; they used to be read directly by api/middleware.py via
+# its own os.getenv() calls at THAT module's import time). Moving them to
+# Settings, read through cfg.settings at RateLimitMiddleware construction
+# time, does NOT let this workaround go: it only changes *which* import
+# has to see the env vars first. config.settings is a frozen singleton
+# built exactly once, at config.py's own first import (see that module's
+# ".env loading" comment) -- so the env vars still have to be in place
+# before whichever happens first. And even that would not be late enough
+# on its own: api.server.app is one shared module-level FastAPI instance
+# reused by most of this suite's tests, and Starlette builds (and caches
+# for the app's entire lifetime) its middleware stack lazily, on the
+# first request it ever serves in the whole pytest session -- so whatever
+# cfg.settings.rate_limit_requests/burst are AT THAT MOMENT is what every
+# later test is stuck with, no matter how many later tests wrap a call in
+# config.override_settings(). Setting the env vars here, before anything
+# in this process has imported config OR sent api.server.app its first
+# request, is what makes both of those "exactly once" events see the
+# huge values from the start.
+#
+# Every authenticated test shares one principal (see auth_settings below),
+# so the whole suite runs through a single token bucket. At the shipped
+# production default -- 600 requests per 60s plus a burst of 40 -- a suite
+# issuing well over a thousand authenticated requests in ~15 seconds would
+# still exhaust that bucket and start getting 429s (this was true, worse,
+# at the old 60/10 default).
 #
 # Those 429s do not look like rate limiting when they land: a test reads
 # resp.json()["session_id"] and gets a KeyError, because the body is an
@@ -45,8 +66,8 @@ import os
 # refill. It cost a long time to find, hence this comment.
 #
 # Set here rather than in the CI workflow so a local run and CI behave
-# identically. Must run before api.middleware is first imported -- conftest
-# loads before any test module, and nothing above imports api.
+# identically. Must run before config.py is first imported -- conftest
+# loads before any test module, and nothing above imports config or api.
 os.environ.setdefault("RATE_LIMIT_REQUESTS", "1000000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 

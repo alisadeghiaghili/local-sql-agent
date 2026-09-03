@@ -19,9 +19,13 @@ from logs.query_log import QueryLog
 #: default_factory literals (LOG_MAX_BYTES / LOG_BACKUP_COUNT unset) --
 #: logs/logger.py no longer keeps its own copy of these (see config.py's
 #: "Three layers, not two" section), so this test pins the values here
-#: instead.
-_DEFAULT_MAX_BYTES = 10 * 1024 * 1024
-_DEFAULT_BACKUP_COUNT = 5
+#: instead. Raised (deployment-readiness pass) from 10 MiB/5 backups to
+#: 50 MiB/20 backups so a first production deployment's audit_log.jsonl
+#: cannot lose its earliest, unrepeatable week of records to a rotation
+#: nobody was watching -- see config.Settings.log_backup_count's docstring
+#: for the full reasoning.
+_DEFAULT_MAX_BYTES = 50 * 1024 * 1024
+_DEFAULT_BACKUP_COUNT = 20
 
 
 def _make_log(**kwargs) -> QueryLog:
