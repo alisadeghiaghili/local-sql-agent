@@ -41,6 +41,7 @@ import pandas as pd
 
 import config as cfg
 from core.models import RetrievalContext
+from knowledge.session_policy import DEFAULT_SCOPE_FIELD_NAME, DEFAULT_SCOPE_FILTER_KEY
 from llm.router import (
     LLMRouter,
     PromptSegments,
@@ -396,7 +397,7 @@ class TurnEngine:
         assumptions = _apply_overrides(assumptions, assumption_overrides)
         ambiguity_block = Ambiguity(is_ambiguous=True, assumptions=assumptions, clarifications=[])
         measure = next((a.value for a in assumptions if a.field == "measure"), "")
-        ring = basis_decision.inherited_filters.get("Ring")
+        ring = basis_decision.inherited_filters.get(DEFAULT_SCOPE_FILTER_KEY)
         resolved_question = (
             f"برای معاملات {ring}، {measure} در میان همهٔ سطرهای منطبق با فیلتر قبلی "
             f"— نه فقط سطرهای نمایش‌داده‌شدهٔ پرسش قبل"
@@ -570,8 +571,8 @@ class TurnEngine:
         # ("سال جاری (۱۴۰۵)") is left alone -- there is no filter key to
         # reconcile it with.
         for a in assumptions:
-            if a.field == "ring":
-                merged_filters["Ring"] = a.value
+            if a.field == DEFAULT_SCOPE_FIELD_NAME:
+                merged_filters[DEFAULT_SCOPE_FILTER_KEY] = a.value
             elif a.field == "period" and a.value.strip().isdigit():
                 merged_filters["PersianYear"] = int(a.value.strip())
 
@@ -777,7 +778,10 @@ def _resolved_question_for_fresh(question: str, assumptions, filters: dict[str, 
     if not assumptions:
         return question
     measure = next((a.value for a in assumptions if a.field == "measure"), None)
-    ring = next((a.value for a in assumptions if a.field == "ring"), filters.get("Ring"))
+    ring = next(
+        (a.value for a in assumptions if a.field == DEFAULT_SCOPE_FIELD_NAME),
+        filters.get(DEFAULT_SCOPE_FILTER_KEY),
+    )
     period = next((a.value for a in assumptions if a.field == "period"), None)
     parts = [p for p in (measure, ring, period) if p]
     if not parts:

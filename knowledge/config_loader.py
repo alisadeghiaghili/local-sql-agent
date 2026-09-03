@@ -132,6 +132,18 @@ class MetricsConfig(BaseModel):
     metrics: dict[str, MetricDefinition]
 
 
+class DefaultScopeConfig(BaseModel):
+    filter_key: str
+    field_name: str
+    default_label: str
+    options: list[str]
+    clarification_prompt: str
+
+
+class SessionPolicyConfig(BaseModel):
+    default_scope: DefaultScopeConfig
+
+
 class RetrievalHintsConfig(BaseModel):
     fact_tables: list[str]
     always_include: dict[str, list[str]]
@@ -189,3 +201,7 @@ def load_metrics() -> MetricsConfig:
 
 def load_retrieval_hints() -> RetrievalHintsConfig:
     return _load_validated("retrieval_hints.yaml", RetrievalHintsConfig)  # type: ignore[return-value]
+
+
+def load_session_policy() -> SessionPolicyConfig:
+    return _load_validated("session_policy.yaml", SessionPolicyConfig)  # type: ignore[return-value]

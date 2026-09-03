@@ -1,0 +1,34 @@
+# session_policy.yaml — TEMPLATE (copy to project_config/session_policy.yaml and fill in real data)
+#
+# Conversational-session policy (see docs/api-contract-v2.md §5,
+# "Ambiguity policy").
+#
+# default_scope: the ONE dimension session.ambiguity/session.engine/
+#   session.refinement default a ranking question to when it names no
+#   scope of its own -- source "default" (§5), always user-editable via
+#   the returned `clarifications`. This is a warehouse-specific policy
+#   choice (which dimension, what its fallback label reads, what options
+#   a clarification offers), unrelated to the separate §5 "policy" source
+#   (a non-editable system rule, e.g. the §2 CTE-refinement scope
+#   assumption), which stays a fixed property of the code, not something
+#   this file toggles.
+#     filter_key           : the RetrievalContext.filters / TurnMemory.filters
+#                             dict key this dimension is stored under (must
+#                             match a table name in schema.yaml -- this
+#                             template uses "Ring", the example dimension
+#                             table schema.yaml.example already ships).
+#     field_name            : the generic Assumption.field / UI field name.
+#     default_label          : the value shown when the question leaves this
+#                             dimension unspecified.
+#     options               : clarification options offered to the user.
+#     clarification_prompt  : the one-click clarification's prompt text.
+
+default_scope:
+  filter_key: "Ring"
+  field_name: "ring"
+  default_label: "All rings"
+  options:
+    - "All rings"
+    - "Ring A"
+    - "Ring B"
+  clarification_prompt: "Which ring do you mean?"
