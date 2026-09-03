@@ -12,8 +12,16 @@ from unittest.mock import patch
 
 import pytest
 
-from logs.logger import _DEFAULT_BACKUP_COUNT, _DEFAULT_MAX_BYTES, _rotate, append_jsonl
+from logs.logger import _rotate, append_jsonl
 from logs.query_log import QueryLog
+
+#: Mirrors config.Settings.log_max_bytes / log_backup_count's own
+#: default_factory literals (LOG_MAX_BYTES / LOG_BACKUP_COUNT unset) --
+#: logs/logger.py no longer keeps its own copy of these (see config.py's
+#: "Three layers, not two" section), so this test pins the values here
+#: instead.
+_DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+_DEFAULT_BACKUP_COUNT = 5
 
 
 def _make_log(**kwargs) -> QueryLog:

@@ -223,6 +223,13 @@ def _classify_table(table: TableInfo) -> str:
 # Sample value extraction
 # ---------------------------------------------------------------------------
 
+#: Display-truncation length for a sample value drafted into
+#: project_config YAML by this module's (interactive, untested,
+#: coverage-excluded -- see setup.cfg) schema-inspection wizard. An
+#: implementation detail, not a ``config.Settings`` field: it is never
+#: read by the running engine, only by a human running the wizard once
+#: per warehouse onboarding. See ``config.py``'s "Three layers, not two"
+#: section.
 _MAX_SAMPLE_LEN = 50
 
 

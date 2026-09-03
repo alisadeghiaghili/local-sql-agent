@@ -54,6 +54,14 @@ from schema_data.registry import SchemaRegistry
 #: token-budget check) or used as a rough per-skill-version constant fed
 #: into ``observability.llm_status.build_llm_status``'s cache-hit ratio —
 #: never presented as an exact model token count.
+#:
+#: An implementation detail, not a ``config.Settings`` field: a deployment
+#: whose text tokenizes at a different real ratio (e.g. Persian vs
+#: English) already has the one knob it needs in
+#: ``cfg.settings.prompt_retrieval_token_budget`` -- giving this ratio its
+#: own env var would add a second dial over the same effective threshold
+#: rather than a genuinely independent one. See ``config.py``'s "Three
+#: layers, not two" section.
 _CHARS_PER_TOKEN = 4
 
 
