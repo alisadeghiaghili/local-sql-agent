@@ -358,17 +358,17 @@ class TestRateLimitBucketCap:
 
 class TestRateLimit429ReportsInstanceConfig:
     """The 429 body and X-RateLimit-* headers must describe the limits
-    THIS middleware instance was actually constructed with, not the
-    module-level env-var defaults -- otherwise a middleware constructed
+    THIS middleware instance was actually constructed with, not
+    config.Settings' own defaults -- otherwise a middleware constructed
     with custom limits (as tests do, and as any deployment overriding the
     defaults would) reports a number that has nothing to do with what
     just happened."""
 
     def test_429_message_reports_custom_requests_per_window(self):
-        import api.middleware as mw_module
+        import config as cfg
 
         custom_requests = 3
-        assert custom_requests != mw_module._RATE_REQUESTS
+        assert custom_requests != cfg.settings.rate_limit_requests
         # A long window keeps refill-during-the-loop negligible so this
         # stays deterministic regardless of how long the requests take.
         app = _rate_limited_app(
@@ -387,9 +387,9 @@ class TestRateLimit429ReportsInstanceConfig:
         )
 
     def test_429_message_reports_custom_window(self):
-        import api.middleware as mw_module
+        import config as cfg
 
-        custom_window = mw_module._RATE_WINDOW + 999  # guaranteed to differ
+        custom_window = cfg.settings.rate_limit_window_seconds + 999  # guaranteed to differ
         app = _rate_limited_app(
             # capacity 2, not 1: sidesteps the unrelated pre-existing
             # first-request rounding edge case noted in item 5's tests.
@@ -405,10 +405,10 @@ class TestRateLimit429ReportsInstanceConfig:
         assert str(int(custom_window)) in resp.json()["error"]["message"]
 
     def test_ratelimit_headers_report_custom_config(self):
-        import api.middleware as mw_module
+        import config as cfg
 
-        custom_requests = mw_module._RATE_REQUESTS + 42
-        custom_window = mw_module._RATE_WINDOW + 42
+        custom_requests = cfg.settings.rate_limit_requests + 42
+        custom_window = cfg.settings.rate_limit_window_seconds + 42
         app = _rate_limited_app(
             requests_per_window=custom_requests,
             window_seconds=custom_window,
@@ -613,3 +613,64 @@ class TestRateLimitBucketPairsPrincipalAndIp:
         mw = RateLimitMiddleware(app=MagicMock())
         key = self._key(mw, principal_id=None, ip="10.0.0.9")
         assert key == "ip:10.0.0.9"
+
+
+# ---------------------------------------------------------------------------
+# RateLimitMiddleware — RATE_LIMIT_* moved to config.Settings, read at
+# construction time (deployment-readiness pass)
+# ---------------------------------------------------------------------------
+
+class TestRateLimitSettingsReadAtCallTime:
+    """RATE_LIMIT_REQUESTS / RATE_LIMIT_WINDOW_SEC / RATE_LIMIT_BURST used to
+    be read once, as os.getenv() calls evaluated at api.middleware's own
+    *import* time -- so config.override_settings() never reached a
+    RateLimitMiddleware built with no explicit constructor kwargs, only a
+    real environment-variable change made before the very first import of
+    this module ever could (see tests/conftest.py's RATE_LIMIT_REQUESTS /
+    RATE_LIMIT_BURST workaround, needed for exactly that reason).
+
+    Now they live on config.Settings and RateLimitMiddleware.__init__
+    resolves them itself, through cfg.settings, at construction time --
+    these tests pin that directly: constructing the middleware with NO
+    explicit kwargs inside an override_settings() block must pick up the
+    override, proving the read genuinely happens at construction time
+    rather than being captured once at import."""
+
+    def test_no_kwargs_picks_up_overridden_requests_and_burst(self):
+        from config import override_settings
+
+        with override_settings(rate_limit_requests=2, rate_limit_burst=0, rate_limit_window_seconds=3600):
+            mw = RateLimitMiddleware(app=MagicMock())
+            assert mw._requests_per_window == 2
+            assert mw._capacity == 2
+
+    def test_no_kwargs_picks_up_overridden_window(self):
+        from config import override_settings
+
+        with override_settings(rate_limit_window_seconds=123.0):
+            mw = RateLimitMiddleware(app=MagicMock())
+            assert mw._window == 123.0
+
+    def test_explicit_kwarg_still_wins_over_settings(self):
+        """An explicit constructor argument (what every other test in this
+        module passes) must never be silently overridden by cfg.settings --
+        only an omitted (None) argument falls back to it."""
+        from config import override_settings
+
+        with override_settings(rate_limit_requests=999):
+            mw = RateLimitMiddleware(app=MagicMock(), requests_per_window=5)
+            assert mw._requests_per_window == 5
+
+    def test_end_to_end_override_without_constructor_kwargs(self):
+        """Same guarantee through a real ASGI app built with no kwargs at
+        all -- the shape api.server.py's own app.add_middleware(RateLimitMiddleware)
+        call uses."""
+        from config import override_settings
+
+        with override_settings(
+            rate_limit_requests=1, rate_limit_burst=0, rate_limit_window_seconds=3600,
+        ):
+            app = _rate_limited_app()
+            client = TestClient(app)
+            assert client.get("/limited").status_code == 200
+            assert client.get("/limited").status_code == 429
