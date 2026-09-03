@@ -47,6 +47,7 @@ from llm.router import (
     TaskType,
     build_prompt_segments,
 )
+from llm.sql_agent import MAX_CORRECTION_ATTEMPTS
 from observability.audit import AuditRecord, save_audit_record
 from observability.llm_status import build_llm_status, finish_reason_from_meta
 from observability.timing import StageTimer
@@ -81,13 +82,6 @@ from session.refinement import BasisDecision, classify_basis
 from session.store import SessionRecord, TurnMemory
 
 logger = logging.getLogger(__name__)
-
-#: Mirrors ``llm.sql_agent.MAX_CORRECTION_ATTEMPTS`` — the fresh/carry-forward
-#: generation loop below re-implements SQLAgent's retry shape (rather than
-#: calling SQLAgent itself) because it needs to thread a ``session_context``
-#: suffix through the router, which SQLAgent's single-backend loop does not
-#: accept.
-MAX_CORRECTION_ATTEMPTS: int = 2
 
 _CORRECTION_SUFFIX_TEMPLATE = """
 
