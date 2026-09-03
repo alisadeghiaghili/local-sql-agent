@@ -20,6 +20,26 @@
 #                   to know exists) but the SQL guard will refuse any query
 #                   that references it directly — add a `columns` map, even
 #                   a partial one, once you want that table queryable.
+#     db_schema   : (optional) this table's schema/database qualifier, e.g.
+#                   "sales" -- used to build a `[db_schema].[table]`
+#                   reference in retrieval.value_resolver / retrieval.dimension_vocabulary.
+#                   Required whenever resolvable_columns or prefetchable_columns
+#                   is non-empty. A warehouse with more than one schema (this
+#                   example has two: "sales" and "ref") just gives each
+#                   table its own value -- there is no single global schema
+#                   constant anywhere in the code.
+#     resolvable_columns  : (optional) subset of `columns`' keys that
+#                   retrieval.value_resolver.resolve_value is allowed to
+#                   query -- name-bearing dimension columns a free-text
+#                   mention could plausibly resolve to (a customer or
+#                   product name, not a foreign key or amount).
+#     prefetchable_columns : (optional) subset of `columns`' keys that
+#                   retrieval.dimension_vocabulary is allowed to prefetch
+#                   the entire distinct value set of -- small-cardinality
+#                   dimensions only; deliberately excluded for any table
+#                   whose row count could be large (see that module's
+#                   docstring for why this example's own Customer/Supplier
+#                   are resolvable but NOT prefetchable).
 #
 # relationships:
 #   A list of JOIN hints between two tables. Both directions do NOT need to
@@ -42,6 +62,7 @@ tables:
   # Example 1: a fact/transaction table with a full column list
   Order:
     description: "sales.Order — customer purchase orders"
+    db_schema: "sales"
     columns:
       ID: "Primary key"
       CustomerID: "FK → Customer"
@@ -57,15 +78,20 @@ tables:
   # four column names if you edit this entry.
   Customer:
     description: "sales.Customer — customer master data"
+    db_schema: "sales"
     columns:
       ID: "Primary key"
       Name: "Customer full name"
       NationalID: "National ID / national code"
       IsActive: "Active flag"
+    # Deliberately resolvable but NOT prefetchable -- Customer can be a
+    # very large table; see retrieval/dimension_vocabulary.py's docstring.
+    resolvable_columns: ["Name"]
 
   # Example 3: a small date dimension
   Date:
     description: "sales.Date — calendar date dimension"
+    db_schema: "sales"
     columns:
       ID: "Primary key"
       CalendarDate: "Gregorian calendar date"
@@ -77,6 +103,67 @@ tables:
   # queryable table until one is added.
   OrderStatus:
     description: "sales.OrderStatus — order lifecycle status lookup"
+    db_schema: "sales"
+
+  # Examples 5-9: small reference/lookup dimensions, in a SECOND schema
+  # ("ref", distinct from "sales" above) -- demonstrating that db_schema is
+  # genuinely per-table, and that resolvable_columns/prefetchable_columns
+  # are ordinary schema.yaml data like everything else here. Also what
+  # exercises retrieval.value_resolver / retrieval.dimension_vocabulary
+  # under this example config in CI.
+  Broker:
+    description: "ref.Broker — selling-agent reference data"
+    db_schema: "ref"
+    columns:
+      ID: "Primary key"
+      PersianName: "Agent display name"
+      Code: "Agent code"
+    resolvable_columns: ["PersianName"]
+    prefetchable_columns: ["PersianName"]
+  Currency:
+    description: "ref.Currency — currency reference data"
+    db_schema: "ref"
+    columns:
+      ID: "Primary key"
+      PersianName: "Currency display name"
+      Code: "ISO currency code"
+    resolvable_columns: ["PersianName"]
+    prefetchable_columns: ["PersianName"]
+  DeliveryPlace:
+    description: "ref.DeliveryPlace — delivery location reference data"
+    db_schema: "ref"
+    columns:
+      ID: "Primary key"
+      PersianName: "Delivery location display name"
+    resolvable_columns: ["PersianName"]
+    prefetchable_columns: ["PersianName"]
+  Ring:
+    description: "ref.Ring — sales channel reference data"
+    db_schema: "ref"
+    columns:
+      ID: "Primary key"
+      Name: "Channel display name"
+      Code: "Channel code"
+    resolvable_columns: ["Name"]
+    prefetchable_columns: ["Name"]
+  Symbol:
+    description: "ref.Symbol — product symbol reference data"
+    db_schema: "ref"
+    columns:
+      ID: "Primary key"
+      Commodity_PersianName: "Product display name"
+      Commodity_Symbol: "Product symbol"
+    resolvable_columns: ["Commodity_PersianName", "Commodity_Symbol"]
+    prefetchable_columns: ["Commodity_PersianName", "Commodity_Symbol"]
+  Supplier:
+    description: "ref.Supplier — supplier master data"
+    db_schema: "ref"
+    columns:
+      ID: "Primary key"
+      Customer_Name: "Supplier display name"
+    # Deliberately resolvable but NOT prefetchable -- same reasoning as
+    # Customer above.
+    resolvable_columns: ["Customer_Name"]
 
 relationships:
   - from_table: "Order"

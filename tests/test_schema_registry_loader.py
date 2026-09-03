@@ -148,6 +148,48 @@ class TestValidationErrors:
         assert cfg.tables == {}
         assert cfg.relationships == []
 
+    def test_resolvable_column_not_in_columns_map_raises(self, tmp_path):
+        """A column cannot be flagged resolvable/prefetchable without
+        first existing as a real, described column -- see
+        SchemaConfig's validator. This is the mechanism that keeps
+        retrieval.value_resolver's allowlist from ever drifting out of
+        sync with schema.yaml's own `columns` map."""
+        _write_schema(
+            tmp_path,
+            {
+                "tables": {
+                    "Widget": {
+                        "description": "a test table",
+                        "db_schema": "dbo",
+                        "columns": {"ID": "primary key"},
+                        "resolvable_columns": ["Name"],  # not in columns
+                    }
+                },
+            },
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            with pytest.raises(ValueError, match="Name"):
+                load_schema()
+
+    def test_prefetchable_columns_without_db_schema_raises(self, tmp_path):
+        """A table cannot flag prefetchable_columns without also giving a
+        db_schema -- there would be no qualifier to build a query with."""
+        _write_schema(
+            tmp_path,
+            {
+                "tables": {
+                    "Widget": {
+                        "description": "a test table",
+                        "columns": {"Name": "widget name"},
+                        "prefetchable_columns": ["Name"],  # no db_schema
+                    }
+                },
+            },
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            with pytest.raises(ValueError, match="db_schema"):
+                load_schema()
+
 
 class TestPydanticModels:
     def test_table_definition_defaults(self):

@@ -231,27 +231,26 @@ from typing import Sequence
 import config as cfg
 from core.persian import normalize_for_matching
 from retrieval.value_resolver import ExecuteParamsFn
+from schema_data.registry import get_prefetchable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal
 from session.models import Clarification
 
 logger = logging.getLogger(__name__)
 
-#: Same schema every allowlisted table lives in -- see
-#: ``retrieval.value_resolver``'s identical constant; kept as a separate
-#: literal here rather than imported so this module has no dependency on
-#: that one beyond the shared ``ExecuteParamsFn`` type alias.
-_SCHEMA = "Auction_Dim"
+#: table -> its schema/db qualifier (e.g. "Auction_Dim"), loaded from
+#: schema.yaml -- see ``retrieval.value_resolver``'s identical-shaped
+#: constant; not shared with that module beyond both calling the same
+#: ``schema_data.registry`` accessor, since the two allowlists (prefetch
+#: vs. resolve) can legitimately differ in which tables they cover.
+_TABLE_SCHEMAS: dict[str, str] = get_table_schema_qualifiers()
 
-#: table -> allowlisted, prefetchable columns. A strict SUBSET of
-#: ``retrieval.value_resolver.RESOLVABLE_COLUMNS`` -- ``Customer`` and
-#: ``Supplier`` are deliberately excluded; see the module docstring.
-PREFETCH_COLUMNS: dict[str, tuple[str, ...]] = {
-    "Broker": ("PersianName",),
-    "Currency": ("PersianName",),
-    "DeliveryPlace": ("PersianName",),
-    "Ring": ("Name",),
-    "Symbol": ("Commodity_PersianName", "Commodity_Symbol"),
-}
+#: table -> allowlisted, prefetchable columns, from schema.yaml's per-table
+#: `prefetchable_columns` field -- see
+#: schema_data.registry.get_prefetchable_columns. A strict SUBSET of
+#: ``retrieval.value_resolver.RESOLVABLE_COLUMNS`` in every deployment so
+#: far -- ``Customer`` and ``Supplier`` are deliberately excluded from it;
+#: see the module docstring.
+PREFETCH_COLUMNS: dict[str, tuple[str, ...]] = get_prefetchable_columns()
 
 #: Minimum normalised length (characters) for a vocabulary value to be used
 #: for matching at all -- see the module docstring's "Matching rules".
@@ -267,18 +266,30 @@ def _prefetch_query(table: str, column: str) -> str:
     """The fixed template for fetching a dimension's whole vocabulary.
 
     No ``WHERE``, no user input of any kind -- ``table``/``column`` are
-    always drawn from :data:`PREFETCH_COLUMNS`, never from a question, so
-    there is nothing here for ``retrieval.value_resolver``'s injection
-    discussion to apply to. ``TOP (?)`` is still a defensive cap (bound,
-    not interpolated) in case a table's cardinality is ever larger than
+    always drawn from :data:`PREFETCH_COLUMNS`, and the schema qualifier
+    from :data:`_TABLE_SCHEMAS`, never from a question, so there is
+    nothing here for ``retrieval.value_resolver``'s injection discussion to
+    apply to. ``TOP (?)`` is still a defensive cap (bound, not
+    interpolated) in case a table's cardinality is ever larger than
     expected -- not because this path is meant to hit it in practice.
 
     Examples
     --------
-    >>> _prefetch_query("Ring", "Name")
-    'SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Ring]'
+    The exact schema qualifier depends on ``schema.yaml`` (see
+    :data:`_TABLE_SCHEMAS`) -- not asserted literally here so this doctest
+    passes under any deployment's config, including CI's
+    ``project_config.example/``:
+
+    >>> sql = _prefetch_query("Customer", "Name")
+    >>> "WHERE" in sql
+    False
+    >>> sql.startswith("SELECT DISTINCT TOP (?) [Name] FROM [")
+    True
+    >>> sql.endswith("].[Customer]")
+    True
     """
-    return f"SELECT DISTINCT TOP (?) [{column}] FROM [{_SCHEMA}].[{table}]"
+    schema = _TABLE_SCHEMAS[table]
+    return f"SELECT DISTINCT TOP (?) [{column}] FROM [{schema}].[{table}]"
 
 
 # ---------------------------------------------------------------------------
@@ -465,8 +476,10 @@ def warm_all(execute_fn: ExecuteParamsFn | None = None) -> dict[str, int]:
 #
 # Each triggered refresh gets its own daemon thread rather than a shared
 # ThreadPoolExecutor. Single-flight already caps concurrent work to at
-# most one thread per (table, column) key -- bounded by len(PREFETCH_COLUMNS)
-# pairs (7 today) -- so a pool's queuing/reuse has no real benefit here.
+# most one thread per (table, column) key -- bounded by the number of
+# (table, column) pairs across PREFETCH_COLUMNS's values (a handful, for
+# any deployment's schema.yaml) -- so a pool's queuing/reuse has no real
+# benefit here.
 # daemon=True matters far more than that: a ThreadPoolExecutor's worker
 # threads are NOT daemons, which means the interpreter's atexit machinery
 # waits for every queued/running task to finish before the process can

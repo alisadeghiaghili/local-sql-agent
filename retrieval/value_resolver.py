@@ -6,9 +6,10 @@ The problem this closes: ``retrieval/value_retriever.py`` resolves values
 from a **static** alias table (``project_config/aliases.yaml``). Anything
 not in that file, the model has to guess -- asked about a customer or
 symbol name it has never seen, it must invent the exact string stored in
-the warehouse. :func:`resolve_value` removes that guess for the seven
-name-bearing dimension columns listed below by looking the mention up in
-the database itself, deterministically, **before** the SQL-generation
+the warehouse. :func:`resolve_value` removes that guess for whichever
+name-bearing dimension columns this deployment's ``schema.yaml`` flags
+``resolvable_columns`` for (see :data:`RESOLVABLE_COLUMNS`) by looking the
+mention up in the database itself, deterministically, **before** the SQL-generation
 prompt is built -- not via an LLM tool call (a tool call is non-deterministic:
 the model might not make it, which just moves the guess one layer back
 rather than removing it). :data:`RESOLVE_VALUE_TOOL_DEFINITION` is exported
@@ -65,10 +66,11 @@ User-supplied text becomes part of a ``WHERE`` clause here -- the first
 place in this system that happens. **The SQL is never built from that
 text.** :func:`resolve_value` and its helpers only ever build a query from
 a *fixed template* (:func:`_build_query`) whose ``<schema>``, ``<table>``,
-and ``<column>`` come from the hardcoded :data:`RESOLVABLE_COLUMNS`
-allowlist below -- never from the question, never from config, never from
-the model -- and the only thing that varies with user input is a **bound
-parameter** value, passed through
+and ``<column>`` come from :data:`RESOLVABLE_COLUMNS` / :data:`_TABLE_SCHEMAS`
+below -- read once from ``schema.yaml`` at import time, a **closed set fixed
+for the life of the process** -- never from the question, never from the
+model, and never re-derived per request. The only thing that varies with
+user input is a **bound parameter** value, passed through
 :func:`database.executor.execute_sql_params` (never interpolated). See
 ``tests/test_value_resolver.py::TestResolveValueInjection`` for the
 byte-identical-SQL-text proof this design exists to satisfy.
@@ -142,6 +144,7 @@ from typing import Any, Callable, Literal, Sequence
 import pandas as pd
 
 import config as cfg
+from schema_data.registry import get_resolvable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal, scope_key
 from session.models import Clarification
 
@@ -156,29 +159,33 @@ logger = logging.getLogger(__name__)
 ExecuteParamsFn = Callable[[str, Sequence[object]], "pd.DataFrame"]
 
 # ---------------------------------------------------------------------------
-# The allowlist -- hardcoded in source, never derived from config or from
+# The allowlist -- loaded from <PROJECT_CONFIG_DIR>/schema.yaml (see
+# schema_data.registry), never hardcoded in source and never derived from
 # schema_data.columns.TABLE_COLUMNS. TABLE_COLUMNS lists every column a
 # *generated SQL query* may reference (TotalPrice, NationalID, ...); this
 # allowlist is deliberately much narrower -- only the name-bearing
-# dimension columns a free-text mention could plausibly resolve to. All
-# seven tables live in the Auction_Dim schema (schema_data/tables.py).
+# dimension columns a free-text mention could plausibly resolve to, i.e.
+# whichever ones this deployment's schema.yaml flags `resolvable_columns`
+# for. Read once at import time (mirroring security.sql_guard's own
+# eager, schema.yaml-derived TABLE_COLUMNS/_TABLE_LOOKUP) -- a schema.yaml
+# edit takes effect on process restart, exactly like the guard's allowlist.
 # ---------------------------------------------------------------------------
 
-_SCHEMA = "Auction_Dim"
+#: table -> allowlisted column names, from schema.yaml's per-table
+#: `resolvable_columns` field -- see schema_data.registry.get_resolvable_columns.
+#: ``Date.Persian*Name`` is deliberately excluded from every deployment's
+#: schema.yaml so far -- see the module docstring's "What is deliberately
+#: NOT covered" section.
+RESOLVABLE_COLUMNS: dict[str, tuple[str, ...]] = get_resolvable_columns()
 
-#: table -> allowlisted column names. Confirmed against
-#: ``schema_data.registry.TABLE_COLUMNS`` (see ``schema_data/columns.py``).
-#: ``Date.Persian*Name`` is deliberately excluded -- see the module
-#: docstring's "What is deliberately NOT covered" section.
-RESOLVABLE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "Broker": ("PersianName",),
-    "Currency": ("PersianName",),
-    "Customer": ("Name",),
-    "DeliveryPlace": ("PersianName",),
-    "Ring": ("Name",),
-    "Supplier": ("Customer_Name",),
-    "Symbol": ("Commodity_PersianName", "Commodity_Symbol"),
-}
+#: table -> its schema/db qualifier (e.g. "Auction_Dim"), same source --
+#: schema_data.registry.get_table_schema_qualifiers. Per-table rather than
+#: one shared constant because a warehouse routinely spans more than one
+#: schema; every table named in RESOLVABLE_COLUMNS is guaranteed an entry
+#: here (schema_data.registry.SchemaConfig's validator enforces that a
+#: table cannot declare resolvable_columns without also giving a
+#: db_schema).
+_TABLE_SCHEMAS: dict[str, str] = get_table_schema_qualifiers()
 
 #: Phase 7 seam: a tool-call-shaped description of :func:`resolve_value`,
 #: exported for a future bounded agentic loop to register -- nothing in
@@ -263,18 +270,29 @@ def _build_query(table: str, column: str) -> str:
     always drawn from :data:`RESOLVABLE_COLUMNS` -- never from *mention* or
     any other user-controlled value -- so this is not the injection surface
     the module docstring warns about; the mention travels only as a bound
-    ``?`` parameter, never through this function at all. The trailing
+    ``?`` parameter, never through this function at all. The schema
+    qualifier likewise comes only from :data:`_TABLE_SCHEMAS` (itself
+    derived from ``schema.yaml``, never from *mention*). The trailing
     ``ESCAPE '\\'`` clause is part of this fixed template too -- it is
     always present, regardless of whether the mention actually contains a
     wildcard character -- see :func:`_escape_like_wildcards`.
 
     Examples
     --------
-    >>> _build_query("Customer", "Name")
-    "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] WHERE [Name] LIKE ? ESCAPE '\\\\'"
+    The exact schema qualifier depends on ``schema.yaml`` (see
+    :data:`_TABLE_SCHEMAS`) -- not asserted literally here so this doctest
+    passes under any deployment's config, including CI's
+    ``project_config.example/``:
+
+    >>> sql = _build_query("Customer", "Name")
+    >>> sql.startswith("SELECT DISTINCT TOP (?) [Name] FROM [")
+    True
+    >>> sql.endswith("].[Customer] WHERE [Name] LIKE ? ESCAPE '\\\\'")
+    True
     """
+    schema = _TABLE_SCHEMAS[table]
     return (
-        f"SELECT DISTINCT TOP (?) [{column}] FROM [{_SCHEMA}].[{table}] "
+        f"SELECT DISTINCT TOP (?) [{column}] FROM [{schema}].[{table}] "
         f"WHERE [{column}] LIKE ? ESCAPE '{_LIKE_ESCAPE_CHAR}'"
     )
 
@@ -484,8 +502,8 @@ def resolve_value(
         Table names to search -- typically what
         ``retrieval.entity_retriever.EntityRetriever.retrieve`` selected
         for the question, so the search is bounded to entity kinds the
-        question plausibly concerns rather than scanning all seven
-        allowlisted tables on every request. A name not in
+        question plausibly concerns rather than scanning every allowlisted
+        table on every request. A name not in
         :data:`RESOLVABLE_COLUMNS` is silently skipped (not an error) --
         e.g. a fact table like ``"Contract"`` passed in alongside
         ``"Customer"`` simply narrows nothing, it doesn't refuse the call.

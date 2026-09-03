@@ -120,14 +120,17 @@ class TestResolveValueInjection:
     def test_generated_sql_shape(self):
         """Documents the exact fixed template -- ``TOP (?)`` parenthesised
         form plus the ``ESCAPE`` clause that makes a literal %, _, or [ in
-        the mention match literally rather than act as a wildcard."""
+        the mention match literally rather than act as a wildcard.
+
+        The schema qualifier itself comes from schema.yaml (see
+        ``retrieval.value_resolver._TABLE_SCHEMAS``) and legitimately
+        differs between the real config and project_config.example/ -- this
+        checks the fixed shape around it, not the literal qualifier."""
         executor = _RecordingExecutor()
         resolve_value("مبارکه", ["Customer"], execute_fn=executor)
         sql, params = executor.calls[0]
-        assert sql == (
-            "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] "
-            "WHERE [Name] LIKE ? ESCAPE '\\'"
-        )
+        assert sql.startswith("SELECT DISTINCT TOP (?) [Name] FROM [")
+        assert sql.endswith("].[Customer] WHERE [Name] LIKE ? ESCAPE '\\'")
         assert params[1] == "%مبارکه%"
 
 
