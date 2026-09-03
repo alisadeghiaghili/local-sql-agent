@@ -43,6 +43,37 @@ data (via :data:`schema_data.columns.TABLE_COLUMNS`) — a table listed under
 the prompt but is not queryable: it will never appear in
 :func:`get_table_columns`'s return value, and the guard refuses any query
 that references it.
+
+Per-table schema qualifier and resolver/prefetch flags (Phase 4 finish)
+-------------------------------------------------------------------------
+Two more pieces of warehouse-specific metadata used to live as Python
+literals in :mod:`retrieval.value_resolver` and
+:mod:`retrieval.dimension_vocabulary` -- a hardcoded ``_SCHEMA`` constant
+and two hand-maintained ``{table: (columns...)}`` dicts (``RESOLVABLE_COLUMNS``,
+``PREFETCH_COLUMNS``) that had to be kept in sync with this file by hand.
+Both are now per-table fields on :class:`TableDefinition`, read here instead:
+
+* ``db_schema`` -- the schema/database qualifier a query must use for this
+  table (e.g. ``"Auction_Dim"``), via :func:`get_table_schema_qualifiers`.
+  A per-*table* field, not one global constant, because a real warehouse
+  routinely has more than one schema (this one has at least ``Auction_Dim``
+  and ``Auction_Fact``) -- a single shared literal would be the wrong shape
+  even before portability is considered.
+* ``resolvable_columns`` -- columns :func:`~retrieval.value_resolver.resolve_value`
+  is allowed to query for this table, via :func:`get_resolvable_columns`.
+* ``prefetchable_columns`` -- columns
+  :mod:`retrieval.dimension_vocabulary` is allowed to prefetch the entire
+  vocabulary of, via :func:`get_prefetchable_columns`.
+
+Both flags live on the column's own table entry (next to ``columns``, the
+same map they are validated against), not as a second, separately-authored
+list elsewhere -- see :class:`SchemaConfig`'s validator. A column named in
+either list that is not also a key of that table's ``columns`` map fails
+``schema.yaml`` validation outright; a table that flags either list non-empty
+without also giving ``db_schema`` fails the same way (there is no schema
+qualifier to build a query with otherwise). This is what keeps the derived
+allowlists from ever drifting out of sync with ``schema.yaml``'s own
+``columns`` map -- there is exactly one place a column is declared to exist.
 """
 
 from __future__ import annotations
@@ -50,7 +81,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from knowledge.config_loader import ConfigNotFoundError, load_yaml
 
@@ -64,6 +95,9 @@ __all__ = [
     "get_table_descriptions",
     "get_table_columns",
     "get_relationships_map",
+    "get_table_schema_qualifiers",
+    "get_resolvable_columns",
+    "get_prefetchable_columns",
 ]
 
 
@@ -79,10 +113,20 @@ class TableDefinition(BaseModel):
     described in the prompt's schema block but is deliberately excluded
     from :func:`get_table_columns` and therefore from the SQL guard's table
     allowlist (see the module docstring).
+
+    ``db_schema``, ``resolvable_columns``, and ``prefetchable_columns`` are
+    all optional and default to "not used by that feature" (``""`` / empty
+    tuple) -- a table needs none of them merely to be described or
+    queryable. See the module docstring's "Per-table schema qualifier and
+    resolver/prefetch flags" section, and :class:`SchemaConfig`'s validator
+    for the consistency rule tying them to ``columns``.
     """
 
     description: str = ""
     columns: dict[str, str] | None = None
+    db_schema: str = ""
+    resolvable_columns: tuple[str, ...] = Field(default_factory=tuple)
+    prefetchable_columns: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class RelationshipDefinition(BaseModel):
@@ -98,6 +142,53 @@ class SchemaConfig(BaseModel):
 
     tables: dict[str, TableDefinition] = Field(default_factory=dict)
     relationships: list[RelationshipDefinition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _resolvable_and_prefetchable_columns_are_consistent(self) -> "SchemaConfig":
+        """Ties ``resolvable_columns``/``prefetchable_columns`` to ``columns``.
+
+        Two rules, checked per table:
+
+        1. Every name in either list must also be a key of that table's
+           ``columns`` map -- a column cannot be flagged resolvable or
+           prefetchable without first existing as a real, described column.
+           This is the mechanism that keeps the derived allowlists
+           (:func:`get_resolvable_columns` / :func:`get_prefetchable_columns`)
+           from ever drifting out of sync with ``schema.yaml``'s own column
+           list: there is exactly one place a column is declared, and these
+           flags can only ever narrow it, never extend it.
+        2. A table that flags either list non-empty must also give a
+           non-empty ``db_schema`` -- without it there is no schema
+           qualifier to build a ``[schema].[table]`` reference with, and
+           :mod:`retrieval.value_resolver` / :mod:`retrieval.dimension_vocabulary`
+           would have nothing to look up at query-build time.
+
+        Raising ``ValueError`` here (rather than a plain assertion) is
+        deliberate -- Pydantic wraps it into the same
+        :class:`~pydantic.ValidationError` :func:`load_schema` already
+        catches and reformats as ``"[schema.yaml] validation error at ...: ..."``,
+        so a schema.yaml author sees exactly the same error shape for this
+        mistake as for any other validation failure in this file.
+        """
+        for name, table in self.tables.items():
+            flagged = set(table.resolvable_columns) | set(table.prefetchable_columns)
+            if not flagged:
+                continue
+            known_columns = set(table.columns or {})
+            unknown = sorted(flagged - known_columns)
+            if unknown:
+                raise ValueError(
+                    f"table '{name}': resolvable_columns/prefetchable_columns "
+                    f"name column(s) {unknown} that are not in this table's "
+                    f"`columns` map"
+                )
+            if not table.db_schema:
+                raise ValueError(
+                    f"table '{name}': resolvable_columns/prefetchable_columns "
+                    f"is set but `db_schema` is empty -- a schema qualifier is "
+                    f"required to build a query for this table"
+                )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +263,19 @@ def _schema_cache() -> dict[str, Any]:
             f"{rel.from_table} -> {rel.to_table}": rel.join_sql
             for rel in cfg.relationships
         }
+        _cache["table_schemas"] = {
+            name: table.db_schema for name, table in cfg.tables.items() if table.db_schema
+        }
+        _cache["resolvable_columns"] = {
+            name: table.resolvable_columns
+            for name, table in cfg.tables.items()
+            if table.resolvable_columns
+        }
+        _cache["prefetchable_columns"] = {
+            name: table.prefetchable_columns
+            for name, table in cfg.tables.items()
+            if table.prefetchable_columns
+        }
         _cache["_loaded"] = True
     return _cache
 
@@ -179,6 +283,40 @@ def _schema_cache() -> dict[str, Any]:
 def get_table_descriptions() -> dict[str, str]:
     """Return ``{table_name: description}`` for every table in ``schema.yaml``."""
     return _schema_cache()["table_descriptions"]
+
+
+def get_table_schema_qualifiers() -> dict[str, str]:
+    """Return ``{table_name: db_schema}`` for every table that sets one.
+
+    A table with no ``db_schema`` in ``schema.yaml`` (the common case for a
+    table that is only ever described, not resolved/prefetched against) is
+    simply absent here rather than mapped to ``""`` -- callers that need a
+    schema qualifier for a specific table (:mod:`retrieval.value_resolver`,
+    :mod:`retrieval.dimension_vocabulary`) only ever look up tables that
+    :func:`get_resolvable_columns` / :func:`get_prefetchable_columns` already
+    guarantee have one (see :class:`SchemaConfig`'s validator).
+    """
+    return _schema_cache()["table_schemas"]
+
+
+def get_resolvable_columns() -> dict[str, tuple[str, ...]]:
+    """Return ``{table_name: (column, ...)}`` for every table's
+    ``resolvable_columns`` -- ``retrieval.value_resolver.resolve_value``'s
+    allowlist. A table with no ``resolvable_columns`` in ``schema.yaml`` is
+    absent here (not mapped to ``()``), matching :func:`get_table_columns`'s
+    own "absent, not empty" convention for a table with no ``columns`` key.
+    """
+    return _schema_cache()["resolvable_columns"]
+
+
+def get_prefetchable_columns() -> dict[str, tuple[str, ...]]:
+    """Return ``{table_name: (column, ...)}`` for every table's
+    ``prefetchable_columns`` -- :mod:`retrieval.dimension_vocabulary`'s
+    prefetch set. A table with no ``prefetchable_columns`` in ``schema.yaml``
+    is absent here (not mapped to ``()``), same convention as
+    :func:`get_resolvable_columns`.
+    """
+    return _schema_cache()["prefetchable_columns"]
 
 
 def get_table_columns() -> dict[str, dict[str, str]]:
