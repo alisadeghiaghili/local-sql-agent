@@ -12,6 +12,33 @@
 
 "use strict";
 
+/** True when the model's answer was cut off by the token budget (contract
+ * §6 `finish_reason: "length"`). This qualifies the WHOLE interpretation,
+ * not just this status strip, so callers (turn.js) show it ABOVE the
+ * interpretation text — read first — rather than leaving it to be found
+ * only by expanding this strip. Pure predicate, no DOM. */
+export function answerWasTruncated(llm) {
+  return !!(llm && llm.finish_reason === "length");
+}
+
+/** The qualifier banner itself, in the STATUS warning colour (a fact about
+ * this answer, not product chrome) — see answerWasTruncated's docstring. */
+export function renderTruncationQualifier() {
+  const div = document.createElement("div");
+  div.className = "answer-qualifier";
+  div.setAttribute("role", "alert");
+  const icon = document.createElement("span");
+  icon.className = "warn-icon";
+  icon.textContent = "⚠";
+  icon.setAttribute("aria-hidden", "true");
+  const text = document.createElement("span");
+  text.textContent =
+    "پاسخ مدل به سقف طول رسید (finish_reason: length) و ممکن است ناقص باشد — این نکته پیش از تفسیر زیر در نظر گرفته شود.";
+  div.appendChild(icon);
+  div.appendChild(text);
+  return div;
+}
+
 function statusPillForFinishReason(reason) {
   switch (reason) {
     case "stop": return { cls: "good", label: "پایان طبیعی (stop)" };
