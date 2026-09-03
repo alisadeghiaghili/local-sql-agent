@@ -47,6 +47,14 @@ logger = logging.getLogger(__name__)
 #: (``scripts/issue_api_key.py``) — not re-checked here, since a key
 #: already issued and deployed must keep authenticating even if this
 #: threshold is later raised.
+#:
+#: Deliberately a source constant, not a ``config.Settings`` field: it is
+#: an *invariant* of this module's security design (structural entropy
+#: enforced once, at issue time), not a per-warehouse/per-hardware tuning
+#: knob. Making it env-overridable would let a deployment quietly weaken
+#: its own auth by setting one variable. See ``config.py``'s module
+#: docstring ("Three layers, not two") for the tuning/invariant/
+#: implementation-detail rule this is the canonical invariant example of.
 MIN_KEY_LENGTH = 32
 
 _BEARER_PREFIX = "Bearer "

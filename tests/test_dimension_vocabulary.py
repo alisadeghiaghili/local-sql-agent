@@ -110,7 +110,12 @@ class TestRefreshAndCachedRead:
 
         sql = _prefetch_query("Ring", "Name")
         assert "WHERE" not in sql
-        assert sql == "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Ring]"
+        # The schema qualifier itself comes from schema.yaml (see
+        # retrieval.dimension_vocabulary._TABLE_SCHEMAS) and legitimately
+        # differs between the real config and project_config.example/ --
+        # this checks the fixed shape around it, not the literal qualifier.
+        assert sql.startswith("SELECT DISTINCT TOP (?) [Name] FROM [")
+        assert sql.endswith("].[Ring]")
 
 
 # ---------------------------------------------------------------------------

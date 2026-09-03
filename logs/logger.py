@@ -52,12 +52,6 @@ logger = logging.getLogger(__name__)
 # Module-level path variable so tests can patch "logs.logger._LOG_FILE".
 _LOG_FILE: str = ""
 
-#: Default size cap (bytes) applied when LOG_MAX_BYTES is unset: 10 MiB.
-_DEFAULT_MAX_BYTES = 10 * 1024 * 1024
-
-#: Default number of rotated backups kept when LOG_BACKUP_COUNT is unset.
-_DEFAULT_BACKUP_COUNT = 5
-
 
 def _log_file() -> str:
     """Return the effective log file path.
@@ -89,7 +83,7 @@ def _rotation_settings() -> tuple[int, int]:
 
     Examples
     --------
-    >>> _rotation_settings()[0] == _DEFAULT_MAX_BYTES
+    >>> _rotation_settings() == (cfg.settings.log_max_bytes, cfg.settings.log_backup_count)
     True
     >>> from config import override_settings
     >>> with override_settings(log_max_bytes=999, log_backup_count=1):
