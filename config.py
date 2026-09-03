@@ -18,6 +18,82 @@ Testing::
 
         with override_settings(max_rows_returned=5):
             ...  # every cfg.settings access sees the patched value
+
+Three layers, not two
+----------------------
+This codebase separates three kinds of thing that are easy to lump
+together into "configuration":
+
+1. **Engine** — the code itself (``api/``, ``llm/``, ``retrieval/``,
+   ``security/``, ...). No domain names, no tuning literals: it must work
+   unmodified against any warehouse.
+2. **Domain data** — what a *particular* warehouse *is*: its tables,
+   columns, business rules, aliases, few-shot examples
+   (``project_config/*.yaml``, loaded by :mod:`knowledge.config_loader`
+   and :mod:`schema_data.registry`). Swapping warehouses means swapping
+   this directory, never editing engine code.
+3. **Tuning** — how aggressively the engine retrieves, matches, caches,
+   and retries against *this* warehouse and *this* hardware. This module.
+
+A module-level numeric constant elsewhere in the source is not
+automatically "tuning" just because layer 3 exists. Sorting a candidate
+constant into one of three buckets:
+
+* **Tuning** — a knob an operator might legitimately want different for
+  their warehouse or their hardware (a bigger cache, a longer timeout, a
+  looser regression tolerance on slower CI hardware, ...). Becomes a
+  ``Settings`` field: ``field(default_factory=lambda: os.getenv(...))``,
+  documented, read through ``cfg.settings`` at call time so
+  ``override_settings()`` reaches it in tests. See
+  ``eval_max_accuracy_drop_pct`` / ``eval_max_latency_p95_increase_pct`` /
+  ``eval_max_guard_rejection_increase`` below for an example promoted out
+  of ``eval/baseline.py`` under exactly this reasoning: how much
+  latency/accuracy regression is tolerable is a property of *this*
+  deployment's hardware and traffic, not a fixed technical fact.
+* **Invariant** — a value that is part of the design's *correctness* and
+  must not be tuned, even though it happens to be a number. Stays a
+  source constant, with a docstring saying why it is deliberately not
+  configurable. The clearest example is
+  :data:`security.auth.MIN_KEY_LENGTH` (32): lowering it weakens a
+  security property (structural entropy enforced once, at key-issue
+  time), so exposing it as an env-overridable knob would let a deployment
+  quietly weaken its own auth by setting one variable. Also in this
+  bucket: :data:`eval.determinism.MIN_REPEATS` (a statistical floor —
+  fewer than 2 repeats cannot measure determinism at all, it is not a
+  "less thorough" setting) and :data:`eval.fingerprint.DEFAULT_FLOAT_PRECISION`
+  (a golden set's ``expected_fingerprint`` values are hashed at a fixed
+  precision; making this env-tunable would silently desynchronise a
+  deployment's environment from its own golden set's pinned hashes,
+  turning "regression" into "someone's shell profile" with no error at
+  either end).
+* **Implementation detail** — a value nobody outside the module cares
+  about, or one whose only meaningful comparison is against itself /
+  against a value already tunable elsewhere. Stays put, no docstring
+  justification required beyond the ordinary one.
+  :data:`prompt_engine.static_prefix._CHARS_PER_TOKEN` lives here: it is
+  a rough characters-per-token heuristic (no real tokenizer dependency),
+  used only in comparisons against itself and against
+  :attr:`prompt_retrieval_token_budget` below — a deployment whose text
+  tokenizes at a different real ratio (e.g. Persian vs English) already
+  has the one knob it needs in :attr:`prompt_retrieval_token_budget`;
+  giving the ratio its own env var would add a second dial over the same
+  effective threshold rather than a genuinely independent one.
+  :data:`database.schema_inspector._MAX_SAMPLE_LEN` is the same kind of
+  thing one level further out: a display-truncation length inside the
+  interactive, untested, coverage-excluded setup wizard
+  (``setup_project.py``), never read by the running engine at all.
+
+This rule is enforced, not just documented: ``tests/test_tuning_layer.py``
+walks first-party source for a *new* bare module-level numeric constant
+outside its allowlist and fails the build, the same way
+``tests/test_persian_normalization.py`` already does for a second
+translation table built the same way ``core.persian`` builds its own.
+See that new test's module docstring for exactly which existing constants
+are allowlisted and why — several are legitimately tuning-shaped but
+already have a more appropriate, narrower configuration surface than a
+process-wide environment variable (e.g. the eval CLI's own
+``--determinism-repeats`` flag; see :data:`eval.determinism.DEFAULT_REPEATS`)
+and were deliberately left alone rather than duplicated into ``Settings``.
 """
 
 from __future__ import annotations
@@ -473,6 +549,42 @@ class Settings:
     every dimension it would have covered to "no match" (this phase's
     universal safe-miss behaviour), not a server that cannot start at
     all."""
+
+    # ── Evaluation harness: golden-set regression gate (see eval/baseline.py) ─
+    eval_max_accuracy_drop_pct: float = field(
+        default_factory=lambda: float(os.getenv("EVAL_MAX_ACCURACY_DROP_PCT", "5.0"))
+    )
+    """Percentage-point drop in ``accuracy_pct`` (current vs baseline) above
+    which ``eval.baseline.compare_to_baseline`` treats a run as regressed.
+    E.g. ``5.0`` means baseline 90% -> current 84% (a 6-point drop) fails,
+    but baseline 90% -> current 86% (a 4-point drop) does not. A per-deployment
+    tuning knob rather than a fixed technical fact: how much accuracy
+    variance is tolerable is a product decision that can reasonably differ
+    across warehouses. Still overridable per invocation via
+    ``python -m eval.cli run --max-accuracy-drop-pct``, which takes
+    precedence when passed explicitly."""
+
+    eval_max_latency_p95_increase_pct: float = field(
+        default_factory=lambda: float(os.getenv("EVAL_MAX_LATENCY_P95_INCREASE_PCT", "20.0"))
+    )
+    """Relative percentage increase in ``latency_p95`` (current vs baseline)
+    above which a run is considered regressed. E.g. ``20.0`` means a
+    baseline p95 of 2.0s tolerates up to 2.4s before failing. Slower or
+    more variable hardware legitimately wants a looser tolerance here than
+    a deployment on fast, dedicated hardware -- this is the textbook
+    "how aggressively to retry/tolerate for *this* hardware" tuning knob.
+    Overridable per invocation via
+    ``python -m eval.cli run --max-latency-p95-increase-pct``."""
+
+    eval_max_guard_rejection_increase: int = field(
+        default_factory=lambda: int(os.getenv("EVAL_MAX_GUARD_REJECTION_INCREASE", "0"))
+    )
+    """Absolute increase in ``guard_rejections`` (current vs baseline) above
+    which a run is considered regressed. Defaults to ``0`` -- any new guard
+    rejection versus baseline is treated as safety-relevant and flagged,
+    since it means SQL that used to pass the security guard no longer does
+    (or the generator started producing worse SQL). Overridable per
+    invocation via ``python -m eval.cli run --max-guard-rejection-increase``."""
 
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.

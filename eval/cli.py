@@ -41,6 +41,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import config as cfg
 from eval.baseline import (
     BaselineThresholds,
     compare_to_baseline,
@@ -399,23 +400,35 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-accuracy-drop-pct",
         type=float,
-        default=5.0,
+        default=cfg.settings.eval_max_accuracy_drop_pct,
         dest="max_accuracy_drop_pct",
-        help="Maximum tolerated accuracy drop, in percentage points, versus the baseline.",
+        help=(
+            "Maximum tolerated accuracy drop, in percentage points, versus the "
+            "baseline. Defaults to config.Settings.eval_max_accuracy_drop_pct "
+            "(env EVAL_MAX_ACCURACY_DROP_PCT)."
+        ),
     )
     run_parser.add_argument(
         "--max-latency-p95-increase-pct",
         type=float,
-        default=20.0,
+        default=cfg.settings.eval_max_latency_p95_increase_pct,
         dest="max_latency_p95_increase_pct",
-        help="Maximum tolerated relative increase in latency p95 versus the baseline.",
+        help=(
+            "Maximum tolerated relative increase in latency p95 versus the "
+            "baseline. Defaults to config.Settings.eval_max_latency_p95_increase_pct "
+            "(env EVAL_MAX_LATENCY_P95_INCREASE_PCT)."
+        ),
     )
     run_parser.add_argument(
         "--max-guard-rejection-increase",
         type=int,
-        default=0,
+        default=cfg.settings.eval_max_guard_rejection_increase,
         dest="max_guard_rejection_increase",
-        help="Maximum tolerated increase in guard-rejected cases versus the baseline.",
+        help=(
+            "Maximum tolerated increase in guard-rejected cases versus the "
+            "baseline. Defaults to config.Settings.eval_max_guard_rejection_increase "
+            "(env EVAL_MAX_GUARD_REJECTION_INCREASE)."
+        ),
     )
     run_parser.set_defaults(func=_run)
 

@@ -14,7 +14,13 @@ Workflow
 What counts as a regression is deliberately explicit and configurable via
 :class:`BaselineThresholds` rather than hard-coded, since "how much
 latency increase is acceptable" is a product decision, not a technical
-constant.
+constant. The defaults below are tuning, not domain data or engine
+behaviour, so they live on :class:`config.Settings`
+(``eval_max_accuracy_drop_pct`` / ``eval_max_latency_p95_increase_pct`` /
+``eval_max_guard_rejection_increase`` — see that module's "Three layers,
+not two" docstring section) rather than as bare module constants here;
+``python -m eval.cli run``'s own flags still take precedence when passed
+explicitly, per-invocation.
 """
 
 from __future__ import annotations
@@ -24,25 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import config as cfg
 from eval.models import CaseResult, EvalReport
-
-#: Percentage-point drop in ``accuracy_pct`` (current vs baseline) above
-#: which a run is considered regressed. E.g. ``5.0`` means baseline 90% ->
-#: current 84% (a 6-point drop) fails, but baseline 90% -> current 86% (a
-#: 4-point drop) does not.
-DEFAULT_MAX_ACCURACY_DROP_PCT = 5.0
-
-#: Relative percentage increase in ``latency_p95`` (current vs baseline)
-#: above which a run is considered regressed. E.g. ``20.0`` means a
-#: baseline p95 of 2.0s tolerates up to 2.4s before failing.
-DEFAULT_MAX_LATENCY_P95_INCREASE_PCT = 20.0
-
-#: Absolute increase in ``guard_rejections`` (current vs baseline) above
-#: which a run is considered regressed. Defaults to ``0`` — any new guard
-#: rejection versus baseline is treated as safety-relevant and flagged,
-#: since it means SQL that used to pass the security guard no longer does
-#: (or the generator started producing worse SQL).
-DEFAULT_MAX_GUARD_REJECTION_INCREASE = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,16 +42,19 @@ class BaselineThresholds:
     ----------
     max_accuracy_drop_pct:
         Maximum tolerated drop in ``accuracy_pct`` (percentage points,
-        not relative percent), baseline minus current. See module-level
-        default for the exact semantics.
+        not relative percent), baseline minus current. Defaults to
+        :attr:`config.Settings.eval_max_accuracy_drop_pct`, read at
+        construction time so ``override_settings()`` reaches it in tests.
     max_latency_p95_increase_pct:
         Maximum tolerated *relative* increase in ``latency_p95``, as a
         percentage of the baseline value. Ignored (no latency check) when
         the baseline's ``latency_p95`` is ``0.0``, since a relative
-        increase from zero is undefined.
+        increase from zero is undefined. Defaults to
+        :attr:`config.Settings.eval_max_latency_p95_increase_pct`.
     max_guard_rejection_increase:
         Maximum tolerated increase in ``guard_rejections`` (current minus
-        baseline, absolute count).
+        baseline, absolute count). Defaults to
+        :attr:`config.Settings.eval_max_guard_rejection_increase`.
 
     Examples
     --------
@@ -74,9 +66,15 @@ class BaselineThresholds:
     10.0
     """
 
-    max_accuracy_drop_pct: float = DEFAULT_MAX_ACCURACY_DROP_PCT
-    max_latency_p95_increase_pct: float = DEFAULT_MAX_LATENCY_P95_INCREASE_PCT
-    max_guard_rejection_increase: int = DEFAULT_MAX_GUARD_REJECTION_INCREASE
+    max_accuracy_drop_pct: float = field(
+        default_factory=lambda: cfg.settings.eval_max_accuracy_drop_pct
+    )
+    max_latency_p95_increase_pct: float = field(
+        default_factory=lambda: cfg.settings.eval_max_latency_p95_increase_pct
+    )
+    max_guard_rejection_increase: int = field(
+        default_factory=lambda: cfg.settings.eval_max_guard_rejection_increase
+    )
 
 
 @dataclass(frozen=True, slots=True)

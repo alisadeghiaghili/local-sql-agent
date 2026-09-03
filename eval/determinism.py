@@ -83,12 +83,26 @@ from eval.models import GoldenCase
 from eval.runner import GenerateFn
 
 #: Fewer than this many repeats cannot measure determinism at all -- see
-#: :func:`probe_determinism`.
+#: :func:`probe_determinism`. An invariant (a statistical floor), not a
+#: tuning knob: "less thorough than 2 repeats" is not a lower setting, it
+#: is "cannot measure anything" -- see ``config.py``'s module docstring
+#: ("Three layers, not two") for the tuning/invariant/implementation-detail
+#: rule this is one of the invariant examples of.
 MIN_REPEATS = 2
 
 #: Default number of times each question is generated when the caller (the
 #: CLI) does not override it. Small on purpose: this probe is meant to be
 #: run deliberately against a real endpoint, not folded into a fast CI loop.
+#:
+#: Tuning-shaped (an operator with a flakier endpoint might reasonably want
+#: more repeats), but deliberately left as a plain module constant serving
+#: as ``eval.cli``'s own ``--determinism-repeats`` default rather than
+#: promoted to ``config.Settings``: unlike a comparison threshold, this
+#: value directly multiplies real LLM-endpoint calls, so a silent
+#: environment-variable default would risk quietly making every future
+#: ``--determinism`` run N times slower/costlier than the invoker expects.
+#: Requiring an explicit flag keeps that cost decision visible at the call
+#: site. See ``config.py``'s "Three layers, not two" section.
 DEFAULT_REPEATS = 3
 
 #: Sentinel recorded as a "variant" when the generator raises the

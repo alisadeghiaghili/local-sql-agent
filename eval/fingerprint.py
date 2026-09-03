@@ -52,6 +52,15 @@ import pandas as pd
 #: Default number of digits floats are rounded to before hashing. Chosen to
 #: absorb ordinary floating-point noise (e.g. SUM() accumulation order)
 #: while still catching real discrepancies.
+#:
+#: Deliberately a source constant, not a ``config.Settings`` field, even
+#: though it looks tuning-shaped: a golden set's ``expected_fingerprint``
+#: values are hashed at whatever precision was in effect when they were
+#: recorded. Making this env-overridable would let one deployment's shell
+#: profile silently desynchronise its runs from its own golden set's
+#: pinned hashes -- every case would report "regression" with no error at
+#: either end, for a reason that has nothing to do with SQL quality. See
+#: ``config.py``'s "Three layers, not two" section.
 DEFAULT_FLOAT_PRECISION = 6
 
 
