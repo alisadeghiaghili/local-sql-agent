@@ -58,20 +58,28 @@
  * @typedef {Object} LlmStatus
  * @property {string} backend
  * @property {string} model
+ * @property {string|null} endpoint
+ * @property {boolean} trusted
  * @property {number} endpoint_status
  * @property {number} attempts
- * @property {"stop"|"length"|"schema_violation"|"error"} finish_reason
+ * @property {"stop"|"length"|"content_filter"|"tool_calls"|"schema_violation"|"error"|string} finish_reason
+ *   -- literal values per docs/api-contract-v2.md §6, or an "other:<raw>"
+ *   passthrough for a value none of them anticipated.
  * @property {boolean} structured_output
  * @property {number} prompt_tokens
  * @property {number} completion_tokens
- * @property {number} prefill_ms
- * @property {number} decode_ms
- * @property {number} total_ms
- * @property {number} tokens_per_second
+ * @property {number|null} prefill_ms
+ * @property {number|null} decode_ms
+ * @property {number|null} total_ms
+ * @property {number|null} tokens_per_second
  * @property {boolean} prefix_cache_hit
  * @property {number} temperature
- * @property {number} seed
+ * @property {number|null} seed
+ * @property {boolean|null} seed_honored
  * @property {number} corrections
+ * @property {string} provider
+ * @property {boolean} fallback_used
+ * @property {boolean} reasoning_detected
  *
  * @typedef {Object} Turn
  * @property {string} turn_id

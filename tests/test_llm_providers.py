@@ -152,6 +152,161 @@ class TestOpenAIBackendBasics:
             assert backend.test_connection() is False
 
 
+class TestFinishReasonDerivation:
+    """``generate_with_meta`` must read ``choices[0].finish_reason`` off the
+    real response instead of a caller-supplied literal -- see
+    ``api/runner.py``/``session/engine.py``, which used to hardcode
+    ``"stop"`` at every call site regardless of what the endpoint actually
+    said. This is the gap that made a truncated response indistinguishable
+    from a clean completion in the audit log.
+    """
+
+    def test_stop_is_read_from_response(self):
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {"choices": [{"message": {"content": "SELECT 1"}, "finish_reason": "stop"}]}
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["finish_reason"] == "stop"
+
+    def test_length_is_read_from_response_not_hardcoded_stop(self):
+        """The one regression this class exists to catch: a response cut
+        off by the token limit must report "length", never "stop"."""
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {
+            "choices": [{"message": {"content": "SELECT * FROM Cus"}, "finish_reason": "length"}],
+        }
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["finish_reason"] == "length"
+
+    def test_content_filter_is_preserved_not_coerced_to_error(self):
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]}
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["finish_reason"] == "content_filter"
+
+    def test_tool_calls_is_preserved(self):
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {"choices": [{"message": {"content": ""}, "finish_reason": "tool_calls"}]}
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["finish_reason"] == "tool_calls"
+
+    def test_unrecognised_value_survives_as_other_passthrough(self):
+        """A value this project has never seen must not be silently
+        discarded or forced into "error" -- it survives, verbatim, behind
+        an "other:" prefix so an operator reading the log still sees what
+        the endpoint actually said."""
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {"choices": [{"message": {"content": "x"}, "finish_reason": "eos_token"}]}
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["finish_reason"] == "other:eos_token"
+
+    def test_missing_finish_reason_survives_as_other_none(self):
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {"choices": [{"message": {"content": "x"}}]}
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["finish_reason"] == "other:none"
+
+    def test_generate_structured_also_derives_finish_reason(self):
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {
+            "choices": [{"message": {"content": '{"sql": "SELECT 1"}'}, "finish_reason": "length"}],
+        }
+        segments = PromptSegments(question="q")
+        with patch("requests.post", return_value=_mock_response(body)):
+            _obj, meta = backend.generate_structured(segments, schema={"type": "object"})
+        assert meta["finish_reason"] == "length"
+
+
+class TestReasoningChannelDetection:
+    """The deployment target (gpt-oss) emits a reasoning/chain-of-thought
+    channel this project has never previously read. A truncated or
+    reasoning-only response must not present as a generic "model is bad at
+    SQL" failure -- see ``llm.providers._extract_reasoning_text`` and
+    ``_content_carries_reasoning_markers``, both deliberately conservative
+    and never verified against a live gpt-oss endpoint.
+    """
+
+    def test_ordinary_sql_response_is_not_flagged(self):
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {"choices": [{"message": {"content": "SELECT 1"}, "finish_reason": "stop"}]}
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["reasoning_detected"] is False
+
+    def test_separate_reasoning_content_field_is_detected(self):
+        """vLLM's DeepSeek-R1-style convention: reasoning lives in
+        ``message.reasoning_content``, separate from ``content``."""
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {
+            "choices": [{
+                "message": {
+                    "content": "SELECT 1",
+                    "reasoning_content": "The user wants a count, so I should ...",
+                },
+                "finish_reason": "stop",
+            }],
+        }
+        with patch("requests.post", return_value=_mock_response(body)):
+            text, meta = backend.generate_with_meta("prompt")
+        assert meta["reasoning_detected"] is True
+        # "Prefer the real content field": the reasoning text is never
+        # substituted for the actual answer.
+        assert text == "SELECT 1"
+
+    def test_empty_content_with_reasoning_field_is_detected(self):
+        """The failure mode the task description calls out: the model put
+        everything into the reasoning channel and left content empty."""
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "reasoning_content": "Let me think through the schema first...",
+                },
+                "finish_reason": "stop",
+            }],
+        }
+        with patch("requests.post", return_value=_mock_response(body)):
+            text, meta = backend.generate_with_meta("prompt")
+        assert meta["reasoning_detected"] is True
+        assert text == ""
+
+    def test_leaked_think_tag_in_content_is_detected(self):
+        """Some reasoning models (and the OpenAI-compatible servers
+        fronting them) emit a ``<think>...</think>`` block directly inside
+        ``content`` instead of a separate field."""
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {
+            "choices": [{
+                "message": {"content": "<think>the user wants...</think>"},
+                "finish_reason": "stop",
+            }],
+        }
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["reasoning_detected"] is True
+
+    def test_leaked_harmony_channel_marker_in_content_is_detected(self):
+        """gpt-oss's own "harmony" response format uses ``<|channel|>``
+        control tokens; an imperfect OpenAI-compatible shim can leak them
+        straight into ``content``."""
+        backend = OpenAIBackend(model="m", api_key="k")
+        body = {
+            "choices": [{
+                "message": {"content": "<|channel|>analysis<|message|>thinking..."},
+                "finish_reason": "stop",
+            }],
+        }
+        with patch("requests.post", return_value=_mock_response(body)):
+            _text, meta = backend.generate_with_meta("prompt")
+        assert meta["reasoning_detected"] is True
+
+
 class TestOpenAIBackendTrust:
     """Exit criterion 6: a local-looking endpoint is trusted, a hosted one
     is not, by configuration -- see also tests/test_llm_router.py::TestTrust

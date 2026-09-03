@@ -204,7 +204,8 @@ Phase 2 latency work measurable.
   "trusted": true,                  // was that endpoint permitted to see this data
   "endpoint_status": 200,           // HTTP status of the final attempt
   "attempts": 1,                    // >1 means transport retries happened
-  "finish_reason": "stop",          // stop | length | schema_violation | error
+  "finish_reason": "stop",          // stop | length | content_filter | tool_calls
+                                     //   | schema_violation | error | "other:<raw>"
   "structured_output": true,        // was constrained decoding used
 
   "prompt_tokens": 4612,            // usage.prompt_tokens
@@ -217,14 +218,32 @@ Phase 2 latency work measurable.
   "prefix_cache_hit": true,         // derived, see below
   "temperature": 0.0,
   "seed": 7,
-  "seed_honored": true,             // endpoint reported system_fingerprint; null when it reports nothing
+  "seed_honored": true,             // endpoint reported system_fingerprint AND a seed was requested; null otherwise
   "corrections": 0,                 // self-correction rounds spent
 
   "provider": "openai:gpt-oss-20b", // which backend in the router's fallback chain answered
-  "fallback_used": false            // true if the first-choice backend
+  "fallback_used": false,           // true if the first-choice backend
                                      // failed and a later one answered
+  "reasoning_detected": false       // true if the response appears to carry
+                                     // reasoning/chain-of-thought text rather
+                                     // than, or alongside, a final answer
 }
 ```
+
+`finish_reason` is read off the response itself
+(`choices[0].finish_reason`), never a caller-supplied literal — a response
+cut short by `llm_num_predict` reads `"length"`, not `"stop"`, which is the
+one distinction that separates "the model is bad at SQL" from "raise the
+token budget" when reading a week of production logs. The set grew from
+the original four values (`stop | length | schema_violation | error`) to
+add `content_filter` (a moderation block) and `tool_calls` (the model tried
+to call a function instead of answering) — both real values an
+OpenAI-compatible endpoint can return that the original contract didn't
+anticipate. Anything else — a value this project has never seen — is
+preserved verbatim as `"other:<raw>"` rather than being discarded or
+coerced into `"error"`; a total transport failure (no response ever
+arrived) is the one case that still reports `"error"` unconditionally,
+since there is no real response to read a reason from.
 
 `prefix_cache_hit` is derived, and it is the single most useful number in this
 block: on a cache hit `prompt_tokens` collapses to roughly the size of
@@ -239,7 +258,20 @@ vLLM/llama.cpp, and accepted-without-guarantee by OpenAI's own hosted API.
 `system_fingerprint` — the signal OpenAI's own docs describe for detecting
 when a backend change might affect reproducibility — as `true`, or `null`
 when the response carries no such signal at all (never `false`: absence
-means "unknown", not "confirmed not honoured").
+means "unknown", not "confirmed not honoured"). It can only be `true` when
+a `seed` was actually requested in the first place — a `system_fingerprint`
+on a call that never set one does not mean a (nonexistent) seed was
+honoured.
+
+`reasoning_detected` exists because the deployment target (gpt-oss) emits a
+reasoning/chain-of-thought channel this project previously never read at
+all: when the model's answer looks like it landed there instead of (or
+alongside) the final-answer field, this flag says so, so a resulting parse
+failure reads as a diagnosable protocol mismatch rather than a mysterious
+accuracy problem. Deliberately a boolean, not a text excerpt of the
+reasoning itself — that text can quote prompt content (including real row
+data, at the interpretation task), and this block is embedded in the audit
+trail, which must never carry row values.
 
 On error, `llm` is still populated as far as it got — a 503 with
 `attempts: 3` and `endpoint_status: 0` tells a very different story from a 200

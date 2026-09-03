@@ -53,8 +53,19 @@ class TestHappyPath:
             "finish_reason", "structured_output", "prompt_tokens", "completion_tokens",
             "prefill_ms", "decode_ms", "total_ms", "tokens_per_second",
             "prefix_cache_hit", "temperature", "seed", "seed_honored", "corrections",
-            "provider", "fallback_used",
+            "provider", "fallback_used", "reasoning_detected",
         }
+
+    def test_reasoning_detected_defaults_false(self):
+        status = build_llm_status(_raw(), model="m", endpoint_status=200, finish_reason="stop")
+        assert status["reasoning_detected"] is False
+
+    def test_reasoning_detected_threaded_through(self):
+        status = build_llm_status(
+            _raw(), model="m", endpoint_status=200, finish_reason="stop",
+            reasoning_detected=True,
+        )
+        assert status["reasoning_detected"] is True
 
     def test_provider_defaults_to_backend(self):
         status = build_llm_status(_raw(), model="m", backend="openai:m", finish_reason="stop")
@@ -100,20 +111,33 @@ class TestHappyPath:
 
 
 class TestSeedHonored:
-    def test_true_when_system_fingerprint_present(self):
+    def test_true_when_system_fingerprint_present_and_seed_requested(self):
         status = build_llm_status(
-            _raw(system_fingerprint="fp_abc"), model="m", finish_reason="stop",
+            _raw(system_fingerprint="fp_abc"), model="m", finish_reason="stop", seed=7,
         )
         assert status["seed_honored"] is True
 
     def test_none_when_system_fingerprint_absent(self):
         raw = _raw()
         del raw["system_fingerprint"]
-        status = build_llm_status(raw, model="m", finish_reason="stop")
+        status = build_llm_status(raw, model="m", finish_reason="stop", seed=7)
         assert status["seed_honored"] is None
 
     def test_none_on_total_transport_failure(self):
-        status = build_llm_status(None, model="m", finish_reason="error")
+        status = build_llm_status(None, model="m", finish_reason="error", seed=7)
+        assert status["seed_honored"] is None
+
+    def test_none_when_no_seed_was_requested_even_with_system_fingerprint(self):
+        """The bug this class exists to prevent: a ``system_fingerprint`` on
+        a call that never asked for a seed does not mean a (nonexistent)
+        seed was honoured -- that would claim a determinism guarantee
+        nobody requested. ``seed`` defaults to ``None`` here (not passed),
+        exactly what a caller that never set one supplies.
+        """
+        status = build_llm_status(
+            _raw(system_fingerprint="fp_abc"), model="m", finish_reason="stop",
+        )
+        assert status["seed"] is None
         assert status["seed_honored"] is None
 
 
@@ -214,10 +238,25 @@ class TestPartialOrFailedResponse:
 
 
 class TestFinishReasonValidation:
-    @pytest.mark.parametrize("reason", ["stop", "length", "schema_violation", "error"])
+    @pytest.mark.parametrize(
+        "reason",
+        ["stop", "length", "content_filter", "tool_calls", "schema_violation", "error"],
+    )
     def test_valid_reasons_accepted(self, reason):
         status = build_llm_status(_raw(), model="m", endpoint_status=200, finish_reason=reason)
         assert status["finish_reason"] == reason
+
+    def test_other_passthrough_prefix_accepted(self):
+        """A finish_reason this project has never seen isn't rejected or
+        forced into a fixed bucket -- it survives as ``other:<raw>`` (see
+        ``llm.providers._normalize_finish_reason``), and this function
+        accepts anything with that prefix rather than only the six named
+        literals.
+        """
+        status = build_llm_status(
+            _raw(), model="m", endpoint_status=200, finish_reason="other:eos_token",
+        )
+        assert status["finish_reason"] == "other:eos_token"
 
     def test_invalid_reason_raises(self):
         with pytest.raises(ValueError, match="finish_reason"):
