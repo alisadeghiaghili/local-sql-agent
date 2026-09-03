@@ -186,7 +186,7 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
     >>> df = pd.DataFrame({"n": [3]})
     >>> case = GoldenCase(
     ...     id="c1", question="how many?",
-    ...     expected_sql="SELECT COUNT(*) AS n FROM Contract",
+    ...     expected_sql="SELECT COUNT(*) AS n FROM Customer",
     ...     expected_fingerprint=fingerprint_dataframe(df),
     ... )
     >>> result = run_case(case, lambda q: case.expected_sql, lambda sql: df)

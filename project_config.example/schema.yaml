@@ -1,0 +1,87 @@
+# schema.yaml — TEMPLATE (copy to project_config/schema.yaml and fill in real data)
+#
+# Warehouse schema read by schema_data/registry.py. This is the single
+# source of truth for:
+#   * the schema block rendered into the LLM prompt (SchemaRegistry.build_schema_context)
+#   * the JOIN hints offered for a set of tables (SchemaRegistry.get_relationships)
+#   * the SQL guard's table/column allowlist (security/sql_guard.py) — every
+#     table a generated query references must resolve to a table listed
+#     below WITH a `columns` key, or it is rejected outright.
+#
+# tables:
+#   Each top-level key is a table name (as it appears in FROM/JOIN clauses,
+#   without a schema qualifier).
+#     description : human-readable summary shown in the prompt's schema
+#                   block. Include the fully-qualified name (schema.table)
+#                   and any native-language synonyms your users might type.
+#     columns     : (optional) map of column name -> description. A table
+#                   with NO `columns` key is still described in the prompt
+#                   (useful for a lookup/status dimension you want the model
+#                   to know exists) but the SQL guard will refuse any query
+#                   that references it directly — add a `columns` map, even
+#                   a partial one, once you want that table queryable.
+#
+# relationships:
+#   A list of JOIN hints between two tables. Both directions do NOT need to
+#   be listed separately — SchemaRegistry.get_relationships() only includes
+#   an edge when both from_table and to_table are among the tables selected
+#   for a given question, so list each real foreign key once.
+#     from_table : source table name (must match a key under `tables`)
+#     to_table   : target table name (must match a key under `tables`)
+#
+# NOTE: this file is also a test fixture. tests/test_sql_guard_schema.py's
+# TestRealSchemaJoinsValidate::test_order_reserved_word_table_with_date_join
+# specifically needs tables literally named "Order" and "Date" (both T-SQL
+# reserved words) to exist here WITH a `columns` key, to keep exercising
+# the guard's bracketed-reserved-word-identifier handling in CI (which runs
+# against this file, not the real schema). Keep both tables, under these
+# exact names, if you edit this file.
+#     join_sql   : the literal JOIN clause text inserted into generated SQL
+
+tables:
+  # Example 1: a fact/transaction table with a full column list
+  Order:
+    description: "sales.Order — customer purchase orders"
+    columns:
+      ID: "Primary key"
+      CustomerID: "FK → Customer"
+      OrderDate_ID: "FK → Date"
+      TotalAmount: "Order total, in the store's base currency"
+
+  # Example 2: a dimension table
+  #
+  # NOTE: this table's column set (ID, Name, NationalID, IsActive) is also
+  # relied on, unchanged, by doctests in security/sql_guard.py and
+  # session/composer.py that illustrate column-expansion / denied-column
+  # behaviour against a table literally named "Customer" -- keep these
+  # four column names if you edit this entry.
+  Customer:
+    description: "sales.Customer — customer master data"
+    columns:
+      ID: "Primary key"
+      Name: "Customer full name"
+      NationalID: "National ID / national code"
+      IsActive: "Active flag"
+
+  # Example 3: a small date dimension
+  Date:
+    description: "sales.Date — calendar date dimension"
+    columns:
+      ID: "Primary key"
+      CalendarDate: "Gregorian calendar date"
+      Year: "4-digit calendar year"
+      Month: "Month number 1-12"
+
+  # Example 4: a lookup/status table described for prompt context only —
+  # note it has NO `columns` key, so the SQL guard will not accept it as a
+  # queryable table until one is added.
+  OrderStatus:
+    description: "sales.OrderStatus — order lifecycle status lookup"
+
+relationships:
+  - from_table: "Order"
+    to_table: "Customer"
+    join_sql: "JOIN [sales].[Customer] c ON o.CustomerID = c.ID"
+  - from_table: "Order"
+    to_table: "Date"
+    join_sql: "JOIN [sales].[Date] d ON o.OrderDate_ID = d.ID"

@@ -166,7 +166,7 @@ def build_static_prefix(system_prompt: str) -> str:
     >>> prefix = build_static_prefix("You are a T-SQL expert.")
     >>> "You are a T-SQL expert." in prefix
     True
-    >>> "Table: Contract" in prefix
+    >>> "Table: Customer" in prefix
     True
     >>> build_static_prefix("You are a T-SQL expert.") is prefix
     True

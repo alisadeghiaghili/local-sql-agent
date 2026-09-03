@@ -14,6 +14,20 @@ T-SQL -> SQLite translation is via ``sqlglot.transpile`` (handles ``TOP``
 -> ``LIMIT`` at every nesting level) plus one small regex to drop the
 ``N''`` national-string prefix SQLite doesn't understand -- this is test
 plumbing only, never something production code does.
+
+Every test in this module is marked ``domain_data`` (see module-level
+``pytestmark`` below) and skips whenever ``PROJECT_CONFIG_DIR`` points at
+``project_config.example/`` (CI, a fresh clone). The ``sqlite_conn``
+fixture's own ``CREATE TABLE`` statements hardcode the real schema's
+table/column names (``Customer``, ``Ring``, ``CustomerContract`` with its
+real FK/wage columns) specifically so the generated SQL those tests run
+resolves against the real ``schema_data.columns.TABLE_COLUMNS`` allowlist
+-- and the scenario's actual business assertions (buyer ranking by real
+Rial trade volume, a real trading-hall name filter) only mean something
+against that real shape. This is squarely "the real schema snapshot"
+category, not a test that merely reached for a real name as a stand-in --
+rewriting it against a generic 3-table example would mean inventing a
+different, no-longer-representative scenario, not fixing a coincidence.
 """
 
 from __future__ import annotations
@@ -32,6 +46,8 @@ from llm.router import LLMRouter
 from session.engine import TurnEngine, build_session_context_text
 from session.models import ResultColumn, Turn, TurnResult
 from session.store import SessionStore
+
+pytestmark = pytest.mark.domain_data
 
 SYSTEM_PROMPT = "You are a T-SQL expert for the Auction domain."
 

@@ -33,6 +33,15 @@ jobs:
           pip install pytest pytest-cov
 
       - name: Run tests
+        env:
+          # project_config/ is git-ignored (it holds this deployment's real
+          # domain data and warehouse schema) and is therefore absent on a
+          # fresh checkout, including CI's. Point the knowledge/schema
+          # loaders at the committed, sample-data template instead — see
+          # config.Settings.project_config_dir. There is deliberately no
+          # automatic fallback to this directory in the code itself; CI
+          # opts in explicitly the same way any other deployment would.
+          PROJECT_CONFIG_DIR: project_config.example
         run: pytest tests/ eval/tests -v
 
       # Doctests were never executed by CI, so the docstrings drifted from
@@ -42,6 +51,8 @@ jobs:
       # variable live, so they raised NameError the moment they ran.
       # Docstrings in this codebase are treated as contract, so run them.
       - name: Run doctests
+        env:
+          PROJECT_CONFIG_DIR: project_config.example
         run: >-
           pytest --doctest-modules -q
           api llm security session database core knowledge prompt_engine
@@ -49,6 +60,8 @@ jobs:
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.12'
+        env:
+          PROJECT_CONFIG_DIR: project_config.example
         run: pytest tests/ eval/tests --cov --cov-report=term-missing --cov-report=xml
 
       # Offline evaluation gate. Proves the harness, the guard and the
@@ -56,6 +69,8 @@ jobs:
       # measurement, because offline mode replays the golden set's own
       # expected_sql (see eval/runner.py). Accuracy needs --live.
       - name: Evaluation harness smoke run
+        env:
+          PROJECT_CONFIG_DIR: project_config.example
         run: python -m eval.cli run --golden eval_data.example/golden.jsonl
 
       - name: Upload coverage

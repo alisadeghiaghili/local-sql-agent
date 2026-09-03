@@ -25,6 +25,13 @@ from api.models import QueryResponse
 from api.query_cache import QueryCache, _normalize_question
 from llm.base import SQLGenerationResult
 from llm.sql_agent import SQLAgent
+from schema_data.columns import TABLE_COLUMNS
+
+#: A table name picked dynamically from whatever schema is loaded (real or
+#: project_config.example/), rather than a hardcoded real one -- these SQL
+#: strings run through security.sql_guard.validate_sql via SQLAgent.run,
+#: which needs a table it recognises, but does not care WHICH one.
+_ANY_KNOWN_TABLE = next(iter(TABLE_COLUMNS))
 
 
 def _resp(question: str, sql: str = "SELECT 1") -> QueryResponse:
@@ -90,8 +97,8 @@ class TestPrefixVersioning:
 class TestCacheBySQL:
     def test_get_by_sql_hits_after_set_with_sql(self):
         c = QueryCache(ttl_seconds=60, max_size=10)
-        c.set("question A", "full", _resp("question A", sql="SELECT TOP 10 * FROM Contract"), sql="SELECT TOP 10 * FROM Contract")
-        hit = c.get_by_sql("SELECT TOP 10 * FROM Contract", "full")
+        c.set("question A", "full", _resp("question A", sql=f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}"), sql=f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}")
+        hit = c.get_by_sql(f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}", "full")
         assert hit is not None
         assert hit.result == [{"n": 1}]
 
@@ -124,7 +131,7 @@ class TestSQLAgentSqlCacheLookupHook:
 
     def test_cache_hit_skips_execution(self):
         backend = MagicMock()
-        backend.generate_with_meta.return_value = ("SELECT TOP 10 * FROM Contract", {})
+        backend.generate_with_meta.return_value = (f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}", {})
         # SQLAgent now routes through LLMRouter.generate_for_task, which calls
         # generate_with_meta_segments(segments) -- a real LLMBackend subclass
         # gets a working default (flatten + generate_with_meta) for free, but
@@ -144,11 +151,11 @@ class TestSQLAgentSqlCacheLookupHook:
 
         execute_fn.assert_not_called()
         assert df.equals(cached_df)
-        assert result.sql == "SELECT TOP 10 * FROM Contract"
+        assert result.sql == f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}"
 
     def test_cache_miss_falls_through_to_execution(self):
         backend = MagicMock()
-        backend.generate_with_meta.return_value = ("SELECT TOP 10 * FROM Contract", {})
+        backend.generate_with_meta.return_value = (f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}", {})
         # SQLAgent now routes through LLMRouter.generate_for_task, which calls
         # generate_with_meta_segments(segments) -- a real LLMBackend subclass
         # gets a working default (flatten + generate_with_meta) for free, but
@@ -171,7 +178,7 @@ class TestSQLAgentSqlCacheLookupHook:
 
     def test_no_hook_behaves_exactly_as_before(self):
         backend = MagicMock()
-        backend.generate_with_meta.return_value = ("SELECT TOP 10 * FROM Contract", {})
+        backend.generate_with_meta.return_value = (f"SELECT TOP 10 * FROM {_ANY_KNOWN_TABLE}", {})
         # SQLAgent now routes through LLMRouter.generate_for_task, which calls
         # generate_with_meta_segments(segments) -- a real LLMBackend subclass
         # gets a working default (flatten + generate_with_meta) for free, but

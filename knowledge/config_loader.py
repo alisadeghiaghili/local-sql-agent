@@ -7,9 +7,11 @@ Usage
     from knowledge.config_loader import load_aliases, ConfigNotFoundError
 
 Each ``load_*`` function:
-  1. Looks for  ``project_config/<name>.yaml``  (git-ignored, real data).
+  1. Looks for  ``<PROJECT_CONFIG_DIR>/<name>.yaml``  (``PROJECT_CONFIG_DIR``
+     defaults to ``project_config``, git-ignored, real data — see
+     :attr:`config.Settings.project_config_dir`).
   2. If missing → raises ``ConfigNotFoundError`` immediately.
-     There is NO silent fallback.
+     There is NO silent fallback to ``project_config.example/``.
   3. Validates structure with a Pydantic v2 model.
   4. On validation failure → raises ``ValueError`` with filename + field.
 """
@@ -25,7 +27,23 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_CONFIG_DIR = Path(__file__).parent.parent / "project_config"
+
+def _project_config_dir() -> Path:
+    """Return the configured project-config directory, resolved at call time.
+
+    Reads ``cfg.settings.project_config_dir`` on every call (not once at
+    import time) so that :func:`config.override_settings` and a changed
+    ``PROJECT_CONFIG_DIR`` environment variable both take effect
+    immediately, per this codebase's read-through-``cfg.settings``
+    convention (see ``config.py``'s module docstring). A relative value
+    (the default, ``"project_config"``) is resolved against the current
+    working directory, matching how :attr:`config.Settings.log_dir` and
+    :attr:`config.Settings.export_dir` are already resolved elsewhere in
+    this codebase; an absolute path is used as-is.
+    """
+    import config as cfg  # deferred: avoids a hard import-time dependency
+
+    return Path(cfg.settings.project_config_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +137,7 @@ class MetricsConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _load_validated(filename: str, model: type[BaseModel]) -> BaseModel:
-    path = _PROJECT_CONFIG_DIR / filename
+    path = _project_config_dir() / filename
     raw = load_yaml(path)
     try:
         return model.model_validate(raw)

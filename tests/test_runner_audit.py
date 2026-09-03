@@ -33,9 +33,15 @@ import requests
 
 from llm.base import LLMBackend
 from llm.sql_agent import SQLAgent
+from schema_data.columns import TABLE_COLUMNS
 
 SIMPLE_SQL = "SELECT TOP 5 * FROM [Auction_Dim].[Customer]"
 POISON_VALUE = "ACME-SECRET-ROW-VALUE-9c1f2a"
+
+#: A table name picked dynamically from whatever schema is loaded, rather
+#: than a hardcoded real one -- used where a test only needs SOME known
+#: table to satisfy security.sql_guard's allowlist.
+_ANY_KNOWN_TABLE = next(iter(TABLE_COLUMNS))
 
 
 def _raw_meta(prompt_tokens: int = 100, completion_tokens: int = 20) -> dict:
@@ -308,7 +314,7 @@ class TestSqlOnlyModeAudit:
         from api.runner import run_query
         from api.errors import ForbiddenSQLError
 
-        stacked_statement = "SELECT Price FROM Contract; DROP TABLE Contract"
+        stacked_statement = f"SELECT Price FROM {_ANY_KNOWN_TABLE}; DROP TABLE {_ANY_KNOWN_TABLE}"
         with patch("api.runner.agent", _agent(FakeMetaBackend([stacked_statement]))):
             with pytest.raises(ForbiddenSQLError):
                 run_query("سوال", system_prompt="sp", mode="sql", request_id="r_sql_forbidden")
@@ -659,7 +665,7 @@ class TestErrorPathsAudit:
         from api.runner import run_query
         from api.errors import ForbiddenSQLError
 
-        stacked_statement = "SELECT Price FROM Contract; DROP TABLE Contract"
+        stacked_statement = f"SELECT Price FROM {_ANY_KNOWN_TABLE}; DROP TABLE {_ANY_KNOWN_TABLE}"
         with patch("api.runner.agent", _agent(FakeMetaBackend([stacked_statement]))):
             with pytest.raises(ForbiddenSQLError):
                 run_query("سوال", system_prompt="sp", mode="full", request_id="r_forbidden")
@@ -675,7 +681,7 @@ class TestErrorPathsAudit:
         # statements), the candidate text is recovered well enough to
         # report which known table it touched.
         assert rec["generated_sql"] == stacked_statement
-        assert rec["guard"]["tables_touched"] == ["Contract"]
+        assert rec["guard"]["tables_touched"] == [_ANY_KNOWN_TABLE]
 
     def test_model_unavailable_after_transport_failure(self, audit_file):
         """Backend raises RuntimeError directly (as OpenAIBackend does

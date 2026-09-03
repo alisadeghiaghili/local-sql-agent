@@ -5,7 +5,8 @@
 Inspects a live database via SQLAlchemy and extracts table metadata,
 column info, FK relationships, row counts, and sample values.  The
 extracted data can be serialised into draft YAML files that seed
-``project_config/entities.yaml`` and ``project_config/aliases.yaml``.
+``project_config/entities.yaml``, ``project_config/aliases.yaml``,
+``project_config/relationships.yaml``, and ``project_config/schema.yaml``.
 
 Design goals
 ------------
@@ -24,12 +25,15 @@ Typical usage::
 
     inspector = SchemaInspector("mssql+pyodbc://...")
     schema = inspector.inspect(include_schemas=["Auction_Dim", "Auction_Fact"])
-    entities_yaml = inspector.draft_entities_yaml(schema)
-    aliases_yaml  = inspector.draft_aliases_yaml(schema)
+    entities_yaml      = inspector.draft_entities_yaml(schema)
+    aliases_yaml       = inspector.draft_aliases_yaml(schema)
+    relationships_yaml = inspector.draft_relationships_yaml(schema)
+    schema_yaml        = inspector.draft_schema_yaml(schema)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sys
@@ -162,6 +166,18 @@ def _normalise_type(sa_type: Any) -> str:
 
 def _is_string_type(norm_type: str) -> bool:
     return norm_type in ("varchar", "nvarchar", "char", "text")
+
+
+def _yaml_str(s: str) -> str:
+    """Render *s* as a double-quoted YAML flow scalar.
+
+    ``json.dumps`` produces exactly that (JSON double-quoted strings are a
+    valid YAML 1.1/1.2 flow scalar, escapes and all) -- reused here instead
+    of a hand-rolled quoting routine so values containing quotes,
+    backslashes, or non-ASCII text (e.g. sample values or descriptions
+    pulled from live rows) always round-trip through ``yaml.safe_load``.
+    """
+    return json.dumps(s, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +573,85 @@ class SchemaInspector:
                     tokens_yaml = ", ".join(f'"{t}"' for t in tokens)
                     lines.append(f"  # from {table.full_name}.{col.name}")
                     lines.append(f'  "{key}": [{tokens_yaml}]  # REVIEW')
+
+        return "\n".join(lines)
+
+    def draft_schema_yaml(self, snapshot: SchemaSnapshot) -> str:
+        """Return a draft ``schema.yaml`` string from *snapshot*.
+
+        The output mirrors exactly the shape :class:`schema_data.registry.
+        SchemaConfig` validates: a top-level ``tables`` map (each entry has
+        an optional ``description`` and an optional ``columns`` map) and a
+        top-level ``relationships`` list (each entry has ``from_table``,
+        ``to_table``, ``join_sql``). This is verified by round-tripping the
+        generated text through ``yaml.safe_load`` +
+        ``SchemaConfig.model_validate`` (see ``tests/test_schema_inspector.py``)
+        rather than merely asserted here.
+
+        A table with no columns detected is emitted WITHOUT a ``columns``
+        key at all (not an empty map) — per ``schema_data/registry.py``'s
+        documented split, that is what keeps a table described-but-not-
+        queryable, the same state a hand-written lookup-table entry would
+        be in.
+
+        .. warning::
+           Column notes may quote **sample values fetched from live rows**
+           (see :attr:`ColumnInfo.sample_values`) to help a human write a
+           real description. The returned string therefore may contain
+           real warehouse data and must only ever be written to a
+           throwaway, git-ignored draft directory — never to
+           ``project_config.example/`` or any other path tracked by git.
+           This module never writes files itself (see
+           :mod:`database.schema_inspector_cli`, which enforces the
+           destination-directory guard); it only ever returns a string.
+        """
+        lines: list[str] = [
+            "# AUTO-GENERATED DRAFT - review and edit before moving to project_config/",
+            f"# Generated: {snapshot.generated_at} from {snapshot.source_url}",
+            f"# Tables found: {len(snapshot.tables)} | "
+            f"Fact tables: {len(snapshot.fact_tables)} | "
+            f"Dim tables: {len(snapshot.dim_tables)}",
+            "#",
+            "# WARNING: descriptions below may quote sample values read from",
+            "# live rows in this warehouse. Review before sharing this file, and",
+            "# NEVER commit it or copy it into project_config.example/.",
+            "",
+            "tables:",
+        ]
+
+        for table in snapshot.tables:
+            lines.append(f"  {_yaml_str(table.name)}:")
+            desc = f"{table.full_name} — auto-detected {table.classification} table"
+            if table.row_count is not None:
+                desc += f" (~{table.row_count} rows)"
+            lines.append(
+                f"    description: {_yaml_str(desc)}  "
+                "# TO BE FILLED: refine wording, add native-language synonyms"
+            )
+            if table.columns:
+                lines.append("    columns:")
+                for col in table.columns:
+                    col_desc = f"{col.type} column"
+                    if col.is_pk:
+                        col_desc += "; primary key"
+                    if col.sample_values:
+                        examples = ", ".join(col.sample_values[:3])
+                        col_desc += f"; e.g. {examples}"
+                    lines.append(f"      {_yaml_str(col.name)}: {_yaml_str(col_desc)}")
+            else:
+                lines.append(
+                    "    # no columns detected -- this table is described in the "
+                    "prompt but NOT queryable until a `columns` map is added "
+                    "(see schema_data/registry.py)"
+                )
+            lines.append("")
+
+        lines.append("relationships:")
+        for rel in snapshot.relationships:
+            lines.append(f"  - from_table: {_yaml_str(rel.from_table)}")
+            lines.append(f"    to_table: {_yaml_str(rel.to_table)}")
+            lines.append(f"    join_sql: {_yaml_str(rel.join_hint)}")
+            lines.append("")
 
         return "\n".join(lines)
 

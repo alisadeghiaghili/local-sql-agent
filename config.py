@@ -102,6 +102,25 @@ class Settings:
     export_dir: str = field(
         default_factory=lambda: os.getenv("EXPORT_DIR", "exports")
     )
+    project_config_dir: str = field(
+        default_factory=lambda: os.getenv("PROJECT_CONFIG_DIR", "project_config")
+    )
+    """Directory :mod:`knowledge.config_loader` and :mod:`schema_data.registry`
+    read their YAML files from (``aliases.yaml``, ``entities.yaml``,
+    ``business_rules.yaml``, ``examples.yaml``, ``metrics.yaml``,
+    ``schema.yaml``). Defaults to ``project_config`` — the git-ignored
+    directory holding this deployment's real domain data and warehouse
+    schema. Point this at ``project_config.example`` to run against the
+    committed, sample-data template instead (a fresh clone with no
+    ``project_config/`` at all, or CI).
+
+    Deliberately **not** an automatic fallback: when this resolves to
+    ``project_config`` (the default) and that directory or one of its
+    files is missing, loading still raises ``ConfigNotFoundError`` exactly
+    as before — silently running on sample aliases/business rules against
+    a real warehouse would produce confidently wrong SQL, which is worse
+    than refusing to start. The example directory is only ever reached by
+    explicitly setting this variable."""
     # ── query result cache ────────────────────────────────────────────────
     cache_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("CACHE_TTL_SECONDS", "300"))

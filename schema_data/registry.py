@@ -2,6 +2,18 @@
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Schema registry — single source of truth for table/column metadata.
 
+Loads ``<PROJECT_CONFIG_DIR>/schema.yaml`` (``PROJECT_CONFIG_DIR`` defaults
+to ``project_config``, git-ignored, real warehouse data — see
+:attr:`config.Settings.project_config_dir`), the same directory and
+"no automatic fallback to project_config.example/" discipline
+:mod:`knowledge.config_loader` already applies to the aliases/entities/
+business-rules/examples/metrics configs. A missing or invalid
+``schema.yaml`` raises :class:`~knowledge.config_loader.ConfigNotFoundError`
+or :class:`ValueError` only when the data is actually *accessed* (via
+:class:`SchemaRegistry`, or by importing :mod:`schema_data.tables`,
+:mod:`schema_data.columns`, or :mod:`schema_data.relationships`) — never
+merely by importing this module.
+
 Provides :class:`SchemaRegistry` with two public methods:
 
 * :meth:`~SchemaRegistry.build_schema_context` / :meth:`~SchemaRegistry.build_context`
@@ -24,13 +36,164 @@ Typical usage::
 
     # JOIN clauses between selected tables
     joins = SchemaRegistry.get_relationships(["Contract", "Customer"])
+
+``security.sql_guard`` derives its table/column allowlist from this same
+data (via :data:`schema_data.columns.TABLE_COLUMNS`) — a table listed under
+``schema.yaml``'s ``tables`` key with NO ``columns`` sub-key is described in
+the prompt but is not queryable: it will never appear in
+:func:`get_table_columns`'s return value, and the guard refuses any query
+that references it.
 """
 
 from __future__ import annotations
 
-from schema_data.columns import TABLE_COLUMNS
-from schema_data.tables import TABLE_DESCRIPTIONS
-from schema_data.relationships import RELATIONSHIPS
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field, ValidationError
+
+from knowledge.config_loader import ConfigNotFoundError, load_yaml
+
+__all__ = [
+    "SchemaRegistry",
+    "ConfigNotFoundError",
+    "TableDefinition",
+    "RelationshipDefinition",
+    "SchemaConfig",
+    "load_schema",
+    "get_table_descriptions",
+    "get_table_columns",
+    "get_relationships_map",
+]
+
+
+# ---------------------------------------------------------------------------
+# Pydantic v2 models — mirrors the shape knowledge/config_loader.py uses for
+# its own five configs (a validated model per YAML file).
+# ---------------------------------------------------------------------------
+
+class TableDefinition(BaseModel):
+    """One entry under ``schema.yaml``'s ``tables`` key.
+
+    ``columns`` is optional and, when absent (``None``), means the table is
+    described in the prompt's schema block but is deliberately excluded
+    from :func:`get_table_columns` and therefore from the SQL guard's table
+    allowlist (see the module docstring).
+    """
+
+    description: str = ""
+    columns: dict[str, str] | None = None
+
+
+class RelationshipDefinition(BaseModel):
+    """One entry under ``schema.yaml``'s ``relationships`` list."""
+
+    from_table: str
+    to_table: str
+    join_sql: str
+
+
+class SchemaConfig(BaseModel):
+    """Validated, top-level shape of ``schema.yaml``."""
+
+    tables: dict[str, TableDefinition] = Field(default_factory=dict)
+    relationships: list[RelationshipDefinition] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
+
+def _project_config_dir() -> Path:
+    """Return the configured project-config directory, resolved at call time.
+
+    Mirrors ``knowledge.config_loader._project_config_dir`` exactly (reads
+    ``cfg.settings.project_config_dir`` fresh on every call rather than once
+    at import time), so :func:`config.override_settings` and a changed
+    ``PROJECT_CONFIG_DIR`` environment variable both take effect
+    immediately.
+    """
+    import config as cfg  # deferred: avoids a hard import-time dependency
+
+    return Path(cfg.settings.project_config_dir)
+
+
+def load_schema() -> SchemaConfig:
+    """Load and validate ``<PROJECT_CONFIG_DIR>/schema.yaml``.
+
+    This is a plain, uncached loader — it re-reads and re-validates the
+    file on every call, exactly like ``knowledge.config_loader``'s
+    ``load_*`` functions. Callers that want a process-lifetime cache should
+    use :func:`get_table_descriptions` / :func:`get_table_columns` /
+    :func:`get_relationships_map` (or the lazy module attributes in
+    :mod:`schema_data.tables` / :mod:`schema_data.columns` /
+    :mod:`schema_data.relationships`) instead.
+
+    Raises
+    ------
+    ConfigNotFoundError
+        If ``schema.yaml`` does not exist under the configured directory.
+        There is NO silent fallback to ``project_config.example/``.
+    ValueError
+        If the file exists but fails Pydantic validation.
+    """
+    path = _project_config_dir() / "schema.yaml"
+    raw = load_yaml(path)
+    try:
+        return SchemaConfig.model_validate(raw)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        field = " -> ".join(str(x) for x in first["loc"])
+        raise ValueError(
+            f"[schema.yaml] validation error at '{field}': {first['msg']}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Process-lifetime cache — populated once, on first access, from load_schema().
+# Mirrors knowledge/aliases.py's own ``_cache`` pattern.
+# ---------------------------------------------------------------------------
+
+_cache: dict[str, Any] = {}
+
+
+def _schema_cache() -> dict[str, Any]:
+    if "_loaded" not in _cache:
+        cfg = load_schema()
+        _cache["table_descriptions"] = {
+            name: table.description for name, table in cfg.tables.items()
+        }
+        _cache["table_columns"] = {
+            name: table.columns
+            for name, table in cfg.tables.items()
+            if table.columns
+        }
+        _cache["relationships"] = {
+            f"{rel.from_table} -> {rel.to_table}": rel.join_sql
+            for rel in cfg.relationships
+        }
+        _cache["_loaded"] = True
+    return _cache
+
+
+def get_table_descriptions() -> dict[str, str]:
+    """Return ``{table_name: description}`` for every table in ``schema.yaml``."""
+    return _schema_cache()["table_descriptions"]
+
+
+def get_table_columns() -> dict[str, dict[str, str]]:
+    """Return ``{table_name: {column_name: description}}``.
+
+    Only includes tables that have a ``columns`` key in ``schema.yaml`` —
+    this is also, by construction, the SQL guard's effective table
+    allowlist (see :data:`schema_data.columns.TABLE_COLUMNS`).
+    """
+    return _schema_cache()["table_columns"]
+
+
+def get_relationships_map() -> dict[str, str]:
+    """Return ``{"FromTable -> ToTable": join_sql}`` for every relationship."""
+    return _schema_cache()["relationships"]
 
 
 class SchemaRegistry:
@@ -41,9 +204,14 @@ class SchemaRegistry:
 
     Data sources
     ------------
-    * :data:`~schema_data.columns.TABLE_COLUMNS` — ``{table: {col: desc}}``
-    * :data:`~schema_data.tables.TABLE_DESCRIPTIONS` — ``{table: description}``
-    * :data:`~schema_data.relationships.RELATIONSHIPS` — ``{"A -> B": join_sql}``
+    * :func:`get_table_columns` — ``{table: {col: desc}}``
+    * :func:`get_table_descriptions` — ``{table: description}``
+    * :func:`get_relationships_map` — ``{"A -> B": join_sql}``
+
+    Both are read fresh (through the process-lifetime cache above) on every
+    call, not captured at import time — importing this module, or
+    :mod:`schema_data`, never requires ``schema.yaml`` to exist; only
+    calling one of these two methods does.
     """
 
     @staticmethod
@@ -57,7 +225,7 @@ class SchemaRegistry:
             empty sequence (``()``, ``[]``).  When the value is falsy
             (``None``, empty list, empty tuple), *all* known tables are
             included.  Table names not present in
-            :data:`~schema_data.columns.TABLE_COLUMNS` are silently skipped.
+            :func:`get_table_columns` are silently skipped.
 
         Returns
         -------
@@ -73,12 +241,12 @@ class SchemaRegistry:
 
             Sections are separated by a blank line.  Returns an empty string
             when ``selected_tables`` is non-empty but none of the names exist
-            in :data:`~schema_data.columns.TABLE_COLUMNS`.
+            in :func:`get_table_columns`.
 
         Examples
         --------
-        >>> ctx = SchemaRegistry.build_schema_context(["Contract"])
-        >>> ctx.startswith("Table: Contract")
+        >>> ctx = SchemaRegistry.build_schema_context(["Customer"])
+        >>> ctx.startswith("Table: Customer")
         True
 
         >>> # None → include all tables
@@ -94,19 +262,22 @@ class SchemaRegistry:
         >>> SchemaRegistry.build_schema_context(["NonExistentTable"])
         ''
         """
+        table_columns = get_table_columns()
+        table_descriptions = get_table_descriptions()
+
         # None or empty sequence → include everything
         if not selected_tables:
-            selected_tables = list(TABLE_COLUMNS.keys())
+            selected_tables = list(table_columns.keys())
 
         lines = []
 
         for table_name in selected_tables:
-            if table_name not in TABLE_COLUMNS:
+            if table_name not in table_columns:
                 # silently skip unknown tables
                 continue
 
-            description = TABLE_DESCRIPTIONS.get(table_name, "")
-            columns = TABLE_COLUMNS.get(table_name, {})
+            description = table_descriptions.get(table_name, "")
+            columns = table_columns.get(table_name, {})
 
             lines.append(f"Table: {table_name}")
 
@@ -129,10 +300,10 @@ class SchemaRegistry:
     def get_relationships(selected_tables: list[str]) -> list[str]:
         """Return JOIN SQL clauses for FK edges between *selected_tables*.
 
-        An edge from :data:`~schema_data.relationships.RELATIONSHIPS` is
-        included only when **both** its left-side and right-side tables
-        appear in ``selected_tables``.  Edges where either endpoint is
-        absent are silently omitted.
+        An edge from :func:`get_relationships_map` is included only when
+        **both** its left-side and right-side tables appear in
+        ``selected_tables``.  Edges where either endpoint is absent are
+        silently omitted.
 
         Relationship keys follow the format ``"LeftTable -> RightTable"``
         (with optional schema prefix, e.g. ``"Contract.ContractID ->
@@ -176,7 +347,7 @@ class SchemaRegistry:
         selected = set(selected_tables)
         result = []
 
-        for name, join_sql in RELATIONSHIPS.items():
+        for name, join_sql in get_relationships_map().items():
             parts = name.split(" -> ")
             left  = parts[0].split(".")[0]
             right = parts[1].split(".")[0]

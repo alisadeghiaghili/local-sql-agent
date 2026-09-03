@@ -95,11 +95,13 @@ class TestShouldUseStaticPrefix:
 
 class TestPromptBuilderStaticPath:
     def test_build_dispatches_to_static_by_default(self):
+        from schema_data.columns import TABLE_COLUMNS
+
         ctx = RetrievalContext(filters={"PersianYear": 1402})
         prompt = PromptBuilder.build("سوال", _SYSTEM_PROMPT, ctx)
         # Full schema present regardless of context.entities/facts (empty here).
-        assert "Table: Contract" in prompt
-        assert "Table: Customer" in prompt
+        for table in TABLE_COLUMNS:
+            assert f"Table: {table}" in prompt
         assert "1402" in prompt
 
     def test_static_prefix_identical_regardless_of_question_or_filters(self):
@@ -149,10 +151,16 @@ class TestPromptBuilderRetrievalFallback:
 
     def test_static_path_would_have_included_every_table(self):
         """Sanity check the contrast: the static path (default budget)
-        includes tables the retrieval-fallback path above correctly omits."""
+        includes tables the retrieval-fallback path above correctly omits.
+        Any known table not named in ctx.entities/facts proves the point;
+        picked dynamically rather than hardcoded, so this holds under
+        whichever schema is actually loaded."""
+        from schema_data.columns import TABLE_COLUMNS
+
         ctx = RetrievalContext(entities=["Customer"], facts=["Contract"])
         prompt = PromptBuilder.build("سوال", _SYSTEM_PROMPT, ctx)
-        assert "Table: Ring" in prompt
+        some_table = next(iter(TABLE_COLUMNS))
+        assert f"Table: {some_table}" in prompt
 
     def test_static_prefix_token_estimate_is_positive(self):
         assert static_prefix_token_estimate(_SYSTEM_PROMPT) > 0

@@ -21,6 +21,15 @@ import json
 import pytest
 
 from eval.cli import _load_system_prompt, build_parser, main
+from schema_data.columns import TABLE_COLUMNS
+
+#: A table name picked dynamically from whatever schema is loaded (real or
+#: project_config.example/) -- Phase 1's validate_sql enforces a table
+#: allowlist against schema_data/columns.py, and this fixture is exercised
+#: through the real offline pipeline (run_case -> validate_sql), so a
+#: placeholder table would be guard-rejected. Which known table is used
+#: does not matter to any test in this module.
+_ANY_KNOWN_TABLE = next(iter(TABLE_COLUMNS))
 
 
 def _write_golden(tmp_path, lines):
@@ -33,10 +42,7 @@ SIMPLE_CASE = {
     "id": "c1",
     "question": "how many?",
     "tags": ["count"],
-    # A real table -- Phase 1's validate_sql enforces a table allowlist
-    # against schema_data/columns.py, and this fixture is exercised
-    # through the real offline pipeline (run_case -> validate_sql).
-    "expected_sql": "SELECT COUNT(*) AS n FROM Contract",
+    "expected_sql": f"SELECT COUNT(*) AS n FROM {_ANY_KNOWN_TABLE}",
     "expected_rows": [{"n": 3}],
 }
 

@@ -22,15 +22,26 @@ and comments explaining every field.
 | `business_rules.yaml` | LLM instructions per query category | `BUSINESS_RULES` |
 | `examples.yaml` | Few-shot NLQ → SQL examples | `EXAMPLES` |
 | `metrics.yaml` | Metric name → SQL expression mapping | `METRICS` |
+| `schema.yaml` | Warehouse tables/columns/relationships — also the SQL guard's table/column allowlist | `TABLE_DESCRIPTIONS`, `TABLE_COLUMNS`, `RELATIONSHIPS` |
+
+Which directory these are read from is controlled by
+`PROJECT_CONFIG_DIR` (default `project_config`) — see
+`config.Settings.project_config_dir`. Set it to `project_config.example`
+to run against this template directory instead (e.g. a fresh clone with no
+`project_config/` yet, or CI). There is deliberately no automatic fallback
+to this directory: pointing at it only ever happens by explicitly setting
+the variable.
 
 ## What happens if project_config/ is missing?
 
-Importing `knowledge.*` modules will succeed.
-Accessing the variables (e.g. `knowledge.aliases.RING_ALIASES`) will raise
-`ConfigNotFoundError` with a clear message telling you which file is missing.
+Importing `knowledge.*` and `schema_data.*` modules will succeed.
+Accessing the variables (e.g. `knowledge.aliases.RING_ALIASES`,
+`schema_data.columns.TABLE_COLUMNS`) will raise `ConfigNotFoundError` with
+a clear message telling you which file is missing.
 
 ## Validation
 
 All YAML files are validated with Pydantic v2 models defined in
-`knowledge/config_loader.py`. If a field is wrong, you will get a clear
+`knowledge/config_loader.py` (`schema.yaml` is validated by
+`schema_data/registry.py`). If a field is wrong, you will get a clear
 error message with the filename and field name.
