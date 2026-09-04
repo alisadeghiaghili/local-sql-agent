@@ -5,6 +5,151 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.0.0] — 2026-09-04
+
+Everything between 3.2.0 and here: authentication, the conversational
+session API, the evaluation harness, LLM observability, the separation of
+domain data from engine code, multi-dialect support, and two web clients.
+Two of those changes are breaking.
+
+### Breaking
+
+- **Every route except `/health` now requires authentication.** Requests
+  must carry `Authorization: Bearer <key>`. Keys are hashed with SHA-256
+  (deliberately not bcrypt or argon2 — these are high-entropy tokens, not
+  passwords) and compared with `hmac.compare_digest`. Startup fails
+  closed if `AUTH_REQUIRED` is on and no key is configured. Issue keys
+  with `python -m scripts.issue_api_key`.
+
+- **Domain data no longer lives in the repository.** `project_config/` is
+  gitignored and mandatory: `aliases.yaml`, `business_rules.yaml`,
+  `entities.yaml`, `examples.yaml`, `metrics.yaml`, `schema.yaml`,
+  `retrieval_hints.yaml`, `session_policy.yaml`. A missing file raises
+  `ConfigNotFoundError` at start-up. There is deliberately **no** silent
+  fallback to `project_config.example/` — running a real warehouse on
+  sample business rules would produce confidently wrong SQL, which is
+  worse than refusing to start. An existing deployment will not boot
+  until those files are placed by hand.
+
+- `/health` no longer reports the model name to unauthenticated callers.
+
+### Added
+
+- **Conversational sessions (`/v2/sessions…`)** — the `Turn` contract in
+  `docs/api-contract-v2.md`, SSE streaming, declared assumptions with a
+  source and an editability flag, `PATCH …/assumptions` to re-run a turn
+  under edited assumptions, and CTE-composed refinement so «از بین
+  آن‌ها» resolves against the previous turn rather than re-querying the
+  warehouse.
+- **Evaluation harness (`eval/`)** — golden set, execution accuracy,
+  per-tag breakdown, error taxonomy, latency percentiles, an
+  order-insensitive result fingerprint so "the same answer" is decidable,
+  determinism measurement against a live endpoint, and a baseline
+  regression gate with a CI exit code.
+- **LLM status block** — 21 fields on every response and audit record:
+  token counts, prefix-cache-hit ratio, timings, correction count,
+  `finish_reason` read from the response rather than assumed, and
+  detection of a model answering on its reasoning channel.
+- **Multi-dialect support** — `SQL_DIALECT` selects the target; the model
+  still generates T-SQL, which is transpiled and then **re-validated by
+  the guard in the dialect it will actually execute in**. `tsql` and
+  `sqlite` are verified by end-to-end execution; `postgres` and `mysql`
+  transpile and re-validate cleanly but are unverified by execution and
+  are not claimed. Per-dialect data lives in a `DialectProfile` registry
+  (`security/dialects.py`), not in branches.
+- **Static web client (`web/`)** — Persian, RTL, no build step: per-turn
+  pipeline view, assumption chips, LLM status panel, result-shape
+  selection between chart and table driven by the declared column types,
+  chart defaults following Storytelling with Data, and export.
+- **Flask web app (`webapp/`)** — bilingual FA/EN, sample-question panel,
+  SQL beautifier, result pagination, copy and download.
+- **Value resolution from the warehouse** (`retrieval/value_resolver.py`)
+  with a stale-while-revalidate prefetch and single-flight refresh,
+  replacing per-request lookups.
+- **Guard rejection taxonomy** — `CorrectableRejection` versus
+  `PolicyRejection`, with refusal tracked as an independent axis, so the
+  model is no longer re-prompted for rejections no rewrite could satisfy.
+- **One canonical Persian normalizer** (`core/persian.py`), versioned, so
+  the cache and the retriever agree on what the same question is.
+- **Observability** (`observability/`) — compliance-grade audit records
+  that never contain result rows, stage timings, and the status block
+  above.
+- Operator tooling: `scripts/verify_deployment.py`,
+  `scripts/issue_api_key.py`, `scripts/analyze_audit_log.py`.
+- Documentation: `docs/api-contract-v2.md`,
+  `docs/deployment-runbook.md`, `docs/db-hardening.md`, and bilingual
+  tutorials under `docs/fa/` and `docs/en/`.
+- Licence provenance notices (`core/provenance.py`, `NOTICE`) — stated
+  where the licence is actually encountered rather than only in a file
+  nobody opens.
+- `tests/test_no_domain_literals.py` — walks the AST of first-party
+  source and fails if a warehouse name reappears in an executable
+  literal. This is what keeps the separation above from decaying.
+- `project_config.example/` and `eval_data.example/` templates, so the
+  suite and CI run with no real data present.
+- CI across Python 3.11, 3.12 and 3.13, with doctests, coverage and an
+  offline evaluation gate; branch protection on `main`.
+
+### Changed
+
+- **Prompt assembly is split into a byte-identical static prefix and a
+  variable suffix**, so a local endpoint can reuse the prefix's KV cache.
+  Per-turn content — session context, resolved filters, correction text —
+  goes only in the suffix. This is enforced by tests, because breaking it
+  is silent: the suite stays green and every request pays full prefill.
+- All domain knowledge moved from Python modules to YAML loaded through
+  `knowledge/config_loader.py`, and the guard's table and column
+  allowlists are now derived from `schema.yaml` rather than hardcoded.
+- `ensure_top` keeps its byte-identical text-splicing path for T-SQL and
+  uses an AST row cap for the other dialects.
+- The LLM layer reduced to a single OpenAI-compatible provider
+  (`llm/providers.py`) behind a router with fallback and bounded retries.
+- Rate limits raised from 60 to 600 requests per window and moved into
+  `Settings`.
+- The suite is now 2,079 tests, up from the 427 the README badge
+  advertised at 3.2.0.
+
+### Fixed
+
+- **The rate-limit bucket keyed on the principal alone, then on the IP
+  alone.** Either half by itself collapses distinct callers into one
+  bucket — every analyst behind one UI host, or every request from one
+  key. It is now the `(principal, ip)` pair.
+- **The web UI sent no `Authorization` header**, so every route but
+  `/health` returned 401 and the only thing the UI could reach was the
+  liveness probe. The suite was green throughout because all of it was
+  server-side.
+- **`denied_columns` reached the query cache's scope key but never
+  `validate_sql`** — the column ACL partitioned the cache without
+  enforcing anything. It is now threaded through both the `/query` and
+  the `/v2/…/turns` generation paths.
+- **T-SQL `N'…'` literals and `'a' + 'b'` concatenation transpiled
+  completely unchanged.** SQLite rejects the first as a syntax error and
+  silently evaluates the second to `0` — an error and a plausible wrong
+  number respectively. Both are now refused for non-T-SQL targets.
+- Persian presentation forms and Arabic/Persian letter variants made the
+  cache and the retriever disagree about the same question.
+
+### Security
+
+- Per-principal column ACL, enforced in the guard and not merely
+  partitioned around in the cache.
+- Audit records carry `principal_id` and never carry result rows.
+- The guard parses to an AST and works from a closed allowlist; the
+  bypass suite is parametrised over every claimed dialect, because a
+  guard proven for one dialect and assumed for another has unknown holes.
+
+### Contributors
+
+- [**Ali Sadeghi Aghili**](https://github.com/alisadeghiaghili) — engine,
+  security layer, conversational sessions, evaluation harness,
+  observability, multi-dialect support, static web client, domain
+  separation
+- [**Melika Bahmanabadi**](https://github.com/MelikaBahmanabadi) — Flask
+  web application, bilingual FA/EN system, UI work, schema knowledge
+
+---
+
 ## [3.2.0] — 2026-06-12
 
 License, documentation, and attribution release.
