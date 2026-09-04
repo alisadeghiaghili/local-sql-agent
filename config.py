@@ -617,6 +617,19 @@ class Settings:
     ``resolve_value``'s docstring) rather than blocking the request for as
     long as a real query is allowed to run."""
 
+    resolve_value_max_concurrency: int = field(
+        default_factory=lambda: int(os.getenv("RESOLVE_VALUE_MAX_CONCURRENCY", "8"))
+    )
+    """How many value-resolution queries may be in flight at once,
+    process-wide. This is the bound a ``ThreadPoolExecutor``'s
+    ``max_workers`` used to provide, before
+    ``retrieval.value_resolver._run_under_deadline`` replaced that pool
+    with daemon threads (see its docstring for why it had to). Read at
+    call time, so it responds to ``override_settings``. Waiting for a
+    free slot spends the caller's own
+    :attr:`resolve_value_timeout_seconds`: a saturated resolver must
+    report a miss on time rather than queue past its deadline."""
+
     resolve_value_cache_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("RESOLVE_VALUE_CACHE_TTL_SECONDS", "300"))
     )

@@ -280,16 +280,20 @@ class TestResolveValueTimeout:
         clear_resolution_cache()
 
         # Deliberately short (not the 2s+ this test originally used): the
-        # "slow" execute_fn keeps running in the shared background thread
-        # pool for a while *after* resolve_value has already given up and
-        # returned -- see _POOL's docstring. A multi-second orphaned sleep
-        # here would keep running well into unrelated, later tests in the
-        # same process and was the actual source of a rare, hard-to-explain
-        # full-suite flake (an unrelated test failing only when run as part
-        # of the whole session, never in isolation). Keeping a healthy
-        # margin (10x) over the timeout while shrinking the absolute
-        # wall-clock duration removes that window almost entirely without
-        # making the timeout itself unreliable on a loaded machine.
+        # "slow" execute_fn keeps running in its own background thread for
+        # a while *after* resolve_value has already given up and returned
+        # -- see _run_under_deadline's docstring for why the deadline is
+        # soft. A multi-second orphaned sleep here would keep running well
+        # into unrelated, later tests in the same process and was the
+        # actual source of a rare, hard-to-explain full-suite flake (an
+        # unrelated test failing only when run as part of the whole
+        # session, never in isolation). Keeping a healthy margin (10x)
+        # over the timeout while shrinking the absolute wall-clock
+        # duration removes that window almost entirely without making the
+        # timeout itself unreliable on a loaded machine.
+        #
+        # Shrinking the window was only ever a mitigation. What actually
+        # closes it is TestAbandonedWorkersAreDaemons below.
         def slow_execute(sql, params):
             _time.sleep(0.2)
             return pd.DataFrame({"Name": ["شرکت فولاد مبارکه اصفهان"]})
@@ -299,6 +303,55 @@ class TestResolveValueTimeout:
 
         assert result.status == "no_match"
         assert result.miss_reason == "timeout"
+
+    def test_abandoned_worker_is_a_daemon_thread(self):
+        """A worker the caller gave up on must never be joinable at exit.
+
+        The deadline here is soft by design: on a breach, resolve_value
+        stops waiting but the query keeps running. If that abandoned
+        worker is a non-daemon thread, ``concurrent.futures``' atexit
+        hook (or ``threading``'s own) joins it during interpreter
+        finalisation and runs caller-supplied ``execute_fn`` code against
+        a half-torn-down process. That produced a segmentation fault
+        (exit 139) *after* the suite had already reported every test
+        passing -- no failing test, no traceback, green summary directly
+        above it.
+
+        Asserting the thread is alive-and-daemon, rather than asserting
+        the absence of a crash, is the only way to test this
+        deterministically: the crash itself is a race.
+        """
+        import threading
+        import time as _time
+
+        import config as cfg
+
+        from retrieval.value_resolver import clear_resolution_cache
+
+        clear_resolution_cache()
+        started = threading.Event()
+
+        def slow_execute(sql, params):
+            started.set()
+            _time.sleep(0.5)
+            return pd.DataFrame({"Name": ["x"]})
+
+        with cfg.override_settings(resolve_value_timeout_seconds=0.02):
+            result = resolve_value("مبارکه", ["Customer"], execute_fn=slow_execute)
+
+        assert result.miss_reason == "timeout"
+        assert started.wait(1.0), "the worker never ran, so nothing was abandoned"
+
+        abandoned = [
+            t for t in threading.enumerate()
+            if t.name.startswith("resolve-value") and t.is_alive()
+        ]
+        assert abandoned, "expected the abandoned worker to still be running"
+        assert all(t.daemon for t in abandoned), (
+            "an abandoned resolution worker is not a daemon thread, so the "
+            "interpreter will join it during finalisation: "
+            f"{[(t.name, t.daemon) for t in abandoned]}"
+        )
 
     def test_execute_fn_raising_falls_back_to_no_match(self):
         from retrieval.value_resolver import clear_resolution_cache

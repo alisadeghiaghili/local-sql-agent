@@ -106,6 +106,12 @@ _ALLOWED_MODULE_CONSTANTS = {
         "display-truncation length inside the interactive, untested, "
         "coverage-excluded setup wizard; never read by the running engine"
     ),
+    "retrieval/value_resolver.py::_in_flight_resolutions": (
+        "not a constant at all -- a mutable counter of running resolution "
+        "workers, guarded by _resolution_slots. Its 0 is an initial value, "
+        "not a knob; the bound it is compared against is the tunable "
+        "config.Settings.resolve_value_max_concurrency"
+    ),
 
     # ── Tuning-shaped, but with a narrower, more appropriate configuration
     # surface than a process-wide environment variable -- deliberately not

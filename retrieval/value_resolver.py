@@ -136,8 +136,6 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as _FutureTimeoutError
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Sequence
 
@@ -443,22 +441,128 @@ def clear_resolution_cache() -> None:
 # Timeout wrapper
 # ---------------------------------------------------------------------------
 
-#: Shared pool for running one resolution query under a soft deadline.
-#: "Soft" because Python has no portable, safe way to forcibly abort a
-#: running thread -- a breach here means resolve_value STOPS WAITING and
-#: reports a miss, not that the underlying call is actually cancelled; it
-#: keeps running in the background and its result is discarded. This is
-#: still a real, working timeout from the caller's point of view (the one
-#: the phase spec asks for: "fall back to the no-match path rather than
-#: failing the request"), and the query itself remains bounded by
-#: ``database.executor``'s own driver-level ``query_timeout_seconds`` --
-#: this is an *additional*, tighter, resolution-specific bound on top of
-#: that, not a replacement for it.
-_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="resolve-value")
+#: Signalled whenever a worker finishes and frees a slot; guards
+#: :data:`_in_flight_resolutions`. A ``Condition`` rather than a
+#: ``Semaphore`` because the bound
+#: (``cfg.settings.resolve_value_max_concurrency``) is read at call time,
+#: and a semaphore fixes its count at construction -- which would pin the
+#: bound to whatever the setting happened to be at import and ignore
+#: ``override_settings`` entirely.
+_resolution_slots = threading.Condition()
+
+#: Workers started and not yet finished. Incremented by the caller before
+#: a worker starts, decremented by that worker itself -- so a worker the
+#: caller has already abandoned still returns its slot when it finishes.
+_in_flight_resolutions = 0
 
 
 class _ResolveTimeout(Exception):
     """Internal signal: one (table, column) query exceeded its deadline."""
+
+
+def _run_under_deadline(
+    execute_fn: ExecuteParamsFn,
+    sql: str,
+    params: tuple[object, ...],
+    *,
+    timeout: float,
+) -> pd.DataFrame | None:
+    """Run one resolution query in a daemon thread under a **soft** deadline.
+
+    "Soft" because Python has no portable, safe way to forcibly abort a
+    running thread. A breach here means :func:`resolve_value` STOPS
+    WAITING and reports a miss, not that the underlying call is
+    cancelled: it keeps running and its result is discarded. That is
+    still a real timeout from the caller's point of view, and the query
+    itself remains bounded by ``database.executor``'s own driver-level
+    ``query_timeout_seconds`` -- this is an *additional*, tighter,
+    resolution-specific bound on top of that, not a replacement.
+
+    Why a daemon thread rather than a ``ThreadPoolExecutor``
+    --------------------------------------------------------
+    This module used to hold a module-level
+    ``ThreadPoolExecutor(max_workers=8)`` and call
+    ``future.result(timeout=...)`` on it. That combination is unsafe
+    precisely *because* the deadline is soft:
+
+    A pool worker's threads are **not** daemons, and
+    ``concurrent.futures`` registers an ``atexit`` hook that joins every
+    one of them before the interpreter may exit. So an abandoned
+    query -- which this function creates by design, every time a deadline
+    is breached -- was guaranteed to be joined during interpreter
+    finalisation, running arbitrary caller-supplied ``execute_fn`` code
+    (in this suite, a test-local closure or a mock) at a point where the
+    module globals and objects it touches are already being torn down.
+
+    The observed symptom was a segmentation fault (exit code 139) *after*
+    the test run had already reported every test passing, on Python 3.12,
+    intermittently -- the worst diagnostic shape available: no failing
+    test, no traceback, and a green summary immediately above it.
+    ``tests/test_value_resolver.py``'s timeout test had already narrowed
+    the orphaned sleep from seconds to 0.2s to shrink that window, which
+    made the race rarer without removing it.
+
+    A daemon thread cannot do this. If the interpreter wants to exit, an
+    abandoned worker is simply cut off, never granted a window to run
+    unsupervised against a half-finalised process. This is the same
+    reasoning, and the same conclusion, as
+    ``retrieval.dimension_vocabulary``'s background refresh -- whose own
+    comment argues against exactly the pool this replaces.
+
+    The concurrency bound the pool used to provide as ``max_workers`` is
+    kept by :data:`_in_flight_resolutions`, read from
+    ``cfg.settings.resolve_value_max_concurrency`` at call time. Waiting
+    for a free slot spends the caller's deadline, because a deadline is a
+    deadline: a saturated resolver must report a miss on time, not queue
+    past it.
+
+    Raises
+    ------
+    _ResolveTimeout
+        No slot became free, or the query did not finish, within
+        *timeout* seconds in total.
+    Exception
+        Whatever *execute_fn* raised, re-raised in the calling thread.
+    """
+    global _in_flight_resolutions
+
+    started = time.monotonic()
+    limit = max(cfg.settings.resolve_value_max_concurrency, 1)
+    with _resolution_slots:
+        if not _resolution_slots.wait_for(
+            lambda: _in_flight_resolutions < limit, timeout=max(timeout, 0.0),
+        ):
+            raise _ResolveTimeout(
+                f"resolve_value: no free resolution slot within {timeout}s "
+                f"({limit} queries already in flight)"
+            )
+        _in_flight_resolutions += 1
+
+    done = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def _target() -> None:
+        global _in_flight_resolutions
+        try:
+            outcome["value"] = execute_fn(sql, params)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+            outcome["error"] = exc
+        finally:
+            done.set()
+            with _resolution_slots:
+                _in_flight_resolutions -= 1
+                _resolution_slots.notify()
+
+    threading.Thread(target=_target, name="resolve-value", daemon=True).start()
+
+    remaining = timeout - (time.monotonic() - started)
+    if remaining <= 0 or not done.wait(remaining):
+        raise _ResolveTimeout(f"resolve_value: query exceeded {timeout}s")
+
+    error = outcome.get("error")
+    if error is not None:
+        raise error
+    return outcome.get("value")
 
 
 def _query_one(
@@ -485,10 +589,12 @@ def _query_one(
     like_value = f"%{_escape_like_wildcards(mention)}%"
     params: tuple[object, ...] = (cfg.settings.default_top_n, like_value)
 
-    future = _POOL.submit(execute_fn, sql, params)
     try:
-        frame = future.result(timeout=cfg.settings.resolve_value_timeout_seconds)
-    except _FutureTimeoutError as exc:
+        frame = _run_under_deadline(
+            execute_fn, sql, params,
+            timeout=cfg.settings.resolve_value_timeout_seconds,
+        )
+    except _ResolveTimeout as exc:
         raise _ResolveTimeout(
             f"resolve_value: {table}.{column} exceeded "
             f"{cfg.settings.resolve_value_timeout_seconds}s"

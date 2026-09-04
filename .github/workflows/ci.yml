@@ -11,6 +11,14 @@ jobs:
     name: "Python ${{ matrix.python-version }}"
     runs-on: ubuntu-latest
 
+    # A crash during interpreter finalisation reports as a bare exit code
+    # 139 with a green test summary printed directly above it -- no
+    # failing test, no traceback, nothing to act on. This makes Python
+    # dump the faulting stack instead, which is the difference between a
+    # diagnosable defect and a flake people re-run until it passes.
+    env:
+      PYTHONFAULTHANDLER: "1"
+
     strategy:
       fail-fast: false
       matrix:
