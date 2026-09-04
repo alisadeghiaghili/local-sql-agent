@@ -84,3 +84,37 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("domain_data") is not None:
             item.add_marker(skip)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Name any thread still alive when the run ends.
+
+    A thread that outlives the session runs during interpreter
+    finalisation, against module globals and mocks that are already being
+    torn down. When that goes wrong the process dies with a bare exit
+    code 139 *after* pytest has printed a green summary -- no failing
+    test, no traceback. One such crash cost a CI investigation before
+    ``retrieval.value_resolver``'s abandoned workers were made daemons,
+    and Python 3.12 hit it most because it is the only version whose
+    workflow runs the whole suite a second time for coverage.
+
+    This does not fail the run. Some lingering threads are legitimate --
+    ``value_resolver``'s soft deadline abandons a worker on purpose, and
+    ``dimension_vocabulary``'s background refresh is fire-and-forget --
+    and both are daemons precisely so the interpreter may cut them off.
+    What was missing was any record of *which* thread was alive, so the
+    next exit-139 starts from a name instead of a guess.
+    """
+    import threading
+
+    main = threading.main_thread()
+    lingering = [t for t in threading.enumerate() if t is not main and t.is_alive()]
+    if not lingering:
+        return
+
+    writer = session.config.get_terminal_writer()
+    writer.line("")
+    writer.line(f"threads still alive at session end ({len(lingering)}):", yellow=True)
+    for t in lingering:
+        kind = "daemon" if t.daemon else "NON-DAEMON -- will be joined at exit"
+        writer.line(f"  {t.name}: {kind}", yellow=not t.daemon)
