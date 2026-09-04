@@ -485,7 +485,7 @@ def _touched_or_none(sql: str) -> list[str] | None:
     returns ``None`` rather than an empty list, so "we don't know" and
     "we know it touched nothing" don't look the same in the audit log.
     """
-    tables = extract_touched_tables(sql)
+    tables = extract_touched_tables(sql, dialect=cfg.settings.sql_dialect)
     return tables or None
 
 

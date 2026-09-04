@@ -34,8 +34,65 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import config as cfg
 from database.connection import get_engine
+from security.dialects import get_dialect_profile
 
 logger = logging.getLogger(__name__)
+
+#: Dialects whose session-setup statement has already been confirmed by
+#: this process to fail against the connected server (see the ``except``
+#: branch in :func:`_apply_session_setup`) -- logged once per dialect, not
+#: once per query, so a misconfigured/unsupported timeout statement does
+#: not spam the log for every single request.
+_session_setup_warned: set[str] = set()
+
+
+def _apply_session_setup(conn, dialect: str, timeout_seconds: int) -> None:
+    """Best-effort, dialect-aware session-level query-timeout setup.
+
+    Replaces the previous hardcoded ``SET LOCK_TIMEOUT`` (T-SQL-only)
+    call: the statement (if any) that bounds how long *this* dialect's
+    session will wait/run before ``query_timeout_seconds`` kicks in comes
+    from :attr:`~security.dialects.DialectProfile.session_timeout_statement`
+    — config-keyed per dialect (T-SQL's ``SET LOCK_TIMEOUT``, PostgreSQL's
+    ``SET statement_timeout``, MySQL's ``SET SESSION MAX_EXECUTION_TIME``),
+    never a hardcoded per-dialect branch here.
+
+    *dialect* is :data:`config.Settings.sql_dialect` — the deployment's own
+    declared target, resolved once at start-up (see that setting's
+    docstring) and validated by :func:`security.dialects.require_dialect_supported`
+    — not re-derived from the live SQLAlchemy engine/connection, so this
+    function (and every test exercising it) needs no real or mocked engine
+    dialect metadata to behave correctly.
+
+    SQLite has no session-level query-timeout mechanism at all
+    (:attr:`~security.dialects.DialectProfile.session_timeout_statement`
+    is ``None`` for it) — :func:`security.dialects.require_dialect_supported`
+    already logs this loudly once at start-up (see its own docstring), so
+    this function silently no-ops for that case rather than repeating the
+    warning on every single query.
+    """
+    profile = get_dialect_profile(dialect)
+    if profile.session_timeout_statement is None:
+        return
+    stmt = profile.session_timeout_statement.format(timeout_ms=int(timeout_seconds * 1_000))
+    try:
+        conn.exec_driver_sql(stmt)
+    except SQLAlchemyError as exc:
+        # A session-timeout statement that fails against the connected
+        # server (unsupported server version, insufficient privilege, ...)
+        # must not take the whole query down with it -- query_timeout_seconds
+        # is a defence-in-depth backstop, not the only protection this
+        # module applies (see the driver-level timeout below, and
+        # max_rows_returned's fetchmany cap) -- but it must not fail
+        # silently either, so it is logged once per dialect per process.
+        if dialect not in _session_setup_warned:
+            _session_setup_warned.add(dialect)
+            logger.warning(
+                "Session-level query-timeout statement failed for dialect "
+                "%r (%r) -- query_timeout_seconds is not enforced at the "
+                "session level for this connection: %s",
+                dialect, stmt, exc,
+            )
 
 
 def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
@@ -48,7 +105,8 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
     parameter sequence passed straight through to the DBAPI driver.
     """
     timeout_seconds = cfg.settings.query_timeout_seconds
-    timeout_ms = timeout_seconds * 1_000
+    dialect = cfg.settings.sql_dialect
+    profile = get_dialect_profile(dialect)
 
     try:
         engine = get_engine()
@@ -60,10 +118,16 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
             conn = conn.execution_options(stream_results=True)
 
             raw_conn = conn.connection.dbapi_connection
-            if raw_conn is not None:
-                raw_conn.timeout = timeout_seconds
+            if raw_conn is not None and profile.driver_level_timeout_attr:
+                # Driver-level timeout attribute, e.g. pyodbc's
+                # Connection.timeout for tsql -- only set for a dialect
+                # whose driver is confirmed to expose one (see
+                # DialectProfile.driver_level_timeout_attr's docstring);
+                # a dialect with none configured is left alone rather than
+                # setting an attribute that would silently do nothing.
+                setattr(raw_conn, profile.driver_level_timeout_attr, timeout_seconds)
 
-            conn.exec_driver_sql(f"SET LOCK_TIMEOUT {int(timeout_ms)}")
+            _apply_session_setup(conn, dialect, timeout_seconds)
 
             transaction = conn.begin()
             try:

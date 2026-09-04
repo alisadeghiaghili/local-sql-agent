@@ -126,7 +126,13 @@ from llm.base import LLMBackend, SQLGenerationResult
 from llm.router import LLMRouter, PromptSegments, TaskType, build_prompt_segments
 from observability.timing import StageTimer
 from retrieval.context_retriever import ContextRetriever
-from security.sql_guard import PolicyRejection, clean_sql, ensure_top, validate_sql
+from security.sql_guard import (
+    PolicyRejection,
+    clean_sql,
+    ensure_top,
+    transpile_and_revalidate,
+    validate_sql,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -484,24 +490,53 @@ class SQLAgent:
     def _clean_validate_cap(
         self, raw: str, *, denied_columns: Iterable[str] | None = None,
     ) -> tuple[str, int | None]:
-        """clean_sql + validate_sql + ensure_top.  May raise ValueError.
+        """clean_sql + validate_sql + ensure_top (+ transpile, for a non-tsql target).
 
         Returns
         -------
         tuple[str, int | None]
-            ``(sql, injected_top)`` — *sql* is the validated, capped
-            query; *injected_top* is the row cap :func:`ensure_top`
-            injected, or ``None`` if the model's own SQL already carried
-            a row-limit clause (``ensure_top`` returned its input
-            unchanged). Detected by comparing ``ensure_top``'s output to
-            its input, since ``ensure_top`` itself only returns the
-            capped string, not whether it changed anything.
+            ``(sql, injected_top)`` — *sql* is the validated, capped query,
+            in this deployment's target dialect
+            (:data:`config.Settings.sql_dialect`); *injected_top* is the
+            row cap :func:`~security.sql_guard.ensure_top` injected, or
+            ``None`` if the model's own SQL already carried a row-limit
+            clause (``ensure_top`` returned its input unchanged). Detected
+            by comparing ``ensure_top``'s output to its input, since
+            ``ensure_top`` itself only returns the capped string, not
+            whether it changed anything. This is measured on the model's
+            ``tsql`` output *before* any transpilation, since that is where
+            the cap is actually injected (see
+            :func:`~security.sql_guard.transpile_and_revalidate`'s
+            docstring: capping happens once, on tsql, and sqlglot carries
+            the resulting row-limiting clause into the target dialect's
+            own syntax when transpiling).
+
+        Multi-dialect pipeline
+        --------------------------
+        The model always generates ``tsql`` (see
+        :data:`config.Settings.sql_dialect`'s docstring for why), so
+        :func:`~security.sql_guard.clean_sql`,
+        :func:`~security.sql_guard.validate_sql`, and
+        :func:`~security.sql_guard.ensure_top` all run pinned to ``tsql``
+        here, completely unchanged from this method's pre-multi-dialect
+        behaviour. Only the *last* step is new:
+        :func:`~security.sql_guard.transpile_and_revalidate` transpiles the
+        guard-approved, capped ``tsql`` text to
+        ``cfg.settings.sql_dialect`` and re-validates the **transpiled**
+        text with the guard pinned to that dialect before this method ever
+        returns it for execution — never trusting that transpiled SQL
+        which merely *parses* is also safe (see that function's own
+        docstring for the finding that makes this non-negotiable). When
+        the target dialect is ``"tsql"`` (this deployment's default), that
+        step is a documented no-op passthrough: nothing above changes for
+        an existing tsql-only deployment.
 
         A rejected candidate is still recoverable for the audit trail: on
         a ``ValueError``, the raised exception gets a ``candidate_sql``
-        attribute — the cleaned-but-rejected text if :func:`validate_sql`
-        is what failed, or ``None`` if :func:`clean_sql` itself failed
-        (no candidate SQL ever existed to report).
+        attribute — the last successfully-produced SQL text (cleaned,
+        capped, or transpiled, whichever stage got furthest before the
+        rejection), or ``None`` if :func:`clean_sql` itself failed (no
+        candidate SQL ever existed to report).
         """
         try:
             sql = clean_sql(raw)
@@ -515,4 +550,15 @@ class SQLAgent:
             raise
         capped = ensure_top(sql, cfg.settings.default_top_n)
         injected_top = cfg.settings.default_top_n if capped != sql else None
-        return capped, injected_top
+
+        try:
+            final_sql = transpile_and_revalidate(
+                capped,
+                target_dialect=cfg.settings.sql_dialect,
+                denied_columns=denied_columns,
+            )
+        except ValueError as exc:
+            exc.candidate_sql = capped  # type: ignore[attr-defined]
+            raise
+
+        return final_sql, injected_top

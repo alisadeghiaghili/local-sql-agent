@@ -156,6 +156,35 @@ class Settings:
             "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
         )
     )
+    sql_dialect: str = field(
+        default_factory=lambda: os.getenv("SQL_DIALECT", "tsql")
+    )
+    """The single SQL dialect this deployment targets, as a
+    `sqlglot <https://sqlglot.com/>`_ dialect key -- one of ``"tsql"``
+    (default), ``"postgres"``, ``"mysql"``, ``"sqlite"`` (see
+    :data:`security.dialects.DIALECT_PROFILES`). Resolved once from config
+    at start-up, the same way :class:`~llm.router.LLMRouter` resolves an
+    endpoint -- this is portability (one dialect per deployment), not
+    runtime routing across several live databases.
+
+    SQL generation itself is unaffected by this setting: the model always
+    generates ``tsql`` regardless (see ``prompts/system_prompt.md`` and the
+    multi-dialect phase report for why the static prompt prefix must stay
+    byte-identical across every deployment). When this resolves to
+    anything other than ``"tsql"``, ``llm.sql_agent.SQLAgent`` transpiles
+    the guard-approved ``tsql`` SQL to this dialect with sqlglot and
+    re-validates the **transpiled** text with
+    :func:`~security.sql_guard.validate_sql` pinned to this dialect before
+    executing it -- never executing anything the guard has not approved in
+    the dialect it will actually run in. When this is ``"tsql"`` (the
+    default), that transpile-and-revalidate step is skipped entirely and
+    the guard-approved SQL is executed exactly as produced, unchanged from
+    this deployment's original, single-dialect behaviour.
+
+    Validated at start-up by :meth:`validate` via
+    :func:`security.dialects.require_dialect_supported`, which fails
+    closed for an unknown dialect or one with no system-catalogue
+    blocklist configured -- see that function's docstring."""
     query_timeout_seconds: int = field(
         default_factory=lambda: int(os.getenv("QUERY_TIMEOUT_SECONDS", "60"))
     )
@@ -714,6 +743,50 @@ class Settings:
             raise ValueError(
                 "DB_CONNECTION_URL still has the factory-default placeholder "
                 "host (username@server) — set a real connection string in .env"
+            )
+        # Fail closed for an unconfigured/unsupported SQL_DIALECT -- an
+        # unknown dialect, or one whose profile has no system-catalogue
+        # blocklist, must never reach request-serving code (see
+        # security.dialects.require_dialect_supported's docstring for why
+        # an empty blocklist is refused rather than treated as "nothing to
+        # block"). Deferred import: security.dialects has no dependency on
+        # config, but importing it at module scope here would still make
+        # every `import config` pay for importing security.dialects even
+        # when nothing ever calls validate() -- matches this module's own
+        # "read at call time" convention for cross-module dependencies.
+        from security.dialects import require_dialect_supported
+
+        require_dialect_supported(self.sql_dialect)
+
+        # Catch the "set SQL_DIALECT but forgot to update DB_CONNECTION_URL"
+        # misconfiguration -- a mismatch here means every single query
+        # would fail at execution (or, worse, be silently misinterpreted),
+        # so this fails closed the same way the placeholder checks above
+        # do, rather than starting a server that will simply not work.
+        # Parses the connection URL string only (sqlalchemy.engine.make_url
+        # needs no driver import and opens no connection) -- an exotic
+        # backend this module has no sqlglot-dialect mapping for is not an
+        # error on its own (a different concern to this check), so that
+        # case is silently skipped rather than treated as a mismatch.
+        from sqlalchemy.engine import make_url
+
+        from security.dialects import sqlglot_dialect_for_backend
+
+        try:
+            backend_name = make_url(self.db_connection_url).get_backend_name()
+            expected_dialect = sqlglot_dialect_for_backend(backend_name)
+        except Exception:  # noqa: BLE001 - an unrecognised backend is a
+            # different, unrelated concern -- not something this
+            # SQL_DIALECT/DB_CONNECTION_URL consistency check can judge.
+            expected_dialect = None
+        if expected_dialect is not None and expected_dialect != self.sql_dialect:
+            raise ValueError(
+                f"SQL_DIALECT={self.sql_dialect!r} does not match "
+                f"DB_CONNECTION_URL's backend ({backend_name!r}, which "
+                f"this deployment targets as {expected_dialect!r}) -- "
+                "every query would fail at execution against the wrong "
+                "dialect. Set SQL_DIALECT to match DB_CONNECTION_URL, or "
+                "fix DB_CONNECTION_URL to point at the intended database."
             )
 
 
