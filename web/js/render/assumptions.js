@@ -16,7 +16,7 @@
 
 "use strict";
 
-const SOURCE_LABELS = {
+export const SOURCE_LABELS = {
   question: "از پرسش",
   session: "از نشست",
   default: "پیش‌فرض",

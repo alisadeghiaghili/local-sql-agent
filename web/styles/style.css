@@ -699,3 +699,142 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
 }
+
+/* ── Result shapes (table.js / chart.js) ─────────────────────────────
+ * Chart tokens — a fourth, narrow colour axis: FOCUS vs CONTEXT within
+ * one chart only. Everything that is not the point is grey
+ * (--chart-context); the point takes the brand hue (--chart-focus).
+ * Aliased to existing tokens, defined once here on bare :root, so both
+ * stay theme-correct automatically with no second set of dark-mode
+ * overrides — never define a colour only inside a media/[data-theme]
+ * block (see this file's header). */
+:root {
+  --chart-focus: var(--teal);
+  --chart-context: var(--muted);
+}
+
+/* Numeric islands in RTL flow — the logical-property equivalent of the
+ * result table's existing `dir="ltr"` wrapper, for a number that sits
+ * directly in RTL text rather than inside its own LTR block (the scalar
+ * figure, record values, figure-strip tiles). */
+.num { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+
+/* ── Zero rows — a fact about the RESULT, so STATUS colour, not brand.
+ * See table.js's determineShape()/renderEmptyResult(). */
+.zero-rows {
+  border: 1.5px solid var(--status-warn);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.zero-rows-head {
+  padding: 10px 14px; font-size: 13px; font-weight: 700;
+  color: var(--status-warn); background: var(--status-warn-bg);
+  border-bottom: 1px solid var(--status-warn);
+}
+.zero-rows-body { padding: 12px 14px; font-size: 13.5px; line-height: 1.7; }
+.zero-rows-culprit { margin-top: 8px; }
+.zero-rows-tag {
+  font-size: 10.5px; font-weight: 800; letter-spacing: .3px; text-transform: uppercase;
+  border-radius: 999px; padding: 2px 8px; margin-inline-start: 6px;
+}
+.zero-rows-tag[data-source="question"] { background: var(--source-question-bg); color: var(--source-question); }
+.zero-rows-tag[data-source="session"]  { background: var(--source-session-bg);  color: var(--source-session); }
+.zero-rows-tag[data-source="default"]  { background: var(--source-default-bg);  color: var(--source-default); }
+.zero-rows-tag[data-source="policy"]   { background: var(--source-policy-bg);   color: var(--source-policy); }
+.zero-rows-list { margin-top: 8px; padding-inline-start: 20px; color: var(--muted); }
+
+/* ── Scalar shape — one row, one numeric column: one large figure, no
+ * chart, no table. */
+.scalar-block { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 6px 2px 4px; }
+.scalar-figure { font-size: 34px; font-weight: 700; }
+.scalar-note { font-size: 12px; color: var(--muted); }
+
+/* ── Record shape — one row, several columns: a record card, not a
+ * one-row table. */
+.record-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px; background: var(--border); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); overflow: hidden; margin: 4px 0;
+}
+.record-grid > div { background: var(--card-2); padding: 9px 12px; }
+.record-grid dt {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  color: var(--muted);
+}
+.record-grid dd { margin-top: 3px; font-size: 14px; font-weight: 700; color: var(--ink); }
+
+/* ── Story strip — 2-3 named framings of the same rows, one rejected
+ * option shown (not omitted) once it stops being legible. */
+.story-strip { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 2px; }
+.story-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12px; color: var(--muted); }
+.story-head b { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.story-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.story-opt {
+  text-align: start; background: var(--card-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 9px 11px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px; font-family: inherit;
+}
+.story-opt:hover:not(:disabled) { border-color: var(--teal); }
+.story-opt[aria-pressed="true"] { border-color: var(--teal); border-width: 1.5px; background: var(--teal-l); }
+.story-opt em {
+  font-style: normal; font-size: 9.5px; font-weight: 700; letter-spacing: .4px;
+  text-transform: uppercase; color: var(--teal-d);
+}
+.story-opt b { font-size: 13px; font-weight: 700; color: var(--ink); }
+.story-opt span { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.story-opt.rejected { cursor: not-allowed; opacity: .7; border-style: dashed; }
+.story-opt.rejected b { text-decoration: line-through; text-decoration-color: var(--border); color: var(--muted); }
+
+/* ── Chart — Storytelling with Data craft: title states the takeaway,
+ * dimensions move to the subcaption, no gridlines/frame, at most two
+ * reference lines, direct labels only on the point(s) that carry the
+ * message. */
+.chart-block { padding: 6px 2px 4px; }
+.chart-takeaway { font-size: 15px; font-weight: 700; margin: 0 0 2px; line-height: 1.5; }
+.chart-subcap { font-size: 11.5px; color: var(--muted); margin: 0 0 10px; }
+.chart-block svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart-axis-label { fill: var(--muted); font-family: "Vazirmatn", sans-serif; font-size: 10.5px; }
+.chart-value-label { fill: var(--ink); font-family: Consolas, monospace; font-size: 10.5px; font-weight: 600; }
+.chart-value-label.dim { fill: var(--muted); }
+.chart-focus-label { fill: var(--chart-focus); font-family: "Vazirmatn", sans-serif; font-size: 11px; font-weight: 700; }
+.chart-refline { stroke: var(--border); stroke-width: 1; }
+
+/* ── Figures strip — three tiles for a series, none for a scalar. ── */
+.figures-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  border-block: 1px solid var(--border); background: var(--card-2); margin: 10px 0;
+}
+.figure-tile { padding: 10px 14px; border-inline-start: 1px solid var(--border); }
+.figure-tile:first-child { border-inline-start: 0; }
+.figure-tile-label {
+  display: block; font-size: 9.5px; font-weight: 700; letter-spacing: .4px;
+  text-transform: uppercase; color: var(--muted);
+}
+.figure-tile-value { display: block; margin-top: 3px; font-size: 17px; font-weight: 700; }
+
+/* ── View switch (chart <-> table, contract-honouring `chart` shape). ── */
+.view-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; margin-top: 4px; }
+.view-btn { background: var(--card-2); color: var(--muted); border: 0; padding: 5px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.view-btn.active { background: var(--teal); color: #fff; }
+
+/* ── Result actions (export — see export.js) ── */
+.result-actions {
+  display: flex; align-items: center; gap: 10px; margin-top: 10px;
+  font-size: 12px; color: var(--muted);
+}
+.btn-export {
+  margin-inline-start: auto; border: 1px solid var(--border); background: var(--card-2);
+  color: var(--ink); border-radius: 8px; padding: 5px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.btn-export:hover { border-color: var(--teal); color: var(--teal-d); }
+
+/* ── Truncation qualifier — reads ABOVE the interpretation: finish_reason
+ * "length" qualifies the whole answer, not a footnote below it. */
+.answer-qualifier {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: var(--status-warn-bg); color: var(--status-warn);
+  border: 1px solid color-mix(in srgb, var(--status-warn) 40%, transparent);
+  border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; font-weight: 600;
+  line-height: 1.6; margin-bottom: 10px;
+}
+.answer-qualifier .warn-icon { flex: 0 0 auto; font-size: 15px; }

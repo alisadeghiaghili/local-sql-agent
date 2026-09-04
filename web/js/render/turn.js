@@ -14,7 +14,7 @@
 import { renderPipeline } from "./pipeline.js";
 import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.js";
 import { renderResult, renderWarnings } from "./table.js";
-import { renderLlmStatus } from "./llm-status.js";
+import { renderLlmStatus, answerWasTruncated, renderTruncationQualifier } from "./llm-status.js";
 
 function el(tag, className, text) {
   const e = document.createElement(tag);
@@ -156,7 +156,10 @@ export function createTurnCard(turn, ctx) {
   if (!turn.error) {
     const resultCard = el("div", "card");
     resultCard.appendChild(el("div", "card-title", "نتیجه"));
-    resultCard.appendChild(renderResult(turn.result));
+    resultCard.appendChild(renderResult(turn.result, {
+      assumptions: turn.ambiguity && turn.ambiguity.assumptions,
+      guardRejected: !!(turn.guard && turn.guard.verdict === "rejected"),
+    }));
     body.appendChild(tagLate(resultCard));
   }
 
@@ -168,9 +171,12 @@ export function createTurnCard(turn, ctx) {
   llmCard.appendChild(renderLlmStatus(turn.llm));
   body.appendChild(tagLate(llmCard));
 
-  // 11. Interpretation.
+  // 11. Interpretation. Truncation (finish_reason: "length") qualifies the
+  // WHOLE answer, so it renders above the interpretation text, read first,
+  // in the status warning colour — not a footnote below it.
   if (turn.interpretation) {
     const interpCard = el("div", "card");
+    if (answerWasTruncated(turn.llm)) interpCard.appendChild(renderTruncationQualifier());
     interpCard.appendChild(el("div", "card-title", "تفسیر"));
     interpCard.appendChild(el("p", "interpretation-text", turn.interpretation));
     body.appendChild(tagLate(interpCard));
