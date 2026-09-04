@@ -233,6 +233,8 @@ from core.persian import normalize_for_matching
 from retrieval.value_resolver import ExecuteParamsFn
 from schema_data.registry import get_prefetchable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal
+from security.dialects import get_dialect_profile
+from security.sql_guard import transpile_sql
 from session.models import Clarification
 
 logger = logging.getLogger(__name__)
@@ -262,7 +264,7 @@ MIN_MATCH_LENGTH = 3
 _BACKGROUND_REFRESH_BACKOFF_SECONDS = 60.0
 
 
-def _prefetch_query(table: str, column: str) -> str:
+def _prefetch_query(table: str, column: str, dialect: str = "tsql") -> str:
     """The fixed template for fetching a dimension's whole vocabulary.
 
     No ``WHERE``, no user input of any kind -- ``table``/``column`` are
@@ -272,6 +274,13 @@ def _prefetch_query(table: str, column: str) -> str:
     apply to. ``TOP (?)`` is still a defensive cap (bound, not
     interpolated) in case a table's cardinality is ever larger than
     expected -- not because this path is meant to hit it in practice.
+
+    Multi-dialect: same "author in tsql, transpile" approach as
+    ``retrieval.value_resolver._build_query`` -- see that function's
+    docstring for the full reasoning, including why a schema-less dialect
+    (``dialect_profile.schema_qualification == "none"`` -- SQLite) must
+    have its schema qualifier omitted *before* transpiling, not stripped
+    after.
 
     Examples
     --------
@@ -288,8 +297,16 @@ def _prefetch_query(table: str, column: str) -> str:
     >>> sql.endswith("].[Customer]")
     True
     """
-    schema = _TABLE_SCHEMAS[table]
-    return f"SELECT DISTINCT TOP (?) [{column}] FROM [{schema}].[{table}]"
+    profile = get_dialect_profile(dialect)
+    if profile.schema_qualification == "none":
+        table_ref = f"[{table}]"
+    else:
+        schema = _TABLE_SCHEMAS[table]
+        table_ref = f"[{schema}].[{table}]"
+    tsql = f"SELECT DISTINCT TOP (?) [{column}] FROM {table_ref}"
+    if dialect == "tsql":
+        return tsql
+    return transpile_sql(tsql, source_dialect="tsql", target_dialect=dialect)
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +438,7 @@ def refresh_vocabulary(
     if execute_fn is None:
         execute_fn = _default_execute_fn
 
-    sql = _prefetch_query(table, column)
+    sql = _prefetch_query(table, column, dialect=cfg.settings.sql_dialect)
     frame = execute_fn(sql, (cfg.settings.default_top_n,))
     values = [] if frame is None or frame.empty else [str(v) for v in frame.iloc[:, 0].tolist()]
     _cache.set(table, column, values)  # only reached on success

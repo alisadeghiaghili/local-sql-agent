@@ -81,6 +81,54 @@ class TestSettings:
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
 
+    # --- multi-dialect: SQL_DIALECT (new) ---
+
+    def test_default_sql_dialect_is_tsql(self):
+        with patch.dict(os.environ):
+            os.environ.pop("SQL_DIALECT", None)
+            assert Settings().sql_dialect == "tsql"
+
+    def test_env_override_sql_dialect(self):
+        with patch.dict(os.environ, {"SQL_DIALECT": "postgres"}):
+            assert Settings().sql_dialect == "postgres"
+
+    def test_validate_rejects_unknown_sql_dialect(self):
+        s = Settings(
+            openai_model="gpt-oss-20b",
+            db_connection_url="mssql+pyodbc://prod-db-host:1433/RealDB",
+            sql_dialect="oracle",
+        )
+        with pytest.raises(ValueError, match="oracle"):
+            s.validate()
+
+    def test_validate_passes_for_every_supported_dialect_with_matching_url(self):
+        """One dialect resolved from config at start-up, matching the
+        connection URL's own backend -- validate() must accept all four
+        supported combinations, not just tsql."""
+        urls = {
+            "tsql": "mssql+pyodbc://prod-db-host:1433/RealDB",
+            "postgres": "postgresql+psycopg2://prod-db-host:5432/realdb",
+            "mysql": "mysql+pymysql://prod-db-host:3306/realdb",
+            "sqlite": "sqlite:////tmp/real.db",
+        }
+        for dialect, url in urls.items():
+            Settings(
+                openai_model="gpt-oss-20b", db_connection_url=url, sql_dialect=dialect,
+            ).validate()
+
+    def test_validate_rejects_sql_dialect_mismatched_with_connection_url(self):
+        """SQL_DIALECT=postgres against a still-mssql DB_CONNECTION_URL is
+        a real misconfiguration -- every query would fail at execution
+        against the wrong dialect -- so this must fail closed at
+        start-up, the same way the placeholder checks above do."""
+        s = Settings(
+            openai_model="gpt-oss-20b",
+            db_connection_url="mssql+pyodbc://prod-db-host:1433/RealDB",
+            sql_dialect="postgres",
+        )
+        with pytest.raises(ValueError, match="SQL_DIALECT"):
+            s.validate()
+
     # --- cache settings (new) ---
 
     def test_default_cache_ttl_seconds(self):
