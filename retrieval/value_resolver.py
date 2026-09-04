@@ -146,6 +146,8 @@ import pandas as pd
 import config as cfg
 from schema_data.registry import get_resolvable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal, scope_key
+from security.dialects import get_dialect_profile
+from security.sql_guard import transpile_sql
 from session.models import Clarification
 
 logger = logging.getLogger(__name__)
@@ -263,19 +265,40 @@ def _escape_like_wildcards(value: str) -> str:
     return _LIKE_WILDCARDS_RE.sub(lambda m: _LIKE_ESCAPE_CHAR + m.group(1), value)
 
 
-def _build_query(table: str, column: str) -> str:
+def _build_query(table: str, column: str, dialect: str = "tsql") -> str:
     """The one, fixed SQL template every resolution query uses.
 
     ``table`` and ``column`` are f-string-interpolated here, but both are
     always drawn from :data:`RESOLVABLE_COLUMNS` -- never from *mention* or
     any other user-controlled value -- so this is not the injection surface
     the module docstring warns about; the mention travels only as a bound
-    ``?`` parameter, never through this function at all. The schema
+    ``?``/``%s`` parameter, never through this function at all. The schema
     qualifier likewise comes only from :data:`_TABLE_SCHEMAS` (itself
     derived from ``schema.yaml``, never from *mention*). The trailing
     ``ESCAPE '\\'`` clause is part of this fixed template too -- it is
     always present, regardless of whether the mention actually contains a
     wildcard character -- see :func:`_escape_like_wildcards`.
+
+    Multi-dialect
+    -----------------
+    This template is always *authored* in tsql (``TOP (?)``, bracketed
+    identifiers) and transpiled to *dialect* with
+    :func:`~security.sql_guard.transpile_sql` when *dialect* is anything
+    else -- the same "generate tsql, transpile" architecture the
+    LLM-generated SQL pipeline uses (see
+    :func:`~security.sql_guard.transpile_and_revalidate`'s docstring), not
+    a second hand-written per-dialect query string. This is also where
+    :attr:`~security.dialects.DialectProfile.schema_qualification` is
+    consulted: a dialect with no schema concept at all
+    (``"none"`` -- SQLite) gets the *unqualified* table reference
+    (``[Customer]``, never ``[Auction_Dim].[Customer]``) built into the
+    tsql text **before** transpilation, not stripped out after -- SQLite
+    would otherwise interpret the schema qualifier as an ``ATTACH``ed
+    database name that does not exist, and fail at execution, exactly the
+    class of "looked right, failed at execution" gap this phase's
+    verification exists to catch (see the module docstring). For
+    ``schema_qualification in ("schema", "database")`` (tsql, PostgreSQL,
+    MySQL), the qualifier is included exactly as before.
 
     Examples
     --------
@@ -289,12 +312,26 @@ def _build_query(table: str, column: str) -> str:
     True
     >>> sql.endswith("].[Customer] WHERE [Name] LIKE ? ESCAPE '\\\\'")
     True
+
+    A schema-less dialect gets no schema qualifier at all:
+
+    >>> sql = _build_query("Customer", "Name", dialect="sqlite")
+    >>> "Customer" in sql and "." not in sql.split("FROM")[1].split("WHERE")[0]
+    True
     """
-    schema = _TABLE_SCHEMAS[table]
-    return (
-        f"SELECT DISTINCT TOP (?) [{column}] FROM [{schema}].[{table}] "
+    profile = get_dialect_profile(dialect)
+    if profile.schema_qualification == "none":
+        table_ref = f"[{table}]"
+    else:
+        schema = _TABLE_SCHEMAS[table]
+        table_ref = f"[{schema}].[{table}]"
+    tsql = (
+        f"SELECT DISTINCT TOP (?) [{column}] FROM {table_ref} "
         f"WHERE [{column}] LIKE ? ESCAPE '{_LIKE_ESCAPE_CHAR}'"
     )
+    if dialect == "tsql":
+        return tsql
+    return transpile_sql(tsql, source_dialect="tsql", target_dialect=dialect)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +477,7 @@ def _query_one(
         -- propagated to the caller, which treats any exception here as
         that pair's miss. Never raised past :func:`resolve_value` itself.
     """
-    sql = _build_query(table, column)
+    sql = _build_query(table, column, dialect=cfg.settings.sql_dialect)
     # _escape_like_wildcards + _build_query's ESCAPE clause together make a
     # literal "%", "_", or "[" in *mention* match itself, not act as a
     # wildcard -- a mention of "50%" must never match every row starting

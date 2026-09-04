@@ -60,6 +60,7 @@ from security.sql_guard import (
     clean_sql,
     ensure_top,
     extract_touched_tables,
+    transpile_and_revalidate,
     validate_sql,
 )
 
@@ -463,6 +464,19 @@ class TurnEngine:
                 validate_sql(composed, denied_columns=denied_columns)
                 capped = ensure_top(composed, cfg.settings.default_top_n)
                 injected_top = cfg.settings.default_top_n if capped != composed else None
+                # Multi-dialect: transpile the tsql-validated, capped SQL to
+                # this deployment's target dialect and re-validate the
+                # transpiled text before it is ever executed -- a no-op
+                # passthrough when the target is "tsql" (the default). See
+                # security.sql_guard.transpile_and_revalidate's docstring.
+                # Raises the same PolicyRejection/CorrectableRejection
+                # taxonomy as validate_sql above, so the existing except
+                # clause below already handles it correctly.
+                capped = transpile_and_revalidate(
+                    capped,
+                    target_dialect=cfg.settings.sql_dialect,
+                    denied_columns=denied_columns,
+                )
         except (CompositionError, ValueError) as exc:
             outcome = _GenOutcome(
                 guard=GuardVerdict(verdict="rejected", rule=str(exc)),
@@ -493,7 +507,7 @@ class TurnEngine:
                 sql=capped,
                 guard=GuardVerdict(
                     verdict="allowed", injected_top=injected_top,
-                    tables_touched=extract_touched_tables(capped),
+                    tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
                 ),
                 error=TurnErrorInfo(code="QUERY_EXECUTION_ERROR", message=str(exc)),
                 llm_status=llm_status,
@@ -507,7 +521,7 @@ class TurnEngine:
             sql_display=clean_sql(raw_outer),
             guard=GuardVerdict(
                 verdict="allowed", injected_top=injected_top,
-                tables_touched=extract_touched_tables(capped),
+                tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
             ),
             result=TurnResult(
                 columns=[ResultColumn(name=c, type=_infer_type(df[c])) for c in columns],
@@ -648,6 +662,20 @@ class TurnEngine:
                     validate_sql(cleaned, denied_columns=denied_columns)
                     capped = ensure_top(cleaned, cfg.settings.default_top_n)
                     injected_top = cfg.settings.default_top_n if capped != cleaned else None
+                    # Multi-dialect: transpile the tsql-validated, capped SQL
+                    # to this deployment's target dialect and re-validate the
+                    # transpiled text before it is ever executed -- a no-op
+                    # passthrough when the target is "tsql" (the default).
+                    # See security.sql_guard.transpile_and_revalidate's
+                    # docstring. Raises the same
+                    # PolicyRejection/CorrectableRejection taxonomy as
+                    # validate_sql above, so the except clauses below
+                    # already handle it correctly (terminal vs. retried).
+                    capped = transpile_and_revalidate(
+                        capped,
+                        target_dialect=cfg.settings.sql_dialect,
+                        denied_columns=denied_columns,
+                    )
             except PolicyRejection as exc:
                 # No re-prompt can fix this (a forbidden statement, a
                 # denied column, ...) -- the policy behind it is not in
@@ -688,7 +716,7 @@ class TurnEngine:
                         sql=capped,
                         guard=GuardVerdict(
                             verdict="allowed", injected_top=injected_top,
-                            tables_touched=extract_touched_tables(capped),
+                            tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
                         ),
                         error=TurnErrorInfo(code="QUERY_EXECUTION_ERROR", message=last_error),
                         llm_status=llm_status,
@@ -702,7 +730,7 @@ class TurnEngine:
                 sql=capped,
                 guard=GuardVerdict(
                     verdict="allowed", injected_top=injected_top,
-                    tables_touched=extract_touched_tables(capped),
+                    tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
                 ),
                 result=TurnResult(
                     columns=[ResultColumn(name=c, type=_infer_type(df[c])) for c in columns],
