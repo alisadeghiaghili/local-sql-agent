@@ -1,11 +1,12 @@
 # Local SQL Agent
 
-> Ask your SQL Server database a question in Persian or English.  
-> Get back precise T-SQL — generated locally, executed securely, zero data leaves your machine.
+> Ask your database a question in Persian or English.  
+> Get back precise SQL — generated locally, executed securely, zero data leaves your machine.
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-427%2B-green)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-2079-green)](tests/)
+[![Version](https://img.shields.io/badge/Version-4.0.0-blue)](CHANGELOG.md)
 
 ---
 
@@ -101,13 +102,18 @@ Scoping the prompt — instead of dumping your full schema — is what makes loc
 | 🔍 | **Two-tier retrieval** | Fast alias/pattern matching first; TF-IDF bigram engine as fallback. |
 | 🎯 | **Few-shot learning** | Tag-scored example selector injects the most relevant SQL patterns. |
 | 📐 | **Business rule injection** | Domain rules injected per question topic at prompt-build time. |
-| 🛡️ | **SQL security guard** | Blocks DDL, DML, injection patterns; converts LIMIT→TOP. |
-| 🔄 | **Auto-correct loop** | SQLAgent retries with error feedback when SQL fails validation. |
-| ⚡ | **FastAPI HTTP API** | REST endpoints for query, cache, and health check. |
-| 💾 | **LRU query cache** | Thread-safe TTL + LRU cache; configurable size and expiry. |
+| 🛡️ | **SQL security guard** | AST-based (sqlglot), closed table/column allowlist; blocks DDL, DML, injection; converts LIMIT→TOP. |
+| 🔄 | **Auto-correct loop** | Retries with error feedback when SQL fails validation or execution — bounded, and never re-prompted for a rejection no rewrite could satisfy. |
+| 💬 | **Conversational sessions** | `/v2/sessions*` — follow-up questions resolve «از بین آن‌ها» against the previous turn via CTE composition, with every assumption declared. |
+| 🔑 | **Authentication & column ACL** | API keys on every route but `/health`; per-principal `denied_columns` enforced in the guard, not just partitioned in the cache. |
+| 🗄️ | **Multi-dialect** | Generates T-SQL, transpiles, then re-validates in the dialect that will execute. T-SQL and SQLite verified by execution. |
+| ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
+| 💾 | **LRU query cache** | Thread-safe TTL + LRU cache, partitioned by visibility scope so two principals never share a result they should not. |
+| 📊 | **Evaluation harness** | Golden set, execution accuracy, error taxonomy, latency percentiles, determinism measurement, baseline regression gate. |
+| 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
-| 📋 | **Structured logging** | Rotating JSONL logger with correlation ID, latency, row count. |
-| 🧪 | **Test suite** | 470+ unit + integration tests; GitHub Actions CI. |
+| 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
+| 🧪 | **Test suite** | 2,079 unit + integration tests; GitHub Actions CI on Python 3.11–3.13. |
 
 ---
 
@@ -129,11 +135,24 @@ cp .env.example .env
 #   OPENAI_MODEL=gpt-oss-20:F16
 #   OPENAI_API_KEY=your-key
 
-# 3a. CLI
+# 3. Provide the domain config — the server will NOT start without it
+cp -r project_config.example project_config
+# Then fill in your own schema, aliases, metrics, business rules and
+# examples. project_config/ is gitignored on purpose: it is your data,
+# not the engine's. There is deliberately no silent fallback to the
+# example files.
+
+# 4. Issue an API key (every route but /health requires one)
+python -m scripts.issue_api_key
+
+# 5a. CLI
 python app.py
 
-# 3b. HTTP API
+# 5b. HTTP API
 uvicorn api.server:app --host 0.0.0.0 --port 8000
+
+# 6. Before a real deployment, check the four things that stop a week
+python -m scripts.verify_deployment
 ```
 
 **→ Full tutorial (installation · first query · extending the domain · writing tests · diagnosing misses):**  
@@ -189,30 +208,37 @@ All routes above, plus the `/v2/sessions*` conversational endpoints (see
 
 ## Extending the domain
 
-All domain knowledge lives in `knowledge/`. No engine code needs to change.
+All domain knowledge lives in `project_config/*.yaml`. No engine code
+needs to change — and no engine code *may* contain it:
+`tests/test_no_domain_literals.py` walks the AST of first-party source
+and fails if a warehouse name reappears in an executable literal.
 
-```python
-# Add a trading hall alias — knowledge/aliases.py
-RING_ALIASES["تالار برق"] = ["برق", "تالار برق", "بازار برق", "رینگ برق"]
+```yaml
+# project_config/aliases.yaml — a new trading-hall alias
+ring_aliases:
+  "<canonical hall name>": ["<synonym>", "<synonym>", "<synonym>"]
 
-# Add a business rule — knowledge/business_rules.py
-BUSINESS_RULES["electricity"] = (
-    "برق در تالار انرژی معامله می‌شود. "
-    "واحد اندازه‌گیری مگاوات‌ساعت است."
-)
+# project_config/business_rules.yaml — a rule injected per question topic
+rules:
+  - topic: "<topic key>"
+    text: "<the rule, in the analyst's own language>"
 
-# Add a few-shot example — knowledge/examples.py
-{
-    "tags": ["electricity", "trade", "value"],
-    "question": "ارزش معاملات برق در ماه گذشته",
-    "sql": "SELECT SUM(TotalPrice) AS ElectricityValue FROM [Auction_Fact].[Contract] ..."
-}
+# project_config/examples.yaml — a tag-scored few-shot example
+examples:
+  - tags: ["<topic>", "<measure>"]
+    question: "<a question an analyst would actually ask>"
+    sql: "SELECT ..."
 
-# Add a new table — schema_data/tables.py + columns.py + relationships.py
-TABLE_DESCRIPTIONS["Broker"] = (
-    "Registered brokerage firms (کارگزاری‌ها) licensed to trade on the exchange."
-)
+# project_config/schema.yaml — tables, columns, relationships
 ```
+
+`schema.yaml` is a **security file**: the guard derives its table and
+column allowlist from it, so adding a table widens what generated SQL may
+touch and a typo silently narrows the allowlist. Run
+`tests/test_schema_registry_snapshot.py` after editing it.
+
+Start from `project_config.example/`, which carries the same structure
+with placeholder data and is what CI and the test suite run against.
 
 Full step-by-step guide: **[English tutorial](docs/en/tutorial.md)** · **[آموزش فارسی](docs/fa/tutorial.md)**
 
@@ -286,7 +312,10 @@ pytest tests/test_sql_guard.py -v       # one module
 pytest --cov=. --cov-report=html        # with coverage report
 ```
 
-CI runs on every push via GitHub Actions (Python 3.13).
+CI runs on every push via GitHub Actions across Python 3.11, 3.12 and
+3.13, with doctests, coverage, and an offline evaluation gate. It runs
+with `PROJECT_CONFIG_DIR=project_config.example` and no `project_config/`
+present, so the suite never depends on real domain data.
 
 ---
 
