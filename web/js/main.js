@@ -157,7 +157,14 @@ function setHealth(api_, llm, db, label) {
 async function refreshHealth() {
   try {
     const h = await api.health();
-    setHealth(h.api, h.llm, h.db, `/health: ${h.status}, model ${h.model || "?"}`);
+    // The tooltip carries the backend's own reason for each light, so a
+    // red LLM indicator says WHY rather than leaving the reader to guess
+    // between a wrong host, a wrong key, and an endpoint we never call.
+    const lines = [`/health: ${h.status}, model ${h.model || "?"}`];
+    if (h.llmDetail) lines.push(`LLM: ${h.llmDetail}`);
+    if (h.dbDetail) lines.push(`DB: ${h.dbDetail}`);
+    setHealth(h.api, h.llm, h.db, lines.join("
+"));
   } catch {
     setHealth(false, false, false, "بک‌اند در دسترس نیست — uvicorn api.server:app را اجرا کنید یا حالت نمایشی را انتخاب کنید");
   }

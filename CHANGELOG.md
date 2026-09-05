@@ -5,6 +5,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.1.2] — 2026-09-05
+
+### Fixed
+
+- **The LLM health light showed red while the CLI answered questions
+  through the same endpoint.** The probe disagreed with the engine in two
+  ways, and either alone was enough.
+
+  It **sent an `Authorization` header even with no key configured**,
+  building `Bearer ` with nothing after it. Many self-hosted
+  OpenAI-compatible servers check no credentials, so an empty
+  `OPENAI_API_KEY` is legitimate — and a malformed header is not the same
+  as an absent one: plenty of servers answer the first with 401 and the
+  second with 200. `llm.providers.OpenAIBackend` omits the header
+  entirely when the key is empty, which is exactly why the engine
+  succeeded where the probe failed. Both now use the same rule.
+
+  It also **judged an endpoint the engine never calls**. Generation goes
+  to `/chat/completions`; the probe asks `/models`, because a liveness
+  check must be cheap and must not spend tokens. That trade is fine, but
+  it means a 404 says only that this server lacks an endpoint we do not
+  use — not a fault, and no longer reported as one. A 401 or 403 is the
+  opposite and stays a failure, because the endpoint is reachable and has
+  actively refused our credentials.
+
+- **A red light now says why.** `GET /health` gained `openai_detail` and
+  `database_detail` (additive, optional), and the UI shows them in the
+  indicator's tooltip. "Unreachable host", "wrong key" and "this server
+  does not implement `/models`" were three different problems with three
+  different fixes and one indistinguishable symptom.
+
+### Documentation
+
+- `docs/fa/getting-started.md` explains why the setup asks for something
+  token-shaped in three places, which is a fair thing to find confusing:
+  they are **two** secrets, not one entered three times. `OPENAI_API_KEY`
+  is the credential for the *model endpoint* and is unrelated to the
+  other two; the analyst's key exists as a hash on the server and as the
+  raw value in the browser, which is how every password system works —
+  storing the raw key would let anyone who reads `.env` impersonate any
+  analyst and make the audit trail's `principal_id` worthless.
+
+  It also points at `AUTH_REQUIRED=false`, which removes the analyst key
+  entirely for a single-user local run, and says plainly what that costs:
+  the audit log can no longer say who asked what, and rate limiting sees
+  everyone as one caller.
+
+---
+
 ## [4.1.1] — 2026-09-05
 
 ### Fixed

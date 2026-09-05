@@ -67,6 +67,19 @@ class HealthResponse(BaseModel):
     database: bool
     model: str | None = None
 
+    openai_detail: str | None = None
+    """Why ``openai`` is what it is, in words.
+
+    A bare ``false`` is undiagnosable: unreachable host, wrong
+    credentials and "this server does not implement ``/models``" all look
+    identical, and the last of those is not even a fault. This says
+    which. Additive and optional, so an existing client that ignores it
+    is unaffected."""
+
+    database_detail: str | None = None
+    """Why ``database`` is what it is. Same reasoning as
+    :attr:`openai_detail`."""
+
 
 # ---------------------------------------------------------------------------
 # /cache/*
