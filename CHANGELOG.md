@@ -36,6 +36,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `## [x.y.z]` heading out of this file and fails if the two disagree —
   the failure being prevented is exactly "two places, one updated".
 
+- **Two SQLite sidecar files were committed.** `.gitignore` had `*.db`,
+  which matches `sessions.db` but **not** `sessions.db-wal` or
+  `sessions.db-shm` — and the write-ahead log is where recently-written
+  pages live, so on a deployment that has served real questions it is the
+  file most likely to hold questions and generated SQL not yet
+  checkpointed into the main database.
+
+  The two files that reached the repository contained only the empty
+  schema — no session ids, no turns, no SQL — because the session store
+  was disabled in every run that produced them. The gap that let them in
+  was real regardless, and would have mattered on a machine that had
+  served a week of traffic.
+
+  `.gitignore` now covers the sidecars, and
+  `tests/test_no_runtime_artifacts_tracked.py` fails the build both if
+  such a file is tracked and if the ignore rules stop covering it. The
+  warning explaining this hazard was already in `.gitignore`, written for
+  the rotated audit logs; it did not stop the same mistake one line below
+  it, because a comment cannot fail a build.
+
 ### Documentation
 
 - `docs/fa/getting-started.md` said "two terminals" but let a reader
