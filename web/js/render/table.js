@@ -19,11 +19,12 @@
 
 "use strict";
 
+import { fmt } from "../num.js";
+
 import { renderChartAndTable } from "./chart.js";
 import { downloadResultAsCsv } from "../export.js";
 import { SOURCE_LABELS } from "./assumptions.js";
 
-const nf = new Intl.NumberFormat("en-US");
 
 const CHART_MAX_ROWS = 30;
 
@@ -45,7 +46,12 @@ const CULPRIT_PRIORITY = { session: 0, default: 1, policy: 2, question: 3 };
 export function fmtCell(value, type) {
   if (value === null || value === undefined) return "—";
   if (type === "number" || typeof value === "number") {
-    return Number.isFinite(value) ? nf.format(value) : String(value);
+    // Persian digits, like every other number a reader sees here. This
+    // used to hold a local en-US formatter, which is why a chart's value
+    // labels came out Latin while the row count beside them was Persian.
+    // The Latin carve-out is num.technical(), for values that travel to
+    // other systems -- not for cells someone is simply reading.
+    return Number.isFinite(value) ? fmt(value) : String(value);
   }
   return String(value);
 }
@@ -94,7 +100,7 @@ function renderMeta(result) {
   const meta = document.createElement("div");
   meta.className = "result-meta";
   const rowLabel = document.createElement("span");
-  rowLabel.textContent = `${result.row_count.toLocaleString("fa-IR")} ردیف`;
+  rowLabel.textContent = `${fmt(result.row_count)} ردیف`;
   meta.appendChild(rowLabel);
   if (result.truncated) {
     const flag = document.createElement("span");
@@ -258,7 +264,7 @@ export function renderExportRow(result) {
   const bar = document.createElement("div");
   bar.className = "result-actions";
   const info = document.createElement("span");
-  info.textContent = `${result.columns.length.toLocaleString("fa-IR")} ستون`;
+  info.textContent = `${fmt(result.columns.length)} ستون`;
   bar.appendChild(info);
   const btn = document.createElement("button");
   btn.type = "button";
@@ -286,7 +292,7 @@ function renderOmittedResult(result, opts) {
   const head = document.createElement("div");
   head.className = "rows-omitted-head";
   head.textContent =
-    `${result.row_count.toLocaleString("fa-IR")} ردیف — این گفتگو دوباره باز شده و داده‌های نتیجه ذخیره نشده‌اند`;
+    `${fmt(result.row_count)} ردیف — این گفتگو دوباره باز شده و داده‌های نتیجه ذخیره نشده‌اند`;
   wrap.appendChild(head);
 
   const body = document.createElement("div");

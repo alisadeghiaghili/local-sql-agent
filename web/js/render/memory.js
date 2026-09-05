@@ -22,6 +22,8 @@
 
 "use strict";
 
+import { fmt } from "../num.js";
+
 // Built from character codes rather than a regex literal with embedded
 // control characters (C0 controls + DEL) — keeps the source file itself
 // free of raw non-printable bytes, which a literal like /[\x00-\x1f]/
@@ -55,7 +57,7 @@ export function validateMemoryValue(value, rememberableEntry) {
   }
   const maxLength = rememberableEntry && rememberableEntry.max_length;
   if (typeof maxLength === "number" && v.length > maxLength) {
-    return { ok: false, error: `مقدار نباید بیش از ${maxLength.toLocaleString("fa-IR")} نویسه باشد.` };
+    return { ok: false, error: `مقدار نباید بیش از ${fmt(maxLength)} نویسه باشد.` };
   }
   const options = rememberableEntry && rememberableEntry.options;
   if (options && options.length > 0 && !options.includes(v)) {

@@ -36,6 +36,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _WEB_JS = _REPO_ROOT / "web" / "js"
+_NUM_JS = _WEB_JS / "num.js"
 _TABLE_JS = _WEB_JS / "render" / "table.js"
 _CHART_JS = _WEB_JS / "render" / "chart.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
@@ -56,6 +57,21 @@ _ASSUMPTIONS_IMPORT = re.compile(r'^import \{ SOURCE_LABELS \} from "\./assumpti
 _TABLE_IMPORT_IN_CHART = re.compile(
     r'^import \{ renderTableOnly, renderExportRow, fmtCell \} from "\./table\.js";$', re.MULTILINE,
 )
+
+
+def _rewrite_num_import(src: str) -> str:
+    """Point a staged module's `num.js` import at the staged `num.mjs`.
+
+    Every renderer imports the shared number formatter (see web/js/num.js),
+    and the staged copies all sit flat in one directory, so both the
+    "../num.js" and "./num.js" forms resolve to the same sibling here.
+    Unlike the other rewrites this one is not asserted to match: not every
+    staged module imports it, and requiring one would break the moment a
+    module legitimately has no numbers in it.
+    """
+    return src.replace('from "../num.js"', 'from "./num.mjs"').replace(
+        'from "./num.js"', 'from "./num.mjs"'
+    )
 
 
 def _subn_or_fail(pattern: re.Pattern[str], replacement: str, text: str, what: str) -> str:
@@ -87,10 +103,19 @@ def _prepare_copy(tmp_path: Path) -> Path:
     chart_mjs = tmp_path / "chart.mjs"
     assumptions_mjs = tmp_path / "assumptions.mjs"
     export_mjs = tmp_path / "export.mjs"
+    table_src = _rewrite_num_import(table_src)
+    chart_src = _rewrite_num_import(chart_src)
+    assumptions_src = _rewrite_num_import(assumptions_src)
+    export_src = _rewrite_num_import(export_src)
     table_mjs.write_text(table_src, encoding="utf-8")
     chart_mjs.write_text(chart_src, encoding="utf-8")
     assumptions_mjs.write_text(assumptions_src, encoding="utf-8")
     export_mjs.write_text(export_src, encoding="utf-8")
+    # num.js is shared by every renderer (see web/js/num.js): one place
+    # that decides how a number looks, after seven modules each decided
+    # separately. Staging it here is what lets those imports resolve.
+    num_mjs = tmp_path / "num.mjs"
+    num_mjs.write_text(_NUM_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return table_mjs
 
 

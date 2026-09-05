@@ -9,7 +9,19 @@ const STORAGE_BASE_KEY = "lsa-web-base";
 const STORAGE_SESSION_KEY = "lsa-web-session-id";
 
 export const state = {
-  mode: "simulated", // "simulated" | "live"
+  // "live" is the default. A deployment is live and the analysts opening
+  // this page expect real answers; defaulting to "simulated" would mean
+  // synthetic, made-up numbers render in the exact same UI as real ones
+  // — clearly labelled, but still the wrong DEFAULT once the system is
+  // actually serving people. Simulated mode stays fully available (it is
+  // genuinely used for demos and training — see web/README.md's
+  // "Modes"); only the default changes. See resolveBootMode below for
+  // how `?live=0` / `?live=1` and the topbar's mode-switch buttons
+  // override this. Consequence to hold honestly: on a first load against
+  // an unreachable backend, an analyst now sees an error (from
+  // refreshHealth in main.js) instead of a working simulated demo — see
+  // that error's own wording for why that is the right trade.
+  mode: "live", // "simulated" | "live"
   baseUrl: "http://localhost:8000",
   theme: "system", // "system" | "light" | "dark"
   sessionId: null,
@@ -61,6 +73,38 @@ export function resolveActiveSessionId(storedId, sessions) {
     (a, b) => new Date(b.last_active_at).getTime() - new Date(a.last_active_at).getTime(),
   )[0];
   return newest.session_id;
+}
+
+/** Resolves the effective run mode for THIS page load from the `?live=`
+ * URL param, falling back to *defaultMode* (state.mode's own initial
+ * value, "live" — see its comment above) when the param is absent or
+ * unrecognized. Pure, total, no DOM/localStorage access, so the exact
+ * precedence rule is unit-testable without standing up the whole page:
+ *   - `?live=1` -> "live" (explicit opt-in — e.g. a bookmarked/shared link)
+ *   - `?live=0` -> "simulated" (explicit opt-out — demos, training, CI)
+ *   - anything else (param absent, or an unrecognized value) -> defaultMode
+ * Keeping this a pure function (rather than the inline if/if it used to
+ * be in main.js's boot) is what lets the DEFAULT itself change in exactly
+ * one place (state.mode's initializer) without this precedence rule
+ * needing to change, or be re-verified, along with it. */
+export function resolveBootMode(searchParams, defaultMode) {
+  const live = searchParams.get("live");
+  if (live === "1") return "live";
+  if (live === "0") return "simulated";
+  return defaultMode;
+}
+
+/** Resolves the effective backend base URL for THIS page load. `?base=`
+ * is the highest-precedence override (an operator pointing this one load
+ * somewhere else for debugging) and always wins when present; otherwise
+ * *currentBaseUrl* stands unchanged — by the time main.js calls this,
+ * loadPersisted() has already folded in a localStorage override (if any)
+ * on top of web/js/config.js's deploy-time DEFAULT_BASE_URL, so "leave it
+ * alone" here already means "the persisted value, or the deploy default".
+ * Pure, total, no DOM access. */
+export function resolveBootBaseUrl(searchParams, currentBaseUrl) {
+  const base = searchParams.get("base");
+  return base ? base : currentBaseUrl;
 }
 
 export function persistTheme(theme) {

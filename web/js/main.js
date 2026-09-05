@@ -16,11 +16,13 @@ import {
   SCENARIO_SESSIONS, SCENARIO_MEMORY, getSimulatedSessionTurns, FULL_TURNS_BY_ID,
 } from "./data.js";
 import {
-  state, loadPersisted, persistTheme, persistBaseUrl, persistSessionId,
+  state, loadPersisted, persistTheme, persistSessionId,
   applyTheme, addTurn, findTurn, resetTranscript, resolveActiveSessionId,
+  resolveBootMode, resolveBootBaseUrl,
 } from "./state.js";
 import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError } from "./api.js";
 import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
+import { DEFAULT_BASE_URL } from "./config.js";
 import { createTurnCard } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
@@ -30,9 +32,18 @@ const $ = (id) => document.getElementById(id);
 
 /* ── Boot ──────────────────────────────────────────────────────────── */
 const params = new URLSearchParams(location.search);
+// Deploy-time default (web/js/config.js) first; loadPersisted() then
+// overrides it with a localStorage value if one was ever saved (e.g. an
+// operator debugging against a different backend from this browser);
+// resolveBootBaseUrl's `?base=` param is the final, highest-precedence
+// override, for a one-off load. Same layering for mode: state.js's own
+// default ("live" — see its comment) unless `?live=0`/`?live=1` says
+// otherwise; the topbar mode-switch buttons can still change it after
+// boot either way.
+state.baseUrl = DEFAULT_BASE_URL;
 loadPersisted();
-if (params.get("live") === "1") state.mode = "live";
-if (params.get("base")) state.baseUrl = params.get("base");
+state.mode = resolveBootMode(params, state.mode);
+state.baseUrl = resolveBootBaseUrl(params, state.baseUrl);
 applyTheme();
 
 let api = new Api(state.baseUrl);
@@ -48,7 +59,7 @@ wireComposer();
 wireTopbar();
 wireSidebar();
 wireMemoryPanel();
-setMode(state.mode, { skipHealthPrompt: true });
+setMode(state.mode);
 tickClock();
 setInterval(tickClock, 1000);
 
@@ -65,15 +76,6 @@ function wireTopbar() {
 
   $("mode-simulated").addEventListener("click", () => setMode("simulated"));
   $("mode-live").addEventListener("click", () => setMode("live"));
-
-  $("live-base-connect").addEventListener("click", () => {
-    const val = $("live-base-input").value.trim();
-    if (!val) return;
-    state.baseUrl = val.replace(/\/+$/, "");
-    persistBaseUrl(state.baseUrl);
-    api = new Api(state.baseUrl);
-    refreshHealth();
-  });
 
   $("live-key-save").addEventListener("click", () => {
     const val = $("live-key-input").value;
@@ -121,12 +123,10 @@ function updateThemeLabel() {
 }
 
 /* ── Mode switch ───────────────────────────────────────────────────── */
-function setMode(mode, opts = {}) {
+function setMode(mode) {
   state.mode = mode;
   $("mode-simulated").classList.toggle("active", mode === "simulated");
   $("mode-live").classList.toggle("active", mode === "live");
-  $("live-base-row").hidden = mode !== "live";
-  $("live-base-input").value = state.baseUrl;
   $("live-key-row").hidden = mode !== "live";
   updateKeyStatus();
 
@@ -136,8 +136,12 @@ function setMode(mode, opts = {}) {
     setHealth(true, true, true, "شبیه‌سازی‌شده — بدون اتصال واقعی");
   } else {
     foot.textContent = `حالت زندهٔ API — بک‌اند: ${state.baseUrl}`;
-    if (!opts.skipHealthPrompt) refreshHealth();
-    else setHealth(null, null, null, "در حال بررسی...");
+    // Always checked, including at boot (live is the default mode now —
+    // see state.js) — an analyst opening a live deployment against an
+    // unreachable backend must see that honestly and immediately
+    // (refreshHealth's catch branch below says exactly what to do about
+    // it), never a silent "در حال بررسی..." that never resolves.
+    refreshHealth();
   }
 
   // Each mode has its own conversation index (simulated demo data vs. the

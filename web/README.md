@@ -36,10 +36,13 @@ python -m http.server 8080
 # then open http://localhost:8080
 ```
 
-`python -m http.server` only hands files to the browser. It has no idea
-what a `/query` or a `/v2/sessions` is, so the UI stays in نمایشی
-(simulated) mode until you point it at the backend on port 8000 — see
-**Modes** below.
+`python -m http.server` only hands files to the browser. **زندهٔ API**
+(live) is this page's default mode (see **Modes** below) — if the backend
+on port 8000 is not actually running yet, the health pills go red with an
+honest "backend unreachable, run uvicorn or switch to simulated" message
+rather than silently falling back to demo data. Switch to نمایشی
+(simulated) with the topbar toggle, or load with `?live=0`, if you just
+want the demo.
 
 Click one of the six "داستان نمونه" (sample story) buttons, or type your own
 question and press **پرسش** (Ask). Free-typed questions are matched
@@ -49,7 +52,34 @@ the demo script" notice rather than guessing.
 
 ## Modes
 
-### نمایشی — Simulated (default)
+### زندهٔ API — Live (default)
+
+Talks to the real FastAPI backend using `fetch` against the endpoints in
+`docs/api-contract-v2.md` §3 (`/v2/sessions`, `/v2/sessions/{id}/turns`,
+`?stream=1` SSE, `PATCH .../assumptions`). This is the default because a
+deployment is live and the analysts opening it expect real answers —
+defaulting to simulated would mean synthetic, made-up numbers render in
+the exact same UI as real ones (see `web/js/state.js`'s comment on
+`state.mode`).
+
+The backend base URL is **not** a top-bar control — it is deployment
+configuration, not something an analyst should see or set (a wrong value
+there looks exactly like a dead backend). A deployment sets it once in
+`web/js/config.js`'s `DEFAULT_BASE_URL`; an operator can still override it
+per-load with `?base=http://host:port` for debugging, or persist an
+override to one browser's `localStorage` (`web/js/state.js`). Switch modes
+with the **نمایشی** / **زندهٔ API** buttons in the top bar, `?live=1`, or
+`?live=0` to force simulated (e.g. `index.html?live=0`, or
+`index.html?base=http://localhost:8000` to point a live load somewhere
+else for one load).
+
+No live Ollama or SQL Server handy? `scripts/dev_v2_demo_server.py` runs
+the real FastAPI app end to end against a synthetic in-memory SQLite
+database and a keyword-dispatching stub model — see that file's docstring.
+It is manual-verification tooling only, not a substitute for testing
+against a real model/database.
+
+### نمایشی — Simulated
 
 Replays the fixed six-turn conversation in `js/data.js` through the five
 pipeline stages with realistic timing. All data — customer names, contract
@@ -68,20 +98,6 @@ The six scripted turns exercise every UI state called for by the contract:
 | `t_05` | total LLM transport failure (`attempts: 3`, `endpoint_status: 0`) — the card still renders everything it has |
 | `t_06` | retry of `t_05`'s question, succeeds, with one self-correction round |
 
-### زندهٔ API — Live
-
-Talks to the real FastAPI backend using `fetch` against the endpoints in
-`docs/api-contract-v2.md` §3 (`/v2/sessions`, `/v2/sessions/{id}/turns`,
-`?stream=1` SSE, `PATCH .../assumptions`). Enable it with the **زندهٔ API**
-button and enter the backend base URL (defaults to `http://localhost:8000`),
-or start directly with `index.html?live=1&base=http://localhost:8000`.
-
-No live Ollama or SQL Server handy? `scripts/dev_v2_demo_server.py` runs
-the real FastAPI app end to end against a synthetic in-memory SQLite
-database and a keyword-dispatching stub model — see that file's docstring.
-It is manual-verification tooling only, not a substitute for testing
-against a real model/database.
-
 ### Authentication (Phase 8)
 
 Every route the real backend serves requires `Authorization: Bearer <key>`
@@ -90,10 +106,12 @@ ship a key — it is a static file served straight to the browser, and
 anything embedded in it at serve time is readable by anyone who opens dev
 tools. Instead:
 
-- The first time you ask a question in **زندهٔ API** mode, the UI reveals
-  a "کلید API" field in the top bar and asks you to enter your key. Get
-  your key from whoever administers this deployment — they issue it with
-  `scripts/issue_api_key.py`, one per analyst.
+- The "کلید API" field is in the top bar whenever **زندهٔ API** mode is
+  active — which, since live is now the default, means from the first
+  load. Ask a question (or open the memory panel, or start a new
+  conversation) before entering one and the UI prompts you to fill it in
+  first. Get your key from whoever administers this deployment — they
+  issue it with `scripts/issue_api_key.py`, one per analyst.
 - The key is saved in this browser's `localStorage` (via `js/apikey.js`)
   and sent as `Authorization: Bearer <key>` on every authenticated call.
   It is never logged, never put in a URL, and never echoed back in an
@@ -166,15 +184,18 @@ web/
 │   ├── style.css           # all styling — RTL-first, logical properties,
 │   │                       #   light/dark tokens, responsive rules
 │   └── fonts.css           # @font-face for the bundled Vazirmatn woff2s
-├── assets/fonts/            # Vazirmatn-Regular.woff2, Vazirmatn-Bold.woff2
+├── assets/
+│   ├── fonts/               # Vazirmatn-Regular.woff2, Vazirmatn-Bold.woff2
+│   └── vendor/              # Prism (core + SQL language + theme) — see "SQL highlighting"
 ├── js/
 │   ├── main.js              # bootstrap, ask flow, simulated/live dispatch
-│   ├── state.js             # app state + localStorage (theme, base URL)
+│   ├── state.js             # app state + localStorage (theme, base URL, mode)
+│   ├── config.js             # THE ONE FILE A DEPLOYMENT EDITS — default backend base URL
 │   ├── api.js                # live-mode transport (contract §3, §6, §7, §11)
 │   ├── apikey.js              # per-analyst API key storage (contract §11)
 │   ├── data.js                # SCENARIO: the six synthetic sample turns
 │   └── render/
-│       ├── turn.js            # composes one full turn card
+│       ├── turn.js            # composes one full turn card; SQL syntax highlighting
 │       ├── assumptions.js     # basis indicator, assumption chips, clarifications
 │       ├── pipeline.js        # the 5-step pipeline list
 │       ├── table.js           # result table + warnings
@@ -200,6 +221,24 @@ UI works fully offline. If the font files are ever missing (e.g. this
 directory was copied without `web/assets/fonts/`), `styles/fonts.css` falls
 through to `"Segoe UI", Tahoma` which render Persian adequately on Windows
 but without Vazirmatn's Persian-specific metrics.
+
+## SQL highlighting
+
+The generated-SQL block is syntax-highlighted with
+[Prism](https://prismjs.com/), vendored locally (core + the SQL language
+component) under `web/assets/vendor/prism.min.js` /
+`prism-sql.min.js` — no CDN, same offline requirement as the font above.
+`web/assets/vendor/prism-sql-theme.css` maps Prism's token classes to this
+app's own existing colour tokens (`--teal`, `--amber`, `--muted`, etc. —
+see `styles/style.css`), so it already adapts to both the light and dark
+theme rather than shipping Prism's own hardcoded theme colours.
+
+Highlighting is presentation only (`web/js/render/turn.js`'s
+`highlightSql`): it always sets the code element's plain text first, and
+only then overlays Prism's markup, falling back silently to the plain
+text if Prism ever fails to load or throws. The "کپی" (copy) button never
+reads from that markup — it always copies the exact original SQL string
+from the Turn object.
 
 ## Adding a scenario
 
@@ -227,7 +266,10 @@ sample turn:
 ## What this UI does not do
 
 - No build step, bundler, or package.json — open the files as-is.
-- No external runtime dependency beyond the bundled fonts.
+- No external runtime dependency beyond the bundled fonts and the
+  vendored Prism (SQL syntax highlighting) — no CDN, ever.
+- No backend base-URL control in the top bar — that is deployment
+  configuration (`web/js/config.js`), not an analyst-facing setting.
 - Simulated mode never claims to have executed a real query; the footer and
   a persistent notice always say which mode is active.
 - Live mode never synthesizes a Turn to hide a missing or failing backend
