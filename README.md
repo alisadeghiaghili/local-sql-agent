@@ -5,8 +5,8 @@
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-2079-green)](tests/)
-[![Version](https://img.shields.io/badge/Version-4.0.1-blue)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/Tests-2146-green)](tests/)
+[![Version](https://img.shields.io/badge/Version-4.1.0-blue)](CHANGELOG.md)
 
 ---
 
@@ -134,6 +134,8 @@ its KV cache instead of re-reading the schema on every question.
 | 🛡️ | **SQL security guard** | AST-based (sqlglot), closed table/column allowlist; blocks DDL, DML, injection; converts LIMIT→TOP. |
 | 🔄 | **Auto-correct loop** | Retries with error feedback when SQL fails validation or execution — bounded, and never re-prompted for a rejection no rewrite could satisfy. |
 | 💬 | **Conversational sessions** | `/v2/sessions*` — follow-up questions resolve «از بین آن‌ها» against the previous turn via CTE composition, with every assumption declared. |
+| 🗂️ | **Many conversations, kept** | A conversation index that survives a restart: sessions, turns and titles persist for `session_retention_days`. Result **rows never touch the disk** — a stored row could not be re-checked against an ACL that changed after it was written. |
+| 📌 | **Cross-session memory** | Standing preferences the analyst *pins* — never inferred from repetition. A closed, config-declared set, surfaced as an editable assumption chip and re-checked against the column ACL on every turn that would apply it. |
 | 🔑 | **Authentication & column ACL** | API keys on every route but `/health`; per-principal `denied_columns` enforced in the guard, not just partitioned in the cache. |
 | 🗄️ | **Multi-dialect** | Generates T-SQL, transpiles, then re-validates in the dialect that will execute. T-SQL and SQLite verified by execution. |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
@@ -142,7 +144,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 2,079 unit + integration tests; GitHub Actions CI on Python 3.11–3.13. |
+| 🧪 | **Test suite** | 2,146 unit + integration tests; GitHub Actions CI on Python 3.11–3.13. |
 
 ---
 
@@ -211,6 +213,9 @@ python -m scripts.verify_deployment
 | `SESSION_TTL_SECONDS` | `1800` | Idle expiry for a conversational session |
 | `SESSION_MAX_TURNS` | `50` | Transcript cap per session |
 | `SESSION_PROMPT_TURNS` | `3` | How many prior turns enter the prompt |
+| `SESSION_STORE_PATH` | `logs/sessions.db` | SQLite file for session + memory persistence; empty disables it |
+| `SESSION_RETENTION_DAYS` | `30` | How long a conversation stays listable and reopenable |
+| `MEMORY_ENABLED` | `true` | Cross-session standing preferences |
 
 Full list in `config.py` — every setting carries a docstring explaining
 what it does and why its default is what it is.
@@ -227,6 +232,12 @@ what it does and why its default is what it is.
 | `POST` | `/v2/sessions/{sid}/turns` | Ask, in context; add `?stream=1` for SSE |
 | `PATCH` | `/v2/sessions/{sid}/turns/{tid}/assumptions` | Re-run under edited assumptions — returns a *new* turn, never mutates the old one |
 | `DELETE` | `/v2/sessions/{sid}` | Drop a conversation and free its state |
+| `GET` | `/v2/sessions` | The caller's conversation index |
+| `PATCH` | `/v2/sessions/{sid}` | Rename a conversation |
+| `GET` | `/v2/memory` | Standing preferences, and which fields may be remembered |
+| `PUT` | `/v2/memory/{key}` | Pin one preference |
+| `DELETE` | `/v2/memory/{key}` | Forget one |
+| `DELETE` | `/v2/memory` | Forget all |
 | `GET` | `/health` | DB + LLM endpoint reachability probe |
 | `GET` | `/cache/stats` | Cache size, hits, misses, evictions |
 | `POST` | `/cache/invalidate` | Remove a specific cached entry |
@@ -309,7 +320,8 @@ local-sql-agent/
 │   ├── examples.yaml         #   tagged few-shot NLQ→SQL pairs
 │   ├── metrics.yaml          #   metric definitions + aggregate expressions
 │   ├── retrieval_hints.yaml  #   fact tables + trigger phrases
-│   └── session_policy.yaml   #   the default scope assumption
+│   ├── session_policy.yaml   #   the default scope assumption
+│   └── memory_policy.yaml    #   the closed set of pinnable preferences
 ├── project_config.example/   # Same structure, placeholder data — what CI runs against
 ├── knowledge/                # Lazy loaders + validation for the YAML above
 │   ├── config_loader.py      #   Pydantic models, fail-closed on a missing file
@@ -381,7 +393,7 @@ local-sql-agent/
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 2,079 unit + integration tests
+└── tests/                    # 2,146 unit + integration tests
 ```
 
 ---
@@ -526,7 +538,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 2,079 unit and integration tests; GitHub Actions CI across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 2,146 unit and integration tests; GitHub Actions CI across Python 3.11–3.13 |
 
 ---
 
