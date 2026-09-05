@@ -812,6 +812,8 @@ class TurnEngine:
                 timings=turn.timings,
                 llm=turn.llm,
                 columns=columns,
+                session_id=turn.session_id,
+                turn_id=turn.turn_id,
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn
