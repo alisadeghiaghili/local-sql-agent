@@ -5,6 +5,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.1.5] — 2026-09-05
+
+### Documentation
+
+- **A review pass over `docs/admin-panel-architecture.md` found five gaps
+  in the design as written.** All are now in the document; one was a real
+  security hole.
+
+  - **`AUTH_REQUIRED=false` must not confer either admin capability.**
+    The escape hatch resolves the caller to `ANONYMOUS`, which has no
+    capabilities — so the safe behaviour falls out, *provided the
+    implementation checks the capability*. The shortcut that suggests
+    itself ("auth is off, let everything through") would hand every
+    anonymous caller the ability to rewrite the guard's allowlist.
+  - **Tier 1 is not only a panel feature.** The flag control and its
+    endpoint live in the analyst UI, so it changes the analyst-facing
+    product too — and "promote this to a golden case" has no defined
+    destination, because the golden set is a file outside the
+    application database and outside the versioning scheme.
+  - **Stored column names are not re-checked against a changed ACL.**
+    Result rows are never persisted precisely because a stored row
+    cannot be re-checked; column names *are* persisted and get no such
+    treatment. Weaker than exposing values, but inconsistent with the
+    principle we applied to rows.
+  - **Maintenance mode was leaned on twice and never defined** — and
+    migration safety depends on it stopping writes. It must also keep
+    the panel reachable, or enabling it is a one-way door.
+  - **"Bind the panel to loopback" contradicts "the panel is a client of
+    the API".** The privileged routes live on the same application that
+    serves analysts, so restricting the static server restricts nothing.
+    Three resolutions are named; picking one is a prerequisite.
+
+- Four further open questions recorded rather than left implicit,
+  including that failed admin authentication carries no principal and so
+  buckets on IP alone.
+
+---
+
 ## [4.1.4] — 2026-09-05
 
 ### Documentation

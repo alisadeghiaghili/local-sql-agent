@@ -101,6 +101,16 @@ must not be able to create the first security admin.
 Removing the last admin of either kind is refused. Recovery from lockout
 would otherwise be `.env` plus a restart.
 
+**`AUTH_REQUIRED=false` must not confer either capability.** That escape
+hatch exists so a local run needs no key, and it resolves the caller to
+`security.auth.ANONYMOUS`. Since capabilities live on the principal, and
+that principal has none, the safe behaviour falls out — but only if the
+implementation checks the capability. The shortcut that suggests itself
+("auth is off, so let everything through") would hand every anonymous
+caller the ability to rewrite the guard's allowlist. Stated here because
+it is exactly the kind of thing that reads as obviously fine while being
+written.
+
 One person may legitimately hold both capabilities. When they do, each
 audit record must say **which capability authorised the action** —
 otherwise "I was acting as operations" and "I was acting as security"
@@ -126,6 +136,15 @@ the security admin, whose actions have no other supervisory mechanism.
 - **Wrong-answer feedback and triage.** An analyst flags an answer; an
   admin triages it into a golden-set case, a new few-shot example, or an
   alias fix.
+
+  Two things this implies that are easy to miss. **It is not only a panel
+  feature**: the flag control and its endpoint live in the *analyst* UI
+  (`web/`), so tier 1 changes the analyst-facing product too. And **the
+  golden set has no home in this design** — it is `eval_data/golden.jsonl`,
+  a file outside the application database, so §6's versioning does not
+  cover it. Either it moves into the database alongside the rest, or
+  "promote this to a golden case" needs a defined destination and its own
+  provenance. Unanswered on purpose rather than by omission.
 - **Retrieval-miss review.** `scripts/analyze_misses.py` already derives
   synonym gaps from query logs. Surfacing them with a one-click "add this
   synonym" turns diagnosis into a fix.
@@ -156,6 +175,12 @@ the security admin, whose actions have no other supervisory mechanism.
   refreshed, and a manual refresh. A hall added to the warehouse and
   never refreshed makes value resolution miss silently.
 - Session and memory inspection, for support.
+- **Maintenance mode**, which this document leans on twice without ever
+  defining. It must at minimum: refuse new analyst queries with a clear
+  status rather than a hang, stop writes to the application database
+  (§5.4 depends on that for migration safety), and **keep the panel
+  itself reachable** — otherwise turning it on is a one-way door. Whether
+  in-flight requests drain or are cut is a decision to make explicitly.
 
 ### 3.1 What the panel must never contain
 
@@ -168,6 +193,17 @@ the security admin, whose actions have no other supervisory mechanism.
   `__post_init__` rejects a `columns` list containing anything else. The
   panel inherits that. It must not become the place warehouse data leaks.
 - **Reading a secret back.** See §4.3.
+- **Stored column names, unfiltered.** This one is an inconsistency in
+  our own reasoning rather than a rule. Result *rows* are never persisted
+  precisely because a stored row cannot be re-checked against an ACL that
+  changed after it was written — but result **column names** are
+  persisted, in turns and in the session store, and they are not
+  re-checked either. A column denied to a principal today can still be
+  named in a turn they ran last week. It is much weaker than exposing
+  values, and the schema is largely known to analysts anyway; but the
+  principle we applied to rows says to filter these on read, the same way
+  memory entries already are. Cheap to do, and cheaper than explaining
+  later why the rule applied to one and not the other.
 - **Deleting or editing an audit record.** An audit trail an admin can
   edit is not an audit trail, and it is the only supervisory mechanism
   over the security admin.
@@ -225,6 +261,17 @@ the environment and accepts a restart.
 
 The panel must be served over TLS or bound to loopback. A secret-setting
 form over plain HTTP on an internal network is a secret on the wire.
+
+**This contradicts §8 as written, and the contradiction has to be
+resolved before implementation, not during it.** §8 says the panel is a
+client of the API like `web/` is. But binding "the panel" to loopback
+cannot be achieved by binding its *static files* — the privileged routes
+live on the same FastAPI application that serves `/query` to analysts, so
+restricting the static server restricts nothing. Making it real needs one
+of: a separate ASGI application on its own port for the admin routes,
+network-level restriction in front of the existing one, or accepting that
+the control is TLS plus authorisation and dropping the loopback claim.
+Each is defensible; leaving all three implied is not.
 
 ---
 
@@ -493,3 +540,11 @@ Four concrete gaps, each of which blocks part of the above:
   unreachable (§5.7)?
 - Is the propose-and-approve flow (§6.4) worth its weight in the first
   version, or does it wait?
+- How are the admin routes isolated (§4.3)?
+- Where does a promoted golden case live (§3)?
+- Failed admin authentication carries no principal, so the rate limiter
+  buckets it on IP alone. Is that enough for the highest-value credential
+  in the system?
+- Do feedback records, admin-action audit and configuration versions have
+  a retention policy, or do they grow forever? Config snapshots are small
+  and rare; a record per admin log search is neither.
