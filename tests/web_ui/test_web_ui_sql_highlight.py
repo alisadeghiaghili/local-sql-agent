@@ -46,6 +46,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _WEB_JS = _REPO_ROOT / "web" / "js"
+_NUM_JS = _WEB_JS / "num.js"
 _TURN_JS = _WEB_JS / "render" / "turn.js"
 _PIPELINE_JS = _WEB_JS / "render" / "pipeline.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
@@ -78,6 +79,21 @@ _ASSUMPTIONS_IMPORT_IN_TABLE = re.compile(r'^import \{ SOURCE_LABELS \} from "\.
 _TABLE_IMPORT_IN_CHART = re.compile(
     r'^import \{ renderTableOnly, renderExportRow, fmtCell \} from "\./table\.js";$', re.MULTILINE,
 )
+
+
+def _rewrite_num_import(src: str) -> str:
+    """Point a staged module's `num.js` import at the staged `num.mjs`.
+
+    Every renderer imports the shared number formatter (see web/js/num.js),
+    and the staged copies all sit flat in one directory, so both the
+    "../num.js" and "./num.js" forms resolve to the same sibling here.
+    Unlike the other rewrites this one is not asserted to match: not every
+    staged module imports it, and requiring one would break the moment a
+    module legitimately has no numbers in it.
+    """
+    return src.replace('from "../num.js"', 'from "./num.mjs"').replace(
+        'from "./num.js"', 'from "./num.mjs"'
+    )
 
 
 def _subn_or_fail(pattern: re.Pattern[str], replacement: str, text: str, what: str) -> str:
@@ -120,6 +136,18 @@ def _prepare_copies(tmp_path: Path) -> Path:
     table_src = _subn_or_fail(_ASSUMPTIONS_IMPORT_IN_TABLE, 'import { SOURCE_LABELS } from "./assumptions.mjs";', table_src, "table.js -> assumptions.js")
     chart_src = _subn_or_fail(_TABLE_IMPORT_IN_CHART, 'import { renderTableOnly, renderExportRow, fmtCell } from "./table.mjs";', chart_src, "chart.js -> table.js")
 
+    turn_src = _rewrite_num_import(turn_src)
+
+    assumptions_src = _rewrite_num_import(assumptions_src)
+
+    table_src = _rewrite_num_import(table_src)
+
+    chart_src = _rewrite_num_import(chart_src)
+
+    export_src = _rewrite_num_import(export_src)
+
+    llm_status_src = _rewrite_num_import(llm_status_src)
+
     (tmp_path / "turn.mjs").write_text(turn_src, encoding="utf-8")
     (tmp_path / "pipeline.mjs").write_text(pipeline_src, encoding="utf-8")
     (tmp_path / "assumptions.mjs").write_text(assumptions_src, encoding="utf-8")
@@ -127,6 +155,10 @@ def _prepare_copies(tmp_path: Path) -> Path:
     (tmp_path / "chart.mjs").write_text(chart_src, encoding="utf-8")
     (tmp_path / "export.mjs").write_text(export_src, encoding="utf-8")
     (tmp_path / "llm-status.mjs").write_text(llm_status_src, encoding="utf-8")
+    # num.js is shared by every renderer (see web/js/num.js): one place
+    # that decides how a number looks, after seven modules each decided
+    # separately. Staging it is what lets those imports resolve.
+    (tmp_path / "num.mjs").write_text(_NUM_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return tmp_path / "turn.mjs"
 
 

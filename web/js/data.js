@@ -24,6 +24,8 @@
 
 "use strict";
 
+import { fmt } from "./num.js";
+
 /* ── Deterministic PRNG (mulberry32) — identical technique to the old demo,
  * so results never change between reloads. */
 function mulberry32(seed) {
@@ -190,7 +192,7 @@ const SCENARIO = {
         truncated: true,
       },
       interpretation:
-        `این پرس‌وجو ${T1_TOTAL_MATCHED.toLocaleString("fa-IR")} مشتری فعال در تالار سیمان را شناسایی کرد؛ ` +
+        `این پرس‌وجو ${fmt(T1_TOTAL_MATCHED)} مشتری فعال در تالار سیمان را شناسایی کرد؛ ` +
         `${T1_DISPLAY_CAP} مورد برتر بر اساس ارزش کل معامله در جدول زیر نمایش داده شده است. ` +
         `مشتری نخست بیش از دو برابر مشتری دهم ارزش معامله داشته است.`,
       tier: "T2",

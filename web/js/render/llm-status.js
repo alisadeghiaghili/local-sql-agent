@@ -12,6 +12,8 @@
 
 "use strict";
 
+import { fmt, technical } from "../num.js";
+
 /** True when the model's answer was cut off by the token budget (contract
  * §6 `finish_reason: "length"`). This qualifies the WHOLE interpretation,
  * not just this status strip, so callers (turn.js) show it ABOVE the
@@ -131,7 +133,7 @@ export function renderLlmStatus(llm) {
   if (llm.attempts > 1) {
     const flag = document.createElement("span");
     flag.className = "attempts-flag";
-    flag.textContent = `${llm.attempts.toLocaleString("fa-IR")} تلاش (retry)`;
+    flag.textContent = `${fmt(llm.attempts)} تلاش (retry)`;
     head.appendChild(flag);
   }
 
@@ -210,15 +212,15 @@ export function renderLlmStatus(llm) {
   grid.className = "llm-grid";
   grid.appendChild(statLabelValue("model", llm.model || "—"));
   grid.appendChild(statLabelValue("backend", llm.backend || "—"));
-  grid.appendChild(statLabelValue("prompt tokens", llm.prompt_tokens.toLocaleString("en-US")));
-  grid.appendChild(statLabelValue("completion tokens", llm.completion_tokens.toLocaleString("en-US")));
+  grid.appendChild(statLabelValue("prompt tokens", technical(llm.prompt_tokens)));
+  grid.appendChild(statLabelValue("completion tokens", technical(llm.completion_tokens)));
   grid.appendChild(statLabelValue("tokens/sec", String(llm.tokens_per_second)));
-  grid.appendChild(statLabelValue("total ms", llm.total_ms.toLocaleString("en-US")));
+  grid.appendChild(statLabelValue("total ms", technical(llm.total_ms)));
   grid.appendChild(statLabelValue("temperature", String(llm.temperature)));
   grid.appendChild(statLabelValue("seed", String(llm.seed)));
   grid.appendChild(statLabelValue("structured output", llm.structured_output ? "بله" : "خیر"));
-  grid.appendChild(statLabelValue("corrections", llm.corrections.toLocaleString("fa-IR")));
-  grid.appendChild(statLabelValue("attempts", llm.attempts.toLocaleString("fa-IR")));
+  grid.appendChild(statLabelValue("corrections", fmt(llm.corrections)));
+  grid.appendChild(statLabelValue("attempts", fmt(llm.attempts)));
   grid.appendChild(statLabelValue("endpoint status", String(llm.endpoint_status)));
   body.appendChild(grid);
 

@@ -16,6 +16,8 @@
 
 "use strict";
 
+import { fmt } from "../num.js";
+
 import { renderPipeline } from "./pipeline.js";
 import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.js";
 import { renderResult, renderWarnings } from "./table.js";
@@ -244,7 +246,7 @@ function summarize(turn) {
   if (turn.basis && turn.basis.kind === "refines") parts.push(`ادامهٔ ${turn.basis.refines_turn_id}`);
   if (turn.error) parts.push(`خطا: ${turn.error.code}`);
   else if (turn.guard && turn.guard.verdict === "rejected") parts.push("رد شده توسط نگهبان امنیتی");
-  else if (turn.result) parts.push(`${turn.result.row_count.toLocaleString("fa-IR")} ردیف`);
+  else if (turn.result) parts.push(`${fmt(turn.result.row_count)} ردیف`);
   if (turn.ambiguity && turn.ambiguity.is_ambiguous) parts.push("مبهم — با مفروضات پاسخ داده شد");
   return parts.join(" · ");
 }

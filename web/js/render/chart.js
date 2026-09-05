@@ -45,8 +45,10 @@
 
 import { renderTableOnly, renderExportRow, fmtCell } from "./table.js";
 
-const nf = new Intl.NumberFormat("en-US");
-const faNum = (n) => Number(n).toLocaleString("fa-IR");
+// Formatting lives in one place now -- this module used to declare both
+// an en-US formatter and an fa-IR one and use them in adjacent tiles.
+import { fmt as faNum } from "../num.js";
+const nf = { format: faNum };
 
 const FOCUS_RULE_LABEL_FA = {
   max: "بیشترین مقدار",
@@ -281,7 +283,7 @@ function renderLineChart(rows, labelKey, values, focus) {
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
     role: "img",
-    "aria-label": `نمودار خطی؛ ${n.toLocaleString("fa-IR")} نقطه، تمرکز روی ${rows[focus.index][labelKey]} (${FOCUS_RULE_LABEL_FA[focus.rule]}).`,
+    "aria-label": `نمودار خطی؛ ${faNum(n)} نقطه، تمرکز روی ${rows[focus.index][labelKey]} (${FOCUS_RULE_LABEL_FA[focus.rule]}).`,
   });
 
   svg.appendChild(svgEl("line", { class: "chart-refline", x1: padL, y1: yAt(max), x2: W - padR, y2: yAt(max) }));
@@ -501,7 +503,7 @@ export function renderChartAndTable(result) {
   const storyHeadB = document.createElement("b");
   storyHeadB.textContent = "این نتیجه را چطور بگوییم؟";
   const storyHeadSpan = document.createElement("span");
-  storyHeadSpan.textContent = `یک برچسب + یک سنجه · ${rows.length.toLocaleString("fa-IR")} ردیف`;
+  storyHeadSpan.textContent = `یک برچسب + یک سنجه · ${faNum(rows.length)} ردیف`;
   storyHead.appendChild(storyHeadB);
   storyHead.appendChild(storyHeadSpan);
   storyStrip.appendChild(storyHead);
