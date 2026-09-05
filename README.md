@@ -5,8 +5,8 @@
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-2179-green)](tests/)
-[![Version](https://img.shields.io/badge/Version-4.1.5-blue)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/Tests-2180-green)](tests/)
+[![Version](https://img.shields.io/badge/Version-4.2.0-blue)](CHANGELOG.md)
 
 ---
 
@@ -144,7 +144,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 2,179 unit + integration tests; GitHub Actions CI on Python 3.11–3.13. |
+| 🧪 | **Test suite** | 2,180 unit + integration tests; GitHub Actions CI on Python 3.11–3.13. |
 
 ---
 
@@ -397,7 +397,7 @@ local-sql-agent/
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 2,179 unit + integration tests
+└── tests/                    # 2,180 unit + integration tests
 ```
 
 ---
@@ -542,7 +542,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 2,179 unit and integration tests; GitHub Actions CI across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 2,180 unit and integration tests; GitHub Actions CI across Python 3.11–3.13 |
 
 ---
 

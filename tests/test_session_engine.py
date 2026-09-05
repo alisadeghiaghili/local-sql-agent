@@ -436,3 +436,44 @@ class TestStaticPrefixInvariance:
         # context) but the two prompts must share the identical prefix.
         assert captured_prompts[0][: len(prefix)] == captured_prompts[1][: len(prefix)]
         assert captured_prompts[0] != captured_prompts[1]
+
+
+class TestAuditRecordCarriesTheConversation:
+    """A v2 turn's audit record must name its session and turn.
+
+    Without these the audit trail can say nothing about the
+    conversational product. A follow-up and a fresh question look
+    identical in the log; "this answer was wrong" cannot be traced back
+    to the turn that produced it, nor to the turns it refined.
+
+    `docs/admin-panel-architecture.md` names their absence as the
+    prerequisite blocking the panel's entire first tier, and the cost is
+    not recoverable later: a week of production logs written without them
+    is a week that is permanently blind to it. That is why this landed
+    during a deployment rather than after.
+
+    Both are identifiers this system generated, not user content -- the
+    same category as `request_id`.
+    """
+
+    def test_session_and_turn_reach_the_audit_record(self, sqlite_conn, monkeypatch):
+        saved: list = []
+        monkeypatch.setattr(
+            "session.engine.save_audit_record", lambda record: saved.append(record),
+        )
+
+        store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=10)
+        record = store.create(owner_id="analyst-1")
+        engine = _engine(Q1_SQL, _execute_fn(sqlite_conn))
+
+        with override_settings(refinement_scan_cap=10_000, default_top_n=1000):
+            turn = engine.ask(record, Q1_QUESTION, SYSTEM_PROMPT)
+
+        assert saved, "every turn must produce exactly one audit record"
+        audited = saved[-1]
+        assert audited.session_id == record.session_id, (
+            "the audit record must name the conversation this turn belongs to"
+        )
+        assert audited.turn_id == turn.turn_id, (
+            "and the turn, so a flagged answer can be traced back to it"
+        )

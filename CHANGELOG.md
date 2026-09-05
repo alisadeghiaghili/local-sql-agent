@@ -5,6 +5,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.2.0] — 2026-09-05
+
+### Added
+
+- **Audit records now carry `session_id` and `turn_id`.** Additive and
+  optional: `None` on the `/query` and CLI paths, which have no session.
+
+  Without them the audit trail could say nothing at all about the
+  conversational product. A follow-up question and a fresh one looked
+  identical in the log, and "this answer was wrong" could not be traced
+  back to the turn that produced it or to the turns it refined.
+
+  `docs/admin-panel-architecture.md` names their absence as the
+  prerequisite blocking the panel's entire first tier. This shipped
+  during a deployment rather than after it because the cost is not
+  recoverable: a week of production logs written without these is a week
+  permanently blind to the dimension the deployment exists to exercise.
+
+  Both are identifiers this system generated, not user content — the same
+  category as `request_id`, and they reveal no more about the warehouse
+  than it does.
+
+---
+
 ## [4.1.5] — 2026-09-05
 
 ### Documentation

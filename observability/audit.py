@@ -148,6 +148,21 @@ class AuditRecord:
         against which column, never what came back" guarantee
         :attr:`columns` already enforces for result columns, and
         :meth:`__post_init__` rejects it the same way.
+    session_id, turn_id:
+        The conversation and turn this record belongs to
+        (``docs/api-contract-v2.md`` §4), or ``None`` for the ``/query``
+        and CLI paths, which have no session.
+
+        Without these the audit trail cannot answer anything about the
+        conversational product at all. A follow-up question and a fresh
+        one look identical; "this answer was wrong" cannot be traced back
+        to the turn that produced it, or to the turns it refined. The
+        panel design in ``docs/admin-panel-architecture.md`` names their
+        absence as the prerequisite that blocks its whole first tier.
+
+        They are identifiers this system generated, not user content —
+        the same category as ``request_id``, and they carry no more
+        information about the warehouse than it does.
 
     Raises
     ------
@@ -204,6 +219,8 @@ class AuditRecord:
     columns: list[str] | None = None
     principal_id: str | None = None
     resolved_columns: list[str] | None = None
+    session_id: str | None = None
+    turn_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
