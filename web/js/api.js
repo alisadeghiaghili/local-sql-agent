@@ -256,6 +256,12 @@ export class Api {
       db: !!h.database,
       status: h.status,
       model: h.model || null,
+      // Why each light is what it is. A red indicator with no reason is
+      // undiagnosable -- "unreachable host", "wrong key" and "this server
+      // does not implement /models" look identical, and the last is not
+      // even a fault. Optional: an older backend omits these.
+      llmDetail: h.openai_detail || null,
+      dbDetail: h.database_detail || null,
     };
   }
 
