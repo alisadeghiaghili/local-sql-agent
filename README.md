@@ -186,6 +186,9 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000
 python -m scripts.verify_deployment
 ```
 
+**→ Step-by-step guide to running the CLI and the web UI:**  
+**[راهنمای راه‌اندازی — فارسی](docs/fa/getting-started.md)**
+
 **→ Full tutorial (installation · first query · extending the domain · writing tests · diagnosing misses):**  
 **[English](docs/en/tutorial.md) · [فارسی](docs/fa/tutorial.md)**
 
