@@ -205,6 +205,64 @@ function svgEl(tag, attrs) {
  * most (baseline and the max value); everything before the focus segment
  * is context grey, the focus segment onward is the brand hue, with a
  * direct label only on the focus point. */
+
+/* ── Keeping text inside the drawing ─────────────────────────────────────
+ * SVG does not clip or reflow text: a label positioned near an edge simply
+ * renders outside the viewBox and disappears. Both failure modes were
+ * live here — a value label ran off the right of the bar chart when the
+ * number was long, and the line chart's end-of-axis labels, anchored
+ * `middle` at the extreme x positions, had half their width outside the
+ * box on both sides.
+ *
+ * There is no layout to measure against while building a detached SVG, so
+ * width is estimated from character count. The estimate only has to be
+ * good enough to decide *which side to anchor on* and *when to clamp*,
+ * not to place text precisely — an anchor decision that is one character
+ * out still keeps the label inside. */
+
+/** Rough advance width of `text` at the chart's label size, in user units. */
+function estimateTextWidth(text, size = 11) {
+  // The ratio is deliberately ABOVE the real advance width of both Persian
+  // glyphs and Latin digits at these sizes. An estimate that merely
+  // approximates the truth puts labels exactly on the boundary, where any
+  // stricter measurement -- the geometry test's, or a real browser with a
+  // different face loaded -- finds them outside. Over-estimating costs a
+  // few pixels of gutter and makes the guarantee hold instead of usually
+  // holding.
+  return String(text).length * size * 0.68;
+}
+
+/** Anchor and x for a label that must stay within `[0, W]`.
+ *
+ * Near an edge the anchor flips so the text grows inward instead of over
+ * the boundary, which is what `middle` at an extreme position cannot do. */
+function edgeSafeLabel(x, text, W, size = 11) {
+  const half = estimateTextWidth(text, size) / 2;
+  if (x - half < 2) return { x: 2, anchor: "start" };
+  if (x + half > W - 2) return { x: W - 2, anchor: "end" };
+  return { x, anchor: "middle" };
+}
+
+
+/** Shorten `text` until its estimated width fits `maxWidth`, with slack.
+ *
+ * The slack matters: the width estimate is an approximation, and the one
+ * the tests measure with is deliberately more generous than this one so
+ * they err toward catching overflow. A renderer that truncated to exactly
+ * its own estimate would sit right on the boundary and fail under any
+ * stricter measurement -- including a real browser with a different face
+ * loaded. Leaving room is what makes the guarantee hold rather than
+ * merely usually hold. */
+function truncateToWidth(text, maxWidth, size = 11) {
+  const budget = maxWidth * 0.88;
+  if (estimateTextWidth(text, size) <= budget) return text;
+  let out = String(text);
+  while (out.length > 1 && estimateTextWidth(`${out}…`, size) > budget) {
+    out = out.slice(0, -1);
+  }
+  return `${out}…`;
+}
+
 function renderLineChart(rows, labelKey, values, focus) {
   const W = 640, H = 190;
   const padL = 40, padR = 12, padT = 22, padB = 34;
@@ -213,7 +271,11 @@ function renderLineChart(rows, labelKey, values, focus) {
   const min = Math.min(...values, 0);
   const span = max - min || 1;
 
-  const xAt = (i) => padR + ((n - 1 - i) / Math.max(1, n - 1)) * (W - padL - padR);
+  // Both ends of this expression must use the same two paddings, or the
+  // reserved space lands on one side while the plot starts on the other.
+  // It previously began at padR and spanned (W - padL - padR), which left
+  // the leading edge with 12px of room where 40 was intended.
+  const xAt = (i) => padL + ((n - 1 - i) / Math.max(1, n - 1)) * (W - padL - padR);
   const yAt = (v) => padT + (1 - (v - min) / span) * (H - padT - padB);
 
   const svg = svgEl("svg", {
@@ -222,8 +284,8 @@ function renderLineChart(rows, labelKey, values, focus) {
     "aria-label": `نمودار خطی؛ ${n.toLocaleString("fa-IR")} نقطه، تمرکز روی ${rows[focus.index][labelKey]} (${FOCUS_RULE_LABEL_FA[focus.rule]}).`,
   });
 
-  svg.appendChild(svgEl("line", { class: "chart-refline", x1: padR, y1: yAt(max), x2: W - padR, y2: yAt(max) }));
-  svg.appendChild(svgEl("line", { class: "chart-refline", x1: padR, y1: yAt(0), x2: W - padR, y2: yAt(0) }));
+  svg.appendChild(svgEl("line", { class: "chart-refline", x1: padL, y1: yAt(max), x2: W - padR, y2: yAt(max) }));
+  svg.appendChild(svgEl("line", { class: "chart-refline", x1: padL, y1: yAt(0), x2: W - padR, y2: yAt(0) }));
 
   const segStart = Math.max(0, focus.index - 1);
   const contextPts = [];
@@ -244,24 +306,31 @@ function renderLineChart(rows, labelKey, values, focus) {
 
   const fx = xAt(focus.index), fy = yAt(values[focus.index]);
   svg.appendChild(svgEl("circle", { cx: fx, cy: fy, r: 4.5, fill: "var(--chart-focus)" }));
-  const label = svgEl("text", { class: "chart-focus-label", x: fx, y: fy - 10, "text-anchor": "middle" });
-  label.textContent = `${rows[focus.index][labelKey]} · ${fmtCell(values[focus.index], "number")}`;
+  const focusText = `${rows[focus.index][labelKey]} · ${fmtCell(values[focus.index], "number")}`;
+  const focusPos = edgeSafeLabel(fx, focusText, W, 12);
+  // Above the point normally; below it when the point sits so high that the
+  // label's ascent would leave the top of the box. The focus point IS the
+  // maximum often enough for this to matter.
+  const above = fy - 10 >= 12;
+  const label = svgEl("text", {
+    class: "chart-focus-label", x: focusPos.x, y: above ? fy - 10 : fy + 18,
+    "text-anchor": focusPos.anchor,
+  });
+  label.textContent = focusText;
   svg.appendChild(label);
 
-  const axisFirst = svgEl("text", { class: "chart-axis-label", x: xAt(0), y: H - 8, "text-anchor": "middle" });
-  axisFirst.textContent = rows[0][labelKey];
-  svg.appendChild(axisFirst);
-  const axisLast = svgEl("text", { class: "chart-axis-label", x: xAt(n - 1), y: H - 8, "text-anchor": "middle" });
-  axisLast.textContent = rows[n - 1][labelKey];
-  svg.appendChild(axisLast);
-  if (n > 2) {
-    const midIdx = Math.floor((n - 1) / 2);
-    const axisMid = svgEl("text", { class: "chart-axis-label", x: xAt(midIdx), y: H - 8, "text-anchor": "middle" });
-    axisMid.textContent = rows[midIdx][labelKey];
-    svg.appendChild(axisMid);
+  const axisIdx = n > 2 ? [0, Math.floor((n - 1) / 2), n - 1] : [0, n - 1];
+  for (const i of axisIdx) {
+    const text = String(rows[i][labelKey]);
+    const pos = edgeSafeLabel(xAt(i), text, W);
+    const t = svgEl("text", {
+      class: "chart-axis-label", x: pos.x, y: H - 8, "text-anchor": pos.anchor,
+    });
+    t.textContent = text;
+    svg.appendChild(t);
   }
 
-  const maxLbl = svgEl("text", { class: "chart-value-label dim", x: padR + 2, y: yAt(max) - 4, "text-anchor": "start" });
+  const maxLbl = svgEl("text", { class: "chart-value-label dim", x: padL + 2, y: Math.max(11, yAt(max) - 4), "text-anchor": "start" });
   maxLbl.textContent = fmtCell(max, "number");
   svg.appendChild(maxLbl);
 
@@ -276,8 +345,20 @@ function renderBarChart(rows, labelKey, values, focus) {
   const rowH = 26, gap = 8;
   const n = values.length;
   const H = n * (rowH + gap) + gap;
-  const labelW = 130, padR = 60;
+  const labelW = 130;
   const max = Math.max(...values, 1);
+
+  // Reserve the trailing gutter from the widest value that will actually
+  // be drawn, not from a fixed guess. The constant used to be 60px, which
+  // is fine for "1,240" and far too little for a rial figure in the
+  // billions -- the label simply rendered past the edge of the viewBox and
+  // vanished. Capped so a single enormous number cannot squeeze the bars
+  // themselves down to nothing; past the cap the label moves inside the
+  // bar instead (see below).
+  const widestValue = Math.max(
+    ...values.map((v) => estimateTextWidth(fmtCell(v, "number"))),
+  );
+  const padR = Math.min(Math.max(60, widestValue + 14), Math.round(W * 0.3));
 
   const order = values
     .map((v, i) => i)
@@ -295,10 +376,20 @@ function renderBarChart(rows, labelKey, values, focus) {
     const w = Math.max(2, (values[origIdx] / max) * barMax);
     const isFocus = origIdx === focus.index;
 
+    // The category track is a fixed 130px; a longer name would run off the
+    // leading edge, so it is truncated with an ellipsis and the full value
+    // stays available to a screen reader through <title>.
+    const rawName = String(rows[origIdx][labelKey]);
+    const shown = truncateToWidth(rawName, labelW - 14);
     const label = svgEl("text", {
       class: "chart-axis-label", x: labelW - 8, y: y + rowH / 2 + 4, "text-anchor": "end",
     });
-    label.textContent = rows[origIdx][labelKey];
+    label.textContent = shown;
+    if (shown !== rawName) {
+      const title = svgEl("title", {});
+      title.textContent = rawName;
+      label.appendChild(title);
+    }
     svg.appendChild(label);
 
     svg.appendChild(svgEl("rect", {
@@ -306,10 +397,20 @@ function renderBarChart(rows, labelKey, values, focus) {
       fill: isFocus ? "var(--chart-focus)" : "var(--chart-context)",
     }));
 
+    // Outside the bar when the gutter can hold it; inside, right-aligned
+    // against the bar's end, when it cannot. Placing it inside is the
+    // standard answer for a long value on a long bar, and it is what keeps
+    // the number visible instead of clipped at the boundary.
+    const valueText = fmtCell(values[origIdx], "number");
+    const valueW = estimateTextWidth(valueText);
+    const fitsOutside = labelW + w + 8 + valueW <= W - 2;
     const valueLabel = svgEl("text", {
-      class: `chart-value-label${isFocus ? "" : " dim"}`, x: labelW + w + 8, y: y + rowH / 2 + 4, "text-anchor": "start",
+      class: `chart-value-label${isFocus ? "" : " dim"}${fitsOutside ? "" : " inside"}`,
+      x: fitsOutside ? labelW + w + 8 : labelW + w - 8,
+      y: y + rowH / 2 + 4,
+      "text-anchor": fitsOutside ? "start" : "end",
     });
-    valueLabel.textContent = fmtCell(values[origIdx], "number");
+    valueLabel.textContent = valueText;
     svg.appendChild(valueLabel);
   });
 
@@ -325,7 +426,7 @@ function renderBarChart(rows, labelKey, values, focus) {
 function renderSplitBarChart(values) {
   const W = 640, rowH = 40, gap = 16;
   const H = 2 * rowH + 3 * gap;
-  const labelW = 90, padR = 70;
+  const labelW = 90;
   const half = Math.floor(values.length / 2);
   const firstHalf = values.slice(0, half).reduce((a, b) => a + b, 0);
   const secondHalf = values.slice(half).reduce((a, b) => a + b, 0);
@@ -334,6 +435,16 @@ function renderSplitBarChart(values) {
     { label: "نیمهٔ دوم", value: secondHalf, focus: true },
   ];
   const max = Math.max(firstHalf, secondHalf, 1);
+  // Same fixed-gutter bug as the ranked bar chart: 70px cannot hold a
+  // summed total, and these two bars are sums, so they are the largest
+  // numbers this component ever draws.
+  const padR = Math.min(
+    Math.max(70, Math.max(
+      estimateTextWidth(fmtCell(firstHalf, "number")),
+      estimateTextWidth(fmtCell(secondHalf, "number")),
+    ) + 14),
+    Math.round(W * 0.3),
+  );
 
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
@@ -352,10 +463,15 @@ function renderSplitBarChart(values) {
       x: labelW, y, width: w, height: rowH, rx: 4,
       fill: b.focus ? "var(--chart-focus)" : "var(--chart-context)",
     }));
+    const valueText = fmtCell(b.value, "number");
+    const fitsOutside = labelW + w + 8 + estimateTextWidth(valueText) <= W - 2;
     const valueLabel = svgEl("text", {
-      class: `chart-value-label${b.focus ? "" : " dim"}`, x: labelW + w + 8, y: y + rowH / 2 + 4, "text-anchor": "start",
+      class: `chart-value-label${b.focus ? "" : " dim"}${fitsOutside ? "" : " inside"}`,
+      x: fitsOutside ? labelW + w + 8 : labelW + w - 8,
+      y: y + rowH / 2 + 4,
+      "text-anchor": fitsOutside ? "start" : "end",
     });
-    valueLabel.textContent = fmtCell(b.value, "number");
+    valueLabel.textContent = valueText;
     svg.appendChild(valueLabel);
   });
 
