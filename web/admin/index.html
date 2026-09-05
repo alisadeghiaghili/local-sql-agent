@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>پنل مدیریت — نمایش‌گر فقط‌خواندنی</title>
+<title>پنل مدیریت — عامل هوشمند SQL</title>
 <link rel="stylesheet" href="../styles/fonts.css">
 <link rel="stylesheet" href="../styles/style.css">
 <link rel="stylesheet" href="admin.css">
 </head>
-<body>
+<body class="admin-body">
 
-<header class="topbar">
+<header class="topbar admin-topbar">
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true">ADM</span>
+    <span class="brand-mark admin-mark" aria-hidden="true">ADM</span>
     <div class="brand-text">
       <h1>پنل مدیریت</h1>
-      <p>نمایش‌گر فقط‌خواندنی — هیچ دکمه‌ای در این صفحه چیزی را تغییر نمی‌دهد</p>
+      <p>وضعیت استقرار، ممیزی و پیکربندی — این صفحه فقط می‌خواند</p>
     </div>
   </div>
   <div class="topbar-right">
@@ -25,15 +25,15 @@
     </div>
     <div class="live-key-row" id="live-key-row">
       <span class="live-key-status" id="live-key-status"></span>
-      <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید API مدیریتی خود را وارد کنید" autocomplete="off">
-      <button class="live-key-save" id="live-key-save" type="button">ذخیره کلید</button>
-      <button class="live-key-clear" id="live-key-clear" type="button">حذف کلید</button>
+      <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید مدیریتی" autocomplete="off">
+      <button class="live-key-save" id="live-key-save" type="button">ذخیره</button>
+      <button class="live-key-clear" id="live-key-clear" type="button">حذف</button>
     </div>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-label="تغییر پوسته">
       <span id="theme-toggle-icon" aria-hidden="true">🌓</span>
       <span id="theme-toggle-label">پوسته</span>
     </button>
-    <button class="admin-refresh-all" id="admin-refresh-all" type="button">↻ بروزرسانی همه</button>
+    <button class="admin-refresh-all" id="admin-refresh-all" type="button">↻ بروزرسانی</button>
   </div>
 </header>
 
@@ -42,60 +42,62 @@
   <div id="admin-forbidden-banner" class="admin-banner admin-banner-warn" hidden></div>
   <div id="admin-notice-area"></div>
 
-  <section class="admin-grid">
-
-    <div class="card admin-card" id="card-summary">
-      <div class="card-title-row">
-        <span class="card-title">خلاصهٔ گزارش ممیزی</span>
-        <div class="admin-card-actions">
-          <label class="admin-toggle">
-            <input type="checkbox" id="include-examples-toggle">
-            نمونه‌های واقعی (فقط برای دیباگ)
-          </label>
-          <button class="admin-btn-refresh" data-refresh="summary" type="button">↻</button>
-        </div>
-      </div>
-      <div class="admin-card-body" id="summary-body">
-        <p class="admin-loading">در حال بارگذاری…</p>
-      </div>
+  <!-- Deployment checks lead, because they are the only thing on this page
+       that might need action right now. State is encoded as a severity
+       stripe, so a failure reads before any number does. -->
+  <section class="admin-section" aria-labelledby="rail-heading">
+    <div class="admin-section-head">
+      <h2 id="rail-heading">بررسی‌های استقرار</h2>
+      <button class="admin-btn-refresh" data-refresh="health" type="button" aria-label="بروزرسانی بررسی‌های استقرار">↻</button>
     </div>
-
-    <div class="card admin-card" id="card-health">
-      <div class="card-title-row">
-        <span class="card-title">بررسی‌های استقرار</span>
-        <button class="admin-btn-refresh" data-refresh="health" type="button">↻</button>
-      </div>
-      <div class="admin-card-body" id="health-body">
-        <p class="admin-loading">در حال بارگذاری…</p>
-      </div>
+    <div id="health-body" class="admin-rail">
+      <p class="admin-loading">در حال بارگذاری…</p>
     </div>
-
-    <div class="card admin-card" id="card-cache">
-      <div class="card-title-row">
-        <span class="card-title">آمار کش</span>
-        <button class="admin-btn-refresh" data-refresh="cache" type="button">↻</button>
-      </div>
-      <div class="admin-card-body" id="cache-body">
-        <p class="admin-loading">در حال بارگذاری…</p>
-      </div>
-    </div>
-
-    <div class="card admin-card" id="card-config">
-      <div class="card-title-row">
-        <span class="card-title">پیکربندی (project_config)</span>
-        <button class="admin-btn-refresh" data-refresh="config" type="button">↻</button>
-      </div>
-      <div class="admin-card-body" id="config-body">
-        <p class="admin-loading">در حال بارگذاری…</p>
-      </div>
-    </div>
-
   </section>
+
+  <!-- The figures are the point of this page, so they lead the detail. -->
+  <section class="admin-section" aria-labelledby="stats-heading">
+    <div class="admin-section-head">
+      <h2 id="stats-heading">ممیزی</h2>
+      <div class="admin-section-actions">
+        <label class="admin-toggle">
+          <input type="checkbox" id="include-examples-toggle">
+          <span>نمونهٔ سؤال‌های واقعی</span>
+        </label>
+        <button class="admin-btn-refresh" data-refresh="summary" type="button" aria-label="بروزرسانی ممیزی">↻</button>
+      </div>
+    </div>
+    <div id="summary-body">
+      <p class="admin-loading">در حال بارگذاری…</p>
+    </div>
+  </section>
+
+  <div class="admin-columns">
+    <section class="admin-section" aria-labelledby="cache-heading">
+      <div class="admin-section-head">
+        <h2 id="cache-heading">کش پرس‌وجو</h2>
+        <button class="admin-btn-refresh" data-refresh="cache" type="button" aria-label="بروزرسانی کش">↻</button>
+      </div>
+      <div id="cache-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </section>
+
+    <section class="admin-section" aria-labelledby="config-heading">
+      <div class="admin-section-head">
+        <h2 id="config-heading">پیکربندی دامنه</h2>
+        <button class="admin-btn-refresh" data-refresh="config" type="button" aria-label="بروزرسانی پیکربندی">↻</button>
+      </div>
+      <div id="config-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </section>
+  </div>
 
 </main>
 
-<footer class="foot">
-  <span>این صفحه هیچ پرس‌وجویی روی داده‌های انبار داده اجرا نمی‌کند و هیچ ردیف نتیجه‌ای نمایش نمی‌دهد.</span>
+<footer class="foot admin-foot">
+  <span>هیچ پرس‌وجویی روی انبار داده اجرا نمی‌شود و هیچ ردیف نتیجه‌ای اینجا نمایش داده نمی‌شود.</span>
   <span id="foot-time"></span>
 </footer>
 

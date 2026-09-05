@@ -180,39 +180,120 @@ function escapeHtml(s) {
   return div.innerHTML;
 }
 
+/** Format a rate that may arrive as 0..1, as a percentage, or as null. */
+function asPercent(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (Number.isNaN(n)) return null;
+  return n <= 1 ? n * 100 : n;
+}
+
+function statTile({ label, value, unit, sub, cls }) {
+  const u = unit ? `<span class="admin-stat-unit">${escapeHtml(unit)}</span>` : "";
+  const s = sub ? `<span class="admin-stat-sub" dir="ltr">${escapeHtml(sub)}</span>` : "";
+  return (
+    `<div class="admin-stat ${cls || ""}">` +
+    `<span class="admin-stat-label">${escapeHtml(label)}</span>` +
+    `<span class="admin-stat-value">${escapeHtml(value)}${u}</span>${s}</div>`
+  );
+}
+
 function renderSummary(report) {
   const body = $("summary-body");
+  const out = [];
+
   const modeClass = report.mode === "aggregate_with_examples" ? "examples" : "";
-  const rows = [];
-  rows.push(`<span class="admin-mode-pill ${modeClass}">${escapeHtml(report.mode)}</span>`);
-  rows.push(`<dl class="admin-kv">`);
-  rows.push(kv("تعداد رکوردها", report.record_count));
-  rows.push(kv("بازهٔ زمانی", `${report.time_range?.start ?? "—"} .. ${report.time_range?.end ?? "—"}`));
+  const modeLabel = report.mode === "aggregate_with_examples"
+    ? "شامل نمونهٔ سؤال‌های واقعی — این خروجی را بی‌ملاحظه از سرور خارج نکنید"
+    : "تجمیعی — بدون سؤال یا SQL خام";
+  out.push(`<span class="admin-mode-pill ${modeClass}">${escapeHtml(modeLabel)}</span>`);
+
+  // ── The figures, leading. ────────────────────────────────────────────
+  const tiles = [];
+  tiles.push(statTile({ label: "پرس‌وجوها", value: fmtNum(report.record_count ?? 0) }));
+
   const lat = report.latency?.overall_ms;
   if (lat && lat.count) {
-    rows.push(kv("تأخیر کلی (p50/p95/p99 ms)", `${lat.p50?.toFixed?.(0) ?? lat.p50} / ${lat.p95?.toFixed?.(0) ?? lat.p95} / ${lat.p99?.toFixed?.(0) ?? lat.p99}`));
+    tiles.push(statTile({
+      label: "تأخیر p50", value: fmtNum(Math.round(lat.p50)), unit: "ms",
+      sub: `p95 ${Math.round(lat.p95)} · p99 ${Math.round(lat.p99)}`,
+    }));
   }
+
   const ft = report.failure_taxonomy;
-  if (ft) {
-    rows.push(kv("موفق / ناموفق", `${ft.success_count} / ${ft.failure_count}`));
+  if (ft && (ft.success_count || ft.failure_count)) {
+    const total = ft.success_count + ft.failure_count;
+    const rate = total ? (ft.success_count / total) * 100 : 0;
+    tiles.push(statTile({
+      label: "نرخ موفقیت", value: rate.toFixed(1), unit: "٪",
+      sub: `${fmtNum(ft.failure_count)} ناموفق از ${fmtNum(total)}`,
+      cls: rate < 90 ? "is-degraded" : "",
+    }));
   }
-  const cb = report.cache_behaviour;
-  if (cb) {
-    rows.push(kv("نرخ کش T0", cb.t0_rate ?? "—"));
-    rows.push(kv("نرخ prefix cache hit", cb.prefix_cache_hit_rate ?? "—"));
+
+  const cb = report.cache_behaviour || {};
+  const t0 = asPercent(cb.t0_rate);
+  if (t0 !== null) {
+    tiles.push(statTile({ label: "پاسخ از کش", value: t0.toFixed(1), unit: "٪" }));
   }
-  rows.push(`</dl>`);
+
+  // The keystone: when prefix reuse breaks, nothing errors and every
+  // request pays full prefill. See admin.css's header.
+  const prefix = asPercent(cb.prefix_cache_hit_rate);
+  if (prefix !== null) {
+    tiles.push(statTile({
+      label: "بازاستفادهٔ prefix",
+      value: prefix.toFixed(1), unit: "٪",
+      sub: prefix < 50 ? "پایین — هر درخواست prefill کامل می‌دهد" : "سالم",
+      cls: prefix < 50 ? "is-degraded" : "is-keystone",
+    }));
+  }
+
+  const cr = report.correction_rounds;
+  if (cr && cr.total !== undefined) {
+    tiles.push(statTile({
+      label: "دورهای اصلاح", value: fmtNum(cr.total),
+      sub: cr.mean !== undefined ? `میانگین ${Number(cr.mean).toFixed(2)}` : "",
+    }));
+  }
+
+  out.push(`<div class="admin-stats">${tiles.join("")}</div>`);
+
+  const range = report.time_range || {};
+  if (range.start || range.end) {
+    out.push(
+      `<p class="admin-loading" dir="ltr">${escapeHtml(range.start ?? "—")} → ${escapeHtml(range.end ?? "—")}</p>`,
+    );
+  }
 
   if (report.records_by_model && Object.keys(report.records_by_model).length) {
-    rows.push('<p class="admin-section-title">رکورد به تفکیک مدل</p>');
-    rows.push('<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>مدل</th><th>تعداد</th></tr></thead><tbody>');
-    for (const [model, count] of Object.entries(report.records_by_model)) {
-      rows.push(`<tr><td dir="ltr">${escapeHtml(model)}</td><td>${count}</td></tr>`);
-    }
-    rows.push("</tbody></table></div>");
+    out.push('<p class="admin-section-title">به تفکیک مدل</p>');
+    out.push(twoColumnTable("مدل", "تعداد", Object.entries(report.records_by_model)));
   }
 
-  body.innerHTML = rows.join("");
+  const fr = report.finish_reason_distribution;
+  if (fr && Object.keys(fr).length) {
+    out.push('<p class="admin-section-title">دلیل پایان تولید</p>');
+    out.push(twoColumnTable("finish_reason", "تعداد", Object.entries(fr)));
+  }
+
+  body.innerHTML = out.join("");
+}
+
+function fmtNum(n) {
+  return Number(n).toLocaleString("fa-IR");
+}
+
+function twoColumnTable(headA, headB, entries) {
+  const rows = entries.map(
+    ([k, v]) =>
+      `<tr><td dir="ltr">${escapeHtml(k)}</td><td class="num">${escapeHtml(fmtNum(v))}</td></tr>`,
+  );
+  return (
+    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+    `<th>${escapeHtml(headA)}</th><th>${escapeHtml(headB)}</th>` +
+    `</tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+  );
 }
 
 function kv(label, value) {
@@ -226,35 +307,65 @@ function renderHealth(payload) {
     body.innerHTML = '<p class="admin-loading">هیچ بررسی‌ای ثبت نشده است.</p>';
     return;
   }
-  const rows = checks.map((c) => {
-    const cls = c.status === "PASS" ? "pass" : c.status === "FAIL" ? "fail" : "skip";
-    return `<tr>
-      <td>${escapeHtml(c.name)}</td>
-      <td><span class="admin-status-pill admin-status-${cls}">${escapeHtml(c.status)}</span></td>
-      <td>${escapeHtml(c.detail || "")}</td>
-    </tr>`;
-  });
-  body.innerHTML = (
-    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
-    "<th>بررسی</th><th>وضعیت</th><th>توضیح</th></tr></thead><tbody>" +
-    rows.join("") +
-    "</tbody></table></div>"
+
+  const failed = checks.filter((c) => c.status === "FAIL").length;
+  const passed = checks.filter((c) => c.status === "PASS").length;
+
+  // The count comes first and names the failures, so an operator who reads
+  // one line has read the thing that matters.
+  const summary = failed
+    ? `<p class="admin-rail-summary has-failures"><strong>${fmtNum(failed)} بررسی ناموفق</strong> از ${fmtNum(checks.length)}</p>`
+    : `<p class="admin-rail-summary"><strong>هر ${fmtNum(checks.length)} بررسی موفق</strong></p>`;
+
+  // Failures first: sorting by severity means the thing needing action is
+  // never below the fold on a narrow screen.
+  const order = { FAIL: 0, SKIP: 1, PASS: 2 };
+  const sorted = checks.slice().sort(
+    (a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3),
   );
+
+  const cards = sorted.map((c) => {
+    const cls = c.status === "PASS" ? "pass" : c.status === "FAIL" ? "fail" : "skip";
+    const mark = c.status === "PASS" ? "✓" : c.status === "FAIL" ? "✕" : "–";
+    const detail = c.detail
+      ? `<span class="admin-check-detail">${escapeHtml(c.detail)}</span>`
+      : "";
+    return (
+      `<div class="admin-check ${cls}">` +
+      `<span class="admin-check-mark" aria-hidden="true">${mark}</span>` +
+      `<span><span class="admin-check-name">${escapeHtml(c.name)}</span>` +
+      `<span class="admin-status-pill admin-status-${cls}" style="margin-inline-start:6px">${escapeHtml(c.status)}</span>` +
+      detail +
+      "</span></div>"
+    );
+  });
+
+  body.innerHTML = summary + cards.join("");
+  void passed;
 }
 
 function renderCache(stats) {
   const body = $("cache-body");
-  const rows = [
-    kv("فعال", stats.enabled),
-    kv("اندازهٔ فعلی", stats.size),
-    kv("hits", stats.hits),
-    kv("misses", stats.misses),
-    kv("evictions", stats.evictions),
+  const hits = Number(stats.hits ?? 0);
+  const misses = Number(stats.misses ?? 0);
+  const total = hits + misses;
+  const rate = total ? (hits / total) * 100 : null;
+
+  const tiles = [
+    statTile({ label: "اندازهٔ فعلی", value: fmtNum(stats.size ?? 0), sub: stats.max_size !== undefined ? `از ${fmtNum(stats.max_size)}` : "" }),
   ];
-  if (stats.sql_index_size !== undefined) rows.push(kv("اندازهٔ نمایهٔ SQL", stats.sql_index_size));
-  if (stats.max_size !== undefined) rows.push(kv("حداکثر اندازه", stats.max_size));
-  if (stats.ttl_seconds !== undefined) rows.push(kv("TTL (ثانیه)", stats.ttl_seconds));
-  body.innerHTML = `<dl class="admin-kv">${rows.join("")}</dl>`;
+  if (rate !== null) {
+    tiles.push(statTile({ label: "نرخ اصابت", value: rate.toFixed(1), unit: "٪", sub: `${fmtNum(hits)} / ${fmtNum(total)}` }));
+  }
+
+  const rows = [kv("فعال", stats.enabled ? "بله" : "خیر")];
+  rows.push(kv("evictions", fmtNum(stats.evictions ?? 0)));
+  if (stats.sql_index_size !== undefined) rows.push(kv("نمایهٔ SQL", fmtNum(stats.sql_index_size)));
+  if (stats.ttl_seconds !== undefined) rows.push(kv("TTL", `${fmtNum(stats.ttl_seconds)} s`));
+
+  body.innerHTML =
+    `<div class="admin-stats">${tiles.join("")}</div>` +
+    `<dl class="admin-kv">${rows.join("")}</dl>`;
 }
 
 function renderConfig(payload) {
@@ -266,12 +377,12 @@ function renderConfig(payload) {
     return `<tr>
       <td dir="ltr">${escapeHtml(f.file)}</td>
       <td><span class="admin-status-pill admin-status-${cls}">${escapeHtml(status)}</span></td>
-      <td>${f.count ?? "—"}</td>
+      <td class="num">${f.count === undefined || f.count === null ? "—" : escapeHtml(fmtNum(f.count))}</td>
       <td>${escapeHtml(f.error || "")}</td>
     </tr>`;
   });
   body.innerHTML = (
-    `<p class="admin-loading" dir="ltr">project_config_dir: ${escapeHtml(payload.project_config_dir || "")}</p>` +
+    `<p class="admin-loading" dir="ltr">${escapeHtml(payload.project_config_dir || "")}</p>` +
     '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
     "<th>فایل</th><th>وضعیت</th><th>تعداد ورودی</th><th>خطا</th></tr></thead><tbody>" +
     rows.join("") +
