@@ -191,11 +191,28 @@ async function refreshSessionsForMode() {
       const res = await api.listSessions();
       state.sessions = res.sessions || [];
     } catch {
-      // No v2 support yet, unreachable backend, or an expired key — the
-      // sidebar just shows no conversations rather than an error banner;
-      // askLive's own error handling covers the moment the analyst
-      // actually tries to do something.
+      // No v2 support yet, unreachable backend, a blocked cross-origin
+      // request, or an expired key — the sidebar just shows no
+      // conversations rather than an error banner; askLive's own error
+      // handling covers the moment the analyst actually tries to do
+      // something.
+      //
+      // The active session MUST be cleared, not merely left alone. This
+      // used to `return` here with state.sessionId untouched, so a failure
+      // to list left whatever was active before — and if the analyst had
+      // been in simulated mode, that was a scripted id from data.js. The
+      // next question then went to the real backend as
+      // POST /v2/sessions/s_demo_1404/turns: a demo id, invented locally,
+      // sent to a server that has never heard of it.
+      //
+      // Clearing it means ensureLiveSession() opens a real one on the next
+      // question, which is the only correct thing to do when this mode's
+      // own index could not be read.
       state.sessions = [];
+      state.sessionId = null;
+      persistSessionId(null);
+      resetTranscript();
+      renderTranscriptFromTurns([]);
       renderSessionSidebar();
       return;
     }

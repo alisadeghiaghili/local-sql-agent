@@ -124,6 +124,29 @@ except ImportError:  # pragma: no cover - exercised only when dependency missing
     pass
 
 
+#: Origins the bundled ``web/`` UI is documented to be served from, and the
+#: default for :attr:`Settings.cors_allowed_origins`.
+#:
+#: This used to default to empty -- the most restrictive choice, and the
+#: wrong one, because the layout this project *documents* is the API on one
+#: port and the static UI on another. A browser on 8080 calling 8000 is
+#: cross-origin, so the out-of-the-box experience was a preflight answered
+#: "400 Disallowed CORS origin", which every browser reports to the page as
+#: the uninformative "Failed to fetch". The UI showed API, LLM and DB all
+#: down while the CLI, which is not a browser and never sends an Origin,
+#: worked perfectly against the same server.
+#:
+#: Loopback only, and that is what makes it safe to default: a page cannot
+#: choose the ``Origin`` the browser sends, so allowing these helps only a
+#: page genuinely served from this machine's own 8080 -- and every route it
+#: could then reach still requires an API key. Anything else, including any
+#: non-loopback host, still has to be named explicitly.
+DEFAULT_CORS_ALLOWED_ORIGINS: tuple[str, ...] = (
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Immutable runtime settings resolved from environment variables."""
@@ -542,14 +565,21 @@ class Settings:
         default_factory=lambda: tuple(
             o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
         )
+        or DEFAULT_CORS_ALLOWED_ORIGINS
     )
     """Origins allowed to call this API cross-origin (``CORSMiddleware`` in
-    ``api/server.py``). Empty by default — most restrictive: no cross-origin
-    caller is allowed until an operator explicitly lists one or more origins
-    (comma-separated), e.g. ``CORS_ALLOWED_ORIGINS=http://localhost:8080``
-    for the bundled ``web/`` UI served locally. Same-origin requests never
-    need CORS at all, so this only matters for the split-origin deployment
-    ``web/README.md`` describes."""
+    ``api/server.py``), comma-separated.
+
+    Defaults to :data:`DEFAULT_CORS_ALLOWED_ORIGINS` — the loopback
+    origins the bundled ``web/`` UI is documented to be served from.
+    Setting the variable replaces that list entirely rather than adding
+    to it, so a real deployment naming its own origin does not silently
+    keep localhost allowed as well.
+
+    Same-origin requests never need CORS at all, so this only matters for
+    the split-origin layout ``web/README.md`` and
+    ``docs/fa/getting-started.md`` describe: the API on one port, the
+    static UI on another."""
 
     llm_structured_output: bool = field(
         default_factory=lambda: os.getenv("LLM_STRUCTURED_OUTPUT", "false").lower()

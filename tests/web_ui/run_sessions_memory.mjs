@@ -557,4 +557,67 @@ function lastCall() { return calls[calls.length - 1]; }
   console.log("[ok] a chip's display field resolves to its memory key, and an unrememberable field resolves to null rather than being pinned by label");
 }
 
+/* ── Scenario 11: a simulated session id must never survive into live mode,
+ * and a cross-origin transport failure must say so.
+ *
+ * Both come from one real incident. The UI was in live mode against a
+ * healthy backend; the CLI was answering questions against that same
+ * server. The UI showed API, LLM and DB all down and then posted
+ *
+ *   POST /v2/sessions/s_demo_1404/turns
+ *
+ * -- a session id invented by data.js, sent to a server that has never
+ * heard of it. Two separate defects stacked:
+ *
+ *   (a) the server's CORS allowlist was empty, so every call from the
+ *       page was refused at the preflight and the browser reported the
+ *       same opaque "Failed to fetch" it uses for a refused connection;
+ *   (b) when listing sessions failed, main.js returned early WITHOUT
+ *       clearing the active session, so whatever was active in simulated
+ *       mode stayed active in live mode.
+ *
+ * resolveActiveSessionId was never the problem -- it discards an id that
+ * is not in the index it is given. It was simply not being reached. This
+ * pins the invariant it enforces, so a future refactor that skips it
+ * again has something to fail against. ───────────────────────────────── */
+{
+  const { resolveActiveSessionId } = await import(pathToFileURL(stateMjsPath).href);
+  const { describeTransportFailure } = await import(pathToFileURL(apiMjsPath).href);
+
+  const SIMULATED_ID = "s_demo_1404";
+
+  assert.equal(
+    resolveActiveSessionId(SIMULATED_ID, []),
+    null,
+    "with no live sessions there is nothing to resume -- a scripted id must not be carried over",
+  );
+
+  const liveIndex = [
+    { session_id: "s_0a1b2c3d4e", last_active_at: "2026-09-05T10:00:00Z" },
+    { session_id: "s_1122334455", last_active_at: "2026-09-05T12:00:00Z" },
+  ];
+  const resolved = resolveActiveSessionId(SIMULATED_ID, liveIndex);
+  assert.notEqual(resolved, SIMULATED_ID, "a scripted id is not a real session and must never be selected");
+  assert.equal(resolved, "s_1122334455", "falling back to the most recently active real session");
+
+  // The transport message must name the actual suspect. "Failed to fetch"
+  // alone is what made this cost an afternoon.
+  globalThis.location = { href: "http://localhost:8080/", origin: "http://localhost:8080" };
+  const crossOrigin = describeTransportFailure(
+    "http://localhost:8000", "/v2/sessions", new Error("Failed to fetch"),
+  );
+  assert.ok(crossOrigin.includes("CORS_ALLOWED_ORIGINS"), "must name the setting that fixes it");
+  assert.ok(crossOrigin.includes("http://localhost:8080"), "must name the origin to allow");
+
+  const sameOrigin = describeTransportFailure(
+    "http://localhost:8080", "/v2/sessions", new Error("Failed to fetch"),
+  );
+  assert.ok(
+    !sameOrigin.includes("CORS_ALLOWED_ORIGINS"),
+    "a same-origin failure is not a CORS problem, and guessing at one would send the reader the wrong way",
+  );
+
+  console.log("[ok] a simulated session id never survives into a live index, and a cross-origin transport failure names CORS_ALLOWED_ORIGINS");
+}
+
 console.log("ALL_SCENARIOS_PASSED");

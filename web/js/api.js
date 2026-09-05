@@ -180,6 +180,45 @@ export class RateLimitError extends ApiError {
   }
 }
 
+/** Turn a fetch rejection into something a reader can act on.
+ *
+ * A browser reports every pre-response failure as the same opaque
+ * "Failed to fetch": connection refused, DNS failure, and a blocked
+ * cross-origin request are indistinguishable to the page, deliberately —
+ * telling a page *why* a cross-origin call was refused would itself leak
+ * information about the other origin.
+ *
+ * That indistinguishability cost a real deployment an afternoon. The API
+ * was healthy and the CLI was answering questions against it, while this
+ * UI showed API, LLM and DB all down: the server's CORS allowlist was
+ * empty, so the preflight came back "400 Disallowed CORS origin" and the
+ * browser handed the page nothing but "Failed to fetch".
+ *
+ * So when the UI is talking to a different origin than the page it is
+ * served from, say so and name the setting. The guess is stated as a
+ * guess — a refused connection produces the identical error, and claiming
+ * certainty about which one it is would just be a different lie.
+ */
+export function describeTransportFailure(baseUrl, path, err) {
+  const base = `Network error calling ${path}: ${err.message}`;
+  let crossOrigin = false;
+  try {
+    crossOrigin = new URL(baseUrl, location.href).origin !== location.origin;
+  } catch { /* an unparseable baseUrl is its own, more obvious problem */ }
+  if (!crossOrigin) return base;
+  return (
+    `${base}
+
+` +
+    `این صفحه از ${location.origin} سرو شده ولی به ${baseUrl} درخواست می‌دهد — ` +
+    `یعنی cross-origin. مرورگر دلیل واقعی را به صفحه نمی‌گوید، ولی دو حالت ` +
+    `محتمل است: بک‌اند بالا نیست، یا این origin در CORS_ALLOWED_ORIGINS ` +
+    `بک‌اند مجاز نشده. برای دومی این را در .env بگذارید و سرور را ری‌استارت کنید:
+` +
+    `    CORS_ALLOWED_ORIGINS=${location.origin}`
+  );
+}
+
 export class Api {
   /** @param {string} baseUrl */
   constructor(baseUrl) {
@@ -384,7 +423,7 @@ export class Api {
         headers,
       });
     } catch (err) {
-      throw new ApiError(`Network error calling ${path}: ${err.message}`, 0);
+      throw new ApiError(describeTransportFailure(this.baseUrl, path, err), 0);
     }
     if (res.status === 404) {
       throw new V2NotSupportedError(
