@@ -5,6 +5,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.3.0] — 2026-09-05
+
+### Added
+
+- **An admin panel, read-only.** Phase 1 of
+  `docs/admin-panel-architecture.md`: an `admin` capability on
+  `Principal`, four `GET` routes under `/admin`, and a dashboard at
+  `web/admin/`. Nothing in it mutates state — no key issuance, no ACL
+  change, no config edit, no cache invalidation.
+
+  Read-only is the point of a first cut. The architecture's §2.1 spends
+  its length on escalation paths that exist only because an admin can
+  change things; none apply yet. It needs no application database and no
+  role bootstrapping beyond one capability, which makes it safe to ship
+  during a deployment — which a write path is not.
+
+  `/admin/summary` calls `scripts/analyze_audit_log.py`'s `build_report`
+  directly rather than reimplementing any of it, and defaults to the
+  aggregate-safe mode with the report's own `mode` field passed through.
+  `/admin/health/checks` runs `verify_deployment`'s checks on demand.
+
+  `AUTH_REQUIRED=false` cannot confer the capability: the escape hatch
+  resolves to `ANONYMOUS`, which has none, and the dependency checks the
+  capability rather than short-circuiting on "auth is off".
+
+### Fixed
+
+- **The auth-coverage test had stopped covering `/v2` entirely.**
+  FastAPI 0.141 represents each `include_router()` as one opaque
+  `_IncludedRouter` whose `.path` is `None` instead of flattening its
+  sub-routes into `app.routes`. Dispatch is unaffected; introspection is
+  not.
+
+  `tests/test_auth.py` walked `app.routes` naively, so discovery had
+  silently fallen from *every route* to *the eight registered directly on
+  `app`* — zero `/v2/*` routes. The test whose entire purpose is "a route
+  added without auth fails automatically" had stopped looking at the
+  conversational API, and stayed green because its floor was `>= 8` and
+  it still found exactly eight.
+
+  A silently-narrowed security test is worse than a missing one: it
+  reports coverage it does not have. Discovery now recurses, and the
+  guard names the route families that must be covered rather than
+  counting, because a count cannot express "and it is still looking at
+  the conversational API". Coverage went from 8 routes to 23.
+
+- **Chart labels were drawn outside their own viewBox** — sinking out of
+  sight in some places, running past the edge in others. SVG neither
+  clips nor reflows text, so a label near a boundary simply disappears
+  and nothing errors.
+
+  Three causes: the ranked bar chart reserved a fixed 60px gutter for a
+  value label that can be a rial figure in the billions; the line chart
+  anchored its end-of-axis labels `middle` at the extreme positions,
+  putting half of each outside on both sides, and drew its focus label
+  above a point that is often the maximum; and `xAt` built its span from
+  one padding while starting from the other.
+
+  Value labels now move inside the bar when the gutter cannot hold them,
+  edge labels flip their anchor inward, and long category names truncate
+  with the full text kept in a `<title>`. The new test asserts geometry
+  rather than appearance, across hostile inputs and every framing.
+
+---
+
 ## [4.2.0] — 2026-09-05
 
 ### Added
