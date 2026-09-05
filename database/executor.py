@@ -127,10 +127,38 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
                 # setting an attribute that would silently do nothing.
                 setattr(raw_conn, profile.driver_level_timeout_attr, timeout_seconds)
 
-            _apply_session_setup(conn, dialect, timeout_seconds)
-
+            # begin() FIRST, then the session setup inside it.
+            #
+            # SQLAlchemy 2.0 autobegins a transaction on the connection's
+            # first statement. Issuing the session-timeout statement
+            # before begin() therefore left an implicit transaction
+            # already open, and the explicit begin() below raised:
+            #
+            #   InvalidRequestError: This connection has already
+            #   initialized a SQLAlchemy Transaction() object via begin()
+            #   or autobegin; can't call begin() here unless rollback()
+            #   or commit() is called first.
+            #
+            # -- on every query, against any dialect that has a session
+            # timeout statement configured (every one except SQLite).
+            #
+            # Nothing in the suite caught it because every unit test here
+            # substitutes the engine, and the integration tests that use a
+            # real one are gated behind RUN_LIVE_DB_TESTS. The autobegin
+            # is real SQLAlchemy behaviour, so only a real Connection
+            # exhibits it -- see tests/test_executor.py's
+            # TestRealConnectionTransaction, which drives a real SQLite
+            # engine for exactly this reason.
+            #
+            # Running the setup inside the transaction is also the better
+            # behaviour on its own terms: on PostgreSQL a plain SET is
+            # transactional, so the rollback below returns the pooled
+            # connection to its default timeout instead of leaking this
+            # query's value onto whoever borrows it next.
             transaction = conn.begin()
             try:
+                _apply_session_setup(conn, dialect, timeout_seconds)
+
                 if params is None:
                     result = conn.exec_driver_sql(sql)
                 else:

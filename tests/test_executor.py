@@ -239,3 +239,91 @@ class TestExecuteSqlParams:
 
     def test_execute_sql_params_is_a_distinct_callable_from_execute_sql(self):
         assert execute_sql_params is not execute_sql
+
+
+class TestRealConnectionTransaction:
+    """Drive a REAL SQLAlchemy connection, not a substituted one.
+
+    Every other test in this file replaces the engine, which is right for
+    what they assert but structurally blind to one whole class of bug: the
+    transaction lifecycle belongs to SQLAlchemy, so a mock cannot exhibit
+    it and cannot contradict it either.
+
+    That blindness shipped a real one. SQLAlchemy 2.0 autobegins a
+    transaction on a connection's first statement, so issuing the
+    session-timeout statement before ``conn.begin()`` left an implicit
+    transaction open and the explicit ``begin()`` raised
+    ``InvalidRequestError`` -- on *every* query, against every dialect
+    that has a session-timeout statement configured. The suite stayed
+    green: the unit tests mocked the engine, and the integration tests
+    that use a real one are gated behind ``RUN_LIVE_DB_TESTS``, which is
+    off by default and needs a warehouse nobody has in CI.
+
+    SQLite is used here because it is the one engine that needs no
+    server, and its profile is given a session-timeout statement it
+    actually accepts (``PRAGMA busy_timeout``) so that the ordering under
+    test is genuinely exercised -- SQLite's real profile has none, so
+    without this substitution the setup step would no-op and the test
+    would pass while proving nothing.
+    """
+
+    @staticmethod
+    def _sqlite_engine_with_rows():
+        from sqlalchemy import create_engine
+
+        engine = create_engine("sqlite:///:memory:")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE t (name TEXT, amount INTEGER)")
+            conn.exec_driver_sql("INSERT INTO t VALUES ('alpha', 10), ('beta', 20)")
+        return engine
+
+    @staticmethod
+    def _profile_with_session_setup():
+        """SQLite's real profile, but with a session statement SQLite accepts."""
+        import dataclasses
+
+        from security.dialects import get_dialect_profile
+
+        return dataclasses.replace(
+            get_dialect_profile("sqlite"),
+            session_timeout_statement="PRAGMA busy_timeout = {timeout_ms}",
+        )
+
+    def test_a_query_runs_when_the_dialect_has_a_session_timeout_statement(self):
+        engine = self._sqlite_engine_with_rows()
+        profile = self._profile_with_session_setup()
+
+        from config import override_settings
+
+        with override_settings(sql_dialect="sqlite", max_rows_returned=100):
+            with patch("database.executor.get_engine", return_value=engine), \
+                 patch("database.executor.get_dialect_profile", return_value=profile):
+                df = execute_sql("SELECT name, amount FROM t ORDER BY amount")
+
+        assert list(df["name"]) == ["alpha", "beta"], (
+            "the session-timeout statement autobegins a transaction; if it runs "
+            "before conn.begin() then begin() raises InvalidRequestError and no "
+            "query can execute at all"
+        )
+
+    def test_the_transaction_is_rolled_back_not_committed(self):
+        """The read-only contract still holds once the ordering is fixed."""
+        engine = self._sqlite_engine_with_rows()
+        profile = self._profile_with_session_setup()
+
+        from config import override_settings
+
+        with override_settings(sql_dialect="sqlite", max_rows_returned=100):
+            with patch("database.executor.get_engine", return_value=engine), \
+                 patch("database.executor.get_dialect_profile", return_value=profile):
+                # RETURNING so this goes down the same rows/keys path a
+                # SELECT does -- the point is the rollback, not the shape.
+                execute_sql("INSERT INTO t VALUES ('gamma', 30) RETURNING name")
+
+        with engine.connect() as conn:
+            remaining = conn.exec_driver_sql("SELECT COUNT(*) FROM t").scalar()
+        assert remaining == 2, (
+            "execute_sql must always roll back -- a write that reached this "
+            "layer must not survive it (the guard is what refuses writes; this "
+            "is the belt underneath it)"
+        )
