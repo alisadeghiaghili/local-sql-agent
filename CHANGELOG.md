@@ -5,6 +5,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.0.1] — 2026-09-04
+
+### Fixed
+
+- **A segmentation fault during interpreter shutdown, reported as a bare
+  exit code 139 underneath a green test summary.** `resolve_value`'s
+  deadline is deliberately soft — on a breach the caller stops waiting
+  and the query keeps running with its result discarded — but the query
+  ran in a module-level `ThreadPoolExecutor`, whose worker threads are
+  **not** daemons. `concurrent.futures` registers an `atexit` hook that
+  joins every one of them, so each breached deadline left a thread
+  guaranteed to be joined during interpreter finalisation, running
+  caller-supplied code against a process whose module globals were
+  already being torn down.
+
+  The work now runs in a daemon thread — the same conclusion
+  `retrieval/dimension_vocabulary.py` had already reached for its own
+  background refresh, and whose comment argues against exactly the pool
+  this removes. An abandoned daemon is cut off at exit rather than
+  joined.
+
+  Python 3.12 was not special as an interpreter: it is the only version
+  whose CI workflow runs the whole suite a second time for coverage, so
+  it had two chances per run at the race.
+
+### Added
+
+- `resolve_value_max_concurrency` (`RESOLVE_VALUE_MAX_CONCURRENCY`,
+  default 8) — the in-flight bound the removed pool provided as
+  `max_workers`, now read at call time. Waiting for a free slot spends
+  the caller's own `resolve_value_timeout_seconds`: a saturated resolver
+  reports a miss on time rather than queuing past its deadline.
+- `PYTHONFAULTHANDLER=1` in CI, so a finalisation crash dumps the
+  faulting stack instead of a bare exit code.
+- `pytest_sessionfinish` names every thread still alive when a test run
+  ends and flags any that is not a daemon. It does not fail the run —
+  lingering daemons here are deliberate — but the next crash of this
+  shape starts from a thread name instead of a guess.
+
+---
+
 ## [4.0.0] — 2026-09-04
 
 Everything between 3.2.0 and here: authentication, the conversational

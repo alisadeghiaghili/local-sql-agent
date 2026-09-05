@@ -38,6 +38,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Mapping
 
 import config as cfg
 
@@ -283,15 +284,35 @@ def resolve_principal(
     return match
 
 
-def scope_key(principal: Principal) -> str:
-    """The query-cache partition key for *principal* — Phase 8's cache seam.
+def scope_key(principal: Principal, memory_used: Mapping[str, str] | None = None) -> str:
+    """The query-cache partition key for *principal* — Phase 8's cache seam,
+    extended (§5) to also fold in the memory entries that influenced the
+    current query.
 
-    Two principals with identical data visibility (``denied_columns``)
-    share this key and therefore share cache entries; two with different
-    visibility can never collide. This is deliberately **not** the
-    principal's own id — keying on id directly would throw away all
-    cross-user cache sharing on a shared org tool where most questions
-    repeat (see the Phase 8 spec's rationale).
+    Two principals with identical data visibility (``denied_columns``) AND
+    identical *memory_used* share this key and therefore share cache
+    entries; two differing in either can never collide. This is
+    deliberately **not** the principal's own id — keying on id directly
+    would throw away all cross-user cache sharing on a shared org tool
+    where most questions repeat (see the Phase 8 spec's rationale).
+
+    Parameters
+    ----------
+    memory_used:
+        ``{key: value}`` for exactly the memory entries that actually
+        changed this turn's resolved filters (the ``used`` return value of
+        :func:`session.memory.apply_memory_to_assumptions`) — **not** the
+        caller's whole stored memory set. ``None`` (the default, and every
+        pre-§5 call site) omits memory from the key entirely, unchanged
+        from Phase 8's original behaviour.
+
+        Memory-derived filters change the answer, so two principals with
+        different stored preferences must never share a cache entry for a
+        query their memory actually influenced — but hashing the *entire*
+        memory set regardless of relevance would partition the cache per
+        principal for anyone who ever pinned anything, even on queries
+        their memory never touched, throwing away exactly the cross-user
+        sharing this function exists to preserve.
 
     Examples
     --------
@@ -303,6 +324,12 @@ def scope_key(principal: Principal) -> str:
     >>> scope_key(Principal(id="a", name="A", denied_columns=("X",))) == \\
     ...     scope_key(Principal(id="a", name="A", denied_columns=("Y",)))
     False
+    >>> scope_key(Principal(id="a", name="A")) == \\
+    ...     scope_key(Principal(id="a", name="A"), memory_used={"scope": "x"})
+    False
+    >>> scope_key(Principal(id="a", name="A"), memory_used={"scope": "x"}) == \\
+    ...     scope_key(Principal(id="b", name="B"), memory_used={"scope": "x"})
+    True
 
     Collision assumption
     ---------------------
@@ -311,7 +338,16 @@ def scope_key(principal: Principal) -> str:
     identically. This is treated as a non-issue rather than fixed with a
     length-prefixed/JSON encoding: a T-SQL identifier cannot contain a
     colon at all, so ``denied_columns`` (validated as plain column-name
-    strings by :func:`load_api_keys`) can never actually contain one.
+    strings by :func:`load_api_keys`) can never actually contain one. The
+    same reasoning covers *memory_used*: its keys are declared identifiers
+    (``project_config/memory_policy.yaml``) and its values are already
+    newline/control-character-free (:func:`session.memory.validate_memory_value`),
+    so a ``"|"``-joined ``key=value`` encoding cannot collide across two
+    genuinely different *memory_used* mappings for any value this codebase
+    ever stores.
     """
     joined = ":".join(sorted(principal.denied_columns)) or "all"
+    if memory_used:
+        memory_part = "|".join(f"{k}={v}" for k, v in sorted(memory_used.items()))
+        joined = f"{joined}#mem:{memory_part}"
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]

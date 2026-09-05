@@ -467,6 +467,77 @@ class Settings:
     to ``max_rows_returned * 100``, mirroring ``default_top_n``'s own
     fallback-to-``MAX_ROWS_RETURNED`` pattern above."""
 
+    # ── Phase 9: session persistence + cross-session memory ─────────────────
+    session_store_path: str = field(
+        default_factory=lambda: os.getenv("SESSION_STORE_PATH", "logs/sessions.db")
+    )
+    """SQLite file backing :class:`session.persistence.SessionPersistence`
+    (question, generated SQL, result column names/row_count/truncated, the
+    ``TurnMemory`` sidecar, and memory entries — never result rows; see that
+    module's docstring). Defaults to ``logs/sessions.db`` — ``*.db`` is
+    already gitignored, and ``logs/`` is where the audit log already lives,
+    so this introduces no new category of stored data. Empty string
+    disables persistence entirely: ``session.store.SessionStore`` then
+    behaves exactly as it did before this phase (TTL expiry deletes, no
+    rehydration, ``GET /v2/sessions`` reflects only the in-memory hot set).
+    Read once, at ``api.v2_routes.get_session_store``'s lazy-construction
+    time, like every other singleton-constructor setting in this codebase
+    (``session_ttl_seconds``, ``session_max_count``, ...)."""
+
+    session_retention_days: int = field(
+        default_factory=lambda: int(os.getenv("SESSION_RETENTION_DAYS", "30"))
+    )
+    """How long (days) a persisted conversation stays listable and
+    reopenable — the third, previously-conflated lifetime alongside
+    :attr:`session_prompt_turns` (the prompt window) and
+    :attr:`session_ttl_seconds` (how long the in-memory record stays hot).
+    ``session.store.SessionStore.purge_expired`` permanently deletes a
+    persisted session past this many days since its ``last_active_at``;
+    it does not affect the (much shorter) in-memory TTL, which only
+    demotes a session out of memory, never deletes it, when persistence is
+    attached."""
+
+    session_title_max_length: int = field(
+        default_factory=lambda: int(os.getenv("SESSION_TITLE_MAX_LENGTH", "80"))
+    )
+    """Cap on a session title's length — both the auto-derived title (the
+    first question, truncated at a word boundary) and a title supplied via
+    ``PATCH /v2/sessions/{sid}``. A title is presentation only: it is
+    validated under the same length/control-character rules as a memory
+    value (see :attr:`memory_value_max_length`) precisely because it is
+    user text of the same shape, but it never enters a prompt."""
+
+    memory_enabled: bool = field(
+        default_factory=lambda: os.getenv("MEMORY_ENABLED", "true").lower()
+        not in ("0", "false", "no")
+    )
+    """Master switch for cross-session memory (``docs/api-contract-v2.md``
+    §5). When ``False``, a stored entry is never applied to a turn's
+    assumptions/filters (``session.engine.TurnEngine.ask`` skips
+    :func:`session.memory.apply_memory_to_assumptions` entirely) — the
+    ``GET``/``PUT``/``DELETE /v2/memory*`` endpoints themselves are
+    unaffected, so an operator can disable the feature's *effect* without
+    losing an analyst's already-pinned entries."""
+
+    memory_max_entries_per_principal: int = field(
+        default_factory=lambda: int(os.getenv("MEMORY_MAX_ENTRIES_PER_PRINCIPAL", "20"))
+    )
+    """Cap on how many distinct memory keys one principal may have pinned
+    at once. Exceeding it on ``PUT /v2/memory/{key}`` (a *new* key; updating
+    an already-pinned key never counts against this cap) is an explicit
+    422, never a silent eviction of an older entry — see
+    ``docs/api-contract-v2.md`` §5."""
+
+    memory_value_max_length: int = field(
+        default_factory=lambda: int(os.getenv("MEMORY_VALUE_MAX_LENGTH", "120"))
+    )
+    """Default per-key cap on a memory value's length, in
+    ``project_config/memory_policy.yaml``'s absence of a narrower
+    ``max_length`` for that specific key. A memory value is untrusted text
+    that reaches the prompt's variable suffix (never the static prefix),
+    so it is also rejected outright for a newline or control character —
+    see ``session.memory.validate_memory_value``."""
+
     cors_allowed_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()

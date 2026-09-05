@@ -28,6 +28,7 @@ from scripts.verify_deployment import (
     check_audit_log_writable,
     check_project_config_loads,
     check_rate_limit_sane_for_deployment,
+    check_session_store_writable,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +120,35 @@ class TestCheckAuditLogWritable:
         bad_dir = str(blocker / "nested_logs")
         with override_settings(log_dir=bad_dir):
             result = check_audit_log_writable()
+        assert result.status == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# check_session_store_writable
+# ---------------------------------------------------------------------------
+
+class TestCheckSessionStoreWritable:
+    def test_skips_when_persistence_disabled(self):
+        with override_settings(session_store_path=""):
+            result = check_session_store_writable()
+        assert result.status == "SKIP"
+
+    def test_passes_for_writable_new_directory(self, tmp_path):
+        store_dir = tmp_path / "store"
+        db_path = store_dir / "sessions.db"
+        assert not store_dir.exists()
+        with override_settings(session_store_path=str(db_path)):
+            result = check_session_store_writable()
+        assert result.status == "PASS"
+        assert store_dir.exists()  # created as a side effect
+        assert list(store_dir.iterdir()) == []  # probe file removed, no db created
+
+    def test_fails_when_directory_cannot_be_created(self, tmp_path):
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        bad_path = str(blocker / "nested" / "sessions.db")
+        with override_settings(session_store_path=bad_path):
+            result = check_session_store_writable()
         assert result.status == "FAIL"
 
 

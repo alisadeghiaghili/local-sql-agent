@@ -74,22 +74,56 @@ Two hard requirements:
 
 ```
 POST   /v2/sessions                     → create
+GET    /v2/sessions                     → the caller's conversation index
+PATCH  /v2/sessions/{sid}               → rename (title only)
 GET    /v2/sessions/{sid}               → transcript
 DELETE /v2/sessions/{sid}               → drop (and free cached state)
 POST   /v2/sessions/{sid}/turns         → ask; returns a Turn
 POST   /v2/sessions/{sid}/turns?stream=1 → same, as SSE
 PATCH  /v2/sessions/{sid}/turns/{tid}/assumptions → re-run with edited assumptions
+GET    /v2/memory                       → the caller's entries + which keys are rememberable
+PUT    /v2/memory/{key}                 → set one entry
+DELETE /v2/memory/{key}                 → forget one
+DELETE /v2/memory                       → forget all
 GET    /health                          → unchanged
 ```
 
-Sessions are server-side, in-memory, TTL-bounded, and capped in count — same
+Sessions are server-side, TTL-bounded in memory, and capped in count — same
 discipline as the existing query cache. A session holds at most
 `session_max_turns` turns; older turns fall out of the prompt window but stay
-in the transcript.
+in the transcript. Optionally (on by default — see §9, §10) a session is
+*also* backed by SQLite: TTL expiry then only demotes the record out of the
+in-memory hot set, and `session_retention_days` (independent of the TTL)
+governs how long it stays listable/reopenable at all.
 
 `PATCH .../assumptions` is what makes the assumption chips in the UI
 interactive: the client sends back a modified assumption set and gets a fresh
 turn. It does not mutate the original turn.
+
+`GET /v2/sessions` — the conversation index, owner-scoped (a caller only ever
+sees sessions it created):
+
+```jsonc
+{"sessions": [
+  {"session_id": "s_0a1b2c3d4e",
+   "title": "معاملات مشتری‌های تالار سیمان را نشان بده",
+   "created_at": "2026-09-04T12:00:00Z",
+   "last_active_at": "2026-09-04T12:31:00Z",
+   "turn_count": 4,
+   "expires_at": "2026-10-04T12:31:00Z"}],
+ "total": 1}
+```
+
+`title` is derived from the first turn's question, truncated at a word
+boundary to `session_title_max_length` (80), and renameable via
+`PATCH /v2/sessions/{sid}` (`{"title": "..."}`). A title is user text under
+the same length/control-character rules as a memory value (§5), and it
+**never enters a prompt** — presentation only.
+
+`GET`/`DELETE /v2/sessions/{sid}` and `POST .../turns` keep the existing
+404-not-403 rule for a non-owner (§11.5) — a session created with no
+principal at all (`AUTH_REQUIRED=false`) stays reachable by anyone, exactly
+as before this phase.
 
 ---
 
@@ -145,7 +179,17 @@ turn. It does not mutate the original turn.
                  { "name": "TotalVolume",  "type": "number" } ],
     "rows": [ ... ],
     "row_count": 10,
-    "truncated": false
+    "truncated": false,
+    "rows_omitted": false            // true only for a turn rehydrated from
+                                      // disk (§9, §10) -- row VALUES are
+                                      // never persisted, so an older turn in
+                                      // a reopened conversation carries its
+                                      // shape (columns, row_count, truncated)
+                                      // but an empty `rows`. Additive,
+                                      // defaults false: an existing response
+                                      // is unchanged. A client must read
+                                      // this rather than inferring "0 rows"
+                                      // from an empty `rows` array.
   },
 
   "interpretation": "…",
@@ -179,6 +223,8 @@ fully-specified question.
 - Every assumption carries a `source`, and the source is shown in the UI:
   - `question` — extracted from what the user actually typed
   - `session`  — inherited from an earlier turn (builds trust in follow-ups)
+  - `memory`   — a standing preference the analyst explicitly pinned (§5.1),
+                 carried across sessions
   - `default`  — a configured fallback
   - `policy`   — a system rule the user cannot override (e.g. the §2 scope rule)
 - `clarifications` are *offers*, not gates. The UI renders them as one-click
@@ -187,6 +233,50 @@ fully-specified question.
 The only case that legitimately returns no result: the question cannot be
 mapped to the schema under any reasonable assumption. That is
 `error.code = "OUT_OF_SCOPE"`, which already exists.
+
+### 5.1 Memory — a standing preference across sessions
+
+An entry exists only because the analyst pinned it via `PUT /v2/memory/{key}`
+— nothing is inferred from repetition. The set of keys an analyst may pin is
+closed and declared in `project_config/memory_policy.yaml` (mirroring how
+`session_policy.yaml` externalises the default-scope rule); free-form memory
+(an arbitrary remembered sentence) is out of scope — it would be a
+prompt-injection channel with no schema to validate it against.
+
+Precedence, exactly:
+
+```
+question  >  session  >  memory  >  default
+policy: not overridable by any of them
+```
+
+A stored entry only ever replaces an already-`"default"`-sourced assumption
+for the same field, and is re-sourced `"memory"` — the existing assumption
+chip / `PATCH .../assumptions` machinery is how an analyst overrides it for
+one turn, without touching the stored preference. A memory entry naming a
+column is re-validated against the requesting principal's `denied_columns`
+on **every** turn that would apply it (the ACL can change after the entry was
+stored) — a now-denied entry is dropped for that turn and reported in
+`Turn.warnings`, never applied and never silently ignored.
+
+`GET /v2/memory`:
+
+```jsonc
+{"entries": [
+  {"key": "scope", "field": "ring", "value": "تالار سیمان",
+   "updated_at": "2026-09-04T12:00:00Z", "applicable": true}],
+ "rememberable": [
+  {"key": "scope", "field": "ring", "options": ["...", "..."],
+   "max_length": 120}]}
+```
+
+`applicable` is the read-time ACL re-check result: `false` means the entry is
+stored but the caller may no longer see the column it constrains. A value is
+capped at `memory_value_max_length` (default 120, or a narrower per-key
+`max_length`), rejects a newline/control character outright (`422`), and —
+where the key declares a closed option set — must be one of them (`422`).
+`memory_max_entries_per_principal` (default 20) exceeded by a *new* key is an
+explicit `422`, never a silent eviction of an older entry.
 
 ---
 
@@ -323,12 +413,12 @@ KV-cache reuse (see architecture Decision 1).
     turn t_03: question, SQL, result columns, row_count
     turn t_02: question, SQL, result columns, row_count
     (last session_prompt_turns turns; SQL + column names only — never row data)
-  resolved filters for this turn
+  resolved filters for this turn (memory-derived filters included here, §5.1)
   the new question
 [ /VARIABLE SUFFIX ]
 ```
 
-Two rules:
+Three rules:
 
 1. **Result columns go in the prompt, result rows do not.** Column names are
    what let the model resolve «از بین آن‌ها»; row data would leak business data
@@ -336,6 +426,13 @@ Two rules:
 2. The session block sits in the suffix, after the static prefix. Putting
    per-turn content anywhere in the prefix destroys cache reuse and silently
    undoes the entire Phase 2 latency win.
+3. **Memory-derived filters (§5.1) go in the suffix, with the other resolved
+   filters — never in the static prefix.** The static prefix is asserted
+   byte-identical whether or not the calling principal has any memory pinned
+   at all: breaking that is silent (the suite stays green, and every request
+   pays full prefill — roughly halving throughput with no failing test), so
+   this is exactly the kind of change rule 2 above already warns about,
+   applied to the newest source of per-turn content.
 
 ---
 
@@ -343,26 +440,60 @@ Two rules:
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `session_ttl_seconds` | 1800 | idle session expiry |
+| `session_ttl_seconds` | 1800 | idle-expiry window for the in-memory hot set |
 | `session_max_count` | 500 | cap concurrent sessions (memory bound) |
 | `session_max_turns` | 50 | transcript cap per session |
 | `session_prompt_turns` | 3 | how many prior turns enter the prompt |
 | `refinement_scan_cap` | `max_rows_returned * 100` | §2 inner-scan bound |
 | `default_top_n` | `max_rows_returned` | display cap |
+| `session_store_path` | `logs/sessions.db` | SQLite file for session + memory persistence; empty string disables it |
+| `session_retention_days` | 30 | how long a conversation stays listable/reopenable |
+| `session_title_max_length` | 80 | cap on a session title's length |
+| `memory_enabled` | `true` | master switch for §5.1 memory |
+| `memory_max_entries_per_principal` | 20 | cap on pinned keys per principal |
+| `memory_value_max_length` | 120 | default per-key cap on a memory value's length |
 
 All read through `cfg.settings` at call time, per the project's existing
 configuration contract.
+
+Three lifetimes, not two: `session_prompt_turns` (the prompt window — how many
+turns the model sees), `session_ttl_seconds` (the live context — how long the
+in-memory record stays hot), and `session_retention_days` (retention — how
+long a conversation stays listable/reopenable at all). Before persistence,
+the second and third were the same number, which is exactly why there was
+nothing to list: TTL expiry deleted the record outright. With a backend
+attached, TTL expiry instead *demotes* a session out of the hot set —
+rehydrated transparently, with `TurnResult.rows_omitted=true` on every
+rehydrated turn (§4) — and retention is the separate, much longer question of
+permanent deletion, enforced by a purge that runs once at start-up.
+
+Persistence defaults **on**. The file holds questions, generated SQL, and
+result column names/`row_count`/`truncated` — the same class of data the
+audit log has always written, in the same directory — never result rows
+(§4's `rows_omitted`, and see `session.persistence`'s module docstring for
+why: a persisted row cannot be re-checked against a principal's `denied_columns`
+if it changes after the row was written). `scripts/verify_deployment.py`
+checks the target directory is writable, beside its existing
+audit-log-writable check.
 
 ---
 
 ## 10. Out of scope for v2
 
-Deliberately excluded, with reasons:
+Two of the original three deferrals are now delivered — authentication (Phase
+8) landed, which was the stated precondition for cross-session memory, and a
+SQLite-backed store now survives a restart. What stays deliberately out of
+scope, and why:
 
-- **Cross-session memory / user profiles.** Needs authentication first
-  (Phase 7). Building it before authz means building it wrong.
-- **Session persistence across restarts.** In-memory is correct until there is
-  a reason to survive a deploy; adding a store now is unbacked complexity.
+- **Inference from repetition.** A memory entry (§5.1) exists only because the
+  analyst explicitly pinned it via `PUT /v2/memory/{key}`. Silently promoting
+  a repeated pattern to a standing preference the analyst never declared is
+  the exact failure this project treats as worse than an error — and it is
+  undebuggable, since they cannot inspect a rule they never stated.
+- **Free-form remembered text.** An arbitrary remembered sentence injected
+  into the prompt suffix is a prompt-injection channel with no schema to
+  validate it against. Memory is a closed, config-declared set of keys
+  (`project_config/memory_policy.yaml`) for exactly this reason.
 - **Agentic multi-step planning inside a turn.** That is Phase 6, tier T3.
   A session is turn-level state, not an agent loop — do not conflate them.
 
@@ -458,6 +589,17 @@ two with different visibility can never collide. Every all-access principal
 (the common case) shares one scope key, so today's hit rates are preserved.
 Implemented in `security.auth.scope_key`, threaded through
 `api.query_cache.QueryCache`'s question- and SQL-keyed stores alike.
+
+`scope_key` also takes an optional `memory_used` mapping (§5.1): the
+memory entries that actually influenced a query's resolved filters —
+never a principal's whole stored memory set, which would partition the
+cache per principal for anyone who ever pinned anything, even on queries
+their memory never touched. Two principals whose memory *did* influence a
+query never share an entry; two whose memory did *not* influence it still
+do. `POST /query` (v1) has no memory concept and calls `scope_key` with
+`memory_used` omitted, unchanged from Phase 8; the seam exists so a future
+cache tier over `/v2/sessions/*/turns` (currently uncached — see
+`session.engine.TurnEngine.ask`'s own note) can reuse it.
 
 ### 11.5 Session ownership
 
