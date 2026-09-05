@@ -916,6 +916,21 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .chart-axis-label { fill: var(--muted); font-family: "Vazirmatn", sans-serif; font-size: 10.5px; }
 .chart-value-label { fill: var(--ink); font-family: Consolas, monospace; font-size: 10.5px; font-weight: 600; }
 .chart-value-label.dim { fill: var(--muted); }
+
+/* A value label only moves inside its bar when the number is too long to
+ * fit in the gutter (see chart.js). Once it is sitting on the bar's own
+ * fill rather than on the page ground, --ink and --muted are the wrong
+ * colours in both themes -- the bar is a saturated brand hue in each. The
+ * paint-order stroke keeps it legible over the lighter context bars too,
+ * without needing a different colour per bar role. */
+.chart-value-label.inside { fill: #fff; }
+.chart-value-label.inside.dim {
+  fill: #fff;
+  paint-order: stroke;
+  stroke: var(--chart-context);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
 .chart-focus-label { fill: var(--chart-focus); font-family: "Vazirmatn", sans-serif; font-size: 11px; font-weight: 700; }
 .chart-refline { stroke: var(--border); stroke-width: 1; }
 

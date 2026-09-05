@@ -20,6 +20,13 @@ top of it:
   ``cfg.settings.auth_required`` is true; otherwise it degrades to
   :data:`~security.auth.ANONYMOUS` so the server keeps answering exactly
   as it did before this phase while the escape hatch is engaged.
+* :func:`require_admin` is the further-restricted dependency every
+  ``/admin/*`` route declares (admin panel phase 1 —
+  ``docs/admin-panel-architecture.md``). It layers on top of
+  :func:`require_principal`, so ``AUTH_REQUIRED=false`` is resolved to
+  :data:`~security.auth.ANONYMOUS` *first* and only then checked for the
+  admin capability — which ``ANONYMOUS`` never carries, so that escape
+  hatch can never confer it.
 
 ``GET /health`` deliberately uses neither: it stays open unconditionally
 and reads ``request.state.principal`` directly to decide whether to
@@ -30,13 +37,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import Request
+from fastapi import Depends, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
 import config as cfg
-from api.errors import UnauthenticatedError
+from api.errors import AdminRequiredError, UnauthenticatedError
 from security.auth import ANONYMOUS, ApiKeyConfigError, Principal, load_api_keys, resolve_principal
 
 logger = logging.getLogger(__name__)
@@ -91,6 +98,31 @@ def require_principal(request: Request) -> Principal:
         return principal or ANONYMOUS
     if principal is None:
         raise UnauthenticatedError("Missing or invalid API key.")
+    return principal
+
+
+def require_admin(principal: Principal = Depends(require_principal)) -> Principal:
+    """FastAPI dependency for every ``/admin/*`` route (admin panel phase 1).
+
+    Depends on :func:`require_principal` rather than re-reading
+    ``request.state`` itself, so the two dependencies can never disagree
+    about who the caller is, and so ``AUTH_REQUIRED``'s own enforcement
+    (401 for no/invalid credentials) always runs first: an admin route
+    must reject a missing key with 401, not 403, and only ask "is this
+    key an admin key" once a real principal is established.
+
+    Raises
+    ------
+    api.errors.AdminRequiredError
+        (403) when the resolved principal does not carry the ``admin``
+        capability (:attr:`~security.auth.Principal.is_admin`) — whether
+        that principal is a real, non-admin key or
+        :data:`~security.auth.ANONYMOUS` (the ``AUTH_REQUIRED=false``
+        escape hatch, which must never confer it — see
+        ``docs/admin-panel-architecture.md`` §2.3).
+    """
+    if not principal.is_admin:
+        raise AdminRequiredError("This API key does not have admin access.")
     return principal
 
 

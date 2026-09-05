@@ -21,6 +21,7 @@ surfacing as ``RequestValidationError`` (422), not as a 400.
   Layer             Exception                        HTTP  raised
   ───────────────   ──────────────────────────────   ────  ──────
   Auth              UnauthenticatedError              401  yes
+                    AdminRequiredError                403  yes
   Input validation  QuestionTooShortError             400  no
                     QuestionTooLongError              400  no
                     InvalidModeError                  400  no
@@ -92,6 +93,27 @@ class UnauthenticatedError(NLQError):
     """
     http_status = status.HTTP_401_UNAUTHORIZED
     error_code = "UNAUTHENTICATED"
+
+
+# ---------------------------------------------------------------------------
+# 403 Forbidden
+# ---------------------------------------------------------------------------
+
+class AdminRequiredError(NLQError):
+    """The caller authenticated with a real key, but that key does not
+    carry the ``admin`` capability (``docs/admin-panel-architecture.md``
+    §2; ``security.auth.Principal.is_admin``) — raised by
+    :func:`api.auth.require_admin` for every ``/admin/*`` route.
+
+    403, not 401: the credential itself was valid, it is simply
+    insufficient for this route, which is a different fact than "no
+    credential was presented/accepted" — so this does NOT carry the
+    ``WWW-Authenticate`` header ``UnauthenticatedError`` does (that header
+    tells a client *how* to authenticate; there is nothing more this
+    client's own key could present to fix a 403).
+    """
+    http_status = status.HTTP_403_FORBIDDEN
+    error_code = "ADMIN_REQUIRED"
 
 
 # ---------------------------------------------------------------------------

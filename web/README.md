@@ -200,6 +200,16 @@ web/
 │       ├── pipeline.js        # the 5-step pipeline list
 │       ├── table.js           # result table + warnings
 │       └── llm-status.js      # the §6 LLM status strip
+├── admin/                      # read-only admin panel, phase 1 (see
+│   │                           #   docs/admin-panel-architecture.md) —
+│   │                           #   a separate static page, not linked from
+│   │                           #   index.html; reuses js/apikey.js for
+│   │                           #   credentials (an admin key is just a key
+│   │                           #   with the `admin` capability)
+│   ├── index.html               # dashboard shell: four read-only cards
+│   ├── admin.css                 # admin-only layout, reuses styles/style.css's tokens
+│   ├── admin.js                   # GET /admin/* request layer (no writes, ever)
+│   └── main.js                     # DOM wiring / rendering for the four cards
 └── README.md
 ```
 

@@ -70,6 +70,17 @@ _BEARER_PREFIX = "Bearer "
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+#: The one capability the admin panel's phase 1 slice needs (read-only
+#: observability — ``docs/admin-panel-architecture.md`` §2/§3, restricted
+#: to the tier-2 "already computed, currently invisible" surface: audit
+#: summary, deployment checks, cache stats, config-load counts). The
+#: architecture document's eventual two-role split ("operations" vs.
+#: "security") would add further entries to :attr:`Principal.capabilities`
+#: alongside this one — a principal can already carry any number of them —
+#: so that split is additive to this shape, not a rewrite of it.
+ADMIN_CAPABILITY = "admin"
+
+
 @dataclass(frozen=True)
 class Principal:
     """The authenticated caller — ``docs/api-contract-v2.md``'s auth section.
@@ -101,17 +112,37 @@ class Principal:
            ``denied_columns=["NationalID"]`` gets a guard rejection, not
            just a private cache partition, if its generated SQL selects
            that column.
+    capabilities:
+        Named administrative capabilities this principal holds — empty
+        for every ordinary analyst key. Phase 1 of the admin panel
+        (``docs/admin-panel-architecture.md``) defines exactly one,
+        :data:`ADMIN_CAPABILITY`, checked by :func:`api.auth.require_admin`.
+        A set, not a single ``is_admin`` field, precisely so the
+        architecture document's later two-role split (operations/security)
+        is *additive* here — a second capability name joins the set — not
+        a rewrite of this dataclass's shape. Never populated for
+        :data:`ANONYMOUS`: the ``AUTH_REQUIRED=false`` escape hatch must
+        not confer any capability (see that constant's own docstring).
     """
 
     id: str
     name: str
     denied_columns: tuple[str, ...] = field(default_factory=tuple)
+    capabilities: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def is_admin(self) -> bool:
+        """Whether this principal carries :data:`ADMIN_CAPABILITY`."""
+        return ADMIN_CAPABILITY in self.capabilities
 
 
 #: The implicit principal used when ``AUTH_REQUIRED=false`` (the
 #: deliberate escape-hatch — see config.py) and no valid key was
 #: presented anyway. Carries no column restriction, same as "everyone"
-#: before this phase existed.
+#: before this phase existed, and — just as deliberately — no
+#: capabilities: the escape hatch that lets every caller through must
+#: never also hand every caller the admin surface (see
+#: ``docs/admin-panel-architecture.md`` §2.3).
 ANONYMOUS = Principal(id="anonymous", name="anonymous")
 
 
@@ -202,6 +233,26 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
                 f"{type(raw_denied).__name__}"
             )
 
+        # Admin panel, phase 1 (docs/admin-panel-architecture.md §2): a
+        # single, optional capability flag. Absent means false -- an
+        # ordinary analyst key gains no new surface just by this field
+        # existing in the schema. `bool` is checked explicitly (not
+        # merely truthy) for the same reason `denied_columns` rejects a
+        # bare string above: a typo like `"admin": "false"` (a non-empty
+        # string, therefore truthy) must fail loudly at parse time rather
+        # than silently granting the admin capability.
+        raw_admin = entry.get("admin")
+        if raw_admin is None:
+            is_admin = False
+        elif isinstance(raw_admin, bool):
+            is_admin = raw_admin
+        else:
+            raise ApiKeyConfigError(
+                f"API_KEYS_JSON[{i}].admin must be a JSON boolean (true/false) "
+                f"-- got {type(raw_admin).__name__}"
+            )
+        capabilities = frozenset({ADMIN_CAPABILITY}) if is_admin else frozenset()
+
         if principal_id in seen_ids:
             raise ApiKeyConfigError(
                 f"API_KEYS_JSON[{i}].id {principal_id!r} duplicates the id "
@@ -223,6 +274,7 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
 
         keys[normalized_hash] = Principal(
             id=principal_id, name=name, denied_columns=denied_columns,
+            capabilities=capabilities,
         )
     return keys
 
