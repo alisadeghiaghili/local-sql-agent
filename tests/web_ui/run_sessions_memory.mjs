@@ -49,6 +49,7 @@ if (!apiMjsPath || !tableMjsPath || !stateMjsPath || !sessionsMjsPath || !memory
 // derived rather than taking a 6th argv, same pattern as
 // apiMjsPath -> apikey.mjs below.
 const assumptionsMjsPathForPin = tableMjsPath.replace(/table\.mjs$/, "assumptions.mjs");
+const memoryMjsPathForKey = memoryMjsPath;
 
 /* ── Minimal DOM shim -- same primitives as run_result_shapes.mjs (no
  * jsdom dependency; web/ ships none). Extended with nothing new: table.js/
@@ -504,6 +505,56 @@ function lastCall() { return calls[calls.length - 1]; }
   assert.equal(JSON.parse(lastCall().body).value, pinned.value, "the PUT body must carry the exact value the chip showed");
 
   console.log("[ok] pinning an editable assumption fires onPin, and wiring it to api.putMemory issues an authenticated PUT /v2/memory/{key} with that value");
+}
+
+/* ── Scenario 10: a chip's display FIELD is not a memory KEY.
+ *
+ * Scenario 9 wires onPin straight into api.putMemory, which reads as
+ * correct only because its fixture picked a field ("ring") whose label
+ * and key happen to be the same string. In the real contract they are
+ * not: `rememberable` carries {key, field}, where `field` is the Persian
+ * label a chip shows and `key` is the identifier from the closed set
+ * project_config/memory_policy.yaml declares. Pinning by label would PUT
+ * /v2/memory/تالار against a backend that only accepts /v2/memory/scope,
+ * so the entire pin feature would 4xx while every other test stayed
+ * green.
+ *
+ * memoryKeyForField is the translation, and returning null is a real
+ * answer: a field nobody can remember must not be pinnable at all. ── */
+{
+  const { memoryKeyForField } = await import(pathToFileURL(memoryMjsPathForKey).href);
+
+  const rememberable = [
+    { key: "scope", field: "تالار", options: [], max_length: 120 },
+    { key: "measure", field: "سنجه", options: [], max_length: 120 },
+  ];
+
+  assert.equal(
+    memoryKeyForField(rememberable, "تالار"), "scope",
+    "a chip's Persian label must resolve to the config key the API expects",
+  );
+  assert.equal(
+    memoryKeyForField(rememberable, "سنجه"), "measure",
+    "every declared field must resolve, not just the first",
+  );
+  assert.equal(
+    memoryKeyForField(rememberable, "scope"), "scope",
+    "a caller that already holds the key must get it back unchanged",
+  );
+  assert.equal(
+    memoryKeyForField(rememberable, "row_limit"), null,
+    "a field outside the closed rememberable set is not pinnable, and must not be guessed at",
+  );
+  assert.equal(
+    memoryKeyForField([], "تالار"), null,
+    "an empty rememberable set means nothing is pinnable yet",
+  );
+  assert.equal(
+    memoryKeyForField(undefined, "تالار"), null,
+    "a missing rememberable set must not throw -- it is simply not loaded yet",
+  );
+
+  console.log("[ok] a chip's display field resolves to its memory key, and an unrememberable field resolves to null rather than being pinned by label");
 }
 
 console.log("ALL_SCENARIOS_PASSED");

@@ -24,7 +24,7 @@ import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
 import { createTurnCard } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
-import { renderMemoryPanel } from "./render/memory.js";
+import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -400,9 +400,10 @@ function closeMemoryPanel() {
   $("memory-toggle").setAttribute("aria-expanded", "false");
 }
 
-async function loadAndRenderMemory() {
+async function loadAndRenderMemory(opts = {}) {
   if (state.mode === "live") {
     if (!hasApiKey()) {
+      if (opts.quiet) return;
       promptForApiKey("برای مشاهدهٔ حافظهٔ تحلیلی، ابتدا کلید API خود را وارد کنید.");
       renderMemoryPanelBody({ entries: [], rememberable: [] });
       return;
@@ -416,7 +417,9 @@ async function loadAndRenderMemory() {
   } else if (!state.memory) {
     state.memory = JSON.parse(JSON.stringify(SCENARIO_MEMORY));
   }
-  renderMemoryPanelBody(state.memory);
+  // `quiet` is for the pin path, which needs the rememberable set loaded
+  // but must not disturb a panel the analyst has not opened.
+  if (!opts.quiet) renderMemoryPanelBody(state.memory);
 }
 
 function renderMemoryPanelBody(memory) {
@@ -705,7 +708,20 @@ async function pinLiveAssumption(field, value) {
     return;
   }
   try {
-    await api.putMemory(field, value);
+    // The analyst can pin without ever having opened the memory panel, so
+    // the rememberable set may not be loaded yet. Fetch it on demand
+    // rather than assuming the panel populated it.
+    const rem = () => (state.memory && state.memory.rememberable) || [];
+    if (!memoryKeyForField(rem(), field)) await loadAndRenderMemory({ quiet: true });
+    const key = memoryKeyForField(rem(), field);
+    if (key === null) {
+      showNotice(
+        "warn",
+        `«${field}» جزو مواردی نیست که بتوان به‌خاطر سپرد. فهرست موارد قابل ذخیره در پنل حافظه است.`,
+      );
+      return;
+    }
+    await api.putMemory(key, value);
     showNotice("ok", `مفروضهٔ «${field}: ${value}» به‌عنوان اولویت ثابت ذخیره شد — از این پس در گفتگوهای بعدی هم اعمال می‌شود.`);
     if (!$("memory-panel").hidden) await loadAndRenderMemory();
   } catch (err) {

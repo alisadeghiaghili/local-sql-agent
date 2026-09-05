@@ -64,6 +64,33 @@ export function validateMemoryValue(value, rememberableEntry) {
   return { ok: true, error: null };
 }
 
+/**
+ * Resolve an assumption's *display* field to its memory *key*, or null.
+ *
+ * These are two different things, and conflating them silently breaks the
+ * whole pin feature. `Assumption.field` is the human-readable label shown
+ * on a chip; a memory key is a config identifier from the closed set
+ * `project_config/memory_policy.yaml` declares. `PUT /v2/memory/{key}`
+ * takes the key, so pinning by label 4xxs on every field whose label and
+ * key are not the same string — which is most of them, since the labels
+ * are Persian and the keys are not.
+ *
+ * Returning null also means "not rememberable at all", which is not an
+ * error: memory is a closed set on purpose, so a chip for a field nobody
+ * can remember must not offer a pin that is guaranteed to fail.
+ *
+ * @param {import("../api.js").RememberableField[]} rememberable
+ * @param {string} field
+ * @returns {string|null}
+ */
+export function memoryKeyForField(rememberable, field) {
+  const list = rememberable || [];
+  const byField = list.find((r) => r.field === field);
+  if (byField) return byField.key;
+  const byKey = list.find((r) => r.key === field);
+  return byKey ? byKey.key : null;
+}
+
 function el(tag, className, text) {
   const e = document.createElement(tag);
   if (className) e.className = className;
