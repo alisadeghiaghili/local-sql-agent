@@ -6,7 +6,7 @@
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
 [![Tests](https://img.shields.io/badge/Tests-2079-green)](tests/)
-[![Version](https://img.shields.io/badge/Version-4.0.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-4.0.1-blue)](CHANGELOG.md)
 
 ---
 
