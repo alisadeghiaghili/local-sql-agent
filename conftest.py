@@ -40,6 +40,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import time
+
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent
@@ -86,35 +88,84 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
+#: How long :func:`pytest_sessionfinish` will wait, in total, for app-owned
+#: background threads to finish before giving up and naming them. Test-harness
+#: shutdown hygiene, not a tuning knob: too small and a healthy thread gets
+#: reported as stuck, too large and a genuinely wedged one hangs CI. Seconds.
+_THREAD_DRAIN_BUDGET_SECONDS = 10.0
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Name any thread still alive when the run ends.
+    """Drain app-owned background threads before the interpreter tears down.
 
-    A thread that outlives the session runs during interpreter
-    finalisation, against module globals and mocks that are already being
-    torn down. When that goes wrong the process dies with a bare exit
-    code 139 *after* pytest has printed a green summary -- no failing
-    test, no traceback. One such crash cost a CI investigation before
-    ``retrieval.value_resolver``'s abandoned workers were made daemons,
-    and Python 3.12 hit it most because it is the only version whose
-    workflow runs the whole suite a second time for coverage.
+    A daemon thread that is still *running* when finalisation begins is
+    killed at its next GIL acquisition. If that happens inside a C
+    extension call -- a pandas frame being built, a mock being invoked --
+    the process dies with a bare exit code 139 *after* pytest has printed
+    a green summary: no failing test, no traceback, nothing to act on.
+    Re-running passes, so it reads as a flake rather than a defect.
 
-    This does not fail the run. Some lingering threads are legitimate --
-    ``value_resolver``'s soft deadline abandons a worker on purpose, and
-    ``dimension_vocabulary``'s background refresh is fire-and-forget --
-    and both are daemons precisely so the interpreter may cut them off.
-    What was missing was any record of *which* thread was alive, so the
-    next exit-139 starts from a name instead of a guess.
+    Making those threads daemons (which
+    ``retrieval.value_resolver._run_under_deadline`` and
+    ``retrieval.dimension_vocabulary``'s background refresh both are)
+    fixes the *other* half of this -- a non-daemon thread is
+    unconditionally joined during finalisation, which is strictly worse.
+    It does not fix this half. Being a daemon means the interpreter is
+    *allowed* to cut the thread off; it does not make being cut off safe.
+
+    So join them here instead, while the interpreter is still healthy and
+    a join is an ordinary operation. A thread that finishes normally
+    before finalisation cannot be killed mid-call during it.
+
+    Two details matter:
+
+    * The background-refresh trigger is switched off first, so a thread
+      cannot start while others are being drained -- otherwise the drain
+      races the thing it is draining.
+    * The budget is bounded. A thread that will not finish is reported by
+      name rather than hanging the run: the point is to make the next
+      exit-139 start from a name instead of a guess, not to trade a crash
+      for a hang.
     """
     import threading
 
+    try:
+        from retrieval.dimension_vocabulary import set_background_refresh_enabled
+
+        set_background_refresh_enabled(False)
+    except Exception:  # noqa: BLE001 - draining must never fail a finished run
+        pass
+
     main = threading.main_thread()
-    lingering = [t for t in threading.enumerate() if t is not main and t.is_alive()]
+
+    def _live() -> list[threading.Thread]:
+        return [t for t in threading.enumerate() if t is not main and t.is_alive()]
+
+    lingering = _live()
     if not lingering:
+        return
+
+    deadline = time.monotonic() + _THREAD_DRAIN_BUDGET_SECONDS
+    for t in lingering:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            t.join(timeout=remaining)
+        except RuntimeError:  # pragma: no cover - join of a not-yet-started thread
+            pass
+
+    survivors = _live()
+    if not survivors:
         return
 
     writer = session.config.get_terminal_writer()
     writer.line("")
-    writer.line(f"threads still alive at session end ({len(lingering)}):", yellow=True)
-    for t in lingering:
+    writer.line(
+        f"threads still alive after a {_THREAD_DRAIN_BUDGET_SECONDS:g}s drain "
+        f"({len(survivors)}):",
+        yellow=True,
+    )
+    for t in survivors:
         kind = "daemon" if t.daemon else "NON-DAEMON -- will be joined at exit"
-        writer.line(f"  {t.name}: {kind}", yellow=not t.daemon)
+        writer.line(f"  {t.name}: {kind}", yellow=True)
