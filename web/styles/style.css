@@ -235,17 +235,10 @@ button { font-family: inherit; }
 }
 .mode-btn.active { background: var(--teal); color: #fff; }
 
-.live-base-row { display: flex; gap: 6px; align-items: center; }
-.live-base-input {
-  min-width: 0; width: 210px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); color: #fff;
-}
-.live-base-input::placeholder { color: #cbd5e1; }
-.live-base-connect {
-  border: 1px solid rgba(255, 255, 255, .3); border-radius: 8px;
-  background: transparent; color: #e2e8f0; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-}
-.live-base-connect:hover { background: rgba(255, 255, 255, .12); }
+/* The backend base-URL row (.live-base-row/-input/-connect) used to live
+ * here — removed along with its markup in index.html (see that file's
+ * comment): it was deployment configuration, not an analyst-facing
+ * control. Still configurable — see web/js/config.js. */
 
 .live-key-row { display: flex; gap: 6px; align-items: center; }
 .live-key-status {

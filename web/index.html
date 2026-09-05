@@ -6,6 +6,7 @@
 <title>عامل هوشمند SQL — گفتگوی تحلیلی</title>
 <link rel="stylesheet" href="styles/fonts.css">
 <link rel="stylesheet" href="styles/style.css">
+<link rel="stylesheet" href="assets/vendor/prism-sql-theme.css">
 </head>
 <body>
 
@@ -19,13 +20,18 @@
   </div>
   <div class="topbar-right">
     <div class="mode-switch" id="mode-switch" role="group" aria-label="حالت اجرا">
-      <button class="mode-btn active" data-mode="simulated" id="mode-simulated" type="button">نمایشی</button>
-      <button class="mode-btn" data-mode="live" id="mode-live" type="button">زندهٔ API</button>
+      <button class="mode-btn" data-mode="simulated" id="mode-simulated" type="button">نمایشی</button>
+      <button class="mode-btn active" data-mode="live" id="mode-live" type="button">زندهٔ API</button>
     </div>
-    <div class="live-base-row" id="live-base-row" hidden>
-      <input type="text" id="live-base-input" dir="ltr" aria-label="نشانی بک‌اند" class="live-base-input">
-      <button class="live-base-connect" id="live-base-connect" type="button">اتصال</button>
-    </div>
+    <!-- The backend base-URL control used to live here (#live-base-row).
+         It was deployment configuration, not something an analyst should
+         see or set — a wrong value there looks exactly like a dead
+         backend. It is still configurable (see web/js/config.js's
+         DEFAULT_BASE_URL, the `?base=` URL param, and the persisted
+         localStorage value — web/js/state.js), just no longer as a
+         top-bar control every analyst sees. The API-key field below is
+         NOT part of that — it is the analyst's own identity, not
+         deployment config, so it stays. -->
     <div class="live-key-row" id="live-key-row" hidden>
       <span class="live-key-status" id="live-key-status"></span>
       <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید API خود را وارد کنید" autocomplete="off">
@@ -96,10 +102,19 @@
 </div>
 
 <footer class="foot">
-  <span id="foot-mode">حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.</span>
+  <!-- Placeholder only -- js/main.js's setMode() overwrites this immediately
+       on load, per the real default in web/js/state.js ("live"). -->
+  <span id="foot-mode">حالت زندهٔ API — در حال بررسی اتصال به بک‌اند...</span>
   <span id="foot-time"></span>
 </footer>
 
+<!-- Vendored locally, no CDN (offline requirement — see web/README.md).
+     Presentation only: web/js/render/turn.js falls back to plain,
+     unhighlighted text if this fails to load or throws, and the
+     copy button always copies the exact original SQL text regardless
+     of whether highlighting ran — see that file's comment. -->
+<script src="assets/vendor/prism.min.js" data-manual></script>
+<script src="assets/vendor/prism-sql.min.js" data-manual></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>
