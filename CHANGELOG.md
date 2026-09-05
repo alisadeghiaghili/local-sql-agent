@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.1.3] — 2026-09-05
+
+### Documentation
+
+- **The setup guide listed `OPENAI_API_KEY` among four values to fill
+  in, which reads as required. It is not.** `Settings.validate()` demands
+  only `OPENAI_MODEL` and `DB_CONNECTION_URL`, and `.env.example` has
+  always shipped the LLM key empty — because most local
+  OpenAI-compatible servers (LM Studio, Ollama, llama.cpp) check no
+  credentials at all.
+
+  So on a local-model deployment there is exactly **one** real token in
+  the whole system: the analyst's key. The three-row table in the guide
+  shows three *places*, not three secrets.
+
+  Saying otherwise sent people looking for a credential their model
+  server never asked for, and invited the genuinely dangerous shortcut of
+  reusing the analyst key for it. The guide now states, explicitly, that
+  the two must never share a value: they point in opposite directions —
+  `OPENAI_API_KEY` is what this server presents *outward* to the model,
+  the analyst key is what a browser presents *inward* to this server —
+  and many model servers log the `Authorization` header they receive.
+
+- `tests/test_local_model_needs_no_llm_key.py` pins the claim rather than
+  leaving it to drift. Three things in three different modules have to
+  hold for that advice to be true: `validate()` must not demand the key,
+  the provider must omit the header when it is empty, and the health
+  probe must do the same. The last of those was false until 4.1.2.
+
+---
+
 ## [4.1.2] — 2026-09-05
 
 ### Fixed
