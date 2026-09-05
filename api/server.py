@@ -19,6 +19,10 @@ POST /cache/clear
 
 POST /cache/invalidate
     Evict a single (question, mode) entry from the cache.
+
+GET  /admin/summary, /admin/health/checks, /admin/cache, /admin/config
+    Read-only operator observability, admin-capability-gated — see
+    ``api/admin_routes.py`` and ``docs/admin-panel-architecture.md``.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
+import api.admin_routes as admin_routes
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
 import api.v2_routes as v2_routes
 # Only register_handlers is needed here: the typed exceptions are raised in
@@ -247,6 +252,9 @@ app.add_middleware(
 
 # --- v2 conversational session routes (docs/api-contract-v2.md §3) ---
 app.include_router(v2_routes.router)
+
+# --- Admin panel, phase 1: read-only observability (docs/admin-panel-architecture.md) ---
+app.include_router(admin_routes.router)
 
 # --- Exception handlers ---
 register_handlers(app)

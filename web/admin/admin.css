@@ -1,0 +1,412 @@
+/* web/admin/admin.css — admin panel.
+ *
+ * Every colour token, plus .topbar, .live-key-row, .theme-toggle, .foot and
+ * the light/dark custom properties, come from ../styles/style.css unchanged.
+ * This file adds only what a dashboard needs and a chat transcript does not.
+ *
+ * Three decisions worth stating, because each encodes something true rather
+ * than decorating:
+ *
+ * 1. NAVY IS THE ADMIN'S CHROME. The analyst UI leads with teal. Reusing
+ *    that here would let an operator lose track of which surface they are
+ *    on -- and one of these two can eventually change who sees what data.
+ *    Navy is already in the shared palette, so this differentiates within
+ *    the system rather than inventing a second visual language.
+ *
+ * 2. NOT EVERYTHING IS A CARD. This started as four equal cards in a grid,
+ *    which flattens hierarchy: a failing deployment check looked exactly as
+ *    urgent as a cache size. Border, fill and shadow are spent by role now.
+ *    The deployment checks and the headline figures are lifted; the two
+ *    detail tables underneath are plain sections.
+ *
+ * 3. THE PREFIX-CACHE RATE IS EMPHASISED ON PURPOSE. It is the metric
+ *    docs/admin-panel-architecture.md names as the silent failure: when
+ *    prefix reuse breaks, every request pays full prefill and nothing
+ *    errors. A number nobody looks at cannot warn anyone, so it is given
+ *    the weight its consequences have. */
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+
+.admin-layout {
+  flex: 1;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px 20px 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+}
+
+.admin-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 26px;
+  align-items: start;
+}
+
+.admin-section { min-width: 0; }
+
+.admin-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 12px;
+  padding-block-end: 8px;
+  border-block-end: 1px solid var(--border);
+}
+
+.admin-section-head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
+.admin-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── Admin chrome: navy, not the analyst UI's teal ──────────────────── */
+
+.admin-mark {
+  background: var(--navy);
+  color: #fff;
+}
+
+.admin-topbar { border-block-end: 2px solid var(--navy); }
+
+.admin-refresh-all,
+.admin-btn-refresh {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82rem;
+  padding: 6px 12px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.admin-btn-refresh {
+  padding: 2px 9px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.admin-refresh-all:hover,
+.admin-btn-refresh:hover {
+  background: var(--card-2);
+  border-color: var(--navy-3);
+  color: var(--ink);
+}
+
+.admin-refresh-all:focus-visible,
+.admin-btn-refresh:focus-visible,
+.admin-toggle input:focus-visible {
+  outline: 2px solid var(--navy-3);
+  outline-offset: 2px;
+}
+
+.admin-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ── Deployment checks: a severity stripe, read before any number ───── */
+
+.admin-rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.admin-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  /* The stripe is the state. Colour alone would fail a colour-blind
+   * reader, so the label carries the word too. */
+  border-inline-start: 3px solid var(--status-neutral);
+  min-width: 0;
+}
+
+.admin-check.pass { border-inline-start-color: var(--status-good); }
+.admin-check.fail {
+  border-inline-start-color: var(--status-critical);
+  background: var(--status-critical-bg);
+}
+.admin-check.skip { border-inline-start-color: var(--status-neutral); }
+
+.admin-check-name {
+  font-size: 0.8rem;
+  color: var(--ink);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.admin-check-detail {
+  font-size: 0.74rem;
+  color: var(--muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.admin-check-mark {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  font-weight: 700;
+}
+.admin-check.pass .admin-check-mark { color: var(--status-good); }
+.admin-check.fail .admin-check-mark { color: var(--status-critical); }
+.admin-check.skip .admin-check-mark { color: var(--status-neutral); }
+
+.admin-rail-summary {
+  grid-column: 1 / -1;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0 0 2px;
+}
+.admin-rail-summary strong { color: var(--ink); }
+.admin-rail-summary.has-failures strong { color: var(--status-critical); }
+
+/* ── Headline figures ───────────────────────────────────────────────── */
+
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-block-end: 16px;
+}
+
+.admin-stat {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.admin-stat-label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  margin-block-end: 5px;
+}
+
+.admin-stat-value {
+  display: block;
+  font-size: 1.42rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  text-align: start;
+}
+
+.admin-stat-unit {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--muted);
+  margin-inline-start: 3px;
+}
+
+.admin-stat-sub {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-block-start: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one figure whose failure is silent — see this file's header. */
+.admin-stat.is-keystone {
+  border-color: var(--navy-3);
+  box-shadow: inset 0 0 0 1px var(--navy-3);
+}
+.admin-stat.is-keystone .admin-stat-value { color: var(--navy-3); }
+.admin-stat.is-degraded {
+  border-color: var(--status-warn);
+  box-shadow: inset 0 0 0 1px var(--status-warn);
+  background: var(--status-warn-bg);
+}
+.admin-stat.is-degraded .admin-stat-value { color: var(--status-warn); }
+
+/* ── Tables ─────────────────────────────────────────────────────────── */
+
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 8px 11px;
+  text-align: start;
+  border-block-end: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.admin-table thead th {
+  background: var(--card-2);
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+
+.admin-table tbody tr:last-child th,
+.admin-table tbody tr:last-child td { border-block-end: none; }
+
+.admin-table td.num {
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  text-align: start;
+}
+
+/* ── Key/value list ─────────────────────────────────────────────────── */
+
+.admin-kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.admin-kv dt,
+.admin-kv dd {
+  margin: 0;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+  border-block-end: 1px solid var(--border);
+}
+
+.admin-kv dt { color: var(--muted); white-space: nowrap; }
+
+.admin-kv dd {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.admin-kv dt:nth-last-of-type(1),
+.admin-kv dd:nth-last-of-type(1) { border-block-end: none; }
+
+/* ── Pills, banners, states ─────────────────────────────────────────── */
+
+.admin-status-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.71rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.admin-status-pass {
+  background: var(--status-good-bg);
+  color: var(--status-good);
+}
+.admin-status-fail {
+  background: var(--status-critical-bg);
+  color: var(--status-critical);
+}
+.admin-status-skip {
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral);
+}
+
+.admin-mode-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.71rem;
+  font-weight: 700;
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral);
+  margin-block-end: 12px;
+  direction: ltr;
+}
+
+/* The opt-in mode attaches verbatim questions to the report. Saying so at
+ * a glance matters: that is the mode whose output must not leave the
+ * server casually. */
+.admin-mode-pill.examples {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+}
+
+.admin-banner {
+  border-radius: 10px;
+  padding: 11px 14px;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  border: 1px solid var(--border);
+}
+
+.admin-banner-warn {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+  border-color: var(--status-warn);
+}
+
+.admin-loading {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0;
+  padding: 10px 0;
+}
+
+.admin-section-title {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 700;
+  margin: 16px 0 8px;
+  letter-spacing: 0.02em;
+}
+
+.admin-foot { border-block-start: 1px solid var(--border); }
+
+@media (max-width: 640px) {
+  .admin-layout { padding: 16px 13px 32px; gap: 20px; }
+  .admin-stat-value { font-size: 1.2rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-refresh-all,
+  .admin-btn-refresh { transition: none; }
+}

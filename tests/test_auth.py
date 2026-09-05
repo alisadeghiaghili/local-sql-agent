@@ -132,26 +132,68 @@ _OPEN_ROUTES = {
 }
 
 
+#: Route families this test must always be covering. A count-based floor
+#: cannot express "and it is still looking at the conversational API",
+#: which is exactly how the gap below stayed hidden.
+_MUST_COVER_PREFIXES = ("/query", "/cache/", "/v2/", "/admin/")
+
+
+def _iter_live_routes(app):
+    """Yield ``(method, path)`` for every route *app* actually serves.
+
+    Recurses into ``app.include_router(...)``-included sub-routers,
+    because a flat walk of ``app.routes`` no longer sees them.
+
+    FastAPI 0.141 represents each included router as one opaque
+    ``_IncludedRouter`` entry whose own ``.path`` is ``None``, instead of
+    flattening its sub-routes into the top-level list the way earlier
+    versions did. Starlette's dispatch is unaffected -- only
+    introspection is.
+
+    This function exists because of what that did to the test below.
+    Discovery silently dropped from "every route" to "the ten registered
+    directly on ``app``": **zero** ``/v2/*`` routes, and later zero
+    ``/admin/*`` routes. The test whose entire purpose is "a route added
+    without auth fails automatically" had stopped looking at the
+    conversational API altogether, and stayed green because its floor was
+    ``>= 8`` and it still found exactly eight.
+
+    A silently-narrowed security test is worse than a missing one: it
+    reports coverage it does not have.
+    """
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None) or set()
+        if path:
+            for method in methods:
+                yield method, path
+            continue
+        nested = getattr(route, "original_router", None)
+        if nested is None:
+            continue
+        for nested_route in nested.routes:
+            nested_path = getattr(nested_route, "path", None)
+            if not nested_path:
+                continue
+            for method in getattr(nested_route, "methods", None) or set():
+                yield method, nested_path
+
+
 def _protected_route_cases() -> list[tuple[str, str, dict | None]]:
-    """Every (method, concrete_path, body) pair in ``app.routes`` except
+    """Every (method, concrete_path, body) pair the app serves except
     :data:`_OPEN_ROUTES` -- discovered from the live route table, not
     hand-copied, so a route added later without auth fails this test
     automatically."""
     import api.server as server_module
 
     cases: list[tuple[str, str, dict | None]] = []
-    for route in server_module.app.routes:
-        path = getattr(route, "path", None)
-        methods = getattr(route, "methods", None) or set()
-        if not path or path in _OPEN_ROUTES:
+    for method, path in _iter_live_routes(server_module.app):
+        if path in _OPEN_ROUTES or method in ("HEAD", "OPTIONS"):
             continue
         concrete = path
         for k, v in _PATH_FILL.items():
             concrete = concrete.replace("{" + k + "}", v)
-        for method in methods:
-            if method in ("HEAD", "OPTIONS"):
-                continue
-            cases.append((method, concrete, _BODY_FOR.get((method, path))))
+        cases.append((method, concrete, _BODY_FOR.get((method, path))))
     return cases
 
 
@@ -159,10 +201,27 @@ _PROTECTED_CASES = _protected_route_cases()
 
 
 class TestEveryProtectedRouteRequiresAuth:
-    def test_route_discovery_found_something(self):
-        # Guards against the parametrize below going vacuously green if
-        # route discovery itself silently returns nothing.
-        assert len(_PROTECTED_CASES) >= 8
+    def test_discovery_still_covers_every_route_family(self):
+        """Assert *what* was discovered, not how much.
+
+        The previous guard was ``len(...) >= 8``. When FastAPI stopped
+        exposing included routers in ``app.routes``, discovery fell to
+        exactly the eight routes registered directly on ``app`` -- so the
+        floor was met, the suite stayed green, and every ``/v2/*`` route
+        went uncovered without a single failure.
+
+        A count cannot catch that. Naming the families can.
+        """
+        discovered = {path for _, path, _ in _PROTECTED_CASES}
+        missing = [
+            prefix for prefix in _MUST_COVER_PREFIXES
+            if not any(p.startswith(prefix) for p in discovered)
+        ]
+        assert missing == [], (
+            f"route discovery is no longer seeing {missing} -- this test "
+            "reports auth coverage it does not have. Discovered: "
+            f"{sorted(discovered)}"
+        )
 
     @pytest.mark.parametrize(
         "method,path,body", _PROTECTED_CASES,
