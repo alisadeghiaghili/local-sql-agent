@@ -330,4 +330,118 @@ assert.equal(chooseFocus([], "line").rule, "none", "an empty series has no rule 
 
 console.log("[ok] chooseFramings rejects (never omits) pie once illegible; chooseFocus always names its basis");
 
+/* ── Scenario: no chart label may be drawn outside its own viewBox.
+ *
+ * SVG neither clips nor reflows text. A label positioned near an edge does
+ * not wrap or truncate -- it renders past the boundary and is simply gone.
+ * Both directions of that were live:
+ *
+ *   - the ranked bar chart reserved a fixed 60px gutter for its value
+ *     label, which holds "1,240" and not a rial figure in the billions, so
+ *     the number ran off the right edge;
+ *   - the line chart anchored its end-of-axis labels `middle` at the
+ *     extreme x positions, putting half of each label outside the box on
+ *     both sides, and drew the focus label above a point that could be the
+ *     maximum -- i.e. above the top edge.
+ *
+ * Asserting geometry rather than appearance is the point: this checks that
+ * every text node's estimated box lies within the viewBox, for inputs
+ * chosen to stress each edge. A screenshot could not be asserted on, and
+ * asserting exact coordinates would break on any legitimate layout change.
+ * ─────────────────────────────────────────────────────────────────────── */
+{
+  const { renderResult } = await import(pathToFileURL(tableMjsPath).href);
+
+  // Deliberately hostile: huge values (long labels), a long category name,
+  // and a maximum at the last point so the focus label sits at the top edge.
+  const hostileRows = [
+    { month: "فروردین", value: 48320000000 },
+    { month: "اردیبهشت", value: 51004000000 },
+    { month: "خرداد", value: 12000000000 },
+    { month: "نام بسیار بسیار طولانی برای یک دسته", value: 97555123456 },
+  ];
+  const hostile = {
+    columns: [{ name: "month", type: "string" }, { name: "value", type: "number" }],
+    rows: hostileRows,
+    row_count: hostileRows.length,
+  };
+
+  // A categorical dimension so the RANKED BAR path is exercised too -- the
+  // time-like fixture above only reaches the line chart, and the fixed
+  // gutter bug lived in the bar renderer.
+  const hostileCategorical = {
+    columns: [{ name: "customer", type: "string" }, { name: "value", type: "number" }],
+    rows: [
+      { customer: "شرکت با نام بسیار طولانی برای آزمودن ستون برچسب", value: 97555123456 },
+      { customer: "دوم", value: 51004000000 },
+      { customer: "سوم", value: 12000000000 },
+    ],
+    row_count: 3,
+  };
+
+  // Only the ACTIVE framing is in the DOM at a time, so clicking through
+  // every offered framing is the only way to reach the bar and split-bar
+  // renderers -- and the fixed-gutter overflow lived in the bar one. This
+  // also means the check covers whichever framing an analyst actually
+  // picks, not just the default.
+  const svgs = [];
+  for (const fixture of [hostile, hostileCategorical]) {
+    const host = renderResult(fixture, {});
+    const options = [...host.querySelectorAll(".story-opt")].filter((b) => !b.disabled);
+    assert.ok(options.length >= 1, "a chart must offer at least one framing");
+    for (const opt of options) {
+      opt.click();
+      for (const svg of host.querySelectorAll("svg")) svgs.push(svg);
+    }
+  }
+  assert.ok(svgs.length >= 2, `expected charts from every framing, saw ${svgs.length}`);
+
+  const CHAR_W = 12 * 0.6;   // generous: wider than the renderer's own estimate
+  let checked = 0;
+
+  for (const svg of svgs) {
+    const vb = (svg.getAttribute("viewBox") || "").split(/\s+/).map(Number);
+    assert.equal(vb.length, 4, "every chart must declare a viewBox");
+    const [, , W, H] = vb;
+
+    for (const text of svg.querySelectorAll("text")) {
+      // Direct text nodes only. A <text> may carry a nested <title> for
+      // screen readers (the bar chart adds one when it truncates a long
+      // category name), and textContent would concatenate that into the
+      // measurement, reporting a width the glyphs never occupy.
+      const content = [...text.childNodes]
+        .filter((node) => node.nodeType === 3)
+        .map((node) => node.textContent)
+        .join("")
+        .trim();
+      if (!content) continue;
+      const x = Number(text.getAttribute("x"));
+      const y = Number(text.getAttribute("y"));
+      const anchor = text.getAttribute("text-anchor") || "start";
+      const w = content.length * CHAR_W;
+
+      let left = x;
+      if (anchor === "middle") left = x - w / 2;
+      else if (anchor === "end") left = x - w;
+      const right = left + w;
+
+      assert.ok(
+        left >= -1,
+        `label ${JSON.stringify(content)} starts at ${left.toFixed(1)}, left of the viewBox — it would be clipped`,
+      );
+      assert.ok(
+        right <= W + 1,
+        `label ${JSON.stringify(content)} ends at ${right.toFixed(1)} but the viewBox is ${W} wide — it would render outside`,
+      );
+      // Baseline minus ascent must clear the top; y itself must clear the bottom.
+      assert.ok(y - 10 >= -1, `label ${JSON.stringify(content)} sits above the top edge (y=${y})`);
+      assert.ok(y <= H + 1, `label ${JSON.stringify(content)} sits below the bottom edge (y=${y}, H=${H})`);
+      checked++;
+    }
+  }
+
+  assert.ok(checked >= 4, `expected several labels to check, saw ${checked}`);
+  console.log(`[ok] every chart label stays inside its viewBox (${checked} labels, hostile inputs)`);
+}
+
 console.log("ALL_SCENARIOS_PASSED");
