@@ -10,14 +10,36 @@ It never pretends a real query ran when it did not — see **Modes** below.
 
 ## Quick start
 
-Serve this folder with any static file server (no build step, no npm
-install, no CDN dependency):
+This is a **static client**. It is served as files; it does not import
+any Python from this project, and it never runs in the same process as
+the backend.
+
+That means **two terminals, in two different directories**. Getting this
+wrong produces `ModuleNotFoundError: No module named 'api'` — which is
+the backend being started from inside `web/`, where the `api` package
+does not exist. There is no `api` package on PyPI to install; the one it
+wants is this repository's own, and it is only importable from the repo
+root.
+
+**Terminal 1 — the backend, from the repository root:**
 
 ```powershell
-cd web
+cd <repo-root>          # NOT web/
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+```
+
+**Terminal 2 — the static files, from this folder:**
+
+```powershell
+cd <repo-root>\web
 python -m http.server 8080
 # then open http://localhost:8080
 ```
+
+`python -m http.server` only hands files to the browser. It has no idea
+what a `/query` or a `/v2/sessions` is, so the UI stays in نمایشی
+(simulated) mode until you point it at the backend on port 8000 — see
+**Modes** below.
 
 Click one of the six "داستان نمونه" (sample story) buttons, or type your own
 question and press **پرسش** (Ask). Free-typed questions are matched
