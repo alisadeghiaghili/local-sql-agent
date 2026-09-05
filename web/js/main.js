@@ -11,12 +11,20 @@
 
 "use strict";
 
-import { SCENARIO, SCENARIO_MATCH_HINTS } from "./data.js";
-import { state, loadPersisted, persistTheme, persistBaseUrl, applyTheme, addTurn, findTurn } from "./state.js";
+import {
+  SCENARIO, SCENARIO_MATCH_HINTS,
+  SCENARIO_SESSIONS, SCENARIO_MEMORY, getSimulatedSessionTurns, FULL_TURNS_BY_ID,
+} from "./data.js";
+import {
+  state, loadPersisted, persistTheme, persistBaseUrl, persistSessionId,
+  applyTheme, addTurn, findTurn, resetTranscript, resolveActiveSessionId,
+} from "./state.js";
 import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError } from "./api.js";
 import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
 import { createTurnCard } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
+import { renderSessionList } from "./render/sessions.js";
+import { renderMemoryPanel } from "./render/memory.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -29,9 +37,17 @@ applyTheme();
 
 let api = new Api(state.baseUrl);
 
+// turn_id -> Turn[], keyed by session_id: keeps a conversation's in-tab
+// progress when the analyst switches away and back, so flipping between
+// sessions in the sidebar never discards what was just asked (see
+// switchToSession). Session-local to this tab; never persisted.
+const turnsCache = new Map();
+
 renderSamples();
 wireComposer();
 wireTopbar();
+wireSidebar();
+wireMemoryPanel();
 setMode(state.mode, { skipHealthPrompt: true });
 tickClock();
 setInterval(tickClock, 1000);
@@ -123,6 +139,11 @@ function setMode(mode, opts = {}) {
     if (!opts.skipHealthPrompt) refreshHealth();
     else setHealth(null, null, null, "در حال بررسی...");
   }
+
+  // Each mode has its own conversation index (simulated demo data vs. the
+  // real backend) — (re)resolve which session is active and load it every
+  // time the mode is entered, including at boot.
+  refreshSessionsForMode();
 }
 
 function setHealth(api_, llm, db, label) {
@@ -140,6 +161,339 @@ async function refreshHealth() {
   } catch {
     setHealth(false, false, false, "بک‌اند در دسترس نیست — uvicorn api.server:app را اجرا کنید یا حالت نمایشی را انتخاب کنید");
   }
+}
+
+/* ── Sessions (sidebar) ────────────────────────────────────────────────
+ * The sidebar's own index (`state.sessions`) and the active transcript
+ * (`state.turns`) are two separate concerns: the index lists every
+ * conversation (title, recency, turn count); the transcript is whichever
+ * ONE conversation is currently open. Switching sessions never mutates
+ * the index itself, only which transcript is loaded. */
+
+function renderSessionSidebar() {
+  const host = $("session-list-host");
+  host.innerHTML = "";
+  host.appendChild(renderSessionList(state.sessions, {
+    selectedId: state.sessionId,
+    onSelect: (sessionId) => { if (!state.busy) switchToSession(sessionId); },
+    onRename: (sessionId, title) => renameSession(sessionId, title),
+    onDelete: (sessionId) => deleteSessionAndFollowUp(sessionId),
+  }));
+}
+
+/** (Re)resolves and loads the active session for the CURRENT mode.
+ * Called on boot and every time the mode switch is clicked — simulated
+ * and live modes each have their own, entirely separate, session index. */
+async function refreshSessionsForMode() {
+  if (state.mode === "live") {
+    if (!hasApiKey()) { state.sessions = []; renderSessionSidebar(); return; }
+    try {
+      const res = await api.listSessions();
+      state.sessions = res.sessions || [];
+    } catch {
+      // No v2 support yet, unreachable backend, or an expired key — the
+      // sidebar just shows no conversations rather than an error banner;
+      // askLive's own error handling covers the moment the analyst
+      // actually tries to do something.
+      state.sessions = [];
+      renderSessionSidebar();
+      return;
+    }
+  } else {
+    state.sessions = SCENARIO_SESSIONS.map((s) => ({ ...s }));
+  }
+
+  const resolved = resolveActiveSessionId(state.sessionId, state.sessions);
+  if (resolved) {
+    await switchToSession(resolved);
+  } else {
+    state.sessionId = null;
+    resetTranscript();
+    renderTranscriptFromTurns([]);
+    renderSessionSidebar();
+  }
+}
+
+/** Loads *sessionId*'s transcript into the transcript pane. Stashes the
+ * outgoing session's turns in `turnsCache` first (so switching back
+ * later restores exactly what was there, instead of refetching and
+ * losing anything asked in this tab), then either restores from that
+ * cache or loads fresh — from the simulated scenario data, or from the
+ * real GET /v2/sessions/{sid} transcript endpoint in live mode. */
+async function switchToSession(sessionId) {
+  if (sessionId === state.sessionId && state.turns.length > 0) {
+    renderSessionSidebar();
+    return;
+  }
+  if (state.sessionId) turnsCache.set(state.sessionId, state.turns);
+  persistSessionId(sessionId);
+
+  const cached = turnsCache.get(sessionId);
+  if (cached) {
+    state.turns = cached;
+  } else if (state.mode === "live") {
+    try {
+      const session = await api.getSession(sessionId);
+      state.turns = session.turns || [];
+    } catch (err) {
+      handleLiveError(err);
+      state.turns = [];
+    }
+  } else {
+    state.turns = getSimulatedSessionTurns(sessionId);
+  }
+  state.nextScriptedIndex = 0;
+  renderTranscriptFromTurns(state.turns);
+  renderSessionSidebar();
+}
+
+/** Replaces the whole transcript pane with *turns*, already-resolved (no
+ * pipeline animation — these are turns from switching sessions, not a
+ * freshly asked question). */
+function renderTranscriptFromTurns(turns) {
+  const host = $("transcript");
+  host.innerHTML = "";
+  for (const turn of turns) {
+    const card = createTurnCard(turn, turnCtx());
+    host.appendChild(card.el);
+  }
+  refreshSampleButtonsDisabledState();
+}
+
+/** A sample button is disabled once its scripted turn has been asked in
+ * ANY session this tab has touched (turnsCache + the active session) —
+ * these are one-shot "story" prompts, not per-conversation state. */
+function refreshSampleButtonsDisabledState() {
+  const usedIds = new Set(state.turns.map((t) => t.turn_id));
+  for (const cached of turnsCache.values()) for (const t of cached) usedIds.add(t.turn_id);
+  document.querySelectorAll(".sample").forEach((btn) => {
+    btn.disabled = usedIds.has(btn.dataset.turnId);
+  });
+}
+
+async function renameSession(sessionId, title) {
+  if (state.mode === "live") {
+    try {
+      const updated = await api.renameSession(sessionId, title);
+      const idx = state.sessions.findIndex((s) => s.session_id === sessionId);
+      if (idx >= 0) state.sessions[idx] = { ...state.sessions[idx], ...updated };
+      renderSessionSidebar();
+    } catch (err) {
+      handleLiveError(err);
+    }
+    return;
+  }
+  const idx = state.sessions.findIndex((s) => s.session_id === sessionId);
+  if (idx >= 0) {
+    state.sessions[idx] = { ...state.sessions[idx], title };
+    renderSessionSidebar();
+  }
+}
+
+async function deleteSessionAndFollowUp(sessionId) {
+  if (state.mode === "live") {
+    try {
+      await api.deleteSession(sessionId);
+    } catch (err) {
+      handleLiveError(err);
+      return;
+    }
+  }
+  state.sessions = state.sessions.filter((s) => s.session_id !== sessionId);
+  turnsCache.delete(sessionId);
+
+  if (state.sessionId !== sessionId) {
+    renderSessionSidebar();
+    return;
+  }
+  const next = resolveActiveSessionId(null, state.sessions);
+  if (next) {
+    await switchToSession(next);
+  } else {
+    state.sessionId = null;
+    persistSessionId(null);
+    resetTranscript();
+    renderTranscriptFromTurns([]);
+    renderSessionSidebar();
+  }
+}
+
+async function createNewSession() {
+  const nowIso = new Date().toISOString();
+  if (state.mode === "live") {
+    if (!hasApiKey()) {
+      promptForApiKey("برای ساخت گفتگوی جدید در حالت زندهٔ API، ابتدا کلید API خود را وارد کنید.");
+      return;
+    }
+    try {
+      const session = await api.createSession();
+      const sid = session.session_id || session.id;
+      state.sessions.unshift({
+        session_id: sid, title: "گفتگوی جدید", created_at: nowIso, last_active_at: nowIso,
+        turn_count: 0, expires_at: session.expires_at || null,
+      });
+      turnsCache.set(sid, []);
+      await switchToSession(sid);
+    } catch (err) {
+      handleLiveError(err);
+    }
+    return;
+  }
+  const sid = `s_local_${Date.now()}`;
+  state.sessions.unshift({
+    session_id: sid, title: "گفتگوی جدید", created_at: nowIso, last_active_at: nowIso,
+    turn_count: 0, expires_at: null,
+  });
+  turnsCache.set(sid, []);
+  await switchToSession(sid);
+}
+
+/** Reflects a just-completed turn back into the sidebar's own summary
+ * (turn count, recency) — the index and the transcript would otherwise
+ * silently drift apart the moment the very first question is asked. */
+function bumpActiveSessionMeta() {
+  const idx = state.sessions.findIndex((s) => s.session_id === state.sessionId);
+  if (idx < 0) return;
+  state.sessions[idx] = {
+    ...state.sessions[idx], turn_count: state.turns.length, last_active_at: new Date().toISOString(),
+  };
+  renderSessionSidebar();
+}
+
+function wireSidebar() {
+  $("btn-new-session").addEventListener("click", createNewSession);
+  $("sidebar-toggle").addEventListener("click", () => {
+    const body = document.querySelector(".app-body");
+    const open = body.classList.toggle("sidebar-open");
+    $("sidebar-toggle").setAttribute("aria-expanded", String(open));
+  });
+}
+
+/* ── Memory panel ──────────────────────────────────────────────────────
+ * Reachable from the topbar, beside the API-key controls. Memory is
+ * created EXPLICITLY only — the panel's own "set" controls, or a "📌 به
+ * خاطر بسپار" pin on an editable assumption chip (see turnCtx's onPin
+ * below) — never inferred by this UI. */
+
+function wireMemoryPanel() {
+  $("memory-toggle").addEventListener("click", () => {
+    if ($("memory-panel").hidden) openMemoryPanel();
+    else closeMemoryPanel();
+  });
+  $("memory-panel-close").addEventListener("click", closeMemoryPanel);
+  $("memory-overlay").addEventListener("click", closeMemoryPanel);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("memory-panel").hidden) closeMemoryPanel();
+  });
+}
+
+async function openMemoryPanel() {
+  $("memory-panel").hidden = false;
+  $("memory-overlay").hidden = false;
+  $("memory-toggle").setAttribute("aria-expanded", "true");
+  await loadAndRenderMemory();
+}
+
+function closeMemoryPanel() {
+  $("memory-panel").hidden = true;
+  $("memory-overlay").hidden = true;
+  $("memory-toggle").setAttribute("aria-expanded", "false");
+}
+
+async function loadAndRenderMemory() {
+  if (state.mode === "live") {
+    if (!hasApiKey()) {
+      promptForApiKey("برای مشاهدهٔ حافظهٔ تحلیلی، ابتدا کلید API خود را وارد کنید.");
+      renderMemoryPanelBody({ entries: [], rememberable: [] });
+      return;
+    }
+    try {
+      state.memory = await api.getMemory();
+    } catch (err) {
+      handleLiveError(err);
+      return;
+    }
+  } else if (!state.memory) {
+    state.memory = JSON.parse(JSON.stringify(SCENARIO_MEMORY));
+  }
+  renderMemoryPanelBody(state.memory);
+}
+
+function renderMemoryPanelBody(memory) {
+  const host = $("memory-panel-host");
+  host.innerHTML = "";
+  host.appendChild(renderMemoryPanel(memory, {
+    onSetValue: (key, value, errorEl) => setMemoryValue(key, value, errorEl),
+    onClearOne: (key) => clearMemoryEntry(key),
+    onClearAll: () => clearAllMemory(),
+  }));
+}
+
+async function setMemoryValue(key, value, errorEl) {
+  if (state.mode === "live") {
+    try {
+      await api.putMemory(key, value);
+      state.memory = await api.getMemory();
+      renderMemoryPanelBody(state.memory);
+    } catch (err) {
+      // A 422 (bad value) renders inline, next to the field it came
+      // from — not as a page-level notice — since the panel is the only
+      // context that makes it actionable. Anything else (401/429/network)
+      // gets the usual page-level handling.
+      if (err instanceof ApiError && !(err instanceof UnauthorizedError) && !(err instanceof RateLimitError)) {
+        errorEl.textContent = err.message;
+      } else {
+        handleLiveError(err);
+      }
+    }
+    return;
+  }
+  upsertSimulatedMemory(key, value);
+  renderMemoryPanelBody(state.memory);
+}
+
+async function clearMemoryEntry(key) {
+  if (state.mode === "live") {
+    try {
+      await api.deleteMemoryEntry(key);
+      state.memory = await api.getMemory();
+    } catch (err) {
+      handleLiveError(err);
+      return;
+    }
+  } else {
+    state.memory.entries = state.memory.entries.filter((e) => e.key !== key);
+  }
+  renderMemoryPanelBody(state.memory);
+}
+
+async function clearAllMemory() {
+  if (state.mode === "live") {
+    try {
+      await api.clearMemory();
+      state.memory = await api.getMemory();
+    } catch (err) {
+      handleLiveError(err);
+      return;
+    }
+  } else {
+    state.memory.entries = [];
+  }
+  renderMemoryPanelBody(state.memory);
+}
+
+/** Simulated-mode-only: upserts one memory entry locally, matching the
+ * field label from `rememberable` when the key is a known one (the panel's
+ * own "set" controls always are; a pinned assumption's field usually is
+ * too, but falls back to using the field name verbatim if not). */
+function upsertSimulatedMemory(key, value) {
+  if (!state.memory) state.memory = JSON.parse(JSON.stringify(SCENARIO_MEMORY));
+  const knownField = state.memory.rememberable.find((r) => r.key === key);
+  const field = (knownField && knownField.field) || key;
+  const entry = { key, field, value, updated_at: new Date().toISOString(), applicable: true };
+  const idx = state.memory.entries.findIndex((e) => e.key === key);
+  if (idx >= 0) state.memory.entries[idx] = entry;
+  else state.memory.entries.push(entry);
 }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
@@ -253,6 +607,7 @@ async function appendTurnWithAnimation(turn) {
   });
   card.revealEarly();
   card.revealLate();
+  bumpActiveSessionMeta();
 }
 
 function scrollToTurn(turnId) {
@@ -294,6 +649,16 @@ function turnCtx() {
       rerenderTurn(t);
       showNotice("ok", `پاسخ شما («${option}») به‌عنوان مفروضهٔ صریح ثبت شد (شبیه‌سازی محلی).`);
     },
+    // "پین کردن" — the ONLY way memory gets created. Never inferred.
+    onPin: (turnId, field, value) => {
+      if (state.mode === "live") pinLiveAssumption(field, value);
+      else pinSimulatedAssumption(field, value);
+    },
+    // "دوباره اجرا کن" — the rows_omitted re-run affordance (turn.js's
+    // result block). Not a PATCH/re-fetch of this exact turn (the
+    // contract has no such endpoint); it re-asks the same question,
+    // which is the closest honest equivalent to "run it again".
+    onRerun: (turnId) => rerunTurn(turnId),
   };
 }
 
@@ -304,12 +669,69 @@ function rerenderTurn(turn) {
   else $("transcript").appendChild(card.el);
 }
 
+function rerunTurn(turnId) {
+  const t = findTurn(turnId);
+  if (!t) return;
+  if (state.mode === "live") {
+    $("question").value = t.question;
+    ask();
+    return;
+  }
+  rerunSimulatedTurn(turnId);
+}
+
+/** Simulated-mode re-run: restores the turn's REAL data (the version it
+ * had before rows were stripped for the "reopened conversation" demo —
+ * see data.js's getSimulatedSessionTurns/FULL_TURNS_BY_ID) rather than
+ * re-running the ask() pipeline, since askSimulated's own dedup check
+ * would just report "already answered" for a turn_id already in
+ * state.turns — which is exactly this one. */
+function rerunSimulatedTurn(turnId) {
+  const full = FULL_TURNS_BY_ID[turnId];
+  if (!full) {
+    showNotice("info", "بازاجرای این نوبت در نسخهٔ نمایشی پشتیبانی نمی‌شود.");
+    return;
+  }
+  const restored = JSON.parse(JSON.stringify(full));
+  const idx = state.turns.findIndex((t) => t.turn_id === turnId);
+  if (idx >= 0) state.turns[idx] = restored;
+  rerenderTurn(restored);
+  showNotice("ok", "دادهٔ این نوبت دوباره اجرا و بارگذاری شد.");
+}
+
+async function pinLiveAssumption(field, value) {
+  if (!hasApiKey()) {
+    promptForApiKey("برای به‌خاطر سپردن این مقدار، ابتدا کلید API خود را وارد کنید.");
+    return;
+  }
+  try {
+    await api.putMemory(field, value);
+    showNotice("ok", `مفروضهٔ «${field}: ${value}» به‌عنوان اولویت ثابت ذخیره شد — از این پس در گفتگوهای بعدی هم اعمال می‌شود.`);
+    if (!$("memory-panel").hidden) await loadAndRenderMemory();
+  } catch (err) {
+    handleLiveError(err);
+  }
+}
+
+function pinSimulatedAssumption(field, value) {
+  upsertSimulatedMemory(field, value);
+  showNotice("ok", `مفروضهٔ «${field}: ${value}» به‌عنوان اولویت ثابت ذخیره شد (شبیه‌سازی محلی) — از این پس در گفتگوهای بعدی هم اعمال می‌شود.`);
+  if (!$("memory-panel").hidden) renderMemoryPanelBody(state.memory);
+}
+
 /* ── Live ──────────────────────────────────────────────────────────── */
 async function ensureLiveSession() {
   if (state.sessionId) return state.sessionId;
   const session = await api.createSession();
-  state.sessionId = session.session_id || session.id;
-  return state.sessionId;
+  const sid = session.session_id || session.id;
+  persistSessionId(sid);
+  const nowIso = new Date().toISOString();
+  state.sessions.unshift({
+    session_id: sid, title: "گفتگوی جدید", created_at: nowIso, last_active_at: nowIso,
+    turn_count: 0, expires_at: session.expires_at || null,
+  });
+  renderSessionSidebar();
+  return sid;
 }
 
 async function askLive(q) {
@@ -392,6 +814,7 @@ async function askLive(q) {
           working = data.turn || working;
           addTurn(working);
           rebuild();
+          bumpActiveSessionMeta();
           break;
         case "error":
           working.error = data;

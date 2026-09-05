@@ -32,7 +32,7 @@ import { getApiKey } from "./apikey.js";
  * @typedef {Object} Assumption
  * @property {string} field
  * @property {string} value
- * @property {"question"|"session"|"default"|"policy"} source
+ * @property {"question"|"session"|"default"|"policy"|"memory"} source
  * @property {boolean} editable
  *
  * @typedef {Object} Clarification
@@ -66,6 +66,12 @@ import { getApiKey } from "./apikey.js";
  * @property {Object[]} rows
  * @property {number} row_count
  * @property {boolean} truncated
+ * @property {boolean} [rows_omitted] -- true when this turn was loaded from
+ *   a reopened conversation (GET /v2/sessions/{sid}) rather than just
+ *   executed: the transcript endpoint does not persist result rows, so
+ *   `rows` is empty here even though `row_count` is the real, accurate
+ *   count. See render/table.js's `omitted` shape -- this must never be
+ *   confused with an actual 0-row result.
  *
  * @typedef {Object} LlmStatus
  * @property {string} backend
@@ -92,6 +98,27 @@ import { getApiKey } from "./apikey.js";
  * @property {string} provider
  * @property {boolean} fallback_used
  * @property {boolean} reasoning_detected
+ *
+ * @typedef {Object} SessionSummary
+ * @property {string} session_id
+ * @property {string} title
+ * @property {string} created_at
+ * @property {string} last_active_at
+ * @property {number} turn_count
+ * @property {string} expires_at
+ *
+ * @typedef {Object} MemoryEntry
+ * @property {string} key
+ * @property {string} field
+ * @property {string} value
+ * @property {string} updated_at
+ * @property {boolean} applicable
+ *
+ * @typedef {Object} RememberableField
+ * @property {string} key
+ * @property {string} field
+ * @property {string[]} options
+ * @property {number} max_length
  *
  * @typedef {Object} Turn
  * @property {string} turn_id
@@ -199,8 +226,28 @@ export class Api {
     return res.json();
   }
 
+  /** The conversation list for the sidebar (contract §... "session
+   * index"): `{sessions: SessionSummary[], total}`. Ordering is NOT
+   * trusted from the server -- render/sessions.js re-sorts by
+   * `last_active_at` itself, so this just returns the raw body. */
+  async listSessions() {
+    const res = await this._fetchV2(`/v2/sessions`, { method: "GET" });
+    return res.json();
+  }
+
   async getSession(sessionId) {
     const res = await this._fetchV2(`/v2/sessions/${encodeURIComponent(sessionId)}`, { method: "GET" });
+    return res.json();
+  }
+
+  /** Inline rename from the sidebar. Returns the updated index entry
+   * (SessionSummary), per the frozen PATCH /v2/sessions/{sid} contract. */
+  async renameSession(sessionId, title) {
+    const res = await this._fetchV2(`/v2/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
     return res.json();
   }
 
@@ -272,6 +319,44 @@ export class Api {
     return res.json();
   }
 
+  /* ── Memory (v2, standing preferences) ──────────────────────────────
+   * Memory is created EXPLICITLY (the "pin this" affordance on an
+   * editable assumption chip -- see render/assumptions.js), never
+   * inferred here. */
+
+  /** `{entries: MemoryEntry[], rememberable: RememberableField[]}` --
+   * what IS currently remembered, and the closed set of fields that CAN
+   * be. See render/memory.js's docstring for why both lists matter. */
+  async getMemory() {
+    const res = await this._fetchV2(`/v2/memory`, { method: "GET" });
+    return res.json();
+  }
+
+  /** Set (or overwrite) one standing preference. A 422 (value fails
+   * server-side validation -- length/options/control characters) comes
+   * back as a plain ApiError via `_fetchV2`'s generic non-2xx branch;
+   * its `message` is the server's real validation message, rendered
+   * as-is by the caller -- this module never invents its own wording to
+   * replace it. */
+  async putMemory(key, value) {
+    const res = await this._fetchV2(`/v2/memory/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    return res.json();
+  }
+
+  async deleteMemoryEntry(key) {
+    await this._fetchV2(`/v2/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
+  }
+
+  /** Clears every standing preference at once (the memory panel's
+   * "پاک کردن همهٔ حافظه" control -- always behind a confirm in the UI). */
+  async clearMemory() {
+    await this._fetchV2(`/v2/memory`, { method: "DELETE" });
+  }
+
   /** Wraps fetch for every /v2/* endpoint. All of these routes require
    * auth (docs/api-contract-v2.md §11.3), so this is the single place
    * that attaches `Authorization: Bearer <key>` — every v2 call site
@@ -283,7 +368,10 @@ export class Api {
    * are promoted to their own typed errors (see above) so the UI can
    * treat "your key was rejected" and "you're being rate-limited" as the
    * distinct, actionable situations they are instead of a generic error
-   * banner. */
+   * banner. Every v2 call site routes through here, including the
+   * session-index and memory endpoints added later (listSessions,
+   * renameSession, getMemory, putMemory, deleteMemoryEntry,
+   * clearMemory) -- same chokepoint, same auth guarantee. */
   async _fetchV2(path, init) {
     let res;
     const headers = { ...(init && init.headers) };

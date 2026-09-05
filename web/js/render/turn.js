@@ -29,6 +29,8 @@ function el(tag, className, text) {
  *   onJumpToTurn: (turnId: string) => void,
  *   onEditAssumption: (turnId: string, field: string, value: string) => void,
  *   onClarify: (turnId: string, field: string, option: string) => void,
+ *   onPin?: (turnId: string, field: string, value: string) => void,
+ *   onRerun?: (turnId: string) => void,
  * }} ctx
  */
 export function createTurnCard(turn, ctx) {
@@ -81,6 +83,7 @@ export function createTurnCard(turn, ctx) {
   const assumptions = renderAssumptions(
     turn.ambiguity && turn.ambiguity.assumptions,
     (field, value) => ctx.onEditAssumption(turn.turn_id, field, value),
+    ctx.onPin ? (field, value) => ctx.onPin(turn.turn_id, field, value) : undefined,
   );
   if (assumptions) body.appendChild(tagEarly(assumptions));
 
@@ -159,6 +162,7 @@ export function createTurnCard(turn, ctx) {
     resultCard.appendChild(renderResult(turn.result, {
       assumptions: turn.ambiguity && turn.ambiguity.assumptions,
       guardRejected: !!(turn.guard && turn.guard.verdict === "rejected"),
+      onRerun: ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : undefined,
     }));
     body.appendChild(tagLate(resultCard));
   }

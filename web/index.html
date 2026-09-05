@@ -32,6 +32,9 @@
       <button class="live-key-save" id="live-key-save" type="button">ذخیره کلید</button>
       <button class="live-key-clear" id="live-key-clear" type="button">حذف کلید</button>
     </div>
+    <button class="memory-toggle" id="memory-toggle" type="button" aria-haspopup="dialog" aria-controls="memory-panel" aria-expanded="false">
+      <span aria-hidden="true">🧠</span> حافظهٔ تحلیلی
+    </button>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-label="تغییر پوسته">
       <span id="theme-toggle-icon" aria-hidden="true">🌓</span>
       <span id="theme-toggle-label">پوسته</span>
@@ -44,24 +47,53 @@
   </div>
 </header>
 
-<main class="layout">
+<div class="app-body">
 
-  <div class="card composer">
-    <label class="card-title" for="question">پرسش خود را به زبان طبیعی بنویسید</label>
-    <div class="ask-row">
-      <textarea id="question" rows="2" placeholder="مثلاً «معاملات مشتری‌های تالار سیمان را نشان بده»" dir="auto"></textarea>
-      <button class="btn-ask" id="btn-ask" type="button">پرسش</button>
+  <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar">
+    <span aria-hidden="true">☰</span> گفتگوها
+  </button>
+
+  <aside class="sidebar" id="sidebar" aria-label="فهرست گفتگوها">
+    <div class="sidebar-head">
+      <h2>گفتگوها</h2>
+      <button class="btn-new-session" id="btn-new-session" type="button">+ گفتگوی جدید</button>
     </div>
-    <div class="samples" id="samples">
-      <span class="samples-label">داستان نمونه:</span>
-      <!-- sample buttons injected by main.js from data.js SCENARIO -->
+    <div id="session-list-host" aria-live="polite"></div>
+  </aside>
+
+  <main class="layout">
+
+    <div class="card composer">
+      <label class="card-title" for="question">پرسش خود را به زبان طبیعی بنویسید</label>
+      <div class="ask-row">
+        <textarea id="question" rows="2" placeholder="مثلاً «معاملات مشتری‌های تالار سیمان را نشان بده»" dir="auto"></textarea>
+        <button class="btn-ask" id="btn-ask" type="button">پرسش</button>
+      </div>
+      <div class="samples" id="samples">
+        <span class="samples-label">داستان نمونه:</span>
+        <!-- sample buttons injected by main.js from data.js SCENARIO -->
+      </div>
+      <div id="notice-area"></div>
     </div>
-    <div id="notice-area"></div>
+
+    <section id="transcript" aria-live="polite" aria-relevant="additions" aria-label="گفتگوی تحلیلی"></section>
+
+  </main>
+
+</div>
+
+<div class="memory-overlay" id="memory-overlay" hidden></div>
+<div class="memory-panel" id="memory-panel" role="dialog" aria-modal="true" aria-label="حافظهٔ تحلیلی — اولویت‌های ثابت" hidden>
+  <div class="memory-panel-head">
+    <h2>حافظهٔ تحلیلی</h2>
+    <button class="memory-panel-close" id="memory-panel-close" type="button" aria-label="بستن پنل حافظه">✕</button>
   </div>
-
-  <section id="transcript" aria-live="polite" aria-relevant="additions" aria-label="گفتگوی تحلیلی"></section>
-
-</main>
+  <p class="memory-panel-intro">
+    مقادیری که اینجا می‌بینید فقط با اقدام صریح شما — دکمهٔ «📌 به‌خاطر بسپار» روی یک مفروضه، یا تنظیم مستقیم زیر — ذخیره می‌شوند؛
+    سامانه هرگز به‌خودی‌خود چیزی را استنباط و ذخیره نمی‌کند.
+  </p>
+  <div id="memory-panel-host"></div>
+</div>
 
 <footer class="foot">
   <span id="foot-mode">حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.</span>

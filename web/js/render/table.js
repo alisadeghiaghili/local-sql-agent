@@ -29,6 +29,7 @@ const CHART_MAX_ROWS = 30;
 
 export const SHAPE = {
   EMPTY: "empty",
+  OMITTED: "omitted",
   SCALAR: "scalar",
   RECORD: "record",
   CHART: "chart",
@@ -268,9 +269,64 @@ export function renderExportRow(result) {
   return bar;
 }
 
+/** `rows_omitted: true` (contract: a turn loaded from a reopened
+ * conversation, GET /v2/sessions/{sid} — the transcript endpoint does not
+ * persist result rows). This is the single worst thing this UI could get
+ * wrong: `rows` is empty here for a reason that has NOTHING to do with the
+ * query matching zero rows, so it must never fall through to the ordinary
+ * `empty` shape (which would render "۰ ردیف" and blame an assumption —
+ * both false). Shows the accurate `row_count` and the column shape
+ * instead, plus a re-run affordance that hands back to the caller
+ * (opts.onRerun) rather than trying to refetch anything itself — this
+ * module has no notion of sessions or turn ids. */
+function renderOmittedResult(result, opts) {
+  const wrap = document.createElement("div");
+  wrap.className = "rows-omitted";
+
+  const head = document.createElement("div");
+  head.className = "rows-omitted-head";
+  head.textContent =
+    `${result.row_count.toLocaleString("fa-IR")} ردیف — این گفتگو دوباره باز شده و داده‌های نتیجه ذخیره نشده‌اند`;
+  wrap.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "rows-omitted-body";
+
+  const lead = document.createElement("p");
+  lead.textContent =
+    "تعداد ردیف بالا واقعی است، اما محتوای جدول نگه‌داری نشده — برای دیدن دوبارهٔ داده‌ها این نوبت را دوباره اجرا کنید. " +
+    "شکل ستون‌های این نتیجه:";
+  body.appendChild(lead);
+
+  if (result.columns && result.columns.length) {
+    const list = document.createElement("ul");
+    list.className = "rows-omitted-columns";
+    for (const col of result.columns) {
+      const li = document.createElement("li");
+      li.textContent = `${col.name} (${col.type})`;
+      list.appendChild(li);
+    }
+    body.appendChild(list);
+  }
+
+  const rerunBtn = document.createElement("button");
+  rerunBtn.type = "button";
+  rerunBtn.className = "rows-omitted-rerun-btn";
+  rerunBtn.textContent = "برای دیدن داده، دوباره اجرا کن ↻";
+  rerunBtn.addEventListener("click", () => { if (opts.onRerun) opts.onRerun(); });
+  body.appendChild(rerunBtn);
+
+  wrap.appendChild(body);
+  return wrap;
+}
+
 /**
  * @param {import("../api.js").Result|null} result
- * @param {{assumptions?: import("../api.js").Assumption[], guardRejected?: boolean}} [opts]
+ * @param {{
+ *   assumptions?: import("../api.js").Assumption[],
+ *   guardRejected?: boolean,
+ *   onRerun?: () => void,
+ * }} [opts]
  */
 export function renderResult(result, opts = {}) {
   const wrap = document.createElement("div");
@@ -281,6 +337,15 @@ export function renderResult(result, opts = {}) {
     p.className = "empty-result";
     p.textContent = "نتیجه‌ای در دسترس نیست (اجرا کامل نشد).";
     wrap.appendChild(p);
+    return wrap;
+  }
+
+  // Checked before ordinary shape selection — see renderOmittedResult's
+  // docstring: this is a distinct reason for empty `rows`, not the
+  // `empty` shape's "the query ran and matched nothing" fact.
+  if (result.rows_omitted) {
+    wrap.dataset.shape = SHAPE.OMITTED;
+    wrap.appendChild(renderOmittedResult(result, opts));
     return wrap;
   }
 

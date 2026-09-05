@@ -51,6 +51,11 @@
   --source-default-bg: #eef1f5;
   --source-policy: #b45309;
   --source-policy-bg: #fbf1e0;
+  /* memory — the fifth source. Deliberately its own hue (magenta/pink):
+   * not brand (teal/navy), not status (green/amber/red/grey), and not any
+   * of the other four source hues above. */
+  --source-memory: #be185d;
+  --source-memory-bg: #fce8f1;
 
   --radius: 12px;
   --radius-sm: 8px;
@@ -96,6 +101,8 @@
     --source-default-bg: #1c2536;
     --source-policy: #f0b95e;
     --source-policy-bg: #2e2410;
+    --source-memory: #f472b6;
+    --source-memory-bg: #341126;
 
     --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
     --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
@@ -139,6 +146,8 @@
   --source-default-bg: #1c2536;
   --source-policy: #f0b95e;
   --source-policy-bg: #2e2410;
+  --source-memory: #f472b6;
+  --source-memory-bg: #341126;
 
   --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
   --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
@@ -276,6 +285,98 @@ button { font-family: inherit; }
 .dot-ok   { background: var(--status-good); }
 .dot-down { background: var(--status-critical); }
 .dot-unknown { background: var(--status-warn); }
+
+/* ── App body (sidebar + main column) ───────────────────────────────
+ * The sidebar is a flex sibling of .layout, both inside .app-body — the
+ * transcript keeps its own centred max-width, the sidebar gets a fixed
+ * column, and the whole row fills the remaining viewport height below
+ * the topbar. */
+.app-body {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.sidebar-toggle {
+  display: none; /* shown only under the narrow-viewport breakpoint */
+  align-items: center; gap: 8px;
+  border: 0; border-bottom: 1px solid var(--border);
+  background: var(--card); color: var(--ink);
+  padding: 10px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+  width: 100%;
+}
+
+.sidebar {
+  flex: 0 0 260px;
+  width: 260px;
+  align-self: stretch;
+  background: var(--card);
+  border-inline-end: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sidebar-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 16px 16px 10px;
+  position: sticky; top: 0; background: var(--card); z-index: 1;
+}
+.sidebar-head h2 { font-size: 14px; font-weight: 800; color: var(--navy); }
+.btn-new-session {
+  border: 1px solid var(--teal); background: transparent; color: var(--teal-d);
+  border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+  white-space: nowrap;
+}
+.btn-new-session:hover { background: var(--teal-l); }
+
+.session-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 16px; }
+.session-list-empty { padding: 14px 12px; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+
+.session-row {
+  display: flex; align-items: center; gap: 4px;
+  border-radius: var(--radius-sm);
+  position: relative;
+}
+.session-row:hover { background: var(--card-2); }
+.session-row.active { background: var(--teal-l); }
+.session-row-main {
+  flex: 1; min-width: 0; text-align: start;
+  border: 0; background: transparent; color: var(--ink); cursor: pointer;
+  padding: 9px 10px; border-radius: var(--radius-sm);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.session-row-title {
+  font-size: 13px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.session-row.active .session-row-title { color: var(--teal-d); }
+.session-row-meta { font-size: 11px; color: var(--muted); }
+.session-row-actions {
+  display: flex; gap: 2px; flex: 0 0 auto; padding-inline-end: 6px;
+  opacity: 0; transition: opacity .1s;
+}
+.session-row:hover .session-row-actions, .session-row:focus-within .session-row-actions { opacity: 1; }
+.session-row-btn {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  width: 24px; height: 24px; border-radius: 6px; font-size: 12.5px;
+  display: grid; place-items: center;
+}
+.session-row-btn:hover { background: rgba(0,0,0,.08); color: var(--ink); }
+.session-row-delete:hover { color: var(--status-critical); }
+.session-row-editor {
+  display: flex; gap: 6px; align-items: center; padding: 6px 10px 8px;
+}
+.session-row-editor input {
+  flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit;
+}
+.session-row-editor button {
+  border: 0; border-radius: 6px; padding: 5px 10px; font-size: 11.5px; font-weight: 700; cursor: pointer;
+  background: var(--teal); color: #fff;
+}
+.session-row-editor button:last-child { background: var(--border); color: var(--ink); }
 
 /* ── Layout ──────────────────────────────────────────────────────── */
 .layout {
@@ -449,13 +550,15 @@ button { font-family: inherit; }
   opacity: .92;
 }
 .chip[data-source="policy"] .chip-source { background: var(--source-policy); color: #fff; }
-.chip-edit-btn {
+.chip[data-source="memory"] { background: var(--source-memory-bg); border-color: color-mix(in srgb, var(--source-memory) 40%, transparent); }
+.chip[data-source="memory"] .chip-source { background: var(--source-memory); color: #fff; }
+.chip-edit-btn, .chip-pin-btn {
   border: 0; background: rgba(0,0,0,.08); color: inherit;
   width: 20px; height: 20px; border-radius: 50%; cursor: pointer;
   font-size: 12px; line-height: 1; flex: 0 0 auto;
   display: grid; place-items: center;
 }
-.chip-edit-btn:hover { background: rgba(0,0,0,.16); }
+.chip-edit-btn:hover, .chip-pin-btn:hover { background: rgba(0,0,0,.16); }
 .chip[data-source="policy"] .chip-edit-btn { display: none; }
 .chip-noneditable-mark {
   font-size: 13px; opacity: .7;
@@ -686,12 +789,35 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   max-width: 900px; margin: 0 auto; width: 100%;
 }
 
+.memory-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 999px; padding: 6px 13px;
+  color: #e2e8f0; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.memory-toggle:hover { background: rgba(255, 255, 255, .16); }
+
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   .topbar { padding: 12px 14px; }
   .layout { padding: 16px 12px 32px; }
   .turn-question { max-width: 96%; }
   .llm-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
+
+  /* Sidebar collapses to an off-canvas panel behind a toggle, rather
+   * than squeezing the transcript into a sliver next to a fixed rail. */
+  .sidebar-toggle { display: flex; }
+  .sidebar {
+    position: fixed; inset-inline-start: 0; top: 0; bottom: 0;
+    width: 82vw; max-width: 300px; z-index: 40;
+    box-shadow: var(--shadow);
+    transform: translateX(100%);
+    transition: transform .18s ease-out;
+  }
+  [dir="rtl"] .sidebar { transform: translateX(-100%); }
+  .app-body.sidebar-open .sidebar { transform: translateX(0); }
+  .app-body { position: relative; flex-direction: column; }
 }
 
 /* Screen-reader-only utility. */
@@ -741,6 +867,7 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .zero-rows-tag[data-source="session"]  { background: var(--source-session-bg);  color: var(--source-session); }
 .zero-rows-tag[data-source="default"]  { background: var(--source-default-bg);  color: var(--source-default); }
 .zero-rows-tag[data-source="policy"]   { background: var(--source-policy-bg);   color: var(--source-policy); }
+.zero-rows-tag[data-source="memory"]   { background: var(--source-memory-bg);   color: var(--source-memory); }
 .zero-rows-list { margin-top: 8px; padding-inline-start: 20px; color: var(--muted); }
 
 /* ── Scalar shape — one row, one numeric column: one large figure, no
@@ -838,3 +965,111 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   line-height: 1.6; margin-bottom: 10px;
 }
 .answer-qualifier .warn-icon { flex: 0 0 auto; font-size: 15px; }
+
+/* ── Rows-omitted shape — a reopened conversation's turn, loaded without
+ * result rows (see render/table.js's renderOmittedResult). Distinct from
+ * `.zero-rows`: never implies "nothing matched", so it is not styled in
+ * the same warn-red family — a calm neutral card with a clear call to
+ * re-run, not an alarm about the data itself. */
+.rows-omitted {
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.rows-omitted-head {
+  padding: 10px 14px; font-size: 13px; font-weight: 700;
+  color: var(--ink); background: var(--card-2);
+  border-bottom: 1px solid var(--border);
+}
+.rows-omitted-body { padding: 12px 14px; font-size: 13.5px; line-height: 1.7; }
+.rows-omitted-columns {
+  margin: 8px 0; padding-inline-start: 20px; color: var(--muted);
+  font-family: Consolas, "Cascadia Code", monospace; font-size: 12.5px;
+}
+.rows-omitted-rerun-btn {
+  margin-top: 6px; border: 1px solid var(--teal); background: var(--teal);
+  color: #fff; border-radius: 999px; padding: 7px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.rows-omitted-rerun-btn:hover { background: var(--teal-d); }
+
+/* ── Memory panel — a right-anchored drawer reachable from the topbar,
+ * beside the API-key controls. Same card language as everything else;
+ * an overlay behind it closes it on an outside click. */
+.memory-overlay {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, .35); z-index: 49;
+}
+.memory-panel {
+  position: fixed; inset-inline-end: 0; top: 0; bottom: 0;
+  width: min(420px, 92vw);
+  background: var(--card);
+  border-inline-start: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  z-index: 50;
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+}
+/* The `hidden` attribute and this class have equal CSS specificity, and
+ * author styles always beat the UA stylesheet — so `display: flex` above
+ * would otherwise win and defeat `hidden` entirely. Restated explicitly. */
+.memory-overlay[hidden], .memory-panel[hidden] { display: none; }
+.memory-panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 16px 18px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--card);
+}
+.memory-panel-head h2 { font-size: 16px; font-weight: 800; color: var(--navy); }
+.memory-panel-close {
+  border: 0; background: var(--card-2); color: var(--ink);
+  width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 14px;
+}
+.memory-panel-close:hover { background: var(--border); }
+.memory-panel-intro { padding: 12px 18px 0; font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+
+.memory-panel-body { padding: 6px 18px 22px; display: flex; flex-direction: column; gap: 20px; }
+.memory-section { display: flex; flex-direction: column; gap: 10px; }
+.memory-section-title {
+  font-size: 12px; font-weight: 700; color: var(--navy);
+  text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 1px solid var(--border); padding-bottom: 6px;
+}
+.memory-empty { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
+
+.memory-entry {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; background: var(--card-2);
+}
+.memory-entry-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.memory-entry-field { font-size: 12px; font-weight: 700; color: var(--source-memory); }
+.memory-entry-value { font-size: 13.5px; color: var(--ink); font-weight: 600; }
+.memory-entry-inactive-note { font-size: 11.5px; color: var(--status-warn); line-height: 1.6; }
+.memory-entry.inactive { opacity: .78; border-style: dashed; }
+.memory-clear-btn {
+  align-self: flex-start;
+  border: 1px solid var(--border); background: var(--card); color: var(--status-critical);
+  border-radius: 999px; padding: 3px 12px; font-size: 11.5px; font-weight: 700; cursor: pointer;
+}
+.memory-clear-btn:hover { background: var(--status-critical-bg); }
+.memory-clear-all-btn {
+  align-self: flex-start;
+  border: 1px solid var(--status-critical); background: transparent; color: var(--status-critical);
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
+  margin-top: 4px;
+}
+.memory-clear-all-btn:hover { background: var(--status-critical-bg); }
+
+.memory-rememberable-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.memory-rememberable-field { font-size: 12.5px; font-weight: 600; color: var(--ink); flex: 1 1 140px; }
+.memory-rememberable-input {
+  flex: 1 1 140px; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 9px; font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit;
+}
+.memory-rememberable-error { flex-basis: 100%; font-size: 11.5px; color: var(--status-critical); }
+.memory-save-btn {
+  border: 0; background: var(--teal); color: #fff; border-radius: 999px;
+  padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.memory-save-btn:hover { background: var(--teal-d); }
