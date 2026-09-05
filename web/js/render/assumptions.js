@@ -2,12 +2,18 @@
  * clarification offers (contract §4, §5).
  *
  * Chips are colour-coded by `source` (question / session / default /
- * policy) so the UI shows, at a glance, which follow-ups are inheriting
- * session context. `policy` chips are never editable (§5) and are styled
- * non-interactive on purpose. Editable chips open an inline control that
- * calls back into `onEditAssumption` — the caller (main.js) decides what
- * that means for the current mode (PATCH in live mode, local re-run in
- * simulated mode).
+ * policy / memory) so the UI shows, at a glance, which follow-ups are
+ * inheriting session context. `policy` chips are never editable (§5) and
+ * are styled non-interactive on purpose. Editable chips open an inline
+ * control that calls back into `onEditAssumption` — the caller (main.js)
+ * decides what that means for the current mode (PATCH in live mode, local
+ * re-run in simulated mode).
+ *
+ * `memory` is the fifth source: a standing preference the analyst pinned
+ * explicitly (never inferred) is now being applied automatically. Every
+ * editable, non-memory chip also carries a "pin this" control (📌) that
+ * calls `onPin(field, value)` — this is the ONLY way memory gets created;
+ * see web/js/render/memory.js and PUT /v2/memory/{key}.
  *
  * Clarifications render as one-click buttons, never a blocking modal — the
  * contract is explicit that the turn already has an answer; clarifying is
@@ -21,6 +27,7 @@ export const SOURCE_LABELS = {
   session: "از نشست",
   default: "پیش‌فرض",
   policy: "قانون سامانه",
+  memory: "از حافظه",
 };
 
 /**
@@ -60,8 +67,12 @@ export function renderBasis(basis, onJumpToTurn) {
 /**
  * @param {import("../api.js").Assumption[]} assumptions
  * @param {(field: string, newValue: string) => void} onEditAssumption
+ * @param {(field: string, value: string) => void} [onPin] — "pin this as a
+ *   standing preference" (PUT /v2/memory/{key}). Omitted entirely (no pin
+ *   button rendered at all) when the caller passes nothing, so existing
+ *   call sites that don't yet support memory keep working unchanged.
  */
-export function renderAssumptions(assumptions, onEditAssumption) {
+export function renderAssumptions(assumptions, onEditAssumption, onPin) {
   if (!assumptions || assumptions.length === 0) return null;
   const wrap = document.createElement("div");
   wrap.className = "assumptions";
@@ -94,6 +105,20 @@ export function renderAssumptions(assumptions, onEditAssumption) {
       editBtn.textContent = "✎";
       editBtn.addEventListener("click", () => openEditor(chip, a, onEditAssumption));
       chip.appendChild(editBtn);
+
+      // "Pin this" — the ONLY way memory gets created (never inferred).
+      // Not offered on a chip that is ALREADY memory-sourced: re-pinning
+      // its own current value is a no-op the analyst has no use for.
+      if (onPin && a.source !== "memory") {
+        const pinBtn = document.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.className = "chip-pin-btn";
+        pinBtn.setAttribute("aria-label", `به‌خاطر سپردن «${a.field}: ${a.value}» به‌عنوان اولویت ثابت`);
+        pinBtn.title = "این مقدار را برای گفتگوهای بعدی هم به‌خاطر بسپار";
+        pinBtn.textContent = "📌";
+        pinBtn.addEventListener("click", () => onPin(a.field, a.value));
+        chip.appendChild(pinBtn);
+      }
     } else {
       const lock = document.createElement("span");
       lock.className = "chip-noneditable-mark";

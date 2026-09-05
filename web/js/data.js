@@ -420,4 +420,232 @@ const SCENARIO_MATCH_HINTS = {
   t_06: ["دوباره امتحان کن", "سوال قبلی"],
 };
 
-export { SCENARIO, SCENARIO_MATCH_HINTS, STATIC_PREFIX_TOKENS };
+/* ══════════════════════════════════════════════════════════════════════
+ * SECOND CONVERSATION — demos the conversation rail (multi-session), the
+ * `memory` assumption source, and `rows_omitted` in one small, self
+ * contained session, kept fully separate from the six-turn story above so
+ * that story's existing tested behaviour never changes.
+ *
+ * Narrative: this session was started on an EARLIER visit. The analyst
+ * pinned `ring: تالار فلزات` as a standing preference back then (see
+ * SCENARIO_MEMORY below); t_07 shows that memory being applied
+ * automatically (source: "memory"), and t_08 refines it within the same
+ * session (so its own inherited `ring` assumption is "session"-sourced,
+ * matching the convention the six-turn story above already established
+ * for a refinement). Both turns render with real rows when first "asked"
+ * (see t_07/t_08 below) — the versions actually shown when the analyst
+ * SWITCHES to this session from the sidebar are the `*_OMITTED` copies
+ * further down, simulating GET /v2/sessions/{sid}: a reopened
+ * conversation's turns come back without result rows, only row_count. */
+const SESSION_2_ID = "s_demo_1405";
+
+const t7Row = (() => {
+  const rand = mulberry32(7007);
+  return { AvgBasePrice: Math.round((165_000_000 + rand() * 40_000_000) / 1e6) * 1e6 };
+})();
+
+const t8Rows = (() => {
+  const rand = mulberry32(8008);
+  const months = ["تیر", "مرداد", "شهریور"];
+  return months.map((m) => ({
+    Month: m,
+    AvgBasePrice: Math.round((160_000_000 + rand() * 50_000_000) / 1e6) * 1e6,
+  }));
+})();
+
+const t_07 = {
+  turn_id: "t_07",
+  session_id: SESSION_2_ID,
+  index: 1,
+  question: "میانگین قیمت پایه در تالار فلزات در سال ۱۴۰۴ چقدر است؟",
+  resolved_question: "میانگین قیمت پایهٔ معاملات تالار فلزات (بر اساس اولویت ثابت شما) در سال ۱۴۰۴",
+  basis: { kind: "fresh", refines_turn_id: null, composition: "none", inherited: [] },
+  sql:
+    "SELECT AVG(ct.BasePrice) AS AvgBasePrice\n" +
+    "FROM [Auction_Fact].[CustomerContract] ct\n" +
+    "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
+    "JOIN [Auction_Dim].[Date] d ON ct.Date_ID = d.ID\n" +
+    "WHERE r.Name = N'تالار فلزات' AND d.PersianYear = 1404",
+  ambiguity: {
+    is_ambiguous: true,
+    assumptions: [
+      // Applied automatically from a PREVIOUSLY PINNED preference — never
+      // inferred; this is exactly the value the analyst set via the
+      // memory panel (or a chip's "📌 به‌خاطر بسپار") on an earlier visit.
+      { field: "ring", value: "تالار فلزات", source: "memory", editable: true },
+      { field: "period", value: "۱۴۰۴", source: "default", editable: true },
+    ],
+    clarifications: [],
+  },
+  guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["CustomerContract", "Ring", "Date"] },
+  result: {
+    columns: [{ name: "AvgBasePrice", type: "number" }],
+    rows: [t7Row],
+    row_count: 1,
+    truncated: false,
+  },
+  interpretation:
+    "میانگین قیمت پایهٔ تالار فلزات در سال ۱۴۰۴ محاسبه شد. تالار مورد استفاده از حافظهٔ تحلیلی شما آمده — " +
+    "همان مقداری که پیش‌تر به‌عنوان اولویت ثابت به خاطر سپرده بودید، نه یک حدس تازه.",
+  tier: "T2",
+  warnings: [],
+  llm: llm({ promptTokens: 4610, completionTokens: 88, prefillMs: 2050, decodeMs: 360 }),
+  timings: { total_ms: 2470, plan_ms: 3, prompt_ms: 8, llm_ms: 2410, guard_ms: 4, execute_ms: 40, interpret_ms: 3 },
+  error: null,
+};
+
+const t_08 = {
+  turn_id: "t_08",
+  session_id: SESSION_2_ID,
+  index: 2,
+  question: "این عدد را برای سه ماه اخیر هم به تفکیک ماه نشان بده",
+  resolved_question: "میانگین قیمت پایهٔ تالار فلزات، به تفکیک ماه، برای سه ماه اخیر سال ۱۴۰۴",
+  basis: { kind: "refines", refines_turn_id: "t_07", composition: "none", inherited: ["ring=تالار فلزات"] },
+  sql:
+    "SELECT d.PersianMonthName AS Month, AVG(ct.BasePrice) AS AvgBasePrice\n" +
+    "FROM [Auction_Fact].[CustomerContract] ct\n" +
+    "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
+    "JOIN [Auction_Dim].[Date] d ON ct.Date_ID = d.ID\n" +
+    "WHERE r.Name = N'تالار فلزات' AND d.PersianYear = 1404 AND d.PersianMonthNumber >= 4 AND d.PersianMonthNumber <= 6\n" +
+    "GROUP BY d.PersianMonthName, d.PersianMonthNumber\n" +
+    "ORDER BY d.PersianMonthNumber",
+  ambiguity: {
+    is_ambiguous: true,
+    assumptions: [
+      // Same value as t_07, but now inherited from THIS session rather
+      // than freshly applied from memory — matches the existing
+      // convention (see t_02/t_06 above) that a within-session
+      // refinement's inherited assumption is "session"-sourced.
+      { field: "ring", value: "تالار فلزات", source: "session", editable: true },
+    ],
+    clarifications: [],
+  },
+  guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["CustomerContract", "Ring", "Date"] },
+  result: {
+    columns: [
+      { name: "Month", type: "string" },
+      { name: "AvgBasePrice", type: "number" },
+    ],
+    rows: t8Rows,
+    row_count: t8Rows.length,
+    truncated: false,
+  },
+  interpretation: "میانگین قیمت پایهٔ تالار فلزات در سه ماه اخیر نسبتاً باثبات بود، با کمی افزایش در شهریور.",
+  tier: "T2",
+  warnings: [],
+  llm: llm({ promptTokens: 480, completionTokens: 140, prefillMs: 38, decodeMs: 480 }),
+  timings: { total_ms: 580, plan_ms: 3, prompt_ms: 5, llm_ms: 522, guard_ms: 4, execute_ms: 24, interpret_ms: 2 },
+  error: null,
+};
+
+/** The version actually shown when the analyst SWITCHES to this session
+ * from the sidebar (or reloads with it as the persisted one): row DATA is
+ * gone (`rows: []`, `rows_omitted: true`), but `row_count` and `columns`
+ * — the part the transcript endpoint actually persists — are untouched.
+ * See render/table.js's `omitted` shape. */
+function omit(turn) {
+  return { ...turn, result: turn.result ? { ...turn.result, rows: [], rows_omitted: true } : turn.result };
+}
+
+const SESSION_2_TURNS_FULL = [t_07, t_08];
+const SESSION_2_TURNS_OMITTED = SESSION_2_TURNS_FULL.map(omit);
+
+/** turn_id -> the FULL (real-rows) Turn, for the "re-run" affordance to
+ * restore — see main.js's rerunSimulatedTurn. Covers every turn this demo
+ * ships, not just the second session's, so re-run works uniformly even
+ * though only the second session's turns are ever handed out omitted. */
+const FULL_TURNS_BY_ID = Object.fromEntries(
+  [...SCENARIO.turns, ...SESSION_2_TURNS_FULL].map((t) => [t.turn_id, t]),
+);
+
+/* ── Session index (sidebar) — GET /v2/sessions' shape. Timestamps are
+ * computed relative to "now" (not hard-coded) so the rail's relative-time
+ * labels ("۳ روز پیش") stay sensible no matter when the demo is opened,
+ * and s_demo_1404 is always the most-recently-active of the two — so
+ * `resolveActiveSessionId` picks it by default on a first-ever visit,
+ * matching this UI's existing (pre-sidebar) default of an empty,
+ * sample-driven transcript. */
+const _now = Date.now();
+const _hour = 3600_000, _day = 24 * _hour;
+
+const SCENARIO_SESSIONS = [
+  {
+    session_id: SCENARIO.session_id,
+    title: SCENARIO.title,
+    created_at: new Date(_now - 3 * _day).toISOString(),
+    last_active_at: new Date(_now - 2 * _hour).toISOString(),
+    turn_count: SCENARIO.turns.length,
+    expires_at: new Date(_now + 27 * _day).toISOString(),
+  },
+  {
+    session_id: SESSION_2_ID,
+    title: "گفتگوی نمونه — قیمت پایهٔ تالار فلزات",
+    created_at: new Date(_now - 9 * _day).toISOString(),
+    last_active_at: new Date(_now - 5 * _day).toISOString(),
+    turn_count: SESSION_2_TURNS_FULL.length,
+    expires_at: new Date(_now + 21 * _day).toISOString(),
+  },
+];
+
+/** Simulated "GET /v2/sessions/{sid}" — the turns handed back when the
+ * analyst switches to (or reloads into) a session. The flagship session
+ * (SCENARIO.session_id) intentionally returns an empty list: it is this
+ * demo's "currently in progress" conversation, driven entirely by the
+ * sample buttons / ask() flow exactly as before the sidebar existed —
+ * this keeps that whole existing, tested flow unchanged. Only the second
+ * session simulates a genuine reopened-conversation transcript. Returns a
+ * deep copy every time so re-run's in-place mutation of one switch's
+ * turns never leaks into the next. */
+function getSimulatedSessionTurns(sessionId) {
+  if (sessionId === SESSION_2_ID) return JSON.parse(JSON.stringify(SESSION_2_TURNS_OMITTED));
+  return [];
+}
+
+/* ── Memory scenario — GET /v2/memory's shape. One applicable entry (the
+ * `ring` preference t_07 above actually uses) and one `applicable: false`
+ * entry (a preference for a column this analyst's role no longer exposes)
+ * so the memory panel demos both states honestly. */
+const SCENARIO_MEMORY = {
+  entries: [
+    {
+      key: "ring",
+      field: "تالار پیش‌فرض",
+      value: "تالار فلزات",
+      updated_at: new Date(_now - 6 * _day).toISOString(),
+      applicable: true,
+    },
+    {
+      key: "legacy_hall_code",
+      field: "کد تالار (قدیمی)",
+      value: "42",
+      updated_at: new Date(_now - 40 * _day).toISOString(),
+      applicable: false,
+    },
+  ],
+  rememberable: [
+    {
+      key: "ring",
+      field: "تالار پیش‌فرض",
+      options: ["تالار سیمان", "تالار فلزات", "تالار پتروشیمی", "تالار کشاورزی", "تالار صادراتی"],
+      max_length: 40,
+    },
+    {
+      key: "measure",
+      field: "معیار پیش‌فرض برای «برتر»",
+      options: ["ارزش ریالی معامله", "حجم معامله", "تعداد قرارداد"],
+      max_length: 40,
+    },
+    {
+      key: "period",
+      field: "دورهٔ زمانی پیش‌فرض",
+      options: [],
+      max_length: 20,
+    },
+  ],
+};
+
+export {
+  SCENARIO, SCENARIO_MATCH_HINTS, STATIC_PREFIX_TOKENS,
+  SCENARIO_SESSIONS, SCENARIO_MEMORY,
+  getSimulatedSessionTurns, FULL_TURNS_BY_ID,
+};
