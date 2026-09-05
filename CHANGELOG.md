@@ -5,6 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.1.4] — 2026-09-05
+
+### Documentation
+
+- **`docs/admin-panel-architecture.md`** — the agreed design for an admin
+  panel, written as a contract in the spirit of `api-contract-v2.md`:
+  decisions with their reasons, so an implementation can be checked
+  against intent rather than guessed at. Nothing is implemented yet.
+
+  The parts worth knowing before reading it:
+
+  - **Two admin roles, split by one rule** — anything that changes who
+    can see what data belongs to the security admin, everything else to
+    operations. Four escalation paths that would have collapsed that
+    split are closed explicitly, including two non-obvious ones:
+    `schema.yaml` is a data-access change wearing operational clothes
+    (it is the guard's allowlist), and `DB_CONNECTION_URL` could be
+    pointed at a more privileged login on the same database.
+  - **The split holds because enforcement lives in the guard, not the
+    prompt.** That is why editing domain knowledge is safely operational
+    — a crafted few-shot example still cannot reach a denied column — and
+    why `schema.yaml` is the exception.
+  - **Three kinds of data, three homes.** Metadata to a managed database
+    (durability and stewardship), the audit log to append-only files
+    (tamper-evidence — a DBA must not be able to edit it), secrets to the
+    environment.
+  - **Configuration versioning is a table, not git**, with revert
+    semantics, bundle versions plus per-file restore, and validated
+    rollback. Git remains as an *output*: the YAML bundle is exported on
+    every version, so an operator's own repository still gives offline
+    inspection and off-box backup.
+  - **Migration between backends is a shipped tool**, not a property of
+    using SQLAlchemy. Verified by row counts and content hashes, never
+    mutating the source, requiring maintenance mode, refusing a
+    schema-version mismatch.
+  - Four prerequisites in today's code are named: `AuditRecord` has no
+    `session_id`, `Principal` has no role concept, `API_KEYS_JSON` is
+    read at start-up so revocation cannot be immediate, and
+    `session/persistence.py` is hardcoded to `sqlite3`.
+
+---
+
 ## [4.1.3] — 2026-09-05
 
 ### Documentation
