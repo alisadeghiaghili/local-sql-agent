@@ -43,6 +43,7 @@ import api.v2_routes as v2_routes
 from api.auth import AuthMiddleware, get_principal_if_any, require_principal
 from api.errors import register_handlers
 from core.provenance import log_startup_notice
+from core.version import __version__
 from api.middleware import RequestIDMiddleware, RateLimitMiddleware, ConcurrencyMiddleware
 from api.models import (
     QueryRequest,
@@ -203,7 +204,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Auction NLQ Engine",
     description="Natural-language \u2192 SQL \u2192 Results API for Auction_DM.",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -420,6 +421,59 @@ async def query_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /
+# ---------------------------------------------------------------------------
+
+@app.get("/", summary="Service index")
+def index() -> dict[str, object]:
+    """What this server is, and where the things a caller wants actually are.
+
+    There was no route here, so the first thing anyone does after
+    starting the server -- open ``http://localhost:8000`` in a browser --
+    returned ``{"detail":"Not Found"}``. With ``APP_DOCS_PUBLIC=false``
+    (the default) ``/docs`` is behind auth too, so a correctly running,
+    correctly configured server looked completely dead to the one check a
+    person actually performs. That cost a real deployment an
+    investigation into a server that was working perfectly.
+
+    The most important line here is ``ui``. This is an API server; the
+    browser interface is a *separate* static server on a *different*
+    port, and the common wrong turn on a first run is expecting it here.
+
+    Deliberately open, and deliberately boring
+    -----------------------------------------
+    No credentials, for the same reason ``/health`` needs none: someone
+    checking whether the process is up should not have to authenticate to
+    find out. So it carries nothing an anonymous caller should not have --
+    no model name (the disclosure ``/health`` already withholds
+    deliberately), no connection string, no configuration, no counts.
+    Only the service's identity and a directory of paths that are already
+    public in ``docs/api-contract-v2.md``.
+    """
+    return {
+        "service": app.title,
+        "version": app.version,
+        "status": "ok",
+        "ui": (
+            "This is the API, not the web interface. The browser UI is a "
+            "separate static server: serve web/ (for example "
+            "`python -m http.server 8080`, run from inside web/) and open "
+            "that port instead. See docs/fa/getting-started.md."
+        ),
+        "endpoints": {
+            "health": "GET /health",
+            "docs": "GET /docs",
+            "query": "POST /query",
+            "sessions": "POST /v2/sessions",
+        },
+        "auth": (
+            "Every route except GET /health and this one requires "
+            "'Authorization: Bearer <key>'."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

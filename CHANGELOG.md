@@ -5,6 +5,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.1.1] — 2026-09-05
+
+### Fixed
+
+- **The server had no route at `/`,** so the first thing anyone does
+  after starting it — open `http://localhost:8000` in a browser —
+  returned `{"detail":"Not Found"}`. With `APP_DOCS_PUBLIC=false` (the
+  default) `/docs` is behind authentication too, so a correctly running,
+  correctly configured server looked completely dead to the one check a
+  person actually performs. That cost a real deployment an investigation
+  into a server that was working perfectly.
+
+  `GET /` now answers, unauthenticated, with the service identity and a
+  directory of paths — and, most importantly, says that **the browser UI
+  is a separate static server on a different port**. That single
+  confusion is what every wrong turn on a first run traces back to.
+
+  It is deliberately boring: no model name (the disclosure `/health`
+  already withholds from anonymous callers), no connection string, no
+  configuration, no counts. `tests/test_auth.py` pins both halves — open
+  without credentials, and leaking nothing — and the route-coverage test
+  that enumerates the live route table now carries `/` in an explicit
+  `_OPEN_ROUTES` set, so opening a route stays a recorded decision rather
+  than something that happens by omission.
+
+- **The version the API reported was `1.0.0`** while the project was at
+  4.1.0. Harmless only while nothing read it; `GET /` publishes it. There
+  is now one source (`core/version.py`) and a test that reads the newest
+  `## [x.y.z]` heading out of this file and fails if the two disagree —
+  the failure being prevented is exactly "two places, one updated".
+
+### Documentation
+
+- `docs/fa/getting-started.md` said "two terminals" but let a reader
+  treat the second as optional. It now states which port the UI is on,
+  that the backend's own port shows nothing in a browser, and that
+  terminal 2 is required — with the health check shown through `curl`
+  rather than a browser.
+
+---
+
 ## [4.1.0] — 2026-09-05
 
 Many conversations instead of one, and preferences that outlive a
