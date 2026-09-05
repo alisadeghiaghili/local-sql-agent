@@ -116,17 +116,34 @@ _BODY_FOR = {
 _PATH_FILL = {"session_id": "s_doesnotexist", "turn_id": "t_doesnotexist"}
 
 
+#: The only routes that may answer an unauthenticated caller. Every other
+#: route in the live table must 401, and a new one that does not will fail
+#: TestEveryProtectedRouteRequiresAuth -- so opening a route is a decision
+#: someone has to record here, never something that happens by omission.
+#:
+#: Both are open for the same reason and carry the same obligation:
+#: something has to tell a person or a probe that the process is alive
+#: without them holding a credential, and whatever does that must
+#: therefore disclose nothing. See TestHealthOpenNoModelWhenUnauthenticated
+#: and TestIndexOpenAndDiscloseNothing for the tests that hold them to it.
+_OPEN_ROUTES = {
+    "/health",  # liveness probe -- withholds the model name when anonymous
+    "/",        # service index -- says where the UI is, and nothing else
+}
+
+
 def _protected_route_cases() -> list[tuple[str, str, dict | None]]:
     """Every (method, concrete_path, body) pair in ``app.routes`` except
-    ``/health`` -- discovered from the live route table, not hand-copied,
-    so a route added later without auth fails this test automatically."""
+    :data:`_OPEN_ROUTES` -- discovered from the live route table, not
+    hand-copied, so a route added later without auth fails this test
+    automatically."""
     import api.server as server_module
 
     cases: list[tuple[str, str, dict | None]] = []
     for route in server_module.app.routes:
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None) or set()
-        if not path or path == "/health":
+        if not path or path in _OPEN_ROUTES:
             continue
         concrete = path
         for k, v in _PATH_FILL.items():
@@ -298,6 +315,60 @@ class TestHealthOpenNoModelWhenUnauthenticated:
             resp = client.get("/health", headers={"Authorization": f"Bearer {RAW_KEY_A}"})
         assert resp.status_code == 200
         assert resp.json().get("model") == "some-model"
+
+
+class TestIndexOpenAndDiscloseNothing:
+    """GET / is open, and says where the UI is without leaking anything.
+
+    It exists because a server with no root route returns
+    {"detail":"Not Found"} to the one check a person actually performs --
+    opening it in a browser -- and /docs is behind auth by default, so a
+    perfectly healthy deployment looked dead. That happened for real.
+
+    Being open makes it a disclosure surface, so these tests pin both
+    halves: reachable with no credentials, and carrying nothing an
+    anonymous caller should not have. The model name is the specific
+    thing to watch: /health deliberately withholds it from anonymous
+    callers, and a chatty index would hand back what /health just
+    refused.
+    """
+
+    def test_no_credentials_returns_200(self, app_and_client):
+        _, client, _ = app_and_client
+        with override_settings(auth_required=True, api_keys_json=TWO_PRINCIPALS_JSON):
+            resp = client.get("/")
+        assert resp.status_code == 200, (
+            "the index must be reachable without credentials -- it is what "
+            "tells someone the server is up at all"
+        )
+
+    def test_points_at_the_separate_ui_server(self, app_and_client):
+        _, client, _ = app_and_client
+        with override_settings(auth_required=True, api_keys_json=TWO_PRINCIPALS_JSON):
+            body = client.get("/").json()
+        assert "web/" in body["ui"], (
+            "the whole point of this route is telling a reader the browser UI "
+            "is a different server; without that it is decoration"
+        )
+
+    def test_leaks_neither_the_model_name_nor_the_connection_string(self, app_and_client):
+        _, client, _ = app_and_client
+        with override_settings(
+            auth_required=True,
+            api_keys_json=TWO_PRINCIPALS_JSON,
+            openai_model="a-very-distinctive-model-name",
+            db_connection_url=(
+                "mssql+pyodbc://a-very-distinctive-host:1433/SecretDB"
+                "?driver=ODBC+Driver+17+for+SQL+Server"
+            ),
+        ):
+            raw = client.get("/").text
+        assert "a-very-distinctive-model-name" not in raw, (
+            "/health withholds the model name from anonymous callers; an open "
+            "index must not hand back what /health just refused"
+        )
+        assert "a-very-distinctive-host" not in raw
+        assert "SecretDB" not in raw
 
 
 # ---------------------------------------------------------------------------
