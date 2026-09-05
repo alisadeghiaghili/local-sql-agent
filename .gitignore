@@ -10,7 +10,17 @@ logs/*.jsonl
 # not-ignored -- one `git add -A` away from committing real user
 # questions and generated SQL from the audit trail. Match them explicitly.
 logs/*.jsonl.*
+# SQLite, including its sidecars. "*.db" alone does NOT match
+# sessions.db-wal or sessions.db-shm -- and the write-ahead log is where
+# recently-written pages live, so on a real deployment it is the file most
+# likely to hold questions and generated SQL that have not been
+# checkpointed into the main database yet. Both were committed once,
+# exactly the way the rotated audit logs above nearly were: one `git add
+# -A` in a working copy where the server had run.
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 .venv/
 dist/
 build/
