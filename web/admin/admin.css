@@ -1,0 +1,158 @@
+/* web/admin/admin.css — admin panel, phase 1.
+ *
+ * Layout and components specific to the dashboard-not-a-tool surface.
+ * Colour tokens, .card, .pill, .dot, .topbar, .live-key-row, .theme-toggle
+ * and the light/dark custom properties all come from ../styles/style.css
+ * unchanged — this file only adds what that shared stylesheet has no
+ * reason to carry for the analyst chat UI (a grid of stat cards, a
+ * checks table, a key/value table). */
+
+.admin-layout {
+  flex: 1;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.admin-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-btn-refresh {
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--ink);
+  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.admin-btn-refresh:hover { background: var(--teal-l); border-color: var(--teal); }
+.admin-btn-refresh:disabled { opacity: .5; cursor: default; }
+
+.admin-refresh-all {
+  border: 1px solid rgba(255, 255, 255, .3);
+  border-radius: 999px;
+  background: transparent;
+  color: #e2e8f0;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.admin-refresh-all:hover { background: rgba(255, 255, 255, .12); }
+
+.admin-loading { color: var(--muted); font-size: 13px; }
+
+.admin-banner {
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+.admin-banner-warn {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+  border: 1px solid var(--status-warn);
+}
+.admin-banner-error {
+  background: var(--status-critical-bg);
+  color: var(--status-critical);
+  border: 1px solid var(--status-critical);
+}
+
+.admin-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral);
+  margin-inline-end: 8px;
+}
+.admin-mode-pill.examples {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+}
+
+.admin-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  font-size: 13px;
+}
+.admin-kv dt { color: var(--muted); }
+.admin-kv dd { font-weight: 700; color: var(--ink); }
+.admin-kv dt, .admin-kv dd { margin: 0; }
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.admin-table th, .admin-table td {
+  text-align: start;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-table th {
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: .3px;
+}
+.admin-table-wrap { overflow-x: auto; }
+
+.admin-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.admin-status-pass { background: var(--status-good-bg); color: var(--status-good); }
+.admin-status-fail { background: var(--status-critical-bg); color: var(--status-critical); }
+.admin-status-skip { background: var(--status-neutral-bg); color: var(--status-neutral); }
+
+.admin-section-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  margin: 12px 0 6px;
+}
+.admin-section-title:first-child { margin-top: 0; }

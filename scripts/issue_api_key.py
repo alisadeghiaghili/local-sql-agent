@@ -7,6 +7,7 @@ Usage (from repo root)::
     python scripts/issue_api_key.py --id analyst-1 --name "Jane Analyst"
     python scripts/issue_api_key.py --id readonly-broker --name "Broker Desk" \\
         --denied-column NationalID --denied-column Phone
+    python scripts/issue_api_key.py --id ops-1 --name "Ops Admin" --admin
 
 Prints the raw key to stdout **exactly once** — it is not recoverable
 afterwards, because only its SHA-256 hex digest is ever configured or
@@ -55,8 +56,17 @@ def build_entry(
     name: str,
     raw_key: str,
     denied_columns: list[str] | None = None,
+    admin: bool = False,
 ) -> dict:
-    """The ``API_KEYS_JSON`` array entry for *raw_key* -- never the raw key itself."""
+    """The ``API_KEYS_JSON`` array entry for *raw_key* -- never the raw key itself.
+
+    *admin* grants the admin panel's phase 1 read-only observability
+    capability (``docs/admin-panel-architecture.md`` §2;
+    ``security.auth.Principal.is_admin``) -- omitted from the entry
+    entirely when ``False`` (the default), matching *denied_columns*'s own
+    "absent means false/none" convention rather than writing out an
+    explicit ``"admin": false`` on every ordinary analyst key.
+    """
     entry: dict = {
         "id": principal_id,
         "name": name,
@@ -64,6 +74,8 @@ def build_entry(
     }
     if denied_columns:
         entry["denied_columns"] = denied_columns
+    if admin:
+        entry["admin"] = True
     return entry
 
 
@@ -80,10 +92,19 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Column name this principal must never see. Repeatable.",
     )
+    parser.add_argument(
+        "--admin",
+        action="store_true",
+        help=(
+            "Grant the admin panel's phase 1 read-only observability "
+            "capability (docs/admin-panel-architecture.md). Omitted by "
+            "default -- an ordinary analyst key gets no admin surface."
+        ),
+    )
     args = parser.parse_args(argv)
 
     raw_key = issue_key()
-    entry = build_entry(args.id, args.name, raw_key, args.denied_columns)
+    entry = build_entry(args.id, args.name, raw_key, args.denied_columns, admin=args.admin)
 
     print("Raw API key (copy this now -- it will not be shown again):")
     print(f"  {raw_key}")

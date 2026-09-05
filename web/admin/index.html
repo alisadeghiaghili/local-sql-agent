@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>پنل مدیریت — نمایش‌گر فقط‌خواندنی</title>
+<link rel="stylesheet" href="../styles/fonts.css">
+<link rel="stylesheet" href="../styles/style.css">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">ADM</span>
+    <div class="brand-text">
+      <h1>پنل مدیریت</h1>
+      <p>نمایش‌گر فقط‌خواندنی — هیچ دکمه‌ای در این صفحه چیزی را تغییر نمی‌دهد</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="live-base-row" id="live-base-row">
+      <input type="text" id="live-base-input" dir="ltr" aria-label="نشانی بک‌اند" class="live-base-input">
+      <button class="live-base-connect" id="live-base-connect" type="button">اتصال</button>
+    </div>
+    <div class="live-key-row" id="live-key-row">
+      <span class="live-key-status" id="live-key-status"></span>
+      <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید API مدیریتی خود را وارد کنید" autocomplete="off">
+      <button class="live-key-save" id="live-key-save" type="button">ذخیره کلید</button>
+      <button class="live-key-clear" id="live-key-clear" type="button">حذف کلید</button>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="تغییر پوسته">
+      <span id="theme-toggle-icon" aria-hidden="true">🌓</span>
+      <span id="theme-toggle-label">پوسته</span>
+    </button>
+    <button class="admin-refresh-all" id="admin-refresh-all" type="button">↻ بروزرسانی همه</button>
+  </div>
+</header>
+
+<main class="admin-layout">
+
+  <div id="admin-forbidden-banner" class="admin-banner admin-banner-warn" hidden></div>
+  <div id="admin-notice-area"></div>
+
+  <section class="admin-grid">
+
+    <div class="card admin-card" id="card-summary">
+      <div class="card-title-row">
+        <span class="card-title">خلاصهٔ گزارش ممیزی</span>
+        <div class="admin-card-actions">
+          <label class="admin-toggle">
+            <input type="checkbox" id="include-examples-toggle">
+            نمونه‌های واقعی (فقط برای دیباگ)
+          </label>
+          <button class="admin-btn-refresh" data-refresh="summary" type="button">↻</button>
+        </div>
+      </div>
+      <div class="admin-card-body" id="summary-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </div>
+
+    <div class="card admin-card" id="card-health">
+      <div class="card-title-row">
+        <span class="card-title">بررسی‌های استقرار</span>
+        <button class="admin-btn-refresh" data-refresh="health" type="button">↻</button>
+      </div>
+      <div class="admin-card-body" id="health-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </div>
+
+    <div class="card admin-card" id="card-cache">
+      <div class="card-title-row">
+        <span class="card-title">آمار کش</span>
+        <button class="admin-btn-refresh" data-refresh="cache" type="button">↻</button>
+      </div>
+      <div class="admin-card-body" id="cache-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </div>
+
+    <div class="card admin-card" id="card-config">
+      <div class="card-title-row">
+        <span class="card-title">پیکربندی (project_config)</span>
+        <button class="admin-btn-refresh" data-refresh="config" type="button">↻</button>
+      </div>
+      <div class="admin-card-body" id="config-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<footer class="foot">
+  <span>این صفحه هیچ پرس‌وجویی روی داده‌های انبار داده اجرا نمی‌کند و هیچ ردیف نتیجه‌ای نمایش نمی‌دهد.</span>
+  <span id="foot-time"></span>
+</footer>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
