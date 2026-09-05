@@ -71,6 +71,25 @@ import os
 os.environ.setdefault("RATE_LIMIT_REQUESTS", "1000000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 
+# ---------------------------------------------------------------------------
+# Session persistence, disabled by default for the suite
+# ---------------------------------------------------------------------------
+# config.Settings.session_store_path defaults to "logs/sessions.db" in
+# production (persistence-on-by-default -- see that field's docstring).
+# Left at that default here, any test that reaches
+# api.v2_routes.get_session_store()'s lazy construction (every existing
+# POST /v2/sessions test does) would open a REAL SQLite file under this
+# repo's own logs/ directory -- state that would leak between test runs
+# and pollute a git-ignored-but-real directory nobody asked this suite to
+# write to. Empty string is the documented "disabled" value, restoring
+# exactly the pre-Phase-9 in-memory-only behaviour every existing v2 test
+# already assumes. Tests that specifically exercise persistence
+# (tests/test_session_persistence.py, tests/test_v2_session_memory_endpoints.py)
+# override this explicitly via config.override_settings(session_store_path=...)
+# pointed at a pytest tmp_path, same pattern as RATE_LIMIT_* above: must be
+# set before config.py is first imported.
+os.environ.setdefault("SESSION_STORE_PATH", "")
+
 from typing import Any, Iterator
 from unittest.mock import patch
 

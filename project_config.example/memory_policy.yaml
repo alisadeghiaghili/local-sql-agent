@@ -1,0 +1,36 @@
+# memory_policy.yaml — TEMPLATE (copy to project_config/memory_policy.yaml and fill in real data)
+#
+# Cross-session memory policy (see docs/api-contract-v2.md §5, "Memory").
+#
+# keys: the CLOSED set of preferences an analyst may pin via
+#   PUT /v2/memory/{key}. Memory is explicit-only and config-declared on
+#   purpose -- nothing is inferred from repetition, and no key/column/value
+#   may appear as a literal in engine source (session.memory,
+#   session.engine); this file is the one place that vocabulary lives.
+#     filter_key   : the merged-filters dict key this entry contributes
+#                     when applied (must match a table name in schema.yaml
+#                     -- this template uses "Ring", the example dimension
+#                     table schema.yaml.example already ships, the same
+#                     dimension session_policy.yaml's default_scope
+#                     already governs).
+#     field_name   : the generic Assumption.field / UI field name.
+#     column       : the warehouse column this value constrains -- re-checked
+#                     against the requesting principal's denied_columns on
+#                     every turn that would apply it.
+#     options      : closed set of permitted values (rejects anything else).
+#     max_length   : per-key cap; never wider than memory_value_max_length.
+
+keys:
+  scope:
+    filter_key: "Ring"
+    field_name: "ring"
+    column: "Name"
+    # Deliberately excludes "All rings" -- session_policy.yaml's own
+    # default_scope.default_label -- so a pinned memory value is always
+    # textually distinguishable from the unset "default" fallback; see
+    # tests/test_session_memory.py's static-prefix-invariance test, which
+    # asserts the two prompts differ when memory is set vs unset.
+    options:
+      - "Ring A"
+      - "Ring B"
+    max_length: 120

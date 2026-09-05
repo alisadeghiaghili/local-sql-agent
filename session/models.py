@@ -34,7 +34,7 @@ class Assumption(BaseModel):
 
     field: str
     value: str
-    source: Literal["question", "session", "default", "policy"]
+    source: Literal["question", "session", "default", "policy", "memory"]
     editable: bool = True
 
 
@@ -97,6 +97,14 @@ class TurnResult(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
+    rows_omitted: bool = False
+    """``True`` only for a turn rehydrated from ``session.persistence``
+    (§9, §10) — row *values* are never written to disk, so a reopened
+    conversation's earlier turns carry their shape (``columns``,
+    ``row_count``, ``truncated``) but an empty ``rows``. Additive and
+    defaulting ``False`` so every existing response is unchanged; a
+    client must read this rather than inferring "0 rows" from an empty
+    ``rows`` list, since ``row_count`` stays accurate either way."""
 
 
 class TurnErrorInfo(BaseModel):
@@ -182,3 +190,76 @@ class AssumptionEdit(BaseModel):
 
 class PatchAssumptionsRequest(BaseModel):
     assumptions: list[AssumptionEdit] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Conversation index (§3) — GET/PATCH /v2/sessions*
+# ---------------------------------------------------------------------------
+
+
+class SessionIndexEntry(BaseModel):
+    """One row of ``GET /v2/sessions`` — the frozen index shape (§3)."""
+
+    session_id: str
+    title: str | None = None
+    created_at: str
+    last_active_at: str
+    turn_count: int = 0
+    expires_at: str | None = None
+
+
+class SessionIndexResponse(BaseModel):
+    sessions: list[SessionIndexEntry] = Field(default_factory=list)
+    total: int = 0
+
+
+class RenameSessionRequest(BaseModel):
+    """``PATCH /v2/sessions/{sid}`` — rename only; a title never enters a
+    prompt (§3), so it is validated (length, no control characters) but
+    otherwise opaque presentation text."""
+
+    title: str = Field(..., min_length=1)
+
+
+class RenameSessionResponse(BaseModel):
+    session_id: str
+    title: str
+
+
+# ---------------------------------------------------------------------------
+# Cross-session memory (§5) — GET/PUT/DELETE /v2/memory*
+# ---------------------------------------------------------------------------
+
+
+class MemoryEntryResponse(BaseModel):
+    """One row of ``GET /v2/memory``'s ``entries`` list."""
+
+    key: str
+    field: str
+    value: str
+    updated_at: str
+    applicable: bool = True
+    """The read-time ACL re-check result (§5): ``False`` means the entry is
+    still stored but the caller may no longer see the column it
+    constrains, so it was not applied to any turn just now."""
+
+
+class RememberableKeyResponse(BaseModel):
+    """One row of ``GET /v2/memory``'s ``rememberable`` list — the closed
+    set of keys an analyst may pin, independent of whether they have."""
+
+    key: str
+    field: str
+    options: list[str] = Field(default_factory=list)
+    max_length: int = 0
+
+
+class MemoryIndexResponse(BaseModel):
+    entries: list[MemoryEntryResponse] = Field(default_factory=list)
+    rememberable: list[RememberableKeyResponse] = Field(default_factory=list)
+
+
+class SetMemoryRequest(BaseModel):
+    """``PUT /v2/memory/{key}`` request body."""
+
+    value: str = Field(..., min_length=1)
