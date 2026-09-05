@@ -437,6 +437,51 @@ def check_audit_log_writable() -> CheckResult:
     )
 
 
+def check_session_store_writable() -> CheckResult:
+    """``session_store_path``'s directory must exist and be writable
+    (§9/§10 — session and cross-session-memory persistence).
+
+    Mirrors ``check_audit_log_writable`` above exactly, for the same
+    reason: ``session.persistence.SessionPersistence`` is constructed
+    lazily, on the FIRST ``POST /v2/sessions`` or ``GET/PUT /v2/memory*``
+    request this process ever serves — a directory that cannot be written
+    to would surface as that first analyst's request failing, not as a
+    startup-time error anyone is watching for. Skipped (not failed) when
+    ``session_store_path`` is empty — the documented, deliberate way to
+    disable persistence entirely.
+    """
+    if not cfg.settings.session_store_path:
+        return CheckResult(
+            "Session store directory writable", "SKIP",
+            "session_store_path is empty -- persistence deliberately disabled",
+        )
+
+    store_dir = Path(cfg.settings.session_store_path).parent
+    if str(store_dir) in ("", "."):
+        store_dir = Path(".")
+    try:
+        store_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return CheckResult(
+            "Session store directory writable", "FAIL",
+            f"could not create {store_dir}: {exc}",
+        )
+
+    probe = store_dir / ".verify_deployment_write_probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return CheckResult(
+            "Session store directory writable", "FAIL",
+            f"{store_dir} exists but is not writable: {exc}",
+        )
+    return CheckResult(
+        "Session store directory writable", "PASS",
+        f"{store_dir} is writable (session_store_path={cfg.settings.session_store_path!r})",
+    )
+
+
 def check_project_config_loads() -> CheckResult:
     """``project_config/`` (or wherever ``PROJECT_CONFIG_DIR`` points) is
     present and loads under the schema the CURRENT code expects.
@@ -549,6 +594,7 @@ _CHECKS: list[Callable[[], CheckResult]] = [
     check_openai_model_exists,
     check_api_key_authenticates,
     check_audit_log_writable,
+    check_session_store_writable,
     check_project_config_loads,
     check_rate_limit_sane_for_deployment,
 ]

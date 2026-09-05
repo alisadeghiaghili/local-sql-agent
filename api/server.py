@@ -159,6 +159,20 @@ async def lifespan(app: FastAPI):
     v2_routes._system_prompt = _system_prompt
     logger.info("System prompt loaded (%d chars)", len(_system_prompt))
 
+    # ── §9/§10: retention purge, once at start-up (no second daemon thread) ─
+    # Permanently deletes any persisted session past session_retention_days
+    # since its last activity. A no-op when session persistence is disabled
+    # (session_store_path=""). Best-effort: a failure here (e.g. a
+    # transiently locked SQLite file) must not stop the server from
+    # starting -- the next restart tries again, and TTL expiry alone still
+    # bounds the in-memory hot set in the meantime.
+    try:
+        removed = v2_routes.get_session_store().purge_expired()
+        if removed:
+            logger.info("session retention purge: removed %d expired session(s)", removed)
+    except Exception as exc:  # noqa: BLE001 - startup must not fail on this
+        logger.warning("session retention purge failed at startup: %s", exc)
+
     # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
     # Opt-in (see Settings.dimension_vocabulary_warm_on_startup) so this
     # codebase's DB-less test suite is unaffected by default. This call

@@ -71,6 +71,7 @@ from session.composer import (
     compose_refinement_sql,
     predicate_columns,
 )
+from session.memory import MemoryEntry, apply_memory_to_assumptions
 from session.models import (
     Ambiguity,
     Basis,
@@ -276,6 +277,7 @@ class TurnEngine:
         request_id: str | None = None,
         assumption_overrides: dict[str, str] | None = None,
         denied_columns: tuple[str, ...] | None = None,
+        memory_entries: dict[str, MemoryEntry] | None = None,
     ) -> Turn:
         """Answer *question* in the context of *record*, and record one audit entry.
 
@@ -300,7 +302,18 @@ class TurnEngine:
             (Phase 8) — threaded through to every
             :func:`~security.sql_guard.validate_sql` call this turn makes,
             in both the CTE-refinement and the fresh-generation path.
-            ``None`` (the default) applies no column restriction.
+            ``None`` (the default) applies no column restriction. Also
+            re-checked against every applicable :class:`MemoryEntry` (§5) —
+            an entry naming a now-denied column is dropped for this turn
+            and reported in ``Turn.warnings``, never applied.
+        memory_entries:
+            ``{key: MemoryEntry}`` — the calling principal's stored
+            cross-session memory (§5), as returned by
+            ``session.persistence.SessionPersistence.get_memory_entries``.
+            Applied to this turn's assumptions via
+            :func:`session.memory.apply_memory_to_assumptions` unless
+            ``cfg.settings.memory_enabled`` is ``False``, in which case it
+            is ignored entirely. ``None`` (the default) applies nothing.
 
         Returns
         -------
@@ -325,16 +338,28 @@ class TurnEngine:
             record.turns, cfg.settings.session_prompt_turns
         )
 
+        effective_memory_entries = (
+            memory_entries if (memory_entries and cfg.settings.memory_enabled) else None
+        )
+
         if basis_decision.kind == "refines" and basis_decision.composition == "cte":
-            outcome, resolved_question, ambiguity_block, memory_filters = self._handle_cte_refinement(
-                question, system_prompt, previous_turn, basis_decision,
-                session_context_text, timer, assumption_overrides, denied_columns,
+            outcome, resolved_question, ambiguity_block, memory_filters, mem_warnings = (
+                self._handle_cte_refinement(
+                    question, system_prompt, previous_turn, basis_decision,
+                    session_context_text, timer, assumption_overrides, denied_columns,
+                    effective_memory_entries,
+                )
             )
         else:
-            outcome, resolved_question, ambiguity_block, memory_filters = self._handle_generative(
-                question, system_prompt, context, basis_decision,
-                session_context_text, timer, assumption_overrides, denied_columns,
+            outcome, resolved_question, ambiguity_block, memory_filters, mem_warnings = (
+                self._handle_generative(
+                    question, system_prompt, context, basis_decision,
+                    session_context_text, timer, assumption_overrides, denied_columns,
+                    effective_memory_entries,
+                )
             )
+        if mem_warnings:
+            outcome.warnings = list(outcome.warnings) + mem_warnings
 
         basis = Basis(
             kind=basis_decision.kind,
@@ -391,9 +416,13 @@ class TurnEngine:
         timer: StageTimer,
         assumption_overrides: dict[str, str] | None,
         denied_columns: tuple[str, ...] | None = None,
-    ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object]]:
+        memory_entries: dict[str, MemoryEntry] | None = None,
+    ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object], list[str]]:
         assumptions = ambiguity.assumptions_for_cte_refinement(
             question, basis_decision.inherited_filters
+        )
+        assumptions, mem_warnings, _used_memory = apply_memory_to_assumptions(
+            assumptions, memory_entries or {}, denied_columns,
         )
         assumptions = _apply_overrides(assumptions, assumption_overrides)
         ambiguity_block = Ambiguity(is_ambiguous=True, assumptions=assumptions, clarifications=[])
@@ -413,7 +442,7 @@ class TurnEngine:
                 ),
                 tier=None,
             )
-            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters)
+            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters), mem_warnings
 
         cap = cfg.settings.refinement_scan_cap
         try:
@@ -440,7 +469,7 @@ class TurnEngine:
             outcome = _GenOutcome(
                 error=TurnErrorInfo(code=code, message=message), tier=None,
             )
-            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters)
+            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters), mem_warnings
 
         raw_outer = route_result.text or ""
         llm_status = build_llm_status(
@@ -485,7 +514,7 @@ class TurnEngine:
                 llm_status=llm_status,
                 tier="T2",
             )
-            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters)
+            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters), mem_warnings
 
         warnings: list[str] = []
         try:
@@ -512,7 +541,7 @@ class TurnEngine:
                 error=TurnErrorInfo(code="QUERY_EXECUTION_ERROR", message=str(exc)),
                 llm_status=llm_status,
             )
-            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters)
+            return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters), mem_warnings
 
         columns = [str(c) for c in df.columns]
         rows = df.to_dict(orient="records")
@@ -531,7 +560,7 @@ class TurnEngine:
             llm_status=llm_status,
             result_columns=columns,
         )
-        return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters)
+        return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters), mem_warnings
 
     # ------------------------------------------------------------------
     # Fresh / carry-forward generation path
@@ -547,7 +576,8 @@ class TurnEngine:
         timer: StageTimer,
         assumption_overrides: dict[str, str] | None,
         denied_columns: tuple[str, ...] | None = None,
-    ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object]]:
+        memory_entries: dict[str, MemoryEntry] | None = None,
+    ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object], list[str]]:
         is_carry_forward = basis_decision.kind == "refines"
         merged_filters: dict[str, object] = dict(basis_decision.inherited_filters)
         merged_filters.update(context.filters)  # the question's own words win
@@ -561,16 +591,27 @@ class TurnEngine:
 
         if is_carry_forward:
             assumptions = ambiguity.assumptions_for_carry_forward(merged_filters)
-            assumptions = _apply_overrides(assumptions, assumption_overrides)
+            clarifications: list = []
+            is_ambiguous = None  # decided below, after memory may add one
+        else:
+            assumptions, clarifications, is_ambiguous = ambiguity.assumptions_for_fresh(
+                question, merged_filters
+            )
+
+        # Memory (§5) is applied before any PATCH override -- precedence is
+        # question > session > memory > default, and an override re-sources
+        # a field "question" regardless of what it replaced.
+        assumptions, mem_warnings, _used_memory = apply_memory_to_assumptions(
+            assumptions, memory_entries or {}, denied_columns,
+        )
+        assumptions = _apply_overrides(assumptions, assumption_overrides)
+
+        if is_carry_forward:
             ambiguity_block = Ambiguity(is_ambiguous=bool(assumptions), assumptions=assumptions, clarifications=[])
             resolved_question = (
                 f"همان پرسش قبلی، برای {merged_filters.get('PersianYear', '')}"
             )
         else:
-            assumptions, clarifications, is_ambiguous = ambiguity.assumptions_for_fresh(
-                question, merged_filters
-            )
-            assumptions = _apply_overrides(assumptions, assumption_overrides)
             ambiguity_block = Ambiguity(
                 is_ambiguous=is_ambiguous, assumptions=assumptions, clarifications=clarifications,
             )
@@ -602,7 +643,7 @@ class TurnEngine:
         outcome = self._generate_validate_execute(
             segments, system_prompt, timer, denied_columns=denied_columns,
         )
-        return outcome, resolved_question, ambiguity_block, merged_filters
+        return outcome, resolved_question, ambiguity_block, merged_filters, mem_warnings
 
     def _generate_validate_execute(
         self, segments: PromptSegments, system_prompt: str, timer: StageTimer,

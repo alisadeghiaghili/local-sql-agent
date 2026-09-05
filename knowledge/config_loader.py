@@ -144,6 +144,18 @@ class SessionPolicyConfig(BaseModel):
     default_scope: DefaultScopeConfig
 
 
+class MemoryKeyConfig(BaseModel):
+    filter_key: str
+    field_name: str
+    column: str
+    options: list[str] = []
+    max_length: int = 120
+
+
+class MemoryPolicyConfig(BaseModel):
+    keys: dict[str, MemoryKeyConfig]
+
+
 class RetrievalHintsConfig(BaseModel):
     fact_tables: list[str]
     always_include: dict[str, list[str]]
@@ -205,3 +217,7 @@ def load_retrieval_hints() -> RetrievalHintsConfig:
 
 def load_session_policy() -> SessionPolicyConfig:
     return _load_validated("session_policy.yaml", SessionPolicyConfig)  # type: ignore[return-value]
+
+
+def load_memory_policy() -> MemoryPolicyConfig:
+    return _load_validated("memory_policy.yaml", MemoryPolicyConfig)  # type: ignore[return-value]
