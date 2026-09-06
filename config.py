@@ -878,6 +878,31 @@ class Settings:
     (or the generator started producing worse SQL). Overridable per
     invocation via ``python -m eval.cli run --max-guard-rejection-increase``."""
 
+    eval_golden_path: str = field(
+        default_factory=lambda: os.getenv("EVAL_GOLDEN_PATH", "eval_data/golden.jsonl")
+    )
+    """Path to the golden-set ``.jsonl`` file the admin panel's config-version
+    dry-run (``docs/admin-panel-architecture.md`` §6.2, phase 3 spec §5)
+    runs a candidate ``project_config/`` bundle against before it can be
+    applied. Read at call time by :mod:`appdb.config_versions`, the same
+    ``eval_data/golden.jsonl`` a deployment already maintains for
+    ``python -m eval.cli run`` -- this setting exists so the panel can find
+    it without a request body needing to name a filesystem path. Point this
+    at ``eval_data.example/golden.jsonl`` (alongside ``PROJECT_CONFIG_DIR``)
+    to run the dry-run against the committed example data instead."""
+
+    config_export_dir: str = field(
+        default_factory=lambda: os.getenv("CONFIG_EXPORT_DIR", "")
+    )
+    """Directory :mod:`appdb.config_versions` writes the ``project_config/``
+    YAML bundle to on every applied version (spec §7) -- offline inspection
+    with familiar tools, and an off-box backup, without this system's
+    correctness depending on git being installed. Empty (the default)
+    disables the export write entirely; a deployment that wants it points
+    this at a directory of its own -- optionally one under version control
+    with its own remote (``docs/admin-panel-architecture.md`` §6.3: "git as
+    an output, not as the engine" -- never this project's own repository)."""
+
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 

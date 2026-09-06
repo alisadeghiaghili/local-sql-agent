@@ -41,9 +41,11 @@ from __future__ import annotations
 from sqlalchemy import (
     Column,
     Engine,
+    Integer,
     MetaData,
     String,
     Table,
+    Text,
 )
 
 metadata = MetaData()
@@ -103,6 +105,79 @@ admin_principal_roles = Table(
     #: flow" -- this column exists for the day a migration tool backfills
     #: one, not because this phase writes it).
     Column("granted_by", String(255), nullable=False),
+)
+
+#: Phase 3: the ``project_config/`` bundle's version history (§1, §6 of
+#: ``docs/admin-panel-architecture.md`` and the phase 3 spec). One row per
+#: bundle version -- a full snapshot of all nine ``project_config/*.yaml``
+#: files, never a diff, so restoring any depth is a read rather than a
+#: replay (spec §1). ``version_id`` is a plain autoincrementing integer:
+#: the *order* versions were created in is exactly the information a
+#: rollback and an audit trail both need, and an integer sequence is the
+#: simplest thing that can never disagree with itself about that order
+#: (unlike a timestamp, which two versions created within the same clock
+#: tick could tie on).
+#:
+#: ``status`` is one of ``"applied"``, ``"draft"``, or ``"rejected"``
+#: (spec §3.1's propose-and-approve flow). The *active* version is always
+#: the highest ``version_id`` whose ``status`` is ``"applied"`` -- there is
+#: deliberately no separate "is this the active one" flag to keep in sync;
+#: see :mod:`appdb.config_versions` for why that single rule is sufficient
+#: even across restores and approvals.
+#:
+#: ``content_json`` holds the full bundle as a JSON object
+#: (``{filename: yaml_text}``, one entry per file) -- the same "JSON text
+#: in a String/Text column" shape :data:`admin_api_keys`'s own
+#: ``denied_columns_json`` already uses, chosen for the same reason: every
+#: backend this application supports (SQLite, PostgreSQL, SQL Server,
+#: MySQL) has a text column, and a bespoke JSON column type would be one
+#: more thing :mod:`appdb.migrations` would need a backend-specific
+#: mapping for (see the architecture's §5.4 on why type mapping across
+#: backends must be explicit rather than incidental).
+config_bundle_versions = Table(
+    "config_bundle_versions",
+    metadata,
+    Column("version_id", Integer, primary_key=True, autoincrement=True),
+    Column("status", String(16), nullable=False),
+    Column("content_json", Text, nullable=False),
+    #: sha256 hex digest of the canonical (sorted-key) JSON form of the
+    #: content -- a cheap identity check (e.g. "did this restore actually
+    #: change anything") without re-parsing every file.
+    Column("content_hash", String(64), nullable=False),
+    #: The version this row was optimistically based on (spec §8) -- the
+    #: version the editor/reviewer had open when they saved. NULL only for
+    #: the very first, bootstrap version, which has no prior version to be
+    #: based on.
+    Column("based_on_version", Integer, nullable=True),
+    #: Set when this version's content is a revert of an earlier one
+    #: (spec §2/§6.1's "revert, never reset") -- the version *number* that
+    #: was restored from, never mutated itself.
+    Column("restored_from_version", Integer, nullable=True),
+    #: The single filename that was restored, when this version is a
+    #: *per-file* restore (spec §1's "a single file may be restored from
+    #: any version") rather than a restore of the whole bundle. NULL for a
+    #: whole-bundle restore or an ordinary multi-file edit.
+    Column("restored_file", String(64), nullable=True),
+    Column("created_at", String(64), nullable=False),
+    Column("created_by", String(255), nullable=False),
+    #: Which capability authorised creating this version -- "operations"
+    #: or "security" (never omitted, mirroring
+    #: :attr:`appdb.admin_audit.AdminActionRecord.authorised_by`'s own
+    #: reasoning: one principal may hold both roles at once).
+    Column("created_by_capability", String(32), nullable=False),
+    #: NULL until a draft is approved or rejected; the security admin who
+    #: did so, thereafter (spec §3.1).
+    Column("reviewed_by", String(255), nullable=True),
+    Column("reviewed_at", String(64), nullable=True),
+    Column("review_note", Text, nullable=True),
+    #: Precomputed at creation time (never recomputed later, so a
+    #: subsequent version's own diff/dry-run can never retroactively
+    #: change what an earlier draft showed its reviewer): the structural
+    #: diff (spec §4.3) and the offline dry-run summary (spec §5), each as
+    #: a JSON object. NULL only for the bootstrap version, which has no
+    #: prior version to diff or dry-run against.
+    Column("diff_json", Text, nullable=True),
+    Column("dry_run_json", Text, nullable=True),
 )
 
 

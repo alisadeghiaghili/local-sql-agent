@@ -39,6 +39,7 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
+import api.admin_config_routes as admin_config_routes
 import api.admin_routes as admin_routes
 import api.admin_write_routes as admin_write_routes
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
@@ -308,6 +309,9 @@ app.include_router(admin_routes.router)
 
 # --- Admin panel, phase 2: the write foundation -- key lifecycle, roles ---
 app.include_router(admin_write_routes.router)
+
+# --- Admin panel, phase 3: versioned project_config/ editing ---
+app.include_router(admin_config_routes.router)
 
 # --- Exception handlers ---
 register_handlers(app)
