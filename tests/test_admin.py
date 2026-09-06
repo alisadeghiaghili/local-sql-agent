@@ -134,18 +134,35 @@ def _iter_live_routes(app):
 
 
 def _admin_route_cases() -> list[tuple[str, str]]:
-    """Every (method, path) pair under ``/admin`` in the live route table
-    -- discovered, not hand-copied, so a route added later without
-    ``Depends(require_admin)`` fails this test automatically (mirrors the
-    intent of ``tests/test_auth.py``'s ``_protected_route_cases``; see
-    :func:`_iter_live_routes` for why this cannot reuse that function's own
-    flat ``app.routes`` walk verbatim in this environment)."""
-    import api.server as server_module
+    """Every (method, path) pair phase 1's OWN router
+    (``api.admin_routes.router``) serves -- discovered from that router
+    object directly, not hand-copied, so a route added later to
+    ``api/admin_routes.py`` without ``Depends(require_admin)`` fails this
+    test automatically (mirrors the intent of ``tests/test_auth.py``'s
+    ``_protected_route_cases``).
+
+    Scoped to this one router object, not "every path starting with
+    /admin" -- admin panel phase 2 (``docs/admin-panel-architecture.md``;
+    the frozen phase 2 spec) deliberately adds its OWN routes under
+    ``/admin`` (``api/admin_write_routes.py``) gated on the ``operations``/
+    ``security`` capabilities instead of phase 1's single ``admin``
+    capability, per the architecture's two-role split. A prefix-based
+    "every /admin path requires admin" would now be simply false for those
+    routes by design, not a regression this test should catch -- see
+    ``tests/test_admin_write_routes.py`` for phase 2's own equivalent
+    coverage (every phase 2 route requires the RIGHT role) and this
+    module's ``TestEveryMutatingAdminRouteDeclaresARoleDependency`` for
+    the app-wide "every mutating /admin route requires *some* role" rule
+    that replaces phase 1's obsolete "no /admin route accepts a mutating
+    method".
+    """
+    import api.admin_routes as admin_routes_module
 
     return [
-        (method, path)
-        for method, path in _iter_live_routes(server_module.app)
-        if path.startswith("/admin") and method not in ("HEAD", "OPTIONS")
+        (method, route.path)
+        for route in admin_routes_module.router.routes
+        for method in (getattr(route, "methods", None) or set())
+        if method not in ("HEAD", "OPTIONS")
     ]
 
 
@@ -275,18 +292,89 @@ class TestAdminSummaryDefaultsToAggregateSafe:
 
 
 # ---------------------------------------------------------------------------
-# 4. No /admin route accepts a mutating method
+# 4. [Superseded by admin panel phase 2] Every mutating /admin route
+#    declares a role dependency.
 # ---------------------------------------------------------------------------
+# Phase 1's rule here used to be "no /admin route accepts a mutating
+# method at all" -- true only because phase 1 never added a write path.
+# Admin panel phase 2 (docs/admin-panel-architecture.md; the frozen phase 2
+# spec) adds real writes under /admin (key issue/disable/enable/revoke,
+# ACL changes, role grants -- see api/admin_write_routes.py), so that rule
+# is now obsolete by construction: it would fail the moment phase 2's own
+# routes exist, for reasons that have nothing to do with a security
+# regression. The protection this test exists for was never really "no
+# writes exist" -- it was "no write is ungated" -- so this is a
+# replacement, not a deletion, of the same underlying guarantee: every
+# route discovered under /admin that accepts a mutating method must
+# declare one of require_admin/require_operations/require_security,
+# discovered from the route's own dependant tree (the actual FastAPI
+# dependency graph Starlette dispatches through), not hand-listed.
 
-class TestNoAdminRouteAcceptsAMutatingMethod:
-    def test_every_admin_route_is_get_only(self):
-        by_path: dict[str, set[str]] = {}
-        for method, path in _ADMIN_CASES:
-            by_path.setdefault(path, set()).add(method)
+def _dependency_callables(dependant) -> set:
+    """Every callable in *dependant*'s dependency tree, recursively --
+    e.g. for a route depending on ``require_operations`` (which itself
+    depends on ``require_principal``), this returns both."""
+    out = set()
+    stack = [dependant]
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        call = getattr(current, "call", None)
+        if call is not None:
+            out.add(call)
+        stack.extend(getattr(current, "dependencies", None) or [])
+    return out
 
-        assert by_path, "route discovery found no /admin routes at all"
-        for path, methods in by_path.items():
-            assert methods == {"GET"}, (
-                f"{path} accepts {sorted(methods)} -- phase 1 admin routes "
-                "must be GET-only"
-            )
+
+def _admin_route_objects():
+    """Like :func:`_admin_route_cases`, but yielding the live route
+    OBJECTS (not just method/path) -- needed here to reach each route's
+    own ``.dependant`` tree."""
+    import api.server as server_module
+
+    return list(_iter_live_route_objects(server_module.app, "/admin"))
+
+
+def _iter_live_route_objects(app, prefix: str):
+    """Mirrors :func:`_iter_live_routes` above, but yields route objects
+    (recursing into an ``app.include_router(...)``-included sub-router the
+    same way, for the same FastAPI-version reason documented on that
+    function) instead of bare ``(method, path)`` tuples."""
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path:
+            if path.startswith(prefix):
+                yield route
+            continue
+        nested_router = getattr(route, "original_router", None)
+        if nested_router is None:
+            continue
+        for nested_route in nested_router.routes:
+            nested_path = getattr(nested_route, "path", None)
+            if nested_path and nested_path.startswith(prefix):
+                yield nested_route
+
+
+class TestEveryMutatingAdminRouteDeclaresARoleDependency:
+    def test_every_non_get_admin_route_requires_a_role(self):
+        from api.auth import require_admin, require_operations, require_security
+
+        allowed = {require_admin, require_operations, require_security}
+        checked = 0
+        for route in _admin_route_objects():
+            dependant = getattr(route, "dependant", None)
+            deps = _dependency_callables(dependant) if dependant is not None else set()
+            for method in getattr(route, "methods", None) or set():
+                if method in ("HEAD", "OPTIONS", "GET"):
+                    continue
+                checked += 1
+                assert deps & allowed, (
+                    f"{method} {route.path} is a mutating /admin route with no "
+                    "require_admin/require_operations/require_security dependency "
+                    "-- every write under /admin must declare a role"
+                )
+        assert checked > 0, (
+            "route discovery found no mutating /admin route to check -- phase 2's "
+            "write routes (api/admin_write_routes.py) should have added some"
+        )

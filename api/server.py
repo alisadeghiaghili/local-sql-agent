@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
 import api.admin_routes as admin_routes
+import api.admin_write_routes as admin_write_routes
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
 import api.v2_routes as v2_routes
 # Only register_handlers is needed here: the typed exceptions are raised in
@@ -132,19 +133,17 @@ async def lifespan(app: FastAPI):
     # Mirrors the db_connection_url precedent immediately above: a broken
     # or absent auth configuration must stop the server from starting at
     # all, not be discovered later as every caller gets a 401 nobody can
-    # fix without a redeploy.
+    # fix without a redeploy. This first pass only parses API_KEYS_JSON
+    # itself (fail fast on malformed JSON before touching the application
+    # database at all); the "are there ANY usable keys" check below runs
+    # after the application-database keys are known too (admin panel
+    # phase 2), since an all-database-issued key set with an empty
+    # API_KEYS_JSON is a legitimate deployment shape, not a misconfiguration.
     try:
-        configured_keys = load_api_keys()
+        load_api_keys()
     except ApiKeyConfigError as exc:
         raise RuntimeError(f"Invalid API_KEYS_JSON: {exc}") from exc
 
-    if cfg.settings.auth_required and not configured_keys:
-        raise RuntimeError(
-            "AUTH_REQUIRED is true but API_KEYS_JSON has no configured keys "
-            "-- refusing to start a server that requires authentication "
-            "nobody could ever satisfy. Set API_KEYS_JSON (see "
-            "scripts/issue_api_key.py) or explicitly set AUTH_REQUIRED=false."
-        )
     if not cfg.settings.auth_required:
         # Logged on EVERY startup (not deduplicated) -- a deliberately
         # disabled front door must never be quiet in the logs. See
@@ -154,6 +153,57 @@ async def lifespan(app: FastAPI):
             "requests on every route except the ones that were already open. "
             "This is a deliberate escape hatch and must not be used in a "
             "production deployment."
+        )
+
+    # ── Admin panel, phase 2: the application database ─────────────────────
+    # Fail closed, mirroring the auth/db_connection_url checks above: the
+    # server now depends on the application database (key store, role
+    # grants), and an operator must be told clearly which database is
+    # missing/misconfigured rather than discovering it as every request
+    # fails once traffic arrives. See docs/admin-panel-architecture.md §5.7
+    # and the phase 2 spec §1.4 ("this resolves the first open question in
+    # the architecture's §9").
+    #
+    # Checked BEFORE anything touches either engine: raise_if_same_database
+    # must run first so a misconfiguration that would point the writable
+    # application database at the read-only warehouse connection is caught
+    # before a single query runs against either.
+    from appdb.engine import get_app_engine, raise_if_same_database, resolve_app_db_url
+    from appdb.key_store import (
+        AmbiguousKeyIdentityError,
+        bootstrap_from_env,
+        get_active_principals,
+    )
+
+    app_db_url = resolve_app_db_url()
+    raise_if_same_database(app_db_url, cfg.settings.db_connection_url)
+
+    try:
+        get_app_engine()  # builds the engine and creates its tables (checkfirst)
+    except Exception as exc:  # noqa: BLE001 - re-raised as a clear, fail-closed RuntimeError
+        raise RuntimeError(
+            f"Application database unreachable or unusable at startup "
+            f"(APP_DB_URL resolved to {app_db_url!r}): {exc}"
+        ) from exc
+
+    try:
+        bootstrap_from_env()
+    except ApiKeyConfigError as exc:
+        raise RuntimeError(f"Invalid API_KEYS_JSON: {exc}") from exc
+    except AmbiguousKeyIdentityError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    # Now that both sources have been reconciled, "are there any keys at
+    # all" is asked against the merged set -- an all-database-issued
+    # deployment with an empty API_KEYS_JSON must not be refused startup
+    # just because the environment alone has nothing configured.
+    if cfg.settings.auth_required and not get_active_principals():
+        raise RuntimeError(
+            "AUTH_REQUIRED is true but no usable key is configured in "
+            "API_KEYS_JSON or the application database -- refusing to "
+            "start a server that requires authentication nobody could "
+            "ever satisfy. Set API_KEYS_JSON (see scripts/issue_api_key.py) "
+            "or explicitly set AUTH_REQUIRED=false."
         )
 
     if not _PROMPT_PATH.exists():
@@ -255,6 +305,9 @@ app.include_router(v2_routes.router)
 
 # --- Admin panel, phase 1: read-only observability (docs/admin-panel-architecture.md) ---
 app.include_router(admin_routes.router)
+
+# --- Admin panel, phase 2: the write foundation -- key lifecycle, roles ---
+app.include_router(admin_write_routes.router)
 
 # --- Exception handlers ---
 register_handlers(app)
