@@ -5,6 +5,97 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.5.0] — 2026-09-06
+
+### Added
+
+- **An application database.** A new `appdb/` package: one schema, one
+  SQLAlchemy layer, several backends. SQLite when `APP_DB_URL` is unset —
+  the only genuine zero-configuration fallback, since PostgreSQL is a
+  server and cannot be made to appear. Elsewhere, tables are created
+  inside a database someone else provisioned, because `CREATE DATABASE`
+  needs rights a DBA will not grant an application.
+
+  `session/persistence.py` is ported off raw `sqlite3` onto the same
+  layer. Its existing tests pass unchanged, including the byte-level
+  check that result rows never reach the file or its WAL.
+
+  Start-up now depends on this database and fails closed when it is
+  unreachable, consistent with how every other misconfiguration is
+  treated here. The error names *which* database is missing, warehouse or
+  application, because those have different fixes.
+
+- **Two admin roles.** Operations holds key lifecycle and domain
+  knowledge; security holds `denied_columns`, `schema.yaml`, the
+  warehouse connection string, and the granting of either role. The rule
+  that decides any future case: anything that changes who can see what
+  data belongs to security.
+
+  Each escalation path has a test that fails if it opens — issuing a key
+  cannot set its ACL, so operations cannot mint itself an unrestricted
+  one; operations cannot grant any role, including to itself; every
+  security-gated route refuses an operations key, discovered from the
+  route table rather than hand-listed; and `AUTH_REQUIRED=false` confers
+  neither role.
+
+- **Admin actions are audited to their own stream**, so admin activity
+  does not pollute the analytics the analyst audit log exists for. Each
+  record names *which* capability authorised it — otherwise one person
+  holding both roles makes the separation invisible to whoever reviews it
+  later. Each role can read that the other acted without being able to
+  act.
+
+### Changed
+
+- **API keys moved into the database, read at call time.** `API_KEYS_JSON`
+  was read at start-up, so a disable button would have taken effect at the
+  next restart; for a leaked key, "tomorrow morning" is not an answer.
+
+  That plus an external database is a network round trip per request — two
+  correct decisions colliding. The key set is cached with a short TTL *and*
+  invalidated explicitly on every revocation, disable and ACL change. Both
+  halves are tested, because with only one of them either revocation is
+  not immediate or every question pays a hop.
+
+  Revocation writes a tombstone rather than deleting the row. Restoring
+  the database to an earlier point would otherwise restore a key revoked
+  because it leaked — backup as the cause of a security regression rather
+  than the cure.
+
+- **Phase 1's "no `/admin` route accepts a mutating method" rule is
+  replaced, not deleted.** That rule was only ever true because phase 1
+  had no writes; the guarantee underneath it was never "no writes exist"
+  but "no write is ungated". The replacement walks each route's real
+  FastAPI dependant tree and asserts every mutating route declares one of
+  the role dependencies.
+
+### Fixed
+
+- **The application database must never be the warehouse.**
+  `docs/db-hardening.md` specifies a read-only login for the warehouse and
+  `database/executor.py` rolls back every transaction. This database needs
+  writes, so if the two ever point at the same place, our own writes
+  become the mechanism that undoes that posture — silently, from inside
+  the process. The two URLs are compared as parsed endpoints, not as
+  strings: `localhost` and `127.0.0.1` naming one database is the same
+  mistake spelled twice.
+
+  Reviewing that check found it compared database *names*
+  case-sensitively. Case sensitivity varies by backend and by platform —
+  SQL Server folds under most collations, PostgreSQL folds unquoted names,
+  MySQL depends on the host filesystem — so there is no answer to inherit.
+  The failure directions decide it: a false positive costs an operator a
+  rename and a clear start-up error; a false negative silently undoes the
+  read-only posture. It now over-matches on purpose.
+
+### Notes
+
+- Exercised against SQLite only. No PostgreSQL or SQL Server was reachable
+  in this environment, so those backends are implemented and unverified by
+  execution — the same boundary the multi-dialect work was held to.
+
+---
+
 ## [4.4.0] — 2026-09-05
 
 ### Changed
