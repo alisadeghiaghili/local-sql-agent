@@ -163,6 +163,28 @@ class AuditRecord:
         They are identifiers this system generated, not user content —
         the same category as ``request_id``, and they carry no more
         information about the warehouse than it does.
+    config_version_id:
+        The :mod:`appdb.config_versions` bundle version active when this
+        turn's answer was produced (``docs/admin-panel-architecture.md``
+        §6.2's "answer provenance" -- "which configuration produced this
+        wrong answer?"), or ``None`` when no versioned application
+        database was consulted (the CLI path, or one unreachable at the
+        time). Phase 4's feedback triage (spec §2.2) resolves this value
+        from the audit record rather than re-reading the *current* active
+        version at flag time, which may already differ.
+    assumptions:
+        Small, JSON-serialisable ``{"field", "value", "source",
+        "editable"}`` dicts, mirroring
+        ``session.models.Assumption.model_dump()`` -- the declared
+        assumptions behind this turn's answer (contract §5), or ``None``
+        when the turn carried none (the ``/query`` path, which has no
+        ambiguity concept). Phase 4's triage queue (spec §3) shows these
+        alongside the question/SQL/guard verdict so an admin can see what
+        the model assumed without a second query-shape record: an
+        assumption names a field this system resolved (a date range, a
+        scope), the same category of thing ``guard.tables_touched`` and
+        ``guard.injected_top`` already record here, never a raw warehouse
+        value.
 
     Raises
     ------
@@ -221,6 +243,8 @@ class AuditRecord:
     resolved_columns: list[str] | None = None
     session_id: str | None = None
     turn_id: str | None = None
+    config_version_id: int | None = None
+    assumptions: list[dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -257,6 +281,10 @@ class AuditRecord:
             "columns":        self.columns,
             "principal_id":   self.principal_id,
             "resolved_columns": self.resolved_columns,
+            "session_id":     self.session_id,
+            "turn_id":        self.turn_id,
+            "config_version_id": self.config_version_id,
+            "assumptions":    self.assumptions,
         }
 
 
@@ -305,3 +333,75 @@ def save_audit_record(record: AuditRecord) -> None:
         append_jsonl(log_path, record.as_dict())
     except OSError as exc:
         logger.error("Failed to write audit record: %s", exc)
+
+
+def find_record_by_turn(session_id: str, turn_id: str) -> dict[str, Any] | None:
+    """The most recent audit record naming *session_id*/*turn_id*, or ``None``.
+
+    This is the join phase 4's feedback triage exists to prove works
+    (``docs/admin-panel-architecture.md`` §3; the phase 4 spec §7): a
+    flagged turn carries only ``session_id``/``turn_id``, never the
+    question or SQL, so recovering "what did this turn actually do" reads
+    the audit log rather than a second, duplicated store.
+
+    Reuses ``scripts.analyze_audit_log``'s own log-reading primitives
+    (:func:`~scripts.analyze_audit_log.resolve_log_paths`,
+    :func:`~scripts.analyze_audit_log.iter_records`) rather than
+    reimplementing "glob the rotated files and parse JSON lines" a second
+    time — the same "no analysis is reimplemented here" posture
+    ``api/admin_routes.py`` already holds for that module's aggregate
+    report. Imported lazily to avoid a module-level dependency from this
+    package (imported very early, by ``api/runner.py`` and
+    ``session/engine.py``) onto a script module.
+
+    A turn produces at most one audit record in practice (one
+    :func:`save_audit_record` call per turn), but if more than one line
+    matches — a retried write, a hand-edited test log — the **last** one
+    in file order wins, mirroring "the log is append-only, so the latest
+    entry for an id is the current truth" the rest of this module already
+    assumes.
+
+    Parameters
+    ----------
+    session_id, turn_id:
+        The identifiers to look up, exactly as carried on
+        :attr:`AuditRecord.session_id` / :attr:`AuditRecord.turn_id`.
+
+    Returns
+    -------
+    dict | None
+        The matching record as a plain dict (the JSON shape
+        :meth:`AuditRecord.as_dict` produces), or ``None`` if no record in
+        the current audit log names this session/turn — e.g. the log has
+        since rotated past it.
+
+    Examples
+    --------
+    >>> import sys, tempfile, os, json
+    >>> from datetime import datetime
+    >>> d = tempfile.mkdtemp()
+    >>> target = os.path.join(d, "audit_log.jsonl")
+    >>> this_module = sys.modules[__name__]
+    >>> this_module._AUDIT_LOG_FILE = target
+    >>> save_audit_record(AuditRecord(
+    ...     timestamp=datetime(2026, 8, 26, 12, 0, 0),
+    ...     request_id="r_1", question="how many?", generated_sql="SELECT 1",
+    ...     guard={"verdict": "allowed"}, row_count=1,
+    ...     session_id="s_1", turn_id="t_1",
+    ... ))
+    >>> found = find_record_by_turn("s_1", "t_1")
+    >>> found["question"]
+    'how many?'
+    >>> find_record_by_turn("s_1", "t_missing") is None
+    True
+    >>> this_module._AUDIT_LOG_FILE = ""  # reset for other doctests/tests
+    """
+    from scripts.analyze_audit_log import iter_records, resolve_log_paths
+
+    log_path = _audit_log_file()
+    paths = resolve_log_paths([f"{log_path}*"])
+    match: dict[str, Any] | None = None
+    for record in iter_records(paths):
+        if record.get("session_id") == session_id and record.get("turn_id") == turn_id:
+            match = record
+    return match

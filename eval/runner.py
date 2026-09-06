@@ -275,6 +275,17 @@ def run_golden_set(
 ) -> list[CaseResult]:
     """Run every case in *cases* through :func:`run_case`, in order.
 
+    A case whose ``status`` is ``"pending_expected"`` (admin panel phase 4
+    -- see :data:`~eval.models.GoldenCaseStatus`) is skipped entirely and
+    produces no :class:`~eval.models.CaseResult` at all, rather than one
+    reported as a pass or a failure. This is what makes the regression
+    gate genuinely *ignore* such a case instead of merely not counting it
+    against the pass rate: it never reaches ``generate_fn``/``execute_fn``,
+    never touches the security guard, and never appears in
+    :func:`eval.report.build_report`'s ``total``/``passed``/
+    ``status_counts`` at all -- a case with no confirmed expectation yet
+    cannot silently enforce a wrong one.
+
     Parameters
     ----------
     cases:
@@ -285,7 +296,9 @@ def run_golden_set(
     Returns
     -------
     list[CaseResult]
-        One result per input case, same order.
+        One result per non-``"pending_expected"`` input case, same
+        relative order (fewer entries than *cases* whenever any case is
+        still pending its expectation).
 
     Examples
     --------
@@ -302,8 +315,20 @@ def run_golden_set(
     >>> results = run_golden_set(cases, lambda q: "SELECT 1", lambda sql: df)
     >>> [r.case_id for r in results]
     ['a', 'b']
+
+    A ``"pending_expected"`` case is skipped, not run against a
+    placeholder:
+
+    >>> pending = GoldenCase(id="c", question="q3", status="pending_expected")
+    >>> results = run_golden_set([*cases, pending], lambda q: "SELECT 1", lambda sql: df)
+    >>> [r.case_id for r in results]
+    ['a', 'b']
     """
-    return [run_case(case, generate_fn, execute_fn) for case in cases]
+    return [
+        run_case(case, generate_fn, execute_fn)
+        for case in cases
+        if case.status != "pending_expected"
+    ]
 
 
 # ---------------------------------------------------------------------------

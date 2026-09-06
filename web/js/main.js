@@ -690,6 +690,19 @@ function turnCtx() {
     // contract has no such endpoint); it re-asks the same question,
     // which is the closest honest equivalent to "run it again".
     onRerun: (turnId) => rerunTurn(turnId),
+    // "این عدد درست نیست" (admin panel phase 4). LIVE mode really submits
+    // it to the backend, against the session this transcript is currently
+    // showing; SIMULATED mode has no server to send it to, so it is
+    // accepted locally and shown as such rather than pretending to
+    // round-trip a demo scenario through a real endpoint.
+    onFlag: async (turnId, category, note) => {
+      if (state.mode === "live") {
+        if (!state.sessionId) throw new Error("هیچ گفتگوی زنده‌ای در جریان نیست.");
+        await api.submitFeedback(state.sessionId, turnId, category, note);
+        return;
+      }
+      showNotice("ok", "در حالت نمایشی، گزارش‌ها به سرور واقعی ارسال نمی‌شوند (فقط شبیه‌سازی محلی).");
+    },
   };
 }
 

@@ -23,12 +23,15 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 import config as cfg
 from api.auth import require_principal
+from appdb.feedback import TurnNotAuditedError, list_feedback, submit_flag
 from knowledge.memory_policy import get_memory_keys
 from security.auth import Principal
 from session.engine import TurnEngine
@@ -427,6 +430,93 @@ async def patch_assumptions(
     )
     get_session_store().sync_turn(record, turn)
     return turn
+
+
+# ---------------------------------------------------------------------------
+# POST/GET /v2/sessions/{sid}/turns/{tid}/feedback -- admin panel phase 4
+# ---------------------------------------------------------------------------
+# The one piece of phase 4 that lives in the analyst UI, not the admin
+# panel (docs/admin-panel-architecture.md §3 Tier 1; the phase 4 spec §2):
+# an analyst is the only person who knows whether an answer was wrong.
+# Ownership is enforced exactly like every other route in this module
+# (_require_owned_session -- 404, never 403, for a turn on someone else's
+# session) precisely because a feedback row references a turn, and a turn
+# lives inside a session an analyst may not read in the first place.
+
+
+class SubmitFeedbackRequest(BaseModel):
+    """``POST .../feedback`` body -- deliberately mirrors the closed set
+    plus free text the spec's §2.1 UI offers, nothing more: no field here
+    can carry the question or the SQL (this endpoint never reads them from
+    the request at all -- see :mod:`appdb.feedback`'s module docstring for
+    why the join, not a copy, is what the audit log is for)."""
+
+    model_config = {"extra": "forbid"}
+
+    category: Literal[
+        "wrong_number", "different_question", "wrong_filter_or_period", "other",
+    ]
+    note: str = Field(default="", max_length=2000)
+
+
+@router.post(
+    "/sessions/{session_id}/turns/{turn_id}/feedback",
+    status_code=201,
+    summary="Flag this turn's answer as wrong (analyst-facing, admin panel phase 4)",
+)
+def submit_turn_feedback(
+    session_id: str,
+    turn_id: str,
+    req: SubmitFeedbackRequest,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+
+    if get_session_store().find_turn(record, turn_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown turn_id: {turn_id!r}")
+
+    try:
+        return submit_flag(
+            session_id=session_id,
+            turn_id=turn_id,
+            reporter_principal_id=principal.id,
+            category=req.category,
+            note=req.note,
+        )
+    except TurnNotAuditedError as exc:
+        # The turn exists in the session store but no audit record can be
+        # joined to it (e.g. the audit log has since rotated past it) --
+        # 422, not 404: the turn itself is real, only the join failed.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/sessions/{session_id}/turns/{turn_id}/feedback",
+    summary="Flags already raised on this turn, by the caller alone",
+)
+def get_turn_feedback(
+    session_id: str, turn_id: str, principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Lets the UI show "already flagged" without a second submission --
+    scoped to *this session*, which :func:`_require_owned_session` already
+    restricts to the session's own owner. A principal may not read
+    feedback on another principal's session any more than they may read
+    that session's turns (§2's ownership rule extends unchanged)."""
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+
+    if get_session_store().find_turn(record, turn_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown turn_id: {turn_id!r}")
+
+    all_for_session = list_feedback(session_id=session_id)
+    return {"feedback": [f for f in all_for_session if f["turn_id"] == turn_id]}
 
 
 # ---------------------------------------------------------------------------

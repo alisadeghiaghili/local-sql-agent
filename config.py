@@ -891,6 +891,20 @@ class Settings:
     at ``eval_data.example/golden.jsonl`` (alongside ``PROJECT_CONFIG_DIR``)
     to run the dry-run against the committed example data instead."""
 
+    eval_baseline_path: str = field(
+        default_factory=lambda: os.getenv("EVAL_BASELINE_PATH", "eval_data/baseline.json")
+    )
+    """Path to the baseline JSON file ``python -m eval.cli run --save-baseline``
+    writes (:mod:`eval.baseline`). Read at call time by the admin panel's
+    feedback-loop stats endpoint (``docs/admin-panel-architecture.md`` §3's
+    "closing the loop visibly" -- phase 4 spec §5) to show the golden set's
+    most recently recorded accuracy alongside its size and flag volume,
+    without re-running the harness against a live endpoint on every panel
+    load. A missing file (no baseline has been recorded yet) degrades to
+    "no baseline recorded" rather than an error -- this setting exists so
+    the panel can find the file without a request needing to name a
+    filesystem path, the same reasoning as ``eval_golden_path`` above."""
+
     config_version_cache_ttl_seconds: float = field(
         default_factory=lambda: float(
             os.getenv("CONFIG_VERSION_CACHE_TTL_SECONDS", "5")

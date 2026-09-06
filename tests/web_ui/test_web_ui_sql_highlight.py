@@ -54,6 +54,7 @@ _TABLE_JS = _WEB_JS / "render" / "table.js"
 _CHART_JS = _WEB_JS / "render" / "chart.js"
 _EXPORT_JS = _WEB_JS / "export.js"
 _LLM_STATUS_JS = _WEB_JS / "render" / "llm-status.js"
+_FEEDBACK_JS = _WEB_JS / "render" / "feedback.js"
 _HARNESS = Path(__file__).resolve().parent / "run_sql_highlight.mjs"
 
 _NODE = shutil.which("node")
@@ -72,6 +73,9 @@ _TABLE_IMPORT_IN_TURN = re.compile(r'^import \{ renderResult, renderWarnings \} 
 _LLM_STATUS_IMPORT = re.compile(
     r'^import \{ renderLlmStatus, answerWasTruncated, renderTruncationQualifier \} from "\./llm-status\.js";$',
     re.MULTILINE,
+)
+_FEEDBACK_IMPORT_IN_TURN = re.compile(
+    r'^import \{ renderFeedbackControl \} from "\./feedback\.js";$', re.MULTILINE,
 )
 _CHART_IMPORT_IN_TABLE = re.compile(r'^import \{ renderChartAndTable \} from "\./chart\.js";$', re.MULTILINE)
 _EXPORT_IMPORT_IN_TABLE = re.compile(r'^import \{ downloadResultAsCsv \} from "\.\./export\.js";$', re.MULTILINE)
@@ -118,6 +122,7 @@ def _prepare_copies(tmp_path: Path) -> Path:
     chart_src = _CHART_JS.read_text(encoding="utf-8")
     export_src = _EXPORT_JS.read_text(encoding="utf-8")
     llm_status_src = _LLM_STATUS_JS.read_text(encoding="utf-8")
+    feedback_src = _FEEDBACK_JS.read_text(encoding="utf-8")
 
     turn_src = _subn_or_fail(_PIPELINE_IMPORT, 'import { renderPipeline } from "./pipeline.mjs";', turn_src, "turn.js -> pipeline.js")
     turn_src = _subn_or_fail(
@@ -130,6 +135,11 @@ def _prepare_copies(tmp_path: Path) -> Path:
         _LLM_STATUS_IMPORT,
         'import { renderLlmStatus, answerWasTruncated, renderTruncationQualifier } from "./llm-status.mjs";',
         turn_src, "turn.js -> llm-status.js",
+    )
+    turn_src = _subn_or_fail(
+        _FEEDBACK_IMPORT_IN_TURN,
+        'import { renderFeedbackControl } from "./feedback.mjs";',
+        turn_src, "turn.js -> feedback.js",
     )
     table_src = _subn_or_fail(_CHART_IMPORT_IN_TABLE, 'import { renderChartAndTable } from "./chart.mjs";', table_src, "table.js -> chart.js")
     table_src = _subn_or_fail(_EXPORT_IMPORT_IN_TABLE, 'import { downloadResultAsCsv } from "./export.mjs";', table_src, "table.js -> export.js")
@@ -148,6 +158,8 @@ def _prepare_copies(tmp_path: Path) -> Path:
 
     llm_status_src = _rewrite_num_import(llm_status_src)
 
+    feedback_src = _rewrite_num_import(feedback_src)
+
     (tmp_path / "turn.mjs").write_text(turn_src, encoding="utf-8")
     (tmp_path / "pipeline.mjs").write_text(pipeline_src, encoding="utf-8")
     (tmp_path / "assumptions.mjs").write_text(assumptions_src, encoding="utf-8")
@@ -155,6 +167,7 @@ def _prepare_copies(tmp_path: Path) -> Path:
     (tmp_path / "chart.mjs").write_text(chart_src, encoding="utf-8")
     (tmp_path / "export.mjs").write_text(export_src, encoding="utf-8")
     (tmp_path / "llm-status.mjs").write_text(llm_status_src, encoding="utf-8")
+    (tmp_path / "feedback.mjs").write_text(feedback_src, encoding="utf-8")
     # num.js is shared by every renderer (see web/js/num.js): one place
     # that decides how a number looks, after seven modules each decided
     # separately. Staging it is what lets those imports resolve.
@@ -164,7 +177,10 @@ def _prepare_copies(tmp_path: Path) -> Path:
 
 @pytest.mark.skipif(_NODE is None, reason="node is not on PATH -- cannot execute web/js/*.js under test")
 def test_sql_highlighting_is_presentation_only_and_copy_stays_exact() -> None:
-    for p in (_TURN_JS, _PIPELINE_JS, _ASSUMPTIONS_JS, _TABLE_JS, _CHART_JS, _EXPORT_JS, _LLM_STATUS_JS):
+    for p in (
+        _TURN_JS, _PIPELINE_JS, _ASSUMPTIONS_JS, _TABLE_JS, _CHART_JS, _EXPORT_JS,
+        _LLM_STATUS_JS, _FEEDBACK_JS,
+    ):
         assert p.exists(), f"expected {p} to exist"
 
     with tempfile.TemporaryDirectory() as tmp:

@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""The application database — admin panel, phase 2.
+"""The application database — admin panel, phases 2-4.
 
-``docs/admin-panel-architecture.md`` §5 and the phase 2 spec: durable
-storage for the key store and role grants (feedback and configuration
-versioning are out of scope for this phase — see the spec's §6). One
-schema, one SQLAlchemy layer, several backends:
+``docs/admin-panel-architecture.md`` §5: durable storage for the key
+store, role grants, versioned ``project_config/`` history, and
+wrong-answer feedback/triage — each added by its own phase (§6 named the
+last two as originally out of scope for phase 2; :mod:`appdb.config_versions`
+and :mod:`appdb.feedback` are where they landed). One schema, one
+SQLAlchemy layer, several backends:
 
 * unset ``APP_DB_URL`` — SQLite at :attr:`config.Settings.app_db_sqlite_path`,
   created automatically;
@@ -38,6 +40,14 @@ Submodules
     out of the application database: a row in this database is editable
     by anyone with a connection to it (including a DBA), which would
     defeat the one property this record exists for.
+:mod:`appdb.config_versions`
+    The versioned ``project_config/`` bundle — history, diff, rollback,
+    and the operations/security propose-and-approve split for
+    ``schema.yaml`` (§6, phase 3).
+:mod:`appdb.feedback`
+    Wrong-answer feedback and its triage (§3 Tier 1, phase 4) — never the
+    question or the SQL, which the analyst audit log already carries
+    keyed by the same session/turn id.
 """
 
 from __future__ import annotations

@@ -187,6 +187,36 @@
 .admin-rail-summary strong { color: var(--ink); }
 .admin-rail-summary.has-failures strong { color: var(--status-critical); }
 
+/* ── Feedback triage (admin panel phase 4) ─────────────────────────── */
+
+#feedback-body .admin-check {
+  flex-direction: column;
+  align-items: stretch;
+  margin-block-end: 8px;
+}
+#feedback-body .admin-check > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-feedback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-block-start: 4px;
+}
+.admin-feedback-actions .fb-note {
+  flex: 1 1 220px;
+  font-size: 0.78rem;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+}
+
 /* ── Headline figures ───────────────────────────────────────────────── */
 
 .admin-stats {

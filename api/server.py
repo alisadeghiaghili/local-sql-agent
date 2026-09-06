@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
 import api.admin_config_routes as admin_config_routes
+import api.admin_feedback_routes as admin_feedback_routes
 import api.admin_routes as admin_routes
 import api.admin_write_routes as admin_write_routes
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
@@ -312,6 +313,9 @@ app.include_router(admin_write_routes.router)
 
 # --- Admin panel, phase 3: versioned project_config/ editing ---
 app.include_router(admin_config_routes.router)
+
+# --- Admin panel, phase 4: wrong-answer feedback and its triage ---
+app.include_router(admin_feedback_routes.router)
 
 # --- Exception handlers ---
 register_handlers(app)

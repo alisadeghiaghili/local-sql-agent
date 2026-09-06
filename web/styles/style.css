@@ -669,6 +669,35 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 }
 .empty-result { font-size: 13px; color: var(--muted); padding: 8px 2px; }
 
+/* ── Wrong-answer feedback control (admin panel phase 4) ────────────
+ * Deliberately low-key -- a small text-style toggle, never a button
+ * competing visually with the result above it (spec §2.1). */
+.feedback-control { margin-top: 8px; }
+.feedback-toggle {
+  border: none; background: none; padding: 2px 0;
+  font-size: 12px; color: var(--muted); text-decoration: underline dotted;
+  cursor: pointer;
+}
+.feedback-toggle:hover { color: var(--status-critical); }
+.feedback-form {
+  margin-top: 8px; display: flex; flex-direction: column; gap: 8px;
+  max-width: 360px;
+}
+.feedback-category, .feedback-note {
+  font-size: 12.5px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px 9px; background: var(--card-2); color: var(--ink); font-family: inherit;
+}
+.feedback-note { resize: vertical; }
+.feedback-actions { display: flex; justify-content: flex-end; }
+.feedback-submit {
+  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  border-radius: 8px; padding: 5px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.feedback-submit:hover { border-color: var(--teal); color: var(--teal-d); }
+.feedback-status { font-size: 12px; }
+.feedback-status.ok { color: var(--status-good); }
+.feedback-status.error { color: var(--status-critical); }
+
 /* ── Warnings ────────────────────────────────────────────────────── */
 .warnings { display: flex; flex-direction: column; gap: 8px; }
 .warning-item {

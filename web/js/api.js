@@ -352,6 +352,24 @@ export class Api {
     }
   }
 
+  /** "این عدد درست نیست" (admin panel phase 4, spec §2) — flags one turn's
+   * answer as wrong. `category` must be one of the closed set
+   * appdb/feedback.py::FEEDBACK_CATEGORIES defines; `note` is optional
+   * free text. Never sends the question or the SQL — the server joins
+   * those from its own audit log by session/turn id, precisely so this
+   * request never has to carry them. */
+  async submitFeedback(sessionId, turnId, category, note) {
+    const res = await this._fetchV2(
+      `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/feedback`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, note }),
+      },
+    );
+    return res.json();
+  }
+
   async patchAssumptions(sessionId, turnId, assumptions) {
     const res = await this._fetchV2(
       `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/assumptions`,
