@@ -5,6 +5,141 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.6.0] — 2026-09-06
+
+Phases 3 through 6 of `docs/admin-panel-architecture.md`. The panel is
+complete, and that document's "still to be decided" section is empty.
+
+### Added
+
+- **`project_config/` is editable, versioned, and reversible.** The nine
+  YAML files live in the application database as full bundle snapshots —
+  never diffs, so restoring any depth is a read rather than a replay.
+  Restoring an old version always creates a *new* one: intervening
+  history is never touched, and the restore is itself reversible.
+
+  `schema.yaml` stays the security admin's. An operations save that
+  touches it is held as an unapplied draft until a security admin
+  approves or rejects it; the other eight apply immediately. Every save
+  is validated through the real loaders, diffed — naming exactly which
+  tables and columns enter and leave the guard's allowlist — and dry-run
+  against the golden set before it can apply. A save names the version it
+  was based on and is refused, not merged, if that version has moved on.
+
+- **A channel for "this answer was wrong".** The audit trail records what
+  happened *technically*; a query that executed cleanly and returned a
+  plausible wrong number was indistinguishable from a correct one in
+  every artefact this system produced. The analyst-facing flag control
+  lives in `web/`, because an analyst is the only person who knows.
+
+  The feedback row deliberately holds no question, no SQL and no result
+  rows — those columns do not exist. Both are already in the audit log
+  under the same ids, so triage joins to them rather than duplicating
+  them into a second place to keep consistent and a second place to leak
+  from.
+
+  Nothing auto-applies, structurally: `appdb/feedback.py` does not import
+  the configuration write path. A promoted golden case is written
+  `pending_expected` and the regression gate skips it entirely until
+  someone supplies the expectation — a promoted case that silently joined
+  the baseline with a wrong expectation would make the gate enforce the
+  bug.
+
+- **Moving the application database between backends.**
+  `python -m scripts.migrate_app_db`. Starting on SQLite is only safe if
+  leaving it is supported, and leaving is the expected path. Identifiers
+  are preserved exactly — renumbering would turn audit and feedback
+  references into dangling ones with nothing failing at the time. After
+  copying, both sides are re-read and compared per table by row count and
+  content hash; a migration that cannot prove equality is a failed
+  migration and says so. The source is never mutated, and its hash is
+  printed before and after every run, including a failed one.
+
+- **The operational tier.** Maintenance mode; a read-only schema-drift
+  comparison against the live warehouse; vocabulary freshness with manual
+  refresh; per-analyst usage and rate-limit pressure; cache controls.
+
+  Maintenance mode is a switch rather than a trap: the panel stays
+  reachable, `/health` and `/` stay open, analyst queries get a 503 with
+  a body instead of a hang, and in-flight requests drain. Both properties
+  fall out of *where* the check is placed — a dependency on the routes
+  that submit a query and on nothing else — rather than from an exemption
+  list a new route could be forgotten from.
+
+  Schema drift proposes and never applies: `schema.yaml` is asserted
+  byte-identical after a check that finds differences.
+
+### Changed
+
+- **Failed authentication gets its own rate-limit bucket.** Keys are 256
+  bits, so guessing one is arithmetically impossible and tightening the
+  shared limit for that reason would be theatre. The real gap was
+  structural: authentication runs before the limiter, so the `ip:` bucket
+  held auth failures *together with* the unauthenticated traffic a
+  monitoring probe lives in — one client looping on a stale key could
+  starve the probe sharing its address, and the resulting 429 reads
+  exactly like an outage. Failures now bucket separately and small, and
+  every failure is recorded with its source address and surfaced, because
+  the threat to an admin key is leak rather than guessing.
+
+- **The admin-action trail is retained by time, not size.** It rotated by
+  size like every other JSONL log, which discards the oldest evidence
+  first — exactly when there is most activity. Anyone wanting to bury one
+  action could do it by generating noise. A trail whose purpose is "each
+  role can read that the other acted" cannot depend on a mechanism the
+  watched party defeats by volume. Configuration versions and feedback
+  rows are kept in full: capping rollback depth removes the feature, and
+  deleting resolved feedback destroys the trend the loop exists to show.
+
+### Fixed
+
+- **A knowledge-base edit did not move the query cache key.** Only three
+  of the nine configuration files feed the static prefix, so editing
+  `aliases.yaml` or `retrieval_hints.yaml` changed what the engine
+  retrieved — and therefore the SQL it wrote — without moving the
+  prefix's content hash. Every answer cached under the old configuration
+  kept being served. The shape of that failure was the bad part: an
+  operations admin makes the edit, asks the same question to check it,
+  and gets the pre-edit answer back with nothing to say why. The cache
+  key is now composed with the configuration bundle's own version id.
+
+- **Configuration import was the one unguarded way into a new version.**
+  Save, restore and approve all validated, diffed, dry-ran and held a
+  `schema.yaml` change from an operations-only caller as a draft. Import
+  did none of that when the deployment had no version history yet — and
+  since history is created lazily, "no history yet" means "nobody has
+  opened the configuration page since this deployment came up", exactly
+  when the first admin action is most likely to *be* an import.
+
+- **The migration tool copied nothing, and said so nowhere.** A
+  `sqlite_sequence` existence check asked through `inspect(engine)`.
+  SQLite engines here use `StaticPool`, so every checkout shares one
+  DBAPI connection: that opened a second `Connection` facade over the
+  same underlying connection, and closing it returned it to the pool,
+  which resets with a ROLLBACK. The rollback landed on the copy's own
+  transaction and discarded every row — silently, no exception, no
+  warning, `import_export` returning normally. A read-only existence
+  check, of a table that does not exist, threw away the entire migration.
+  Only the per-table verification caught it.
+
+- **`AuditRecord.as_dict()` silently dropped `session_id` and
+  `turn_id`.** 4.2.0 added the fields and never serialised them, which
+  would have made the feedback loop's join to the audit log impossible.
+
+### Notes
+
+- Maintenance mode's flag lives in the server process's memory, which is
+  what makes its own toggle unblockable — and also means the migration
+  tool, a separate process, cannot observe it. That tool keeps its own
+  recent-write-activity refusal and says so in its message. Moving the
+  flag into the application database is the clearest remaining piece of
+  work on the panel, and is recorded as such.
+- Exercised against SQLite only. No PostgreSQL or SQL Server was
+  reachable, so those backends are implemented and unverified by
+  execution.
+
+---
+
 ## [4.5.0] — 2026-09-06
 
 ### Added
