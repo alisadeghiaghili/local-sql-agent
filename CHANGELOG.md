@@ -5,6 +5,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.6.1] — 2026-09-06
+
+### Fixed
+
+- **A 401 now says so when the presented credential is a SHA-256
+  digest.** `scripts/issue_api_key.py` prints two things: the raw key,
+  once, under a line saying it will not be shown again — and then an
+  `API_KEYS_JSON` entry containing that key's `key_sha256`. The entry is
+  the conspicuous artefact: it is what goes into configuration, what gets
+  copied into a ticket, and what is still on screen after the "copy this
+  now" line has scrolled away.
+
+  So presenting the digest at the key field is an easy and repeatable
+  mistake, and it was one this system said nothing about — hashing a hash
+  finds no match, and "Missing or invalid API key" is indistinguishable
+  from a typo, a revoked key, or a key meant for another deployment.
+
+  The reverse mistake has been a loud start-up error since phase 8, where
+  `key_sha256` is checked against a 64-hex pattern. This is the same
+  courtesy in the direction an operator actually hits, where there is no
+  start-up left to fail. The hint cannot fire on a legitimate key:
+  `secrets.token_urlsafe(32)` is 43 characters of URL-safe base64 and can
+  never be 64 hex characters.
+
+### Documentation
+
+- **`docs/fa/getting-started.md` names the two traps the key-issuance
+  flow sets.** Which of the two printed values goes to the browser and
+  which to `.env`, the lengths that tell them apart at a glance, and a
+  one-line command that hashes a raw key so it can be compared against
+  what is configured. Plus the `.env` one: a multi-line `API_KEYS_JSON`
+  must be wrapped in single quotes, because `.env` is line-based and
+  dotenv otherwise takes `[` as the whole value and reads the remaining
+  lines as new keys — a silent failure a long way from "the server will
+  not start".
+
+---
+
 ## [4.6.0] — 2026-09-06
 
 Phases 3 through 6 of `docs/admin-panel-architecture.md`. The panel is
