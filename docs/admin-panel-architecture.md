@@ -179,8 +179,13 @@ the security admin, whose actions have no other supervisory mechanism.
   defining. It must at minimum: refuse new analyst queries with a clear
   status rather than a hang, stop writes to the application database
   (§5.4 depends on that for migration safety), and **keep the panel
-  itself reachable** — otherwise turning it on is a one-way door. Whether
-  in-flight requests drain or are cut is a decision to make explicitly.
+  itself reachable** — otherwise turning it on is a one-way door.
+  Defined and built in `api/maintenance.py` (admin panel phase 6): a pure
+  in-process switch, checked once per request by
+  `require_not_in_maintenance` before a route begins — never re-checked
+  mid-flight — which is what makes "in-flight requests drain, they are
+  never cut" true by construction rather than by any draining machinery.
+  Both transitions are recorded in the admin-action trail.
 
 ### 3.1 What the panel must never contain
 
@@ -347,8 +352,16 @@ backup, is what makes the operation safe to attempt on a working system.
 
 **It requires the application to be stopped or in maintenance mode.**
 Otherwise writes land in the old database after the copy has read past
-them and are lost with no error. This is a second use for the
-maintenance mode in §3's tier 3.
+them and are lost with no error. This was intended as a second use for
+the maintenance mode in §3's tier 3, and **that half is not yet
+delivered**: maintenance mode's flag lives in the server process's own
+memory (`api/maintenance.py`, and see that module on why), so the
+migration tool — a separate process — cannot observe it. Turning
+maintenance on therefore does not satisfy this requirement today; the
+tool's own recent-write-activity refusal is what enforces it, and it
+says so in its refusal message. Moving the flag into the application
+database would close this, and is the clearest remaining piece of work
+on the panel.
 
 **The export carries a schema-version stamp and the import refuses a
 mismatch.** Exporting from one build and importing into a newer one means
@@ -534,17 +547,126 @@ Four concrete gaps, each of which blocks part of the above:
 
 ---
 
-## 9. Still to be decided
+## 9. Resolved (nothing left to decide)
 
-- Does start-up fail closed or degrade when the application database is
-  unreachable (§5.7)?
-- Is the propose-and-approve flow (§6.4) worth its weight in the first
-  version, or does it wait?
-- How are the admin routes isolated (§4.3)?
-- Where does a promoted golden case live (§3)?
-- Failed admin authentication carries no principal, so the rate limiter
-  buckets it on IP alone. Is that enough for the highest-value credential
-  in the system?
-- Do feedback records, admin-action audit and configuration versions have
-  a retention policy, or do they grow forever? Config snapshots are small
-  and rare; a record per admin log search is neither.
+Every question this section used to ask has an answer now, recorded
+below. Four were answered by phases 2-4 without ever updating this
+document; the last two were genuinely open and are resolved by phase 6.
+
+- **Does start-up fail closed or degrade when the application database is
+  unreachable (§5.7)?** Fail closed — phase 2. `api/server.py`'s
+  `lifespan` calls `appdb.engine.get_app_engine()` before anything else
+  touches either database, and a failure there is re-raised as a
+  `RuntimeError` naming the resolved `APP_DB_URL` — the server refuses to
+  start rather than let every request discover the outage independently,
+  matching this project's existing posture for `DB_CONNECTION_URL` and
+  `API_KEYS_JSON`.
+- **Is the propose-and-approve flow (§6.4) worth its weight in the first
+  version, or does it wait?** Built, not deferred — phase 3.
+  `appdb.config_versions.propose_or_apply` saves a `schema.yaml` change
+  from an operations-only caller as an unapplied `"draft"`, never as
+  `"applied"`, regardless of what the request claims; `POST
+  /admin/config/versions/{id}/approve` and `.../reject` are
+  security-only. See `api/admin_config_routes.py`'s module docstring and
+  `tests/test_config_version_role_split.py`.
+- **How are the admin routes isolated (§4.3)?** By role dependency,
+  discovered from the live route table — phases 1-2. Every `/admin/*`
+  route declares `Depends(require_admin)` /
+  `Depends(require_operations)` / `Depends(require_security)` /
+  `Depends(require_operations_or_security)` (`api/auth.py`), and
+  `tests/test_admin.py` / `tests/test_admin_write_routes.py` enumerate
+  the route table itself (never a hand-written list) to assert every
+  route — including one added later — actually declares one. This
+  answers "isolated by what mechanism"; the separate, still-open question
+  of binding the panel to loopback or a second ASGI application (§4.3's
+  own TLS/network-perimeter question) is a deployment-topology decision,
+  not a routing one, and is unchanged by this.
+- **Where does a promoted golden case live (§3)?** In the golden-set
+  FILE — phase 4. `appdb.feedback.promote_to_golden_case` appends the
+  promoted case into `eval_data/golden.jsonl` (the same file `python -m
+  eval.cli run` already reads) with a `feedback_<id>` case id and notes
+  naming the originating session/turn, as `"pending_expected"` until
+  someone supplies a confirmed `expected_sql`/`expected_fingerprint`. It
+  does not move the golden set into the application database — the file
+  stays the single source `eval.cli` and this resolution path both write
+  to; provenance back to the flag (and, on the `turn_feedback` row
+  itself, the configuration version active when the flagged answer was
+  produced) lives in the application database instead.
+- **Failed admin authentication carries no principal, so the rate
+  limiter buckets it on IP alone. Is that enough for the highest-value
+  credential in the system?** — resolved, phase 6. The premise needed
+  correcting rather than the limit tightening: keys are
+  `secrets.token_urlsafe(32)`, 256 bits of entropy, so *guessing* one is
+  arithmetically impossible, and a tighter rate limit aimed at that
+  threat would be security theatre. The real risk is a *leaked* key being
+  tried, and the actual gap was structural: `AuthMiddleware` runs before
+  the rate limiter, so the shared `ip:<ip>` bucket every unauthenticated
+  request (a monitoring probe, most concretely) draws from was also the
+  bucket a client looping on a stale/wrong key drew from — one broken
+  client behind a shared proxy could starve the probe sharing its
+  address, and the resulting 429 reads exactly like an outage. Three
+  changes close this, all shipped:
+  1. Authentication failures (an `Authorization` header that did not
+     resolve to a principal — never a missing header, which stays
+     ordinary unauthenticated traffic) now bucket separately, in their
+     own namespace (`"authfail|ip:<ip>"`), governed by
+     `auth_failure_rate_limit_requests`/`_window_seconds`/`_burst`
+     (`config.Settings`) — small and independent of the shared 600/60s
+     budget. See `api/middleware.py::RateLimitMiddleware` and
+     `api/auth.py::AuthMiddleware`.
+  2. Every such failure is recorded (`security.auth_failures`) — a
+     count and a per-source-address breakdown, surfaced at
+     `GET /admin/security/auth-failures`. This, not a tighter limit, is
+     the real control for a leaked key: a sudden run of failures is the
+     signal an operator actually needs, and a rate limit alone (of any
+     size) cannot distinguish "someone is trying keys" from "one client
+     misconfigured its credential and is retrying".
+  3. **Not implemented, and deliberately opt-in if it ever is**: binding
+     an admin key to an allowed set of source addresses would be a
+     stronger control still, but is not built here. It is the wrong
+     default — a legitimate admin travelling, or working through a
+     rotating egress IP/VPN, must not be locked out by a control this
+     codebase turned on unconditionally. A deployment that wants it
+     should be able to opt in per key, not have every admin key gain a
+     network-topology dependency by default.
+- **Do feedback records, admin-action audit and configuration versions
+  have a retention policy, or do they grow forever?** — resolved, phase
+  6, per artefact:
+  - **Admin-action audit** (`appdb.admin_audit`): retained by TIME, not
+    size. Two things are stated here that used to be assumed rather than
+    checked: this log already rotates by size exactly like every other
+    JSONL log (`log_max_bytes`/`log_backup_count`), and
+    `record_admin_action` is called only from *write* routes — a search
+    or a read of this log was never itself logged, so the old wording's
+    "a record per admin log search" described a design that was never
+    built. The real risk runs the other way: size-based rotation
+    discards the OLDEST evidence first, exactly when there is the MOST
+    activity — an admin wanting to bury one specific action could do so
+    on purpose, by generating enough unrelated noise to roll it off the
+    end of the file before the other role ever reads it. A trail whose
+    whole stated purpose is "each role can read that the other one
+    acted" (§2.4) cannot depend on a retention mechanism the party being
+    watched can defeat by volume. So this log is now exempt from
+    size-based rotation entirely and retained by time instead —
+    `appdb.admin_audit.purge_expired_admin_actions`, run once at
+    start-up, discards a record only once it is older than
+    `config.Settings.admin_action_log_retention_days` (`<= 0` keeps
+    everything forever). This preserves phase 2's separate-stream
+    decision (§4.2) unchanged — the separation from the analyst audit
+    log is about not polluting that log's own analysis, not about which
+    file backs either stream; moving this log into a database is a
+    larger change (it would need the same tamper-evidence argument §4.2
+    already made against exactly that) and was not undertaken this
+    phase. See `docs/deployment-runbook.md` for the operational policy
+    and how to set it for an on-prem deployment with an externally
+    imposed retention requirement.
+  - **Configuration versions and feedback rows**: retain all, by
+    design — unchanged, and no code change was needed. Both are already
+    small (a `project_config/` bundle snapshot; one row per flag), rare
+    relative to query volume, and load-bearing for features this
+    document already specifies: capping rollback depth would remove
+    §6.2's "restore any version" capability outright, and deleting a
+    resolved feedback row would destroy §3's improvement-loop trend (how
+    many flags of each category, resolved which way, over time). Neither
+    grows anywhere near the rate the admin-action log does, so neither
+    needed this phase's anti-forensic fix.

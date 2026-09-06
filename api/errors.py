@@ -38,6 +38,7 @@ surfacing as ``RequestValidationError`` (422), not as a 400.
                     QueryTimeoutError                 504  yes
                     QueryExecutionError               502  yes
   Overload          ServerOverloadError               503  no
+  Maintenance       MaintenanceModeError               503  yes
   Catch-all         fastapi.RequestValidationError    422  yes  (Pydantic)
                     Exception                         500  yes
 
@@ -222,6 +223,22 @@ class ServerOverloadError(NLQError):
     """Too many concurrent requests — server is at capacity."""
     http_status = status.HTTP_503_SERVICE_UNAVAILABLE
     error_code = "SERVER_OVERLOAD"
+
+
+class MaintenanceModeError(NLQError):
+    """The system is in maintenance mode (``api.maintenance`` — admin panel
+    phase 6, ``docs/admin-panel-architecture.md`` §3 tier 3). Raised by
+    :func:`api.maintenance.require_not_in_maintenance` for a new analyst
+    query — never for a request already past that check (see that
+    function's docstring for why that is what makes drain-not-cut true by
+    construction), and never for ``/admin/*``, ``/health``, or ``/``,
+    which do not depend on this dependency at all.
+
+    503, matching :class:`ServerOverloadError`'s reasoning: this is a
+    refusal a well-behaved client should retry later, not a defect in the
+    request itself."""
+    http_status = status.HTTP_503_SERVICE_UNAVAILABLE
+    error_code = "MAINTENANCE_MODE"
 
 
 # ---------------------------------------------------------------------------

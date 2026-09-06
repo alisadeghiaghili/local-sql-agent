@@ -277,3 +277,52 @@ gitignored, kept off shared storage) applies here.
 The tool writes its export to a temporary file and deletes it when the
 run finishes. If you take a copy deliberately, store it where the
 application database itself is stored, not beside a deployment bundle.
+
+## 11. Admin-action log retention
+
+Admin panel phase 6 adds a real retention policy for
+`logs/admin_action_log.jsonl` (`docs/admin-panel-architecture.md` §9). The
+short version: retained by TIME, configurably, never by size.
+
+**Why not size, like every other log here.** Every other JSONL log in
+this project (`query_log.jsonl`, `audit_log.jsonl`) rotates once it
+passes `LOG_MAX_BYTES`, discarding the oldest lines first. That is the
+wrong shape for an audit trail whose entire purpose is "each admin role
+can read that the other one acted" — size-based rotation discards the
+*oldest* evidence exactly when there is the *most* activity, so anyone
+wanting to bury a specific admin action could do so on purpose, by
+generating enough unrelated admin noise to roll it off the end of the
+file before the other role ever reads it. `appdb.admin_audit` now writes
+this one log with rotation disabled entirely and relies solely on the
+mechanism below.
+
+**The policy**: `ADMIN_ACTION_LOG_RETENTION_DAYS` (default `365`) bounds
+how long a record is kept. `appdb.admin_audit.purge_expired_admin_actions`
+runs once at every start-up (mirroring the existing session-retention
+purge) and discards only records older than that many days — never
+because something noisier was appended after them. Set it to `0` to keep
+every record forever, which is the safer choice for a deployment that
+would rather manage its own disk space by hand than risk an automated
+purge; an on-prem deployment operating under an externally imposed
+retention requirement (a regulator, an internal audit policy) should set
+this explicitly to whatever that requirement specifies, rather than
+accept the default.
+
+**Configuration versions and feedback rows are not covered by this**,
+deliberately: both are retained in full, unconditionally, and always have
+been — a `project_config/` bundle snapshot and a wrong-answer flag are
+both small and comparatively rare, and capping either would remove a
+feature this system already promises (rolling back to *any* prior
+configuration version; seeing the full trend of flagged answers over
+time), not merely trim log noise.
+
+**If your organisation's compliance posture wants more than a
+time-bounded file**, the stronger version of this control — the
+admin-action log living in the application database, where the
+organisation's own backup and retention regime already reaches — was
+considered and is recorded as a recommendation in
+`docs/admin-panel-architecture.md` §4.2/§9, but was not built this
+phase: moving it there needs the same tamper-evidence argument that log
+being a file (not a database row anyone with a connection could edit) was
+originally built on to be re-made and re-satisfied first, which is a
+larger change than a retention window.

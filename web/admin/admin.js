@@ -120,6 +120,67 @@ export class AdminApi {
     });
   }
 
+  /* ── Admin panel phase 6: the operational tier -- maintenance mode,
+   * schema drift, vocabulary freshness, per-analyst usage, cache
+   * controls, failed-auth visibility. Every write below (maintenance
+   * toggle, vocabulary refresh, cache clear/invalidate) is recorded in
+   * the admin-action trail server-side -- nothing here bypasses that. */
+
+  /** GET /admin/maintenance -- always reachable, regardless of state. */
+  async maintenanceState() {
+    return this._get("/admin/maintenance");
+  }
+
+  /** POST /admin/maintenance -- switch maintenance mode on or off. */
+  async setMaintenance(active, note) {
+    return this._post("/admin/maintenance", { active, note: note || null });
+  }
+
+  /** GET /admin/schema-drift -- read-only; never applies anything. */
+  async schemaDrift() {
+    return this._get("/admin/schema-drift");
+  }
+
+  /** GET /admin/vocabulary -- per prefetched column freshness/failure state. */
+  async vocabularyStatus() {
+    return this._get("/admin/vocabulary");
+  }
+
+  /** POST /admin/vocabulary/{table}/{column}/refresh -- an operator's own refresh. */
+  async vocabularyRefresh(table, column) {
+    return this._post(
+      `/admin/vocabulary/${encodeURIComponent(table)}/${encodeURIComponent(column)}/refresh`,
+      {},
+    );
+  }
+
+  /** GET /admin/usage -- per-principal queries/failures/latency/rate-limit hits. */
+  async usage(since, until) {
+    const qs = new URLSearchParams();
+    if (since) qs.set("since", since);
+    if (until) qs.set("until", until);
+    const query = qs.toString();
+    return this._get(`/admin/usage${query ? `?${query}` : ""}`);
+  }
+
+  /** POST /admin/cache/clear -- the panel must show the pre-clear cost
+   * BEFORE calling this (see main.js's confirm flow); this call still
+   * echoes that same snapshot in its response. */
+  async cacheClear() {
+    return this._post("/admin/cache/clear", {});
+  }
+
+  /** POST /admin/cache/invalidate -- evict a single cached entry. */
+  async cacheInvalidate(question, mode) {
+    return this._post("/admin/cache/invalidate", { question, mode: mode || "full" });
+  }
+
+  /** GET /admin/security/auth-failures -- count and source breakdown. */
+  async authFailures(windowSeconds) {
+    const qs = windowSeconds ? `?window_seconds=${encodeURIComponent(windowSeconds)}` : "";
+    return this._get(`/admin/security/auth-failures${qs}`);
+  }
+
   /** The one chokepoint every admin call above routes through. Always
    * attaches `Authorization: Bearer <key>` when a key is stored (never
    * omitted for an admin route -- unlike web/js/api.js's health(), there

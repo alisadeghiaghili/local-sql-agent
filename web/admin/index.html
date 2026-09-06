@@ -42,6 +42,21 @@
   <div id="admin-forbidden-banner" class="admin-banner admin-banner-warn" hidden></div>
   <div id="admin-notice-area"></div>
 
+  <!-- Maintenance mode leads even the deployment checks: it is an
+       operations action that stops analyst queries, so its current state
+       is the single most important fact on this page whenever it is on.
+       The panel itself must never depend on maintenance being off to
+       render this section. -->
+  <section class="admin-section" aria-labelledby="maintenance-heading">
+    <div class="admin-section-head">
+      <h2 id="maintenance-heading">حالت تعمیر و نگهداری</h2>
+      <button class="admin-btn-refresh" data-refresh="maintenance" type="button" aria-label="بروزرسانی وضعیت تعمیر">↻</button>
+    </div>
+    <div id="maintenance-body">
+      <p class="admin-loading">در حال بارگذاری…</p>
+    </div>
+  </section>
+
   <!-- Deployment checks lead, because they are the only thing on this page
        that might need action right now. State is encoded as a severity
        stripe, so a failure reads before any number does. -->
@@ -95,7 +110,10 @@
     <section class="admin-section" aria-labelledby="cache-heading">
       <div class="admin-section-head">
         <h2 id="cache-heading">کش پرس‌وجو</h2>
-        <button class="admin-btn-refresh" data-refresh="cache" type="button" aria-label="بروزرسانی کش">↻</button>
+        <div class="admin-section-actions">
+          <button class="admin-btn-refresh" id="cache-clear-btn" type="button">پاک کردن کش</button>
+          <button class="admin-btn-refresh" data-refresh="cache" type="button" aria-label="بروزرسانی کش">↻</button>
+        </div>
       </div>
       <div id="cache-body">
         <p class="admin-loading">در حال بارگذاری…</p>
@@ -108,6 +126,54 @@
         <button class="admin-btn-refresh" data-refresh="config" type="button" aria-label="بروزرسانی پیکربندی">↻</button>
       </div>
       <div id="config-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- Admin panel phase 6: schema drift and vocabulary freshness, both
+       read-only diagnostics -- neither applies anything by itself. -->
+  <div class="admin-columns">
+    <section class="admin-section" aria-labelledby="schema-drift-heading">
+      <div class="admin-section-head">
+        <h2 id="schema-drift-heading">انحراف شِما</h2>
+        <button class="admin-btn-refresh" data-refresh="schemaDrift" type="button" aria-label="بررسی انحراف شِما">↻</button>
+      </div>
+      <div id="schemaDrift-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </section>
+
+    <section class="admin-section" aria-labelledby="vocabulary-heading">
+      <div class="admin-section-head">
+        <h2 id="vocabulary-heading">تازگی واژگان ابعاد</h2>
+        <button class="admin-btn-refresh" data-refresh="vocabulary" type="button" aria-label="بروزرسانی واژگان">↻</button>
+      </div>
+      <div id="vocabulary-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- Admin panel phase 6: per-analyst usage/rate-limit pressure, and
+       failed-authentication visibility. -->
+  <div class="admin-columns">
+    <section class="admin-section" aria-labelledby="usage-heading">
+      <div class="admin-section-head">
+        <h2 id="usage-heading">مصرف هر تحلیل‌گر</h2>
+        <button class="admin-btn-refresh" data-refresh="usage" type="button" aria-label="بروزرسانی مصرف">↻</button>
+      </div>
+      <div id="usage-body">
+        <p class="admin-loading">در حال بارگذاری…</p>
+      </div>
+    </section>
+
+    <section class="admin-section" aria-labelledby="auth-failures-heading">
+      <div class="admin-section-head">
+        <h2 id="auth-failures-heading">تلاش‌های ناموفق احراز هویت</h2>
+        <button class="admin-btn-refresh" data-refresh="authFailures" type="button" aria-label="بروزرسانی احراز هویت">↻</button>
+      </div>
+      <div id="authFailures-body">
         <p class="admin-loading">در حال بارگذاری…</p>
       </div>
     </section>
