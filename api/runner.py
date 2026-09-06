@@ -101,6 +101,7 @@ from observability.audit import AuditRecord, save_audit_record
 from observability.llm_status import build_llm_status, finish_reason_from_meta
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
+from prompt_engine.static_prefix import prefix_version_for_config
 from prompt_engine.static_prefix import static_prefix_token_estimate
 from security.auth import Principal
 from security.auth import scope_key as _scope_key_of
@@ -267,7 +268,7 @@ def run_query(
     # Embedded in every query_cache key (question- and SQL-keyed alike) so a
     # knowledge-base change invalidates stale entries by construction -- see
     # api/query_cache.py's module docstring and Phase 2 task 6.
-    cache_prefix_version = _prefix_version_of(system_prompt)
+    cache_prefix_version = cache_prefix_version_for(system_prompt)
     # Cache-partition key (Phase 8): "" (the cache's own unscoped default)
     # when no principal is known at all, so every pre-Phase-8 caller keeps
     # sharing the single partition it always has. A real principal always
@@ -863,6 +864,45 @@ def _safe_generate_sql_only(
         raise err
 
     return sql, llm_meta
+
+
+def cache_prefix_version_for(system_prompt: str) -> str:
+    """The query-cache key's configuration component.
+
+    The prefix content hash alone was not enough. Only three of the nine
+    ``project_config/`` files -- ``business_rules.yaml``, ``metrics.yaml``
+    and ``examples.yaml`` -- feed the static prefix. The other six change
+    what the engine *retrieves*, and therefore the SQL it writes, without
+    moving a byte of the prefix: editing ``aliases.yaml`` or
+    ``retrieval_hints.yaml`` left the hash exactly where it was, so every
+    answer cached under the old configuration kept being served. An
+    operations admin would make the edit, ask the same question to check
+    it, and get the pre-edit answer back with nothing to say why.
+
+    So the key is composed with the configuration bundle's own version id
+    (:func:`appdb.config_versions.get_active_version_id`) as well. Any
+    applied version moves it -- including one whose effect on the prefix is
+    nil, which over-invalidates on purpose: the cost of a needless miss is
+    one slow question, and the cost of a needless hit is a wrong answer
+    that looks right. An unapplied draft is not the active version and
+    moves nothing. Settings outside the versioned bundle move nothing
+    either, since neither component reads them.
+
+    Falls back to the plain content hash when the application database
+    cannot be reached. That is not a silent degradation: start-up already
+    fails closed on an unreachable application database
+    (:mod:`appdb.engine`), so a caller reaching this line without one is a
+    non-HTTP caller that never had version history to consult -- and for
+    those, the content hash is exactly the behaviour that was always in
+    place.
+    """
+    content_hash = _prefix_version_of(system_prompt)
+    try:
+        from appdb.config_versions import get_active_version_id
+
+        return prefix_version_for_config(system_prompt, get_active_version_id())
+    except Exception:  # noqa: BLE001 -- see the docstring on why this is not fatal
+        return content_hash
 
 
 def _rows_from_sql_cache(

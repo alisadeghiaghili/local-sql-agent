@@ -72,12 +72,12 @@ class TestFirstCallPopulatesCache:
     def test_cache_entry_created_after_success(self, mock_agent, mode):
         from api.runner import run_query
         from api.query_cache import query_cache
-        from prompt_engine.static_prefix import prefix_version
+        from api.runner import cache_prefix_version_for
 
         mock_agent.run.return_value = _good_result()
         run_query("سوال", system_prompt="sp", mode=mode, interpret=False)
 
-        assert query_cache.get("سوال", mode, prefix_version=prefix_version("sp")) is not None
+        assert query_cache.get("سوال", mode, prefix_version=cache_prefix_version_for("sp")) is not None
 
     @pytest.mark.parametrize("mode", ["result", "full"])
     def test_agent_run_called_exactly_once_on_first_call(self, mock_agent, mode):

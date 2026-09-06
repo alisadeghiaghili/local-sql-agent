@@ -878,6 +878,50 @@ class Settings:
     (or the generator started producing worse SQL). Overridable per
     invocation via ``python -m eval.cli run --max-guard-rejection-increase``."""
 
+    eval_golden_path: str = field(
+        default_factory=lambda: os.getenv("EVAL_GOLDEN_PATH", "eval_data/golden.jsonl")
+    )
+    """Path to the golden-set ``.jsonl`` file the admin panel's config-version
+    dry-run (``docs/admin-panel-architecture.md`` §6.2, phase 3 spec §5)
+    runs a candidate ``project_config/`` bundle against before it can be
+    applied. Read at call time by :mod:`appdb.config_versions`, the same
+    ``eval_data/golden.jsonl`` a deployment already maintains for
+    ``python -m eval.cli run`` -- this setting exists so the panel can find
+    it without a request body needing to name a filesystem path. Point this
+    at ``eval_data.example/golden.jsonl`` (alongside ``PROJECT_CONFIG_DIR``)
+    to run the dry-run against the committed example data instead."""
+
+    config_version_cache_ttl_seconds: float = field(
+        default_factory=lambda: float(
+            os.getenv("CONFIG_VERSION_CACHE_TTL_SECONDS", "5")
+        )
+    )
+    """How long :mod:`appdb.config_versions` may reuse a cached active
+    version id before re-reading it, mirroring ``key_cache_ttl_seconds``
+    and existing for the same reason: the id is on the per-request path
+    (``api/runner.py`` folds it into every query-cache key, so an applied
+    configuration version invalidates stale answers), and reading it from
+    the application database on every question would be a network round
+    trip per request on an external backend.
+
+    Applying a version invalidates this cache explicitly, so a change is
+    visible immediately in the process that made it; the TTL is what bounds
+    staleness in *other* processes, where the only cost of being late is a
+    few cache hits that should have been misses. Set to ``0`` to disable
+    the cache and read the id every time."""
+
+    config_export_dir: str = field(
+        default_factory=lambda: os.getenv("CONFIG_EXPORT_DIR", "")
+    )
+    """Directory :mod:`appdb.config_versions` writes the ``project_config/``
+    YAML bundle to on every applied version (spec §7) -- offline inspection
+    with familiar tools, and an off-box backup, without this system's
+    correctness depending on git being installed. Empty (the default)
+    disables the export write entirely; a deployment that wants it points
+    this at a directory of its own -- optionally one under version control
+    with its own remote (``docs/admin-panel-architecture.md`` §6.3: "git as
+    an output, not as the engine" -- never this project's own repository)."""
+
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 

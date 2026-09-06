@@ -177,9 +177,13 @@ class RetrievalHintsConfig(BaseModel):
 # Typed loader functions
 # ---------------------------------------------------------------------------
 
-def _load_validated(filename: str, model: type[BaseModel]) -> BaseModel:
-    path = _project_config_dir() / filename
-    raw = load_yaml(path)
+def _validate_raw(filename: str, raw: dict, model: type[BaseModel]) -> BaseModel:
+    """Validate an already-parsed *raw* dict against *model*, wrapping a
+    :class:`~pydantic.ValidationError` into the one ``ValueError`` shape
+    every loader in this module raises. Shared by :func:`_load_validated`
+    (the file-based path) and :func:`validate_yaml_text` (the in-memory
+    path) so both ever produce exactly the same error text for the same
+    content."""
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
@@ -189,6 +193,64 @@ def _load_validated(filename: str, model: type[BaseModel]) -> BaseModel:
         raise ValueError(
             f"[{filename}] validation error at '{field}': {first['msg']}"
         ) from exc
+
+
+def _load_validated(filename: str, model: type[BaseModel]) -> BaseModel:
+    path = _project_config_dir() / filename
+    raw = load_yaml(path)
+    return _validate_raw(filename, raw, model)
+
+
+def validate_yaml_text(filename: str, text: str, model: type[BaseModel]) -> BaseModel:
+    """Validate raw YAML *text* against *model*, raising the exact same
+    ``"[filename] validation error at ...'"`` :class:`ValueError`
+    :func:`_load_validated` would for the same content on disk -- without
+    ever touching the filesystem or ``cfg.settings.project_config_dir``.
+
+    Used by ``appdb.config_versions`` to validate a *candidate*
+    ``project_config/`` bundle that has not (and may never) be written to
+    disk. That module must not use :func:`config.override_settings` for
+    this: that context manager mutates the single process-wide
+    ``cfg.settings`` object and is documented as a test-only tool, not
+    something safe to call from concurrent request-handling code -- a
+    second, simultaneous request reading any setting while one admin
+    request's validation window has it temporarily repointed would see the
+    wrong value. This function reads nothing from ``cfg.settings`` at all,
+    so no such window exists.
+
+    Parameters
+    ----------
+    filename:
+        Used only for the error message's ``[filename]`` prefix.
+    text:
+        YAML text already read into memory.
+    model:
+        The Pydantic model to validate against.
+
+    Raises
+    ------
+    ValueError
+        If *text* is not valid YAML, or parses but fails *model*'s
+        validation.
+
+    Examples
+    --------
+    >>> from knowledge.config_loader import MetricsConfig
+    >>> validate_yaml_text(
+    ...     "metrics.yaml", "metrics: {}", MetricsConfig,
+    ... ).metrics
+    {}
+
+    >>> validate_yaml_text("metrics.yaml", "metrics: [1, 2]", MetricsConfig)
+    Traceback (most recent call last):
+        ...
+    ValueError: [metrics.yaml] validation error at 'metrics': Input should be a valid dictionary
+    """
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"[{filename}] {exc}") from exc
+    return _validate_raw(filename, raw, model)
 
 
 def load_aliases() -> AliasesConfig:

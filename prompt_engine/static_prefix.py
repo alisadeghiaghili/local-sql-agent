@@ -238,6 +238,72 @@ def prefix_version(system_prompt: str) -> str:
     return digest[:12]
 
 
+def prefix_version_for_config(system_prompt: str, config_version: int | str) -> str:
+    """The prefix version an admin panel config change should be identified
+    by (admin panel phase 3 -- ``docs/admin-panel-architecture.md`` §6,
+    spec §6): derived from *config_version* -- the ``project_config/``
+    bundle's own version identifier
+    (:func:`appdb.config_versions.get_active_version_id`) -- so that
+    applying a new configuration version always changes the identity this
+    function returns, and a setting that is not part of that versioned
+    bundle never does.
+
+    This deliberately does NOT replace :func:`prefix_version` (which stays
+    exactly as it was: a pure content hash of the assembled prefix, with no
+    knowledge of config versioning at all) -- it composes that hash with
+    *config_version* instead, so the result carries both properties at
+    once: it changes whenever the *bundle* version changes (even if, for a
+    file that happens not to feed the prefix, the rendered text is
+    unchanged -- see ``appdb.config_versions``'s module docstring on why a
+    ``session_policy.yaml``-only edit still bumps the bundle version), and
+    it also changes whenever the rendered prefix text itself changes for
+    any other reason. Callers that want "an identity for this exact prompt
+    cache entry, tied to the configuration that produced it" (the LLM
+    status block, the admin panel's pre-apply warning, an audit record's
+    provenance -- §6's three bullet points) use this function; callers that
+    only ever cared about the raw content hash (existing cache-key
+    plumbing) are unaffected and keep calling :func:`prefix_version`
+    exactly as before.
+
+    Parameters
+    ----------
+    system_prompt:
+        The domain system prompt text.
+    config_version:
+        The active ``project_config/`` bundle's version identifier. Any
+        hashable, string-formattable value -- an integer version number in
+        production, or a fixed sentinel in a test that only cares whether
+        two calls agree or disagree.
+
+    Returns
+    -------
+    str
+        A 12-character hex fingerprint.
+
+    Examples
+    --------
+    >>> v1 = prefix_version_for_config("You are a T-SQL expert.", 1)
+    >>> v2 = prefix_version_for_config("You are a T-SQL expert.", 1)
+    >>> v1 == v2
+    True
+
+    Moves when the config version does, even with the same system prompt:
+
+    >>> v3 = prefix_version_for_config("You are a T-SQL expert.", 2)
+    >>> v3 != v1
+    True
+
+    Does not move for a change that never reaches this function at all --
+    an "unrelated setting" is, by construction, anything that is neither
+    *system_prompt* nor *config_version*:
+
+    >>> prefix_version_for_config("You are a T-SQL expert.", 1) == v1
+    True
+    """
+    combined = f"{config_version}:{prefix_version(system_prompt)}"
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:12]
+
+
 def should_use_static_prefix(system_prompt: str) -> bool:
     """True when the static prefix fits ``cfg.settings.prompt_retrieval_token_budget``.
 

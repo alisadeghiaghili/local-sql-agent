@@ -50,6 +50,7 @@ import json
 import pytest
 
 from schema_data.columns import TABLE_COLUMNS
+from schema_data.registry import check_allowlist_structural_invariants
 from schema_data.relationships import RELATIONSHIPS
 from schema_data.tables import TABLE_DESCRIPTIONS
 
@@ -210,7 +211,21 @@ class TestAllowlistStructuralInvariants:
     actually is and prove each entry validates through the real
     ``security.sql_guard.validate_sql`` pipeline) -- this class covers the
     loader's own output shape, that one covers the guard's behaviour on it.
+
+    Every check below is delegated to
+    ``schema_data.registry.check_allowlist_structural_invariants`` rather
+    than reimplemented here -- admin panel phase 3's
+    ``appdb.config_versions`` calls that same function against a
+    *candidate*, not-yet-applied ``schema.yaml`` before a security admin's
+    edit can reach the guard at all, so this class and that module share
+    one source of truth for what "structurally sound" means.
     """
+
+    def test_structural_invariants_hold(self):
+        violations = check_allowlist_structural_invariants(
+            TABLE_COLUMNS, TABLE_DESCRIPTIONS, RELATIONSHIPS
+        )
+        assert violations == []
 
     def test_allowlist_is_not_empty(self):
         assert len(TABLE_COLUMNS) > 0

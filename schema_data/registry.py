@@ -81,6 +81,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from knowledge.config_loader import ConfigNotFoundError, load_yaml
@@ -92,12 +93,14 @@ __all__ = [
     "RelationshipDefinition",
     "SchemaConfig",
     "load_schema",
+    "validate_schema_yaml_text",
     "get_table_descriptions",
     "get_table_columns",
     "get_relationships_map",
     "get_table_schema_qualifiers",
     "get_resolvable_columns",
     "get_prefetchable_columns",
+    "check_allowlist_structural_invariants",
 ]
 
 
@@ -230,6 +233,10 @@ def load_schema() -> SchemaConfig:
     """
     path = _project_config_dir() / "schema.yaml"
     raw = load_yaml(path)
+    return _validate_schema_raw(raw)
+
+
+def _validate_schema_raw(raw: dict) -> SchemaConfig:
     try:
         return SchemaConfig.model_validate(raw)
     except ValidationError as exc:
@@ -238,6 +245,38 @@ def load_schema() -> SchemaConfig:
         raise ValueError(
             f"[schema.yaml] validation error at '{field}': {first['msg']}"
         ) from exc
+
+
+def validate_schema_yaml_text(text: str) -> SchemaConfig:
+    """Validate ``schema.yaml`` *text* directly, raising the exact same
+    ``"[schema.yaml] validation error at ...'"`` :class:`ValueError`
+    :func:`load_schema` would for the same content on disk -- without
+    touching the filesystem or ``cfg.settings.project_config_dir`` at all.
+
+    Mirrors :func:`knowledge.config_loader.validate_yaml_text` exactly --
+    see that function's docstring for why ``appdb.config_versions`` needs
+    this in-memory validation path rather than
+    :func:`config.override_settings` plus a temp file: that context
+    manager mutates a single process-wide setting and is documented as a
+    test-only tool, unsafe to use from concurrent request-handling code.
+
+    Examples
+    --------
+    >>> validate_schema_yaml_text("tables: {}").tables
+    {}
+
+    >>> validate_schema_yaml_text(
+    ...     "relationships: [{from_table: A, to_table: B}]"
+    ... )
+    Traceback (most recent call last):
+        ...
+    ValueError: [schema.yaml] validation error at 'relationships -> 0 -> join_sql': Field required
+    """
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"[schema.yaml] {exc}") from exc
+    return _validate_schema_raw(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +371,93 @@ def get_table_columns() -> dict[str, dict[str, str]]:
 def get_relationships_map() -> dict[str, str]:
     """Return ``{"FromTable -> ToTable": join_sql}`` for every relationship."""
     return _schema_cache()["relationships"]
+
+
+def check_allowlist_structural_invariants(
+    table_columns: dict[str, dict[str, str]],
+    table_descriptions: dict[str, str],
+    relationships: dict[str, str],
+) -> list[str]:
+    """Schema-agnostic invariants the guard's allowlist must hold, regardless
+    of which real ``schema.yaml`` produced it.
+
+    The single source of truth for the checks
+    ``tests/test_schema_registry_snapshot.py``'s ``TestAllowlistStructuralInvariants``
+    pins against the process's own loaded registry -- that test class
+    calls this function rather than duplicating the checks, and
+    ``appdb.config_versions`` calls it a second time, against a
+    *candidate* ``schema.yaml`` that has not been applied yet, before a
+    security admin's edit can ever reach the guard (admin panel phase 3,
+    spec §4 item 2). Neither caller reimplements the other's logic.
+
+    Parameters
+    ----------
+    table_columns:
+        ``{table: {column: description}}`` -- normally
+        :func:`get_table_columns`'s return value, or the equivalent
+        derived from a candidate, not-yet-applied ``schema.yaml``.
+    table_descriptions:
+        ``{table: description}`` for every *described* table, allowlisted
+        or not -- normally :func:`get_table_descriptions`.
+    relationships:
+        ``{"FromTable -> ToTable": join_sql}`` -- normally
+        :func:`get_relationships_map`.
+
+    Returns
+    -------
+    list[str]
+        One human-readable violation description per problem found, empty
+        when every invariant holds.
+
+    Examples
+    --------
+    >>> check_allowlist_structural_invariants(
+    ...     {"Widget": {"ID": "primary key"}},
+    ...     {"Widget": "a test table"},
+    ...     {},
+    ... )
+    []
+
+    A table with an empty ``columns`` map has no business carrying the key
+    at all:
+
+    >>> check_allowlist_structural_invariants(
+    ...     {"Widget": {}}, {"Widget": "a test table"}, {},
+    ... )
+    ["table 'Widget' has a `columns` key but no columns"]
+
+    An allowlisted table must also be a described one:
+
+    >>> check_allowlist_structural_invariants(
+    ...     {"Widget": {"ID": "pk"}}, {}, {},
+    ... )
+    ["allowlisted table(s) not described: ['Widget']"]
+    """
+    violations: list[str] = []
+
+    if len(table_columns) == 0:
+        violations.append("the guard allowlist is empty -- no table carries a `columns` key")
+
+    for table, columns in table_columns.items():
+        if len(columns) == 0:
+            violations.append(f"table '{table}' has a `columns` key but no columns")
+            continue
+        names = list(columns)
+        if not all(name.strip() for name in names):
+            violations.append(f"table '{table}' has a blank column name")
+        if len(names) != len(set(names)):
+            violations.append(f"table '{table}' has a duplicate column name")
+
+    undescribed = sorted(set(table_columns) - set(table_descriptions))
+    if undescribed:
+        violations.append(f"allowlisted table(s) not described: {undescribed}")
+
+    for key in relationships:
+        left_table = key.split(" -> ")[0].split(".")[0]
+        if left_table not in table_descriptions:
+            violations.append(f"relationship {key!r}: unknown left table {left_table!r}")
+
+    return violations
 
 
 class SchemaRegistry:

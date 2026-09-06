@@ -358,9 +358,31 @@ def _iter_live_route_objects(app, prefix: str):
 
 class TestEveryMutatingAdminRouteDeclaresARoleDependency:
     def test_every_non_get_admin_route_requires_a_role(self):
-        from api.auth import require_admin, require_operations, require_security
+        from api.auth import (
+            require_admin,
+            require_operations,
+            require_operations_or_security,
+            require_security,
+        )
 
-        allowed = {require_admin, require_operations, require_security}
+        # Admin panel phase 3 adds one more legitimate shape:
+        # ``require_operations_or_security`` on a *mutating* route. This is
+        # narrower than it looks -- api/admin_config_routes.py's
+        # POST /admin/config/versions (and /config/restore) are the
+        # propose-and-approve save endpoint (spec §3.1): an operations
+        # principal must be able to reach it too (to propose a schema.yaml
+        # draft, or apply an ordinary edit to the other eight files), with
+        # the actual "operations cannot make schema.yaml live" restriction
+        # enforced one layer down, in appdb.config_versions.propose_or_apply
+        # itself (a schema.yaml change from an operations-only caller is
+        # saved as an unapplied draft, never applied) -- not by the route
+        # dependency. The invariant this test exists for still holds: every
+        # write under /admin requires *some* role; it just no longer
+        # requires exactly one of three specific dependency callables.
+        allowed = {
+            require_admin, require_operations, require_security,
+            require_operations_or_security,
+        }
         checked = 0
         for route in _admin_route_objects():
             dependant = getattr(route, "dependant", None)
@@ -371,8 +393,9 @@ class TestEveryMutatingAdminRouteDeclaresARoleDependency:
                 checked += 1
                 assert deps & allowed, (
                     f"{method} {route.path} is a mutating /admin route with no "
-                    "require_admin/require_operations/require_security dependency "
-                    "-- every write under /admin must declare a role"
+                    "require_admin/require_operations/require_security/"
+                    "require_operations_or_security dependency -- every write "
+                    "under /admin must declare a role"
                 )
         assert checked > 0, (
             "route discovery found no mutating /admin route to check -- phase 2's "
