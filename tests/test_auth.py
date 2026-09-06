@@ -769,3 +769,77 @@ class TestColumnLevelACLThroughSessionTurns:
         turn = resp.json()
         assert turn["guard"]["verdict"] == "allowed"
         assert turn["sql"] == _ACL_SQL
+
+
+# ---------------------------------------------------------------------------
+# 12. Presenting the digest instead of the raw key
+# ---------------------------------------------------------------------------
+
+class TestADigestPresentedAsAKeyIsNamedAsSuch:
+    """``scripts/issue_api_key.py`` prints the raw key once, then an
+    ``API_KEYS_JSON`` entry containing that key's ``key_sha256``. The
+    entry is the artefact that stays on screen and gets copied around, so
+    presenting the *digest* at the key field is an easy mistake -- and it
+    was indistinguishable from a typo, a revoked key, or a key that was
+    never issued, because hashing a hash simply finds no match.
+
+    The reverse mistake (a raw key pasted into ``key_sha256``) has been a
+    loud start-up error since phase 8. This is the same courtesy in the
+    direction an operator actually hits, where there is no start-up left
+    to fail.
+    """
+
+    def test_presenting_a_digest_says_so(self, app_and_client):
+        _, client, _ = app_and_client
+        digest = hashlib.sha256(RAW_KEY_A.encode("utf-8")).hexdigest()
+        with override_settings(auth_required=True, api_keys_json=TWO_PRINCIPALS_JSON):
+            resp = client.get(
+                "/cache/stats", headers={"Authorization": f"Bearer {digest}"}
+            )
+
+        assert resp.status_code == 401
+        detail = json.dumps(resp.json(), ensure_ascii=False)
+        assert "SHA-256" in detail, (
+            "presenting the digest instead of the raw key gave the same "
+            "message as any other bad key -- the one mistake the tooling "
+            "actively invites is the one it said nothing about"
+        )
+        assert "key_sha256" in detail
+        assert "issue_api_key" in detail, (
+            "the hint must name where the raw key came from, or it only "
+            "tells the reader they are wrong without telling them what to "
+            "reach for instead"
+        )
+
+    def test_an_ordinary_wrong_key_gets_the_plain_message(self, app_and_client):
+        """The hint must not fire on every failure. A key from
+        ``secrets.token_urlsafe(32)`` is 43 characters of URL-safe base64
+        and so can never be 64 hex characters -- a legitimate key cannot
+        trigger this, and neither should an ordinary typo."""
+        _, client, _ = app_and_client
+        with override_settings(auth_required=True, api_keys_json=TWO_PRINCIPALS_JSON):
+            resp = client.get(
+                "/cache/stats", headers={"Authorization": "Bearer not-a-real-key"}
+            )
+
+        assert resp.status_code == 401
+        assert "SHA-256" not in json.dumps(resp.json(), ensure_ascii=False)
+
+    def test_a_missing_header_gets_the_plain_message(self, app_and_client):
+        _, client, _ = app_and_client
+        with override_settings(auth_required=True, api_keys_json=TWO_PRINCIPALS_JSON):
+            resp = client.get("/cache/stats")
+
+        assert resp.status_code == 401
+        assert "SHA-256" not in json.dumps(resp.json(), ensure_ascii=False)
+
+    def test_the_raw_key_still_authenticates(self, app_and_client):
+        """The control: the raw key the digest was derived from is still
+        accepted, so the assertions above are about the message and not
+        about having broken authentication."""
+        _, client, _ = app_and_client
+        with override_settings(auth_required=True, api_keys_json=TWO_PRINCIPALS_JSON):
+            resp = client.get(
+                "/cache/stats", headers={"Authorization": f"Bearer {RAW_KEY_A}"}
+            )
+        assert resp.status_code == 200

@@ -50,6 +50,8 @@ from api.errors import (
     UnauthenticatedError,
 )
 from security.auth import (
+    _BEARER_PREFIX,
+    _SHA256_HEX_RE,
     ANONYMOUS,
     ApiKeyConfigError,
     Principal,
@@ -135,8 +137,59 @@ def require_principal(request: Request) -> Principal:
     if not cfg.settings.auth_required:
         return principal or ANONYMOUS
     if principal is None:
-        raise UnauthenticatedError("Missing or invalid API key.")
+        raise UnauthenticatedError(_unauthenticated_message(request))
     return principal
+
+
+def _unauthenticated_message(request: Request) -> str:
+    """The 401 body, with one extra sentence when the presented credential
+    looks like a SHA-256 digest.
+
+    ``scripts/issue_api_key.py`` prints two things: the raw key, and an
+    ``API_KEYS_JSON`` entry containing that key's ``key_sha256``. The
+    entry is the conspicuous, copy-pasteable artefact -- it is what goes
+    into configuration, and it is the thing still on screen after the
+    "copy this now" line has scrolled past -- so pasting its *hash* into
+    the key field is an easy and repeatable mistake, and one this system
+    was previously silent about: hashing a hash simply produces no match,
+    and "Missing or invalid API key" is indistinguishable from a typo, a
+    revoked key, or a key that was never issued.
+
+    The reverse mistake -- a raw key pasted into ``key_sha256`` -- has
+    been a loud start-up error since phase 8 (``security.auth``'s
+    ``_SHA256_HEX_RE``). This is the same courtesy for the direction an
+    operator actually hits at the login field, where there is no start-up
+    to fail.
+
+    A 64-character lowercase hex string is not a plausible key from
+    ``secrets.token_urlsafe(32)``, which is 43 characters of URL-safe
+    base64 and, at 43 characters, cannot be 64 of anything -- so the hint
+    cannot fire on a legitimate key. It says nothing about whether any
+    key matched, and reveals nothing to a caller who did not already
+    supply the string being described.
+    """
+    base = "Missing or invalid API key."
+    token = _presented_token(request)
+    if token and _SHA256_HEX_RE.match(token.strip().lower()):
+        return (
+            f"{base} The value presented looks like a SHA-256 digest. "
+            "The digest is what belongs in API_KEYS_JSON's key_sha256 "
+            "field; what a client sends is the raw key that "
+            "scripts/issue_api_key.py printed once, above that entry."
+        )
+    return base
+
+
+def _presented_token(request: Request) -> str | None:
+    """The bearer token this request presented, or ``None``.
+
+    Read from the header rather than from ``request.state`` because there
+    is no principal here by definition -- that is why this code path ran.
+    """
+    header = request.headers.get("Authorization") or ""
+    if header.startswith(_BEARER_PREFIX):
+        return header[len(_BEARER_PREFIX):]
+    return header or None
 
 
 def require_admin(principal: Principal = Depends(require_principal)) -> Principal:
