@@ -27,6 +27,8 @@ from retrieval.dimension_vocabulary import (
     PREFETCH_COLUMNS,
     clear_vocabulary_cache,
     get_cached_vocabulary,
+    get_vocabulary_status,
+    manual_refresh,
     match_question_against_vocabulary,
     refresh_vocabulary,
     set_background_refresh_enabled,
@@ -285,8 +287,8 @@ def _force_stale(table: str, column: str) -> None:
     """Rewrite a cached entry's expiry to the past, without sleeping."""
     from retrieval import dimension_vocabulary
 
-    values, _expires_at = dimension_vocabulary._cache._store[(table, column)]
-    dimension_vocabulary._cache._store[(table, column)] = (values, 0.0)
+    values, _expires_at, fetched_at = dimension_vocabulary._cache._store[(table, column)]
+    dimension_vocabulary._cache._store[(table, column)] = (values, 0.0, fetched_at)
 
 
 class TestStaleWhileRevalidate:
@@ -558,3 +560,126 @@ class TestBackgroundRefresh:
             self._wait_for_quiescence()
         finally:
             dv._default_execute_fn = original_default
+
+
+# ---------------------------------------------------------------------------
+# Admin panel phase 6, §3 -- freshness reporting and manual refresh, read
+# straight off the module's OWN bookkeeping (the cache's fetched_at,
+# _last_failure/_last_failure_at), never a second, parallel structure.
+# ---------------------------------------------------------------------------
+
+
+def _reset_failure_bookkeeping():
+    import retrieval.dimension_vocabulary as dv
+
+    dv._last_failure.clear()
+    dv._last_failure_at.clear()
+
+
+class TestVocabularyStatus:
+    @pytest.fixture(autouse=True)
+    def _clean_failure_state(self):
+        _reset_failure_bookkeeping()
+        yield
+        _reset_failure_bookkeeping()
+
+    def test_never_cached_column_reports_not_cached(self):
+        statuses = get_vocabulary_status()
+        entry = next(s for s in statuses if (s["table"], s["column"]) == ("Ring", "Name"))
+        assert entry["cached"] is False
+        assert entry["value_count"] is None
+        assert entry["fetched_at"] is None
+        assert entry["is_fresh"] is False
+        assert entry["last_failure"] is False
+        assert entry["last_failure_at"] is None
+
+    def test_one_entry_per_prefetch_column(self):
+        expected = {
+            (table, column) for table, columns in PREFETCH_COLUMNS.items() for column in columns
+        }
+        statuses = get_vocabulary_status()
+        assert {(s["table"], s["column"]) for s in statuses} == expected
+
+    def test_after_refresh_reports_value_count_and_fetched_at(self):
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(["تالار پتروشیمی", "تالار دیگر"]))
+        entry = next(
+            s for s in get_vocabulary_status() if (s["table"], s["column"]) == ("Ring", "Name")
+        )
+        assert entry["cached"] is True
+        assert entry["value_count"] == 2
+        assert entry["fetched_at"] is not None
+        assert entry["is_fresh"] is True
+
+    def test_bookkeeping_is_not_a_copy(self):
+        """Reads the SAME module-level state a failed background attempt
+        writes, rather than duplicating it -- flip _last_failure_at by
+        hand (exactly what a background failure does) and confirm the
+        status function picks it up with nothing else touched."""
+        import retrieval.dimension_vocabulary as dv
+
+        key = ("Ring", "Name")
+        dv._last_failure[key] = time.monotonic()
+        dv._last_failure_at[key] = "2026-01-01T00:00:00+00:00"
+
+        entry = next(
+            s for s in get_vocabulary_status() if (s["table"], s["column"]) == ("Ring", "Name")
+        )
+        assert entry["last_failure"] is True
+        assert entry["last_failure_at"] == "2026-01-01T00:00:00+00:00"
+
+
+class TestManualRefresh:
+    @pytest.fixture(autouse=True)
+    def _clean_failure_state(self):
+        _reset_failure_bookkeeping()
+        yield
+        _reset_failure_bookkeeping()
+
+    def test_manual_refresh_actually_refreshes(self):
+        result = manual_refresh("Ring", "Name", execute_fn=_fake_execute(["تالار پتروشیمی"]))
+        assert result["ok"] is True
+        assert result["value_count"] == 1
+        assert get_cached_vocabulary("Ring", "Name") == ["تالار پتروشیمی"]
+
+    def test_failing_manual_refresh_reports_failure_not_success(self):
+        def failing_execute(sql, params):
+            raise RuntimeError("simulated DB outage")
+
+        result = manual_refresh("Ring", "Name", execute_fn=failing_execute)
+        assert result["ok"] is False
+        assert "simulated DB outage" in result["error"]
+        # Never appears to succeed: nothing was cached by this call.
+        assert get_cached_vocabulary("Ring", "Name") is None
+
+    def test_failing_manual_refresh_updates_status_bookkeeping(self):
+        def failing_execute(sql, params):
+            raise RuntimeError("simulated DB outage")
+
+        manual_refresh("Ring", "Name", execute_fn=failing_execute)
+        entry = next(
+            s for s in get_vocabulary_status() if (s["table"], s["column"]) == ("Ring", "Name")
+        )
+        assert entry["last_failure"] is True
+        assert entry["last_failure_at"] is not None
+
+    def test_manual_refresh_ignores_the_automatic_backoff(self):
+        """An operator explicitly asking for a refresh must get one, even
+        moments after an automatic attempt just failed and backed off."""
+        import retrieval.dimension_vocabulary as dv
+
+        dv._last_failure[("Ring", "Name")] = time.monotonic()  # "just failed"
+        result = manual_refresh("Ring", "Name", execute_fn=_fake_execute(["ok"]))
+        assert result["ok"] is True
+
+    def test_success_after_failure_clears_the_failure_flag(self):
+        def failing_execute(sql, params):
+            raise RuntimeError("simulated DB outage")
+
+        manual_refresh("Ring", "Name", execute_fn=failing_execute)
+        manual_refresh("Ring", "Name", execute_fn=_fake_execute(["ok"]))
+
+        entry = next(
+            s for s in get_vocabulary_status() if (s["table"], s["column"]) == ("Ring", "Name")
+        )
+        assert entry["last_failure"] is False
+        assert entry["last_failure_at"] is None

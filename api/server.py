@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import config as cfg
 import api.admin_config_routes as admin_config_routes
 import api.admin_feedback_routes as admin_feedback_routes
+import api.admin_ops_routes as admin_ops_routes
 import api.admin_routes as admin_routes
 import api.admin_write_routes as admin_write_routes
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
@@ -50,6 +51,7 @@ import api.v2_routes as v2_routes
 # register_handlers() attaches, so this module never names them.
 from api.auth import AuthMiddleware, get_principal_if_any, require_principal
 from api.errors import register_handlers
+from api.maintenance import require_not_in_maintenance
 from core.provenance import log_startup_notice
 from core.version import __version__
 from api.middleware import RequestIDMiddleware, RateLimitMiddleware, ConcurrencyMiddleware
@@ -211,10 +213,11 @@ async def lifespan(app: FastAPI):
     if not _PROMPT_PATH.exists():
         raise RuntimeError(f"System prompt not found: {_PROMPT_PATH}")
     _system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
-    # v2_routes.py cannot import this module at load time (this module
-    # imports v2_routes to mount its router -- a cycle), so the loaded
-    # prompt is handed across explicitly here instead.
+    # v2_routes.py/admin_ops_routes.py cannot import this module at load
+    # time (this module imports both to mount their routers -- a cycle),
+    # so the loaded prompt is handed across explicitly here instead.
     v2_routes._system_prompt = _system_prompt
+    admin_ops_routes._system_prompt = _system_prompt
     logger.info("System prompt loaded (%d chars)", len(_system_prompt))
 
     # ── §9/§10: retention purge, once at start-up (no second daemon thread) ─
@@ -230,6 +233,19 @@ async def lifespan(app: FastAPI):
             logger.info("session retention purge: removed %d expired session(s)", removed)
     except Exception as exc:  # noqa: BLE001 - startup must not fail on this
         logger.warning("session retention purge failed at startup: %s", exc)
+
+    # ── Admin panel, phase 6: admin-action log retention purge ─────────────
+    # Mirrors the session-retention purge immediately above (once at
+    # start-up, best-effort) -- see appdb.admin_audit's module docstring
+    # for why this log is retained by time rather than by size.
+    try:
+        from appdb.admin_audit import purge_expired_admin_actions
+
+        removed = purge_expired_admin_actions()
+        if removed:
+            logger.info("admin-action log retention purge: removed %d expired record(s)", removed)
+    except Exception as exc:  # noqa: BLE001 - startup must not fail on this
+        logger.warning("admin-action log retention purge failed at startup: %s", exc)
 
     # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
     # Opt-in (see Settings.dimension_vocabulary_warm_on_startup) so this
@@ -317,6 +333,11 @@ app.include_router(admin_config_routes.router)
 # --- Admin panel, phase 4: wrong-answer feedback and its triage ---
 app.include_router(admin_feedback_routes.router)
 
+# --- Admin panel, phase 6: the operational tier (maintenance mode,
+#     schema drift, vocabulary freshness, per-analyst usage, cache
+#     controls, failed-auth visibility) ---
+app.include_router(admin_ops_routes.router)
+
 # --- Exception handlers ---
 register_handlers(app)
 
@@ -372,7 +393,10 @@ def redoc_docs(_: None = Depends(_require_docs_access)):
     },
 )
 async def query(
-    req: QueryRequest, request: Request, principal: Principal = Depends(require_principal),
+    req: QueryRequest,
+    request: Request,
+    principal: Principal = Depends(require_principal),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> QueryResponse:
     import time
     start = time.perf_counter()
@@ -482,7 +506,10 @@ async def _query_event_stream(
     tags=["query"],
 )
 async def query_stream(
-    req: QueryRequest, request: Request, principal: Principal = Depends(require_principal),
+    req: QueryRequest,
+    request: Request,
+    principal: Principal = Depends(require_principal),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> StreamingResponse:
     request_id = getattr(request.state, "request_id", None)
     return StreamingResponse(

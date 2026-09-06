@@ -68,13 +68,40 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ``api/server.py``'s ``lifespan`` was bypassed, e.g. a test that
     exercises this middleware directly) is logged and treated as "no
     keys configured" rather than raising mid-request.
+
+    Also stamps ``request.state.auth_failed`` (admin panel phase 6) --
+    ``True`` only when an ``Authorization`` header was presented but did
+    not resolve to a principal, never for a request with no header at all.
+    ``api.middleware.RateLimitMiddleware`` reads this to bucket auth
+    failures separately from the shared unauthenticated budget, and every
+    such failure is also recorded via
+    :func:`security.auth_failures.record_auth_failure` for the admin
+    panel's operational-tier visibility.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        request.state.principal = self._resolve(request)
+        principal = self._resolve(request)
+        request.state.principal = principal
+        # An Authorization header was presented but did not resolve to a
+        # real principal -- an auth FAILURE, distinct from a request that
+        # never presented one at all (ordinary unauthenticated traffic,
+        # e.g. GET /health from a probe). Recorded for the admin panel's
+        # operational-tier visibility (security.auth_failures) and flagged
+        # on request.state for RateLimitMiddleware's separate, smaller
+        # auth-failure bucket (see that module's docstring and
+        # docs/admin-panel-architecture.md §9). Never raised from here --
+        # this middleware still never itself rejects a request (module
+        # docstring).
+        header_present = bool(request.headers.get("authorization"))
+        request.state.auth_failed = header_present and principal is None
+        if request.state.auth_failed:
+            from security.auth_failures import record_auth_failure
+
+            source_ip = request.client.host if request.client else "unknown"
+            record_auth_failure(source_ip, request.url.path)
         return await call_next(request)
 
     @staticmethod

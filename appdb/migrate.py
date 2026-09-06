@@ -339,7 +339,8 @@ def hash_database(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Recent-write-activity refusal (§7) -- the maintenance-mode stand-in
+# Recent-write-activity refusal (§7) -- see check_quiescent on why this
+# is not replaced by maintenance mode
 # ---------------------------------------------------------------------------
 
 def _max_activity_timestamp(export: MigrationExport) -> datetime | None:
@@ -386,11 +387,13 @@ def check_quiescent(export: MigrationExport) -> None:
             f"{max(age_seconds, 0.0):.1f}s ago, inside the {window:.0f}s "
             "quiet window this tool requires -- refusing to migrate. This "
             "tool requires the application to be stopped or in maintenance "
-            "mode (maintenance mode itself does not exist yet -- see "
-            "docs/admin-panel-architecture.md §3): a write that lands in "
-            "the source after this tool has read past it is lost with no "
-            "error at all. Stop the application (or wait for it to go "
-            "quiet) and re-run."
+            "mode: a write that lands in the source after this tool has "
+            "read past it is lost with no error at all. Maintenance mode "
+            "exists (api/maintenance.py) but its flag lives in the "
+            "server's own process memory, so this tool -- a separate "
+            "process -- cannot observe it; turning maintenance on does "
+            "not lift this refusal. Stop the application (or wait for it "
+            "to go quiet) and re-run."
         )
 
 

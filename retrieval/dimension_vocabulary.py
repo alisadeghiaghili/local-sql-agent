@@ -226,7 +226,8 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Sequence
+from datetime import datetime, timezone
+from typing import Any, Sequence
 
 import config as cfg
 from core.persian import normalize_for_matching
@@ -324,7 +325,13 @@ def _prefetch_query(table: str, column: str, dialect: str = "tsql") -> str:
 
 class _VocabularyCache:
     def __init__(self) -> None:
-        self._store: OrderedDict[tuple[str, str], tuple[list[str], float]] = OrderedDict()
+        # (values, expires_at_monotonic, fetched_at_iso). The third field
+        # is wall-clock -- admin panel phase 6's freshness report
+        # (get_vocabulary_status) needs a timestamp an operator can read,
+        # and time.monotonic() (used for the TTL comparison, which must
+        # never be affected by a system clock change) has no fixed epoch
+        # to render one from.
+        self._store: OrderedDict[tuple[str, str], tuple[list[str], float, str]] = OrderedDict()
         self._lock = threading.Lock()
 
     def get_with_state(self, table: str, column: str) -> tuple[list[str] | None, bool]:
@@ -341,12 +348,31 @@ class _VocabularyCache:
             entry = self._store.get(key)
             if entry is None:
                 return None, False
-            values, expires_at = entry
+            values, expires_at, _fetched_at = entry
             return list(values), time.monotonic() <= expires_at
+
+    def get_status(self, table: str, column: str) -> dict[str, Any] | None:
+        """``{"value_count", "fetched_at", "is_fresh"}`` for ``(table,
+        column)``, or ``None`` if never cached -- the module's OWN
+        bookkeeping (admin panel phase 6 §3), read straight off this same
+        store rather than a second, parallel tracking structure."""
+        key = (table, column)
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            values, expires_at, fetched_at = entry
+            return {
+                "value_count": len(values),
+                "fetched_at": fetched_at,
+                "is_fresh": time.monotonic() <= expires_at,
+            }
 
     def set(self, table: str, column: str, values: list[str]) -> None:
         ttl = cfg.settings.dimension_vocabulary_ttl_seconds
-        expires_at = time.monotonic() + ttl if ttl > 0 else time.monotonic() - 1
+        now_monotonic = time.monotonic()
+        expires_at = now_monotonic + ttl if ttl > 0 else now_monotonic - 1
+        fetched_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             # ttl <= 0 ("disabled") still stores the value -- unlike the
             # old delete-on-read design, storing nothing here would mean
@@ -357,7 +383,7 @@ class _VocabularyCache:
             # refresh is triggered on every subsequent read, matching the
             # old "effectively uncached" behaviour without discarding a
             # value this module already has in hand.
-            self._store[(table, column)] = (list(values), expires_at)
+            self._store[(table, column)] = (list(values), expires_at, fetched_at)
 
     def clear(self) -> None:
         with self._lock:
@@ -514,9 +540,31 @@ def warm_all(execute_fn: ExecuteParamsFn | None = None) -> dict[str, int]:
 _bg_lock = threading.Lock()
 #: Keys with a refresh currently running in a background thread.
 _in_flight: set[tuple[str, str]] = set()
-#: Keys whose most recent automatic attempt failed, and when -- consulted
-#: only by the automatic trigger, never by refresh_vocabulary/warm_all.
+#: Keys whose most recent attempt failed, and when (monotonic) -- consulted
+#: by the automatic trigger's back-off. Also updated by :func:`manual_refresh`
+#: (admin panel phase 6 §3), since a manual attempt is still an attempt: an
+#: operator refreshing by hand and hitting the same failure should back off
+#: the automatic trigger too, not have it immediately retry the same thing.
 _last_failure: dict[tuple[str, str], float] = {}
+#: Wall-clock counterpart to :data:`_last_failure`, for admin panel phase
+#: 6's freshness report (:func:`get_vocabulary_status`) -- an operator
+#: reads a timestamp, not a monotonic float with no fixed epoch. Cleared
+#: in lockstep with :data:`_last_failure` on every successful attempt, so
+#: "does this key currently show a failure" never disagrees between the
+#: two.
+_last_failure_at: dict[tuple[str, str], str] = {}
+
+
+def _mark_attempt_succeeded(key: tuple[str, str]) -> None:
+    with _bg_lock:
+        _last_failure.pop(key, None)
+        _last_failure_at.pop(key, None)
+
+
+def _mark_attempt_failed(key: tuple[str, str]) -> None:
+    with _bg_lock:
+        _last_failure[key] = time.monotonic()
+        _last_failure_at[key] = datetime.now(timezone.utc).isoformat()
 
 #: Module-wide on/off switch for the automatic background trigger. Default
 #: True (production behaviour) -- see :func:`set_background_refresh_enabled`
@@ -580,16 +628,14 @@ def _trigger_background_refresh(table: str, column: str) -> None:
     def _run() -> None:
         try:
             refresh_vocabulary(table, column)
-            with _bg_lock:
-                _last_failure.pop(key, None)
+            _mark_attempt_succeeded(key)
         except Exception as exc:  # noqa: BLE001 - must never propagate into a request
             logger.warning(
                 "dimension_vocabulary: background refresh failed for %s.%s "
                 "(will not retry automatically for %.0fs): %s",
                 table, column, _BACKGROUND_REFRESH_BACKOFF_SECONDS, exc,
             )
-            with _bg_lock:
-                _last_failure[key] = time.monotonic()
+            _mark_attempt_failed(key)
         finally:
             with _bg_lock:
                 _in_flight.discard(key)
@@ -743,3 +789,106 @@ def match_question_against_vocabulary(
         clarifications=clarifications,
         resolved_columns=tuple(resolved_columns),
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin panel phase 6 (docs/admin-panel-architecture.md §3 tier 3):
+# freshness reporting and manual refresh -- both read/act on the module's
+# OWN bookkeeping above (the cache's fetched_at, _last_failure/_last_failure_at,
+# the back-off), never a second, parallel structure that could disagree
+# with it.
+# ---------------------------------------------------------------------------
+
+def get_vocabulary_status() -> list[dict[str, Any]]:
+    """Per prefetched ``(table, column)``: when it last refreshed, how many
+    values it holds, and whether the last attempt (automatic OR manual)
+    failed.
+
+    Returns
+    -------
+    list[dict]
+        One entry per :data:`PREFETCH_COLUMNS` pair, each carrying
+        ``table``, ``column``, ``cached`` (``False`` only when this pair
+        has never been fetched at all -- everything else below is
+        ``None``/``False`` in that case), ``value_count``, ``fetched_at``
+        (ISO timestamp, or ``None``), ``is_fresh``, ``last_failure`` (bool
+        -- the last attempt for this key failed) and ``last_failure_at``
+        (ISO timestamp of that failure, or ``None`` if the last attempt
+        succeeded, or if there has never been an attempt at all).
+    """
+    entries: list[dict[str, Any]] = []
+    with _bg_lock:
+        failure_snapshot = dict(_last_failure_at)
+    for table, columns in PREFETCH_COLUMNS.items():
+        for column in columns:
+            status = _cache.get_status(table, column)
+            key = (table, column)
+            last_failure_at = failure_snapshot.get(key)
+            entries.append({
+                "table": table,
+                "column": column,
+                "cached": status is not None,
+                "value_count": status["value_count"] if status else None,
+                "fetched_at": status["fetched_at"] if status else None,
+                "is_fresh": status["is_fresh"] if status else False,
+                "last_failure": last_failure_at is not None,
+                "last_failure_at": last_failure_at,
+            })
+    return entries
+
+
+def manual_refresh(
+    table: str, column: str, execute_fn: ExecuteParamsFn | None = None,
+) -> dict[str, Any]:
+    """An operator's own refresh of one prefetched column (spec §3's
+    "operations action... touches no data access, it re-reads what the
+    engine already reads").
+
+    Unlike :func:`_trigger_background_refresh`, this always attempts
+    immediately (no single-flight skip, no back-off check -- an operator
+    who explicitly asked for a refresh gets one) and reports the outcome
+    honestly rather than firing-and-forgetting: a failing attempt updates
+    the SAME ``_last_failure``/``_last_failure_at`` bookkeeping the
+    automatic trigger uses (so a subsequent :func:`get_vocabulary_status`
+    call reflects it, and the automatic trigger backs off from immediately
+    retrying the same failure) and returns ``{"ok": False, "error": ...}``
+    -- never ``{"ok": True, ...}`` for a call that actually raised.
+
+    Parameters
+    ----------
+    table, column:
+        Must be an entry in :data:`PREFETCH_COLUMNS` -- callers (the admin
+        route) are expected to have already validated this; passing an
+        unknown pair still runs (nothing here re-checks the allowlist) but
+        is meaningless -- see :func:`refresh_vocabulary`'s own docstring.
+    execute_fn:
+        Forwarded to :func:`refresh_vocabulary`. Inject a fake to test
+        with no live database.
+
+    Returns
+    -------
+    dict
+        ``{"ok": True, "table", "column", "value_count", "fetched_at"}``
+        on success, or ``{"ok": False, "table", "column", "error"}`` on
+        failure -- never raises.
+    """
+    key = (table, column)
+    try:
+        values = refresh_vocabulary(table, column, execute_fn)
+    except Exception as exc:  # noqa: BLE001 - reported, not propagated -- see docstring
+        _mark_attempt_failed(key)
+        logger.warning(
+            "dimension_vocabulary: manual refresh failed for %s.%s: %s",
+            table, column, exc,
+        )
+        return {"ok": False, "table": table, "column": column, "error": str(exc)}
+
+    _mark_attempt_succeeded(key)
+    status = _cache.get_status(table, column)
+    return {
+        "ok": True,
+        "table": table,
+        "column": column,
+        "value_count": len(values),
+        "fetched_at": status["fetched_at"] if status else None,
+    }

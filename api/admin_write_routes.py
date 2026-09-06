@@ -48,6 +48,22 @@ after its mutation succeeds, naming the capability that authorised it
 (``"operations"`` or ``"security"``) — never omitted, because one
 principal may hold both roles at once (spec §2.3) and without this field
 their two kinds of action would be indistinguishable in the log.
+
+Maintenance mode stops these writes (admin panel phase 6, §1)
+-------------------------------------------------------------------
+Every mutating route below also declares
+:func:`api.maintenance.require_not_in_maintenance` alongside its role
+dependency — a key/role write is an application-database write, and
+"writes to the application database stop" while maintenance mode is on is
+exactly what phase 5's migration safety depends on
+(``docs/admin-panel-architecture.md`` §5.4). The read routes in this
+module (``GET /admin/keys``, ``GET /admin/roles/{capability}``,
+``GET /admin/actions``) do NOT declare it — the panel itself must stay
+reachable while maintenance is on. ``api/admin_config_routes.py`` and
+``api/admin_feedback_routes.py`` are NOT similarly gated in this phase —
+phases 3 and 4 own those modules, and the frozen phase 6 spec explicitly
+reserves them; see this codebase's phase 6 report for that scope
+decision.
 """
 
 from __future__ import annotations
@@ -58,6 +74,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from api.auth import require_operations, require_operations_or_security, require_security
+from api.maintenance import require_not_in_maintenance
 from appdb.admin_audit import iter_admin_actions, record_admin_action
 from appdb.key_store import (
     KeyNotFoundError,
@@ -112,7 +129,9 @@ class RoleChangeRequest(BaseModel):
 
 @router.post("/keys", summary="Issue a new API key (operations)")
 def admin_issue_key(
-    req: IssueKeyRequest, principal: Principal = Depends(require_operations),
+    req: IssueKeyRequest,
+    principal: Principal = Depends(require_operations),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     """Mint a new key for ``req.principal_id``, with the restrictive
     default ACL. The raw key is returned **once**, in this response, and
@@ -147,7 +166,9 @@ def _handle_not_found(key_sha256: str, fn, *args) -> None:
 
 @router.post("/keys/{key_sha256}/disable", summary="Disable a key (operations)")
 def admin_disable_key(
-    key_sha256: str, principal: Principal = Depends(require_operations),
+    key_sha256: str,
+    principal: Principal = Depends(require_operations),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     _handle_not_found(key_sha256, set_disabled, True)
     record_admin_action(principal.id, OPERATIONS_CAPABILITY, "key.disable", key_sha256)
@@ -156,7 +177,9 @@ def admin_disable_key(
 
 @router.post("/keys/{key_sha256}/enable", summary="Re-enable a disabled key (operations)")
 def admin_enable_key(
-    key_sha256: str, principal: Principal = Depends(require_operations),
+    key_sha256: str,
+    principal: Principal = Depends(require_operations),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     _handle_not_found(key_sha256, set_disabled, False)
     record_admin_action(principal.id, OPERATIONS_CAPABILITY, "key.enable", key_sha256)
@@ -165,7 +188,9 @@ def admin_enable_key(
 
 @router.post("/keys/{key_sha256}/revoke", summary="Revoke a key permanently (operations)")
 def admin_revoke_key(
-    key_sha256: str, principal: Principal = Depends(require_operations),
+    key_sha256: str,
+    principal: Principal = Depends(require_operations),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     """Tombstones the key -- never deletes the row (spec §3.4): a restore
     of the application database to a point before this call must not
@@ -181,7 +206,10 @@ def admin_revoke_key(
 
 @router.patch("/keys/{key_sha256}/acl", summary="Change a key's denied_columns (security)")
 def admin_update_acl(
-    key_sha256: str, req: UpdateAclRequest, principal: Principal = Depends(require_security),
+    key_sha256: str,
+    req: UpdateAclRequest,
+    principal: Principal = Depends(require_security),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     _handle_not_found(key_sha256, update_denied_columns, req.denied_columns)
     record_admin_action(
@@ -197,7 +225,10 @@ def admin_update_acl(
 
 @router.post("/roles/{principal_id}", summary="Grant or revoke a role (security)")
 def admin_change_role(
-    principal_id: str, req: RoleChangeRequest, principal: Principal = Depends(require_security),
+    principal_id: str,
+    req: RoleChangeRequest,
+    principal: Principal = Depends(require_security),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     """Grant or revoke ``req.capability`` for *principal_id*.
 

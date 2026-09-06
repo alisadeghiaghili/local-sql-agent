@@ -21,6 +21,7 @@ from scripts.analyze_audit_log import (
     _classify_error_code,
     _join_bucket,
     _percentile,
+    _rate_limit_hit_log_file,
     _stats,
     _time_range,
     build_report,
@@ -32,8 +33,11 @@ from scripts.analyze_audit_log import (
     latency_report,
     llm_meta_summary,
     main,
+    per_principal_usage,
+    record_rate_limit_hit,
     records_by_model,
     resolve_log_paths,
+    resolve_rate_limit_hit_paths,
     sql_shape_clusters,
 )
 
@@ -485,3 +489,84 @@ class TestMainCli:
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["record_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Admin panel phase 6, §4 -- per_principal_usage / record_rate_limit_hit.
+# Frozen spec.
+# ---------------------------------------------------------------------------
+
+class TestPerPrincipalUsage:
+    def test_figures_match_what_build_report_would_say_for_the_same_records(self):
+        """Same source, same numbers -- the whole point of deriving this
+        from analyze_audit_log rather than a second counter."""
+        records = [
+            _rec(principal_id="alice", error_code=None, timings={"total_ms": 100}),
+            _rec(principal_id="alice", error_code="FORBIDDEN_SQL", timings={"total_ms": 200}),
+            _rec(principal_id="bob", error_code=None, timings={"total_ms": 50}),
+        ]
+        report = per_principal_usage(records)
+
+        alice_records = [r for r in records if r["principal_id"] == "alice"]
+        assert report["principals"]["alice"]["queries"] == len(alice_records)
+        assert report["principals"]["alice"]["failures"] == sum(
+            1 for r in alice_records if r["error_code"]
+        )
+        expected_latency = _stats([r["timings"]["total_ms"] for r in alice_records])
+        assert report["principals"]["alice"]["latency_ms"] == expected_latency
+
+        assert report["principals"]["bob"]["queries"] == 1
+        assert report["principals"]["bob"]["failures"] == 0
+
+    def test_never_triggered_says_so_plainly(self):
+        records = [_rec(principal_id="alice")]
+        report = per_principal_usage(records, rate_limit_hit_records=[])
+        assert report["rate_limit_never_triggered"] is True
+        assert report["principals"]["alice"]["rate_limit_hits"] == 0
+
+    def test_rate_limit_hits_come_from_the_separate_stream_not_the_records(self):
+        records = [_rec(principal_id="alice")]
+        hits = [
+            {"timestamp": "2026-01-01T00:00:01+00:00", "principal_id": "alice", "path": "/query"},
+            {"timestamp": "2026-01-01T00:00:02+00:00", "principal_id": "alice", "path": "/query"},
+        ]
+        report = per_principal_usage(records, rate_limit_hit_records=hits)
+        assert report["principals"]["alice"]["rate_limit_hits"] == 2
+        assert report["rate_limit_never_triggered"] is False
+        # Not counted as an extra query -- these never reached run_query.
+        assert report["principals"]["alice"]["queries"] == 1
+
+    def test_window_filters_both_streams_by_timestamp(self):
+        records = [
+            _rec(principal_id="alice", timestamp="2020-01-01T00:00:00"),
+            _rec(principal_id="alice", timestamp="2099-01-01T00:00:00"),
+        ]
+        hits = [
+            {"timestamp": "2020-01-01T00:00:00", "principal_id": "alice", "path": "/query"},
+            {"timestamp": "2099-01-01T00:00:00", "principal_id": "alice", "path": "/query"},
+        ]
+        report = per_principal_usage(records, hits, since="2050-01-01T00:00:00")
+        assert report["principals"]["alice"]["queries"] == 1
+        assert report["principals"]["alice"]["rate_limit_hits"] == 1
+
+    def test_no_principal_falls_into_its_own_bucket(self):
+        report = per_principal_usage([_rec(principal_id=None)])
+        assert report["principals"]["(no principal)"]["queries"] == 1
+
+
+class TestRecordRateLimitHit:
+    def test_record_and_read_back(self, tmp_path):
+        import scripts.analyze_audit_log as module
+
+        path = tmp_path / "rate_limit_hits.jsonl"
+        module._RATE_LIMIT_HIT_LOG_FILE = str(path)
+        try:
+            record_rate_limit_hit("alice", "/query")
+            assert _rate_limit_hit_log_file() == str(path)
+            records = list(iter_records(resolve_rate_limit_hit_paths([str(path)])))
+        finally:
+            module._RATE_LIMIT_HIT_LOG_FILE = ""
+
+        assert len(records) == 1
+        assert records[0]["principal_id"] == "alice"
+        assert records[0]["path"] == "/query"

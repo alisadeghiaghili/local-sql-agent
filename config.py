@@ -959,6 +959,102 @@ class Settings:
     whose application takes longer than a minute to fully quiesce should
     raise it instead of routinely overriding the refusal by other means."""
 
+    # ── Admin panel, phase 6: the operational tier ───────────────────────────
+    maintenance_drain_deadline_seconds: int = field(
+        default_factory=lambda: int(os.getenv("MAINTENANCE_DRAIN_DEADLINE_SECONDS", "120"))
+    )
+    """How long (seconds) an operator should expect in-flight requests to
+    take to drain after maintenance mode is switched on (``api.maintenance``).
+
+    Purely informational: this codebase has no mechanism that forcibly
+    cancels a request already past its admission check (see
+    ``api.maintenance.require_not_in_maintenance``'s docstring for why
+    "drain" falls out of *where* the check runs, not from any cancellation
+    logic) — killing a query mid-execution buys nothing and loses the
+    analyst their answer, per ``docs/admin-panel-architecture.md``'s
+    maintenance-mode definition. This value is returned alongside the
+    toggle-on response so an operator has a concrete number to watch
+    rather than guessing: if every in-flight request has not finished by
+    the time this many seconds have passed, treat that as a hang worth
+    investigating (a stuck LLM call, a wedged database connection), not as
+    evidence the switch failed. ``120`` is deliberately generous — comfortably
+    above :attr:`query_timeout_seconds` plus the self-correction rounds a
+    single query may spend."""
+
+    admin_action_log_retention_days: int = field(
+        default_factory=lambda: int(os.getenv("ADMIN_ACTION_LOG_RETENTION_DAYS", "365"))
+    )
+    """How many days of ``admin_action_log.jsonl`` history
+    (:mod:`appdb.admin_audit`) are kept before :func:`appdb.admin_audit.purge_expired_admin_actions`
+    discards a record permanently. ``<= 0`` disables the purge entirely —
+    keep everything forever, the safest choice for a compliance-sensitive
+    deployment that would rather manage disk space by hand than lose
+    evidence automatically.
+
+    This log is exempt from the size-based rotation every other JSONL log
+    in this project uses (:attr:`log_max_bytes`/:attr:`log_backup_count`)
+    precisely so this setting is the ONLY thing that can make an admin
+    action disappear. Size-based rotation discards the *oldest* evidence
+    first, exactly when there is the *most* activity — which means anyone
+    wanting to bury a specific admin action could do so on purpose by
+    generating enough unrelated admin noise to roll it off the end of the
+    file before anyone reads it. A trail whose whole purpose is "each
+    admin role can read that the other one acted"
+    (``docs/admin-panel-architecture.md`` §2.4) cannot depend on a
+    retention mechanism an interested party can defeat by volume. Retention
+    by time closes that path: a record is discarded only once it is
+    genuinely older than this many days, never because something noisier
+    was appended after it. An on-prem deployment with an externally
+    imposed retention requirement sets this explicitly rather than
+    accepting the default; see ``docs/deployment-runbook.md``."""
+
+    # ── Admin panel, phase 6: a small, separate bucket for auth FAILURES ────
+    # See docs/admin-panel-architecture.md §9's resolved "is IP alone
+    # enough for failed admin auth?" question, and
+    # api.middleware.RateLimitMiddleware's own docstring for how this
+    # bucket is kept separate from the shared, much larger
+    # rate_limit_requests bucket every other unauthenticated/authenticated
+    # request draws from.
+    auth_failure_rate_limit_requests: int = field(
+        default_factory=lambda: int(os.getenv("AUTH_FAILURE_RATE_LIMIT_REQUESTS", "20"))
+    )
+    """Sustained allowance, per window, for requests that presented an
+    ``Authorization`` header that failed to resolve to a principal at all
+    (a wrong/expired/typo'd key — never a *missing* header, which is
+    ordinary unauthenticated traffic and keeps using
+    :attr:`rate_limit_requests`'s much larger shared bucket).
+
+    Deliberately small and deliberately separate. Guessing a real key is
+    arithmetically impossible (``security.auth``'s keys are
+    ``secrets.token_urlsafe(32)`` — 256 bits of entropy), so this is not
+    a brute-force defence; tightening it further would be security
+    theatre against a threat that does not exist. The actual problem this
+    solves: ``api.auth.AuthMiddleware`` runs before the rate limiter, so a
+    single misbehaving client looping on a stale/rotated key would
+    otherwise consume tokens from the *same* IP-keyed bucket that
+    genuinely unauthenticated traffic from that address (a monitoring
+    probe behind the same reverse proxy, most concretely) also draws
+    from — starving the probe and making the resulting 429 look exactly
+    like an outage. A small, separate ceiling for auth failures protects
+    that shared budget without touching the limit that actually matters
+    for real traffic."""
+
+    auth_failure_rate_limit_window_seconds: float = field(
+        default_factory=lambda: float(os.getenv("AUTH_FAILURE_RATE_LIMIT_WINDOW_SEC", "60"))
+    )
+    """Window (seconds) :attr:`auth_failure_rate_limit_requests` refills
+    over — same unit as :attr:`rate_limit_window_seconds`, kept as a
+    separate setting so the two buckets' windows can be tuned
+    independently."""
+
+    auth_failure_rate_limit_burst: int = field(
+        default_factory=lambda: int(os.getenv("AUTH_FAILURE_RATE_LIMIT_BURST", "5"))
+    )
+    """Extra tokens above :attr:`auth_failure_rate_limit_requests` a single
+    auth-failure bucket may spend instantly — mirrors
+    :attr:`rate_limit_burst`'s role for the shared bucket, sized much
+    smaller to match."""
+
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 

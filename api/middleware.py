@@ -223,6 +223,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         burst: int | None = None,
         trusted_proxies: frozenset[str] = _TRUSTED_PROXIES,
         max_tracked_ips: int = _MAX_TRACKED_IPS,
+        auth_failure_requests_per_window: int | None = None,
+        auth_failure_window_seconds: float | None = None,
+        auth_failure_burst: int | None = None,
     ) -> None:
         super().__init__(app)
         # Resolved through cfg.settings HERE, at construction time, rather
@@ -246,6 +249,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._max_tracked_ips: int = max_tracked_ips
         self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
         self._lock = Lock()
+
+        # A small, SEPARATE bucket namespace for requests whose
+        # Authorization header failed to resolve to a principal (admin
+        # panel phase 6 -- see this class's own docstring section below
+        # and docs/admin-panel-architecture.md §9). Resolved the same
+        # "None means ask cfg.settings now" way as the block above.
+        if (
+            auth_failure_requests_per_window is None
+            or auth_failure_window_seconds is None
+            or auth_failure_burst is None
+        ):
+            if auth_failure_requests_per_window is None:
+                auth_failure_requests_per_window = cfg.settings.auth_failure_rate_limit_requests
+            if auth_failure_window_seconds is None:
+                auth_failure_window_seconds = cfg.settings.auth_failure_rate_limit_window_seconds
+            if auth_failure_burst is None:
+                auth_failure_burst = cfg.settings.auth_failure_rate_limit_burst
+        self._auth_failure_requests_per_window: int = auth_failure_requests_per_window
+        self._auth_failure_capacity: float = auth_failure_requests_per_window + auth_failure_burst
+        self._auth_failure_refill_rate: float = (
+            auth_failure_requests_per_window / auth_failure_window_seconds
+        )
+        self._auth_failure_window: float = auth_failure_window_seconds
 
     # ------------------------------------------------------------------
     # helpers
@@ -297,15 +323,38 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ``api/server.py``'s middleware ordering. An unauthenticated
         request (missing/invalid key, or ``AUTH_REQUIRED=false`` with no
         key presented) falls back to the IP-only key.
+
+        A request whose ``Authorization`` header was presented but did
+        NOT resolve to a principal (``request.state.auth_failed`` set by
+        ``AuthMiddleware`` — admin panel phase 6) gets a key in its OWN
+        namespace (``"authfail|ip:<ip>"``), never ``"ip:<ip>"`` — see this
+        class's own docstring's "Bucket identity" section for why that
+        separation exists. Checked with ``is True`` rather than a plain
+        truthy test so a caller that never sets the attribute at all
+        (``getattr`` returning its ``False`` default, or — in a unit test
+        driving this method with a bare ``unittest.mock.MagicMock``
+        request — an auto-created mock attribute that is not itself the
+        object ``True``) is never mistaken for a real auth failure.
         """
         ip = self._client_ip(request)
         principal = getattr(request.state, "principal", None)
         if principal is not None:
             return f"principal:{principal.id}|ip:{ip}"
+        if getattr(request.state, "auth_failed", False) is True:
+            return f"authfail|ip:{ip}"
         return f"ip:{ip}"
 
-    def _consume(self, bucket_key: str) -> tuple[bool, float]:
+    def _consume(
+        self, bucket_key: str, *, capacity: float | None = None, refill_rate: float | None = None,
+    ) -> tuple[bool, float]:
         """Try to consume one token for *bucket_key* (an IP- or principal-keyed identity).
+
+        *capacity*/*refill_rate* default to this instance's shared,
+        default-bucket values (``None`` means "use those") — pass the
+        auth-failure-bucket values explicitly (see ``dispatch``) for a key
+        produced by :meth:`_bucket_key`'s auth-failure branch, so that
+        namespace is governed by its own, much smaller allowance instead of
+        silently reusing the shared bucket's numbers.
 
         Returns
         -------
@@ -313,6 +362,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             *allowed* — True if the request is permitted.
             *retry_after* — seconds until next token is available (0 if allowed).
         """
+        if capacity is None:
+            capacity = self._capacity
+        if refill_rate is None:
+            refill_rate = self._refill_rate
+
         now = time.monotonic()
         with self._lock:
             bucket = self._buckets.get(bucket_key)
@@ -321,7 +375,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     self._buckets.popitem(last=False)  # evict least-recently-seen
                 # Stamp last_refill with *this* call's `now` so a fresh
                 # bucket's first `elapsed` is exactly 0.0, never negative.
-                bucket = _Bucket(tokens=self._capacity, last_refill=now)
+                bucket = _Bucket(tokens=capacity, last_refill=now)
                 self._buckets[bucket_key] = bucket
             else:
                 self._buckets.move_to_end(bucket_key)
@@ -329,8 +383,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # Refill tokens proportional to elapsed time
             elapsed = now - bucket.last_refill
             bucket.tokens = min(
-                self._capacity,
-                bucket.tokens + elapsed * self._refill_rate,
+                capacity,
+                bucket.tokens + elapsed * refill_rate,
             )
             bucket.last_refill = now
 
@@ -338,7 +392,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 bucket.tokens -= 1.0
                 return True, 0.0
             else:
-                retry_after = (1.0 - bucket.tokens) / self._refill_rate
+                retry_after = (1.0 - bucket.tokens) / refill_rate
                 return False, retry_after
 
     # ------------------------------------------------------------------
@@ -349,8 +403,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
 
+        is_auth_failure = getattr(request.state, "auth_failed", False) is True
         key = self._bucket_key(request)
-        allowed, retry_after = self._consume(key)
+        if is_auth_failure:
+            capacity = self._auth_failure_capacity
+            refill_rate = self._auth_failure_refill_rate
+            requests_per_window = self._auth_failure_requests_per_window
+            window = self._auth_failure_window
+        else:
+            capacity = self._capacity
+            refill_rate = self._refill_rate
+            requests_per_window = self._requests_per_window
+            window = self._window
+
+        allowed, retry_after = self._consume(key, capacity=capacity, refill_rate=refill_rate)
 
         if not allowed:
             request_id = getattr(request.state, "request_id", "")
@@ -360,6 +426,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 key,
                 retry_after,
             )
+            principal = getattr(request.state, "principal", None)
+            if principal is not None:
+                # Admin panel phase 6 §4: the per-analyst usage report
+                # needs to know how many times a principal hit the limit,
+                # and the ONLY existing record of "what happened" is the
+                # analyst audit log analyze_audit_log.py already reads —
+                # a 429 never reaches api/runner.py (it is rejected right
+                # here, before the route even runs), so without this call
+                # that log would have no idea a rate-limit rejection ever
+                # happened. See scripts.analyze_audit_log.per_principal_usage
+                # and its own module docstring for how this is read back.
+                # Deliberately NOT observability.audit.save_audit_record:
+                # that log's own contract is "one record per API query"
+                # (see its module docstring) and a throttled request never
+                # became one.
+                from scripts.analyze_audit_log import record_rate_limit_hit
+
+                record_rate_limit_hit(principal.id, request.url.path)
             return JSONResponse(
                 status_code=429,
                 content={
@@ -368,8 +452,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         "message": (
                             f"Rate limit exceeded (this is a client throttling "
                             f"response, not a query or model failure). "
-                            f"Allowed {self._requests_per_window} requests per "
-                            f"{int(self._window)}s window for this caller. "
+                            f"Allowed {requests_per_window} requests per "
+                            f"{int(window)}s window for this caller. "
                             f"Retry after {retry_after:.1f}s."
                         ),
                         "request_id": request_id,
@@ -382,8 +466,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
         # Informational headers so clients can self-throttle
-        response.headers["X-RateLimit-Limit"] = str(self._requests_per_window)
-        response.headers["X-RateLimit-Window"] = str(int(self._window))
+        response.headers["X-RateLimit-Limit"] = str(requests_per_window)
+        response.headers["X-RateLimit-Window"] = str(int(window))
         return response
 
 

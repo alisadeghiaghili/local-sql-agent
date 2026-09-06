@@ -95,19 +95,36 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import logging
+import os
 import re
 import statistics
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config as cfg
+from logs.logger import append_jsonl
 from observability.timing import STAGE_NAMES
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_GLOB = "logs/audit_log.jsonl*"
+
+#: Default glob for :func:`record_rate_limit_hit`'s own log -- see that
+#: function's docstring for why a 429 needs a stream of its own rather
+#: than an entry in ``audit_log.jsonl`` itself.
+_DEFAULT_RATE_LIMIT_HIT_GLOB = "logs/rate_limit_hits.jsonl*"
+
+# Module-level path variable so tests can patch
+# "scripts.analyze_audit_log._RATE_LIMIT_HIT_LOG_FILE", mirroring
+# appdb.admin_audit._ADMIN_ACTION_LOG_FILE's own test seam.
+_RATE_LIMIT_HIT_LOG_FILE: str = ""
 
 #: ``error_code`` values that mean the guard rejected the SQL for a reason
 #: no re-prompt could ever fix (a forbidden statement/keyword, an
@@ -621,6 +638,168 @@ def _time_range(records: list[dict[str, Any]]) -> dict[str, str | None]:
     if not timestamps:
         return {"start": None, "end": None}
     return {"start": timestamps[0], "end": timestamps[-1]}
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit hits — a stream of their own (admin panel phase 6, §4)
+# ---------------------------------------------------------------------------
+#
+# A 429 never reaches api/runner.py: api.middleware.RateLimitMiddleware
+# rejects it before the route (and therefore observability.audit's
+# AuditRecord writer) ever runs. audit_log.jsonl's own contract is "one
+# record per API query" (see observability/audit.py's module docstring),
+# and a throttled request never became one -- so there is genuinely
+# nothing in the analyst audit log to read for "how many times did this
+# principal hit the limit", and inventing an entry there would misuse a
+# compliance artefact whose shape means something specific.
+#
+# Rather than a second, independent counter (the exact thing the frozen
+# spec warns against for query counts), this is a second STREAM read by
+# the SAME per-principal report function below, through the SAME
+# resolve_log_paths/iter_records machinery every other section of this
+# module already uses -- one report, two inputs it is honest about,
+# rather than one input pretending to be the whole picture.
+
+def _rate_limit_hit_log_file() -> str:
+    if _RATE_LIMIT_HIT_LOG_FILE:
+        return _RATE_LIMIT_HIT_LOG_FILE
+    return os.path.join(cfg.settings.log_dir, "rate_limit_hits.jsonl")
+
+
+def record_rate_limit_hit(principal_id: str, path: str) -> None:
+    """Append one rate-limit-hit record. Called by
+    ``api.middleware.RateLimitMiddleware`` for every 429 issued to an
+    authenticated principal (never for an unauthenticated/anonymous 429,
+    which has no principal to attribute usage pressure to).
+
+    Never raises -- this runs on the rate limiter's own hot path, and a
+    logging failure must not turn into a second reason to reject a
+    request that was already being rejected for an unrelated one.
+    """
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "principal_id": principal_id,
+        "path": path,
+    }
+    try:
+        append_jsonl(_rate_limit_hit_log_file(), record)
+    except OSError as exc:  # pragma: no cover - defensive, mirrors appdb.admin_audit
+        logger.warning("Failed to write rate-limit-hit record: %s", exc)
+
+
+def resolve_rate_limit_hit_paths(patterns: Iterable[str] | None = None) -> list[Path]:
+    """:func:`resolve_log_paths` against :data:`_DEFAULT_RATE_LIMIT_HIT_GLOB`
+    rooted at ``cfg.settings.log_dir`` -- the read-side counterpart to
+    :func:`record_rate_limit_hit`, mirroring how ``api/admin_routes.py``
+    roots its own audit-log glob at that same setting rather than the
+    module-level default meant for the CLI."""
+    if patterns is None:
+        patterns = [os.path.join(cfg.settings.log_dir, "rate_limit_hits.jsonl*")]
+    return resolve_log_paths(patterns)
+
+
+# ---------------------------------------------------------------------------
+# Per-principal usage (admin panel phase 6, §4)
+# ---------------------------------------------------------------------------
+
+def per_principal_usage(
+    records: list[dict[str, Any]],
+    rate_limit_hit_records: list[dict[str, Any]] | None = None,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
+    """Per-``principal_id`` queries/failures/latency/rate-limit-hits over
+    a window -- the frozen spec's §4: "the bucket is the (principal, ip)
+    pair, and nobody can currently see whether its allowance is right."
+
+    Everything except the rate-limit-hit count comes from *records*
+    (``audit_log.jsonl``-shaped dicts, e.g. from :func:`iter_records`) --
+    the SAME records :func:`build_report` consumes for the exact same
+    window, so these figures can never diverge from what that report
+    already says about the same traffic. The rate-limit-hit count comes
+    from *rate_limit_hit_records* (e.g. from
+    :func:`resolve_rate_limit_hit_paths` + :func:`iter_records`) -- see
+    the section comment above this function for why that is a second
+    STREAM, not a second COUNTER for anything *records* already answers.
+
+    Parameters
+    ----------
+    since, until:
+        ISO-8601 timestamp strings (inclusive), compared as plain strings
+        -- safe because every timestamp this codebase writes is
+        ``datetime.now(timezone.utc).isoformat()``, which sorts
+        lexicographically in chronological order. ``None`` means
+        unbounded on that side.
+
+    Returns
+    -------
+    dict
+        ``{"since", "until", "principals": {principal_id: {...}},
+        "rate_limit_never_triggered"}``. Each principal's entry carries
+        ``queries``, ``failures``, ``latency_ms`` (:func:`_stats`'s shape
+        -- ``count``/``mean``/``p50``/``p95``/``p99``, so "median" is
+        ``p50``), and ``rate_limit_hits``. ``rate_limit_never_triggered``
+        is ``True`` when nobody, across every principal, hit the limit in
+        this window -- the frozen spec's own instruction: say that
+        plainly rather than rendering an all-zero chart that reads as "no
+        data" instead of "this control has never fired".
+    """
+
+    def _in_window(ts: Any) -> bool:
+        if not isinstance(ts, str):
+            return False
+        if since is not None and ts < since:
+            return False
+        if until is not None and ts > until:
+            return False
+        return True
+
+    selected = [r for r in records if _in_window(r.get("timestamp"))]
+    hits = [r for r in (rate_limit_hit_records or []) if _in_window(r.get("timestamp"))]
+
+    by_principal: dict[str, dict[str, Any]] = {}
+
+    def _bucket(principal_id: str) -> dict[str, Any]:
+        return by_principal.setdefault(
+            principal_id,
+            {
+                "principal_id": principal_id,
+                "queries": 0,
+                "failures": 0,
+                "rate_limit_hits": 0,
+                "_latencies_ms": [],
+            },
+        )
+
+    for rec in selected:
+        principal_id = rec.get("principal_id") or "(no principal)"
+        bucket = _bucket(principal_id)
+        bucket["queries"] += 1
+        if rec.get("error_code"):
+            bucket["failures"] += 1
+        total_ms = (rec.get("timings") or {}).get("total_ms")
+        if isinstance(total_ms, (int, float)):
+            bucket["_latencies_ms"].append(total_ms)
+
+    for rec in hits:
+        principal_id = rec.get("principal_id") or "(no principal)"
+        _bucket(principal_id)["rate_limit_hits"] += 1
+
+    total_rate_limit_hits = sum(b["rate_limit_hits"] for b in by_principal.values())
+
+    principals: dict[str, Any] = {}
+    for principal_id, bucket in by_principal.items():
+        latencies = bucket.pop("_latencies_ms")
+        bucket["latency_ms"] = _stats(latencies)
+        principals[principal_id] = bucket
+
+    return {
+        "since": since,
+        "until": until,
+        "principals": principals,
+        "rate_limit_never_triggered": total_rate_limit_hits == 0,
+    }
 
 
 # ---------------------------------------------------------------------------

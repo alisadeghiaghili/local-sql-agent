@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 
 import config as cfg
 from api.auth import require_principal
+from api.maintenance import require_not_in_maintenance
 from appdb.feedback import TurnNotAuditedError, list_feedback, submit_flag
 from knowledge.memory_policy import get_memory_keys
 from security.auth import Principal
@@ -331,6 +332,7 @@ async def ask_turn(
     req: AskTurnRequest,
     request: Request,
     principal: Principal = Depends(require_principal),
+    _maintenance: None = Depends(require_not_in_maintenance),
 ):
     if request.query_params.get("stream") in ("1", "true"):
         return StreamingResponse(

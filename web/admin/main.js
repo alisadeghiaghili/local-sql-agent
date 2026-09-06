@@ -1,9 +1,13 @@
 /* web/admin/main.js — admin panel bootstrap and rendering.
  *
- * A dashboard, not a tool (docs/admin-panel-architecture.md / the phase-1
- * spec): every card below only ever reads. There is no control anywhere
- * on this page that changes server state -- see web/admin/admin.js's
- * module docstring for why that is a hard line, not a style choice.
+ * Started as a pure dashboard (docs/admin-panel-architecture.md / the
+ * phase-1 spec): every phase-1/2/3 card only ever reads. Phase 4 added
+ * the first deliberate exception (feedback resolution) and phase 6 adds
+ * three more, each a narrow, closed-set operations action, never a
+ * free-form write surface (§3.1's line the architecture draws): the
+ * maintenance-mode toggle, a manual vocabulary-column refresh, and
+ * clearing the query-result cache. See web/admin/admin.js's own comments
+ * on each corresponding method for why each stays inside that line.
  *
  * Reuses web/js/apikey.js (credentials) and web/js/state.js (theme /
  * backend base-URL persistence) unchanged -- an admin key is just a key
@@ -19,6 +23,18 @@ import { getApiKey, setApiKey, clearApiKey, hasApiKey } from "../js/apikey.js";
 import { state, loadPersisted, persistTheme, persistBaseUrl, applyTheme } from "../js/state.js";
 
 const $ = (id) => document.getElementById(id);
+
+/* Every card this page fetches and re-renders, one at a time (see
+ * refreshOne below). Declared here, before the top-level bootstrap calls
+ * below, because those calls run refreshAll() synchronously as part of
+ * page load -- a `const` referenced before its own declaration line has
+ * executed is a ReferenceError (the temporal dead zone), not a "not yet
+ * defined" value, so this array cannot sit below the code that runs
+ * before the module finishes its first pass. */
+const CARDS = [
+  "summary", "health", "cache", "config", "feedback",
+  "maintenance", "schemaDrift", "vocabulary", "usage", "authFailures",
+];
 
 loadPersisted();
 applyTheme();
@@ -125,8 +141,8 @@ function clearNotice() {
  * Each card fails independently: a 403 on one call (all four will 403
  * together, since it is the same key) still renders the others' error
  * state instead of the whole page going blank, and a network error on
- * one endpoint does not block the rest. */
-const CARDS = ["summary", "health", "cache", "config", "feedback"];
+ * one endpoint does not block the rest. CARDS itself is declared near
+ * the top of this file, above the bootstrap calls that run it first. */
 
 async function refreshAll() {
   hideForbiddenBanner();
@@ -153,6 +169,16 @@ async function refreshOne(name) {
       const status = $("feedback-status-filter").value;
       const [stats, list] = await Promise.all([api.feedbackStats(), api.feedbackList(status)]);
       renderFeedback(stats, list.feedback || []);
+    } else if (name === "maintenance") {
+      renderMaintenance(await api.maintenanceState());
+    } else if (name === "schemaDrift") {
+      renderSchemaDrift(await api.schemaDrift());
+    } else if (name === "vocabulary") {
+      renderVocabulary(await api.vocabularyStatus());
+    } else if (name === "usage") {
+      renderUsage(await api.usage());
+    } else if (name === "authFailures") {
+      renderAuthFailures(await api.authFailures());
     }
     hideForbiddenBanner();
   } catch (err) {
@@ -176,6 +202,23 @@ async function refreshOne(name) {
 
 $("include-examples-toggle").addEventListener("change", () => refreshOne("summary"));
 $("feedback-status-filter").addEventListener("change", () => refreshOne("feedback"));
+
+/* ── Cache clear: say the cost BEFORE doing it (spec §5) ────────────── */
+$("cache-clear-btn").addEventListener("click", async () => {
+  const stats = _lastCacheStats || (await api.cache().catch(() => null));
+  const size = stats ? fmtNum(stats.size ?? 0) : "نامشخص";
+  const proceed = window.confirm(
+    `با پاک کردن کش، ${size} ورودی ذخیره‌شده حذف می‌شود و درخواست‌های بعدی هزینهٔ کامل (بدون کش) خواهند داشت. ادامه می‌دهید؟`,
+  );
+  if (!proceed) return;
+  try {
+    await api.cacheClear();
+    showNotice("warn", "کش پاک شد.");
+    await refreshOne("cache");
+  } catch (err) {
+    showNotice("error", `پاک کردن کش ناموفق بود: ${err.message || err}`);
+  }
+});
 
 /* ── Renderers ───────────────────────────────────────────────────── */
 
@@ -349,7 +392,14 @@ function renderHealth(payload) {
   void passed;
 }
 
+/** Admin panel phase 6 §5: the panel must show what clearing will cost
+ * BEFORE the operator clicks clear, not only echo it back afterward.
+ * Kept from the most recent GET /admin/cache (phase 1, read-only) so the
+ * confirm dialog below is never stale by more than one refresh cycle. */
+let _lastCacheStats = null;
+
 function renderCache(stats) {
+  _lastCacheStats = stats;
   const body = $("cache-body");
   const hits = Number(stats.hits ?? 0);
   const misses = Number(stats.misses ?? 0);
@@ -509,4 +559,178 @@ async function resolveFeedbackRow(btn) {
     showNotice("error", `ثبت نتیجه ناموفق بود: ${err.message || err}`);
     btn.disabled = false;
   }
+}
+
+/* ── Admin panel phase 6: maintenance mode ───────────────────────────
+ * A switch, not a trap (docs/admin-panel-architecture.md / phase 6
+ * spec §1) -- this card is the one place on the page that can change
+ * whether analyst queries are being answered at all, so its state is
+ * rendered as a severity banner, the same visual language the
+ * deployment-checks rail already uses for a failure. */
+
+function renderMaintenance(state) {
+  const body = $("maintenance-body");
+  const cls = state.active ? "fail" : "pass";
+  const label = state.active ? "روشن — پرس‌وجوهای جدید رد می‌شوند" : "خاموش — سامانه عادی کار می‌کند";
+  const rows = [];
+  if (state.note) rows.push(kv("یادداشت", state.note));
+  if (state.since) rows.push(kv("از زمان", state.since));
+  if (state.actor_principal_id) rows.push(kv("توسط", state.actor_principal_id));
+
+  const noteField = state.active
+    ? ""
+    : `<input type="text" id="maintenance-note-input" class="fb-note" placeholder="یادداشت برای تحلیل‌گران (اختیاری)">`;
+  const btnLabel = state.active ? "خاموش کردن" : "روشن کردن";
+
+  body.innerHTML =
+    `<p class="admin-rail-summary ${state.active ? "has-failures" : ""}"><strong>${escapeHtml(label)}</strong></p>` +
+    (rows.length ? `<dl class="admin-kv">${rows.join("")}</dl>` : "") +
+    `<div class="admin-feedback-actions">${noteField}` +
+    `<button class="admin-btn-refresh" id="maintenance-toggle-btn" type="button">${escapeHtml(btnLabel)}</button>` +
+    `</div>`;
+
+  $("maintenance-toggle-btn").addEventListener("click", async () => {
+    const btn = $("maintenance-toggle-btn");
+    btn.disabled = true;
+    try {
+      if (state.active) {
+        await api.setMaintenance(false);
+      } else {
+        const noteInput = $("maintenance-note-input");
+        await api.setMaintenance(true, noteInput ? noteInput.value : "");
+      }
+      await refreshOne("maintenance");
+    } catch (err) {
+      showNotice("error", `تغییر حالت تعمیر ناموفق بود: ${err.message || err}`);
+      btn.disabled = false;
+    }
+  });
+}
+
+/* ── Admin panel phase 6: schema drift -- read-only, proposes nothing ── */
+
+function renderSchemaDrift(report) {
+  const body = $("schemaDrift-body");
+  const noDrift =
+    (!report.warehouse_only || !report.warehouse_only.length) &&
+    (!report.schema_only || !report.schema_only.length) &&
+    (!report.type_changed || !report.type_changed.length);
+
+  const out = [];
+  if (noDrift) {
+    out.push('<p class="admin-rail-summary"><strong>انحرافی یافت نشد</strong></p>');
+  } else {
+    if (report.warehouse_only && report.warehouse_only.length) {
+      out.push('<p class="admin-section-title">فقط در انبار داده (فعلاً غیرقابل پرس‌وجو)</p>');
+      out.push(`<p dir="ltr" class="admin-check-detail">${report.warehouse_only.map(escapeHtml).join(", ")}</p>`);
+    }
+    if (report.schema_only && report.schema_only.length) {
+      out.push('<p class="admin-section-title">فقط در schema.yaml (در اجرا ناموفق خواهد شد)</p>');
+      out.push(`<p dir="ltr" class="admin-check-detail">${report.schema_only.map(escapeHtml).join(", ")}</p>`);
+    }
+    if (report.type_changed && report.type_changed.length) {
+      out.push('<p class="admin-section-title">نوع ستون تغییر کرده</p>');
+      out.push(twoColumnTable(
+        "ستون", "نوع قبلی → نوع فعلی",
+        report.type_changed.map((c) => [c.column, `${c.previous_type} → ${c.current_type}`]),
+      ));
+    }
+  }
+  if (!report.baseline_available) {
+    out.push('<p class="admin-loading">اولین اجرا — مبنایی برای مقایسهٔ نوع ستون هنوز ثبت نشده است.</p>');
+  }
+  body.innerHTML = out.join("");
+}
+
+/* ── Admin panel phase 6: vocabulary freshness + manual refresh ─────── */
+
+function renderVocabulary(payload) {
+  const body = $("vocabulary-body");
+  const columns = payload.columns || [];
+  const rows = columns.map((c) => {
+    const freshCls = c.cached ? (c.is_fresh ? "pass" : "skip") : "fail";
+    const freshLabel = c.cached ? (c.is_fresh ? "تازه" : "کهنه") : "هرگز";
+    const failureNote = c.last_failure
+      ? `<span class="admin-status-pill admin-status-fail">آخرین تلاش ناموفق</span>`
+      : "";
+    return `<tr>
+      <td dir="ltr">${escapeHtml(c.table)}.${escapeHtml(c.column)}</td>
+      <td><span class="admin-status-pill admin-status-${freshCls}">${escapeHtml(freshLabel)}</span> ${failureNote}</td>
+      <td class="num">${c.value_count === null ? "—" : escapeHtml(fmtNum(c.value_count))}</td>
+      <td dir="ltr">${escapeHtml(c.fetched_at || "—")}</td>
+      <td><button class="admin-btn-refresh" data-vocab-refresh="${escapeHtml(c.table)}|${escapeHtml(c.column)}" type="button">بازخوانی</button></td>
+    </tr>`;
+  });
+  body.innerHTML =
+    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+    "<th>ستون</th><th>وضعیت</th><th>تعداد مقدار</th><th>آخرین بروزرسانی</th><th></th>" +
+    `</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+
+  body.querySelectorAll("[data-vocab-refresh]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const [table, column] = btn.dataset.vocabRefresh.split("|");
+      btn.disabled = true;
+      try {
+        const result = await api.vocabularyRefresh(table, column);
+        if (!result.ok) {
+          showNotice("error", `بازخوانی ${table}.${column} ناموفق بود: ${result.error}`);
+        }
+        await refreshOne("vocabulary");
+      } catch (err) {
+        showNotice("error", `بازخوانی ناموفق بود: ${err.message || err}`);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+/* ── Admin panel phase 6: per-analyst usage and rate-limit pressure ──── */
+
+function renderUsage(report) {
+  const body = $("usage-body");
+  const principals = report.principals || {};
+  const out = [];
+  if (report.rate_limit_never_triggered) {
+    out.push(
+      '<p class="admin-rail-summary"><strong>محدودیت نرخ تاکنون برای هیچ‌کس فعال نشده است</strong></p>',
+    );
+  }
+  const entries = Object.values(principals);
+  if (!entries.length) {
+    out.push('<p class="admin-loading">داده‌ای در این بازه یافت نشد.</p>');
+    body.innerHTML = out.join("");
+    return;
+  }
+  const rows = entries.map((p) => {
+    const lat = p.latency_ms || {};
+    return `<tr>
+      <td dir="ltr">${escapeHtml(p.principal_id)}</td>
+      <td class="num">${escapeHtml(fmtNum(p.queries))}</td>
+      <td class="num">${escapeHtml(fmtNum(p.failures))}</td>
+      <td class="num" dir="ltr">${lat.p50 !== null && lat.p50 !== undefined ? Math.round(lat.p50) : "—"}</td>
+      <td class="num" dir="ltr">${lat.p95 !== null && lat.p95 !== undefined ? Math.round(lat.p95) : "—"}</td>
+      <td class="num">${escapeHtml(fmtNum(p.rate_limit_hits))}</td>
+    </tr>`;
+  });
+  out.push(
+    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+    "<th>تحلیل‌گر</th><th>پرس‌وجوها</th><th>ناموفق</th><th>p50 (ms)</th><th>p95 (ms)</th><th>برخورد با محدودیت</th>" +
+    `</tr></thead><tbody>${rows.join("")}</tbody></table></div>`,
+  );
+  body.innerHTML = out.join("");
+}
+
+/* ── Admin panel phase 6 §9: failed-authentication visibility ───────── */
+
+function renderAuthFailures(summary) {
+  const body = $("authFailures-body");
+  const tiles = [
+    statTile({ label: "کل تلاش‌های ناموفق", value: fmtNum(summary.total ?? 0) }),
+    statTile({ label: "از مسیرهای مدیریتی", value: fmtNum(summary.admin_path_total ?? 0) }),
+  ];
+  const bySource = summary.by_source_ip || {};
+  const rows = Object.entries(bySource);
+  body.innerHTML =
+    `<div class="admin-stats">${tiles.join("")}</div>` +
+    (rows.length ? twoColumnTable("آدرس مبدأ", "تعداد", rows) : "");
 }
