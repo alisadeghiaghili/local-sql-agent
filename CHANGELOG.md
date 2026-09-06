@@ -5,6 +5,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.4.0] — 2026-09-05
+
+### Changed
+
+- **Live mode is now the default.** A deployment is live and analysts open
+  the UI expecting real answers; defaulting to the simulated demo meant
+  synthetic figures rendered in the same interface as real ones —
+  labelled, but the wrong default once the system is actually serving
+  people. Simulated stays fully available, and `?live=0` now selects it
+  explicitly, which was not previously possible because it was already
+  the default.
+
+  The honest consequence: a first load against an unreachable backend now
+  shows an error rather than a working demo.
+
+- **The backend URL left the analyst's top bar.** It is deployment
+  configuration, and a wrong value there looks exactly like a dead
+  backend. `web/js/config.js` now holds the default and is the one file a
+  deployment edits; `?base=` and the persisted value still override.
+
+  The API-key field stays. It is the analyst's own identity — the audit
+  trail records `principal_id` and the rate-limit bucket is the
+  `(principal, ip)` pair — so removing it would force either a shared key
+  or a key embedded in static files anyone can read.
+
+### Added
+
+- **Generated SQL is syntax-highlighted**, with Prism vendored locally
+  the way the fonts are, because `web/README.md` states a no-CDN
+  requirement. The theme is authored against this app's existing custom
+  properties rather than copied, since no upstream Prism stylesheet is
+  both offline and theme-aware here. Highlighting is presentation only:
+  the copy path reads the `Turn` object, never the DOM, so it still
+  yields the exact original SQL.
+
+### Fixed
+
+- **The UI rendered numbers in two digit systems at once.** `chart.js`
+  declared both an `en-US` formatter and an `fa-IR` one and used them in
+  adjacent tiles — the total in Latin digits beside the point count in
+  Persian. `llm-status.js` did the same inside one stat grid, and
+  `table.js`, `turn.js`, `sessions.js`, `memory.js` and `data.js` each
+  made the call again locally. `table.js`'s `fmtCell`, which formats every
+  table cell *and* every chart value label, was Latin while the row count
+  beside it was Persian.
+
+  That is not one bug — it is the same decision taken eight times,
+  differently, which is why the numbers looked unsettled.
+
+  `web/js/num.js` is now the only place that decides. Persian digits for
+  everything a reader reads; Latin survives in one deliberate carve-out
+  for values that travel to other systems, because converting those makes
+  them wrong at the far end.
+
+  The test asserts the invariant rather than the formatting — within one
+  rendered view, numeric strings may not use both digit systems — so it
+  survives a future change of digit system. It caught `fmtCell`, which
+  the first pass missed.
+
+---
+
 ## [4.3.0] — 2026-09-05
 
 ### Added

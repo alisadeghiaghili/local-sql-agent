@@ -7,14 +7,55 @@
  * requires the LLM block (and the rest of the card) to still render
  * whatever it has on failure — see data.js t_04 (guard-rejected, no
  * result) and t_05 (LLM transport failure, no sql/guard/result at all).
+ *
+ * The generated-SQL block is syntax-highlighted via the vendored Prism
+ * (see highlightSql below) — presentation only, and never the source of
+ * truth for the copy button, which always copies the exact original
+ * `turn.sql_display || turn.sql` text.
  */
 
 "use strict";
+
+import { fmt } from "../num.js";
 
 import { renderPipeline } from "./pipeline.js";
 import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.js";
 import { renderResult, renderWarnings } from "./table.js";
 import { renderLlmStatus, answerWasTruncated, renderTruncationQualifier } from "./llm-status.js";
+
+/** Renders *sqlText* into *codeEl*, syntax-highlighted via the vendored
+ * Prism (web/assets/vendor/prism.min.js + prism-sql.min.js — loaded as
+ * plain `<script>` tags in index.html, so `window.Prism` is a global, not
+ * an import; see that file's comment on why: no build step here).
+ *
+ * Highlighting is PRESENTATION ONLY. `codeEl.textContent` is always set
+ * to the exact, unmodified *sqlText* first; highlighting then REPLACES
+ * the element's markup with Prism's span-wrapped version of that exact
+ * same text (Prism only wraps characters in `<span class="token ...">`,
+ * it does not add, remove, or reorder any of them — reading the
+ * highlighted element's `.textContent` back still yields *sqlText*
+ * unchanged). If `window.Prism`/`Prism.languages.sql` is missing (script
+ * blocked, offline asset removed) or `Prism.highlight` throws for any
+ * reason, this catches it and leaves the plain textContent already set —
+ * the SQL itself must never disappear or corrupt because a decoration
+ * layer failed.
+ *
+ * Separately, and more importantly: nothing here is the copy-button's
+ * source of truth. The "کپی" button below always copies `turn.sql_display
+ * || turn.sql` directly from the Turn object, never anything read out of
+ * this (or any) DOM node — so even if this function's output were ever
+ * wrong, copying the generated SQL would still be unaffected. */
+function highlightSql(codeEl, sqlText) {
+  codeEl.textContent = sqlText;
+  try {
+    if (window.Prism && window.Prism.languages && window.Prism.languages.sql) {
+      codeEl.innerHTML = window.Prism.highlight(sqlText, window.Prism.languages.sql, "sql");
+    }
+  } catch {
+    /* Presentation only — fall back to the plain text already set above
+     * rather than let a highlighting failure hide or corrupt the SQL. */
+  }
+}
 
 function el(tag, className, text) {
   const e = document.createElement(tag);
@@ -126,7 +167,8 @@ export function createTurnCard(turn, ctx) {
     pre.className = "sql-box";
     pre.dir = "ltr";
     const code = document.createElement("code");
-    code.textContent = turn.sql_display || turn.sql;
+    code.className = "language-sql";
+    highlightSql(code, turn.sql_display || turn.sql);
     pre.appendChild(code);
     sqlSection.appendChild(pre);
 
@@ -204,7 +246,7 @@ function summarize(turn) {
   if (turn.basis && turn.basis.kind === "refines") parts.push(`ادامهٔ ${turn.basis.refines_turn_id}`);
   if (turn.error) parts.push(`خطا: ${turn.error.code}`);
   else if (turn.guard && turn.guard.verdict === "rejected") parts.push("رد شده توسط نگهبان امنیتی");
-  else if (turn.result) parts.push(`${turn.result.row_count.toLocaleString("fa-IR")} ردیف`);
+  else if (turn.result) parts.push(`${fmt(turn.result.row_count)} ردیف`);
   if (turn.ambiguity && turn.ambiguity.is_ambiguous) parts.push("مبهم — با مفروضات پاسخ داده شد");
   return parts.join(" · ");
 }

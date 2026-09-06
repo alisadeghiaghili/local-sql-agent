@@ -49,6 +49,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _WEB_JS = _REPO_ROOT / "web" / "js"
+_NUM_JS = _WEB_JS / "num.js"
 
 _API_JS = _WEB_JS / "api.js"
 _APIKEY_JS = _WEB_JS / "apikey.js"
@@ -77,6 +78,21 @@ _ASSUMPTIONS_IMPORT = re.compile(r'^import \{ SOURCE_LABELS \} from "\./assumpti
 _TABLE_IMPORT_IN_CHART = re.compile(
     r'^import \{ renderTableOnly, renderExportRow, fmtCell \} from "\./table\.js";$', re.MULTILINE,
 )
+
+
+def _rewrite_num_import(src: str) -> str:
+    """Point a staged module's `num.js` import at the staged `num.mjs`.
+
+    Every renderer imports the shared number formatter (see web/js/num.js),
+    and the staged copies all sit flat in one directory, so both the
+    "../num.js" and "./num.js" forms resolve to the same sibling here.
+    Unlike the other rewrites this one is not asserted to match: not every
+    staged module imports it, and requiring one would break the moment a
+    module legitimately has no numbers in it.
+    """
+    return src.replace('from "../num.js"', 'from "./num.mjs"').replace(
+        'from "./num.js"', 'from "./num.mjs"'
+    )
 
 
 def _subn_or_fail(pattern: re.Pattern[str], replacement: str, text: str, what: str) -> str:
@@ -123,7 +139,20 @@ def _prepare_copies(tmp_path: Path) -> dict[str, Path]:
         "export": tmp_path / "export.mjs",
         "sessions": tmp_path / "sessions.mjs",
         "memory": tmp_path / "memory.mjs",
+        # num.js is shared by every renderer (see web/js/num.js): one place
+        # that decides how a number looks, after seven modules each decided
+        # separately. Staging it is what lets those imports resolve.
+        "num": tmp_path / "num.mjs",
     }
+    api_src = _rewrite_num_import(api_src)
+    apikey_src = _rewrite_num_import(apikey_src)
+    state_src = _rewrite_num_import(state_src)
+    table_src = _rewrite_num_import(table_src)
+    chart_src = _rewrite_num_import(chart_src)
+    assumptions_src = _rewrite_num_import(assumptions_src)
+    export_src = _rewrite_num_import(export_src)
+    sessions_src = _rewrite_num_import(sessions_src)
+    memory_src = _rewrite_num_import(memory_src)
     paths["api"].write_text(api_src, encoding="utf-8")
     paths["apikey"].write_text(apikey_src, encoding="utf-8")
     paths["state"].write_text(state_src, encoding="utf-8")
@@ -133,6 +162,7 @@ def _prepare_copies(tmp_path: Path) -> dict[str, Path]:
     paths["export"].write_text(export_src, encoding="utf-8")
     paths["sessions"].write_text(sessions_src, encoding="utf-8")
     paths["memory"].write_text(memory_src, encoding="utf-8")
+    paths["num"].write_text(_NUM_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return paths
 
 

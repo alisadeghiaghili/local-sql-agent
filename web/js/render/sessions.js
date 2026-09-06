@@ -9,6 +9,8 @@
 
 "use strict";
 
+import { fmt } from "../num.js";
+
 /** Newest-active-first. Pure, no DOM — returns a new array, never mutates
  * the input, so callers can safely reuse the same SessionSummary[] between
  * renders. */
@@ -35,7 +37,7 @@ export function relativeTimeFa(iso, now = new Date()) {
   const diffSec = Math.max(0, Math.round((nowMs - then) / 1000));
   if (diffSec < 60) return "چند لحظه پیش";
   for (const [label, secs] of RELATIVE_UNITS_FA) {
-    if (diffSec >= secs) return `${Math.floor(diffSec / secs).toLocaleString("fa-IR")} ${label} پیش`;
+    if (diffSec >= secs) return `${fmt(Math.floor(diffSec / secs))} ${label} پیش`;
   }
   return "چند لحظه پیش";
 }
@@ -121,7 +123,7 @@ export function renderSessionList(sessions, handlers = {}) {
     const turnCount = typeof s.turn_count === "number" ? s.turn_count : 0;
     main.appendChild(el(
       "span", "session-row-meta",
-      `${relativeTimeFa(s.last_active_at)} · ${turnCount.toLocaleString("fa-IR")} نوبت`,
+      `${relativeTimeFa(s.last_active_at)} · ${fmt(turnCount)} نوبت`,
     ));
     row.appendChild(main);
 

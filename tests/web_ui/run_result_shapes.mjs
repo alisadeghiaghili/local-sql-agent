@@ -444,4 +444,80 @@ console.log("[ok] chooseFramings rejects (never omits) pie once illegible; choos
   console.log(`[ok] every chart label stays inside its viewBox (${checked} labels, hostile inputs)`);
 }
 
+/* ── Scenario: one digit system, not two.
+ *
+ * chart.js used to declare BOTH an en-US formatter and an fa-IR one and
+ * use them in adjacent tiles -- "مجموع" in Latin digits beside "تعداد
+ * نقاط" in Persian. llm-status.js did the same inside one stat grid, and
+ * table.js, turn.js, sessions.js and memory.js each made the call again
+ * locally. Seven modules, seven decisions, one page.
+ *
+ * This asserts the INVARIANT rather than any particular formatting: no
+ * rendered string may contain both Persian-Indic and ASCII digits. That
+ * catches every future recurrence, which asserting specific formatted
+ * output would not -- and it stays true if the chosen digit system ever
+ * changes.
+ *
+ * The carve-out is deliberate and narrow: content marked dir="ltr" is
+ * where values that travel to other systems live -- SQL, identifiers,
+ * token counts an operator pastes into a ticket. Converting those makes
+ * them wrong at the other end. ────────────────────────────────────────── */
+{
+  const { renderResult } = await import(pathToFileURL(tableMjsPath).href);
+
+  const FA_DIGIT = /[۰-۹]/;
+  const ASCII_DIGIT = /[0-9]/;
+
+  const fixture = {
+    columns: [{ name: "month", type: "string" }, { name: "value", type: "number" }],
+    rows: [
+      { month: "فروردین", value: 48320000000 },
+      { month: "اردیبهشت", value: 51004000000 },
+      { month: "خرداد", value: 12000000000 },
+    ],
+    row_count: 3,
+  };
+
+  const host = renderResult(fixture, {});
+
+  /** Every element whose own direct text is rendered to the reader, with
+   * the nearest explicit dir= inherited down. */
+  function* renderedText(node, dir) {
+    const own = node.getAttribute && node.getAttribute("dir");
+    const effective = own || dir;
+    const direct = [...(node.childNodes || [])]
+      .filter((n) => n.nodeType === 3)
+      .map((n) => n.textContent)
+      .join("")
+      .trim();
+    if (direct) yield { text: direct, dir: effective };
+    for (const child of node.childNodes || []) {
+      if (child.nodeType !== 3) yield* renderedText(child, effective);
+    }
+  }
+
+  // The bug was never two digit systems inside ONE string -- it was two
+  // sibling tiles, "مجموع" in Latin next to "تعداد نقاط" in Persian. So
+  // the invariant is per-view, not per-string: collect every numeric
+  // string the reader sees and assert they all use the same system.
+  const persian = [];
+  const ascii = [];
+  for (const { text, dir } of renderedText(host, null)) {
+    if (dir === "ltr") continue;           // values that travel elsewhere
+    if (FA_DIGIT.test(text)) persian.push(text);
+    if (ASCII_DIGIT.test(text)) ascii.push(text);
+  }
+
+  assert.ok(
+    persian.length === 0 || ascii.length === 0,
+    "this view renders numbers in two digit systems at once — " +
+      `Persian in ${JSON.stringify(persian.slice(0, 2))} and ASCII in ` +
+      `${JSON.stringify(ascii.slice(0, 2))}`,
+  );
+
+  const checked = persian.length + ascii.length;
+  assert.ok(checked >= 3, `expected several numeric strings to check, saw ${checked}`);
+  console.log(`[ok] one digit system across the whole view (${checked} numeric strings)`);
+}
+
 console.log("ALL_SCENARIOS_PASSED");
