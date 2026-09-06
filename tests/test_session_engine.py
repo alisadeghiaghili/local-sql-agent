@@ -477,3 +477,47 @@ class TestAuditRecordCarriesTheConversation:
         assert audited.turn_id == turn.turn_id, (
             "and the turn, so a flagged answer can be traced back to it"
         )
+
+    def test_audit_record_also_carries_config_version_and_assumptions(self, sqlite_conn, monkeypatch):
+        """Admin panel phase 4 (spec §2.2, §7): the feedback row itself
+        must not duplicate the question, the SQL, or the turn's declared
+        assumptions -- they are resolved from the audit record instead.
+        Neither field existed on ``AuditRecord`` before this phase; this is
+        the equivalent, for phase 4, of the class-level test above proving
+        session_id/turn_id reached the record for phase 3."""
+        from appdb.config_versions import get_active_version_id
+
+        saved: list = []
+        monkeypatch.setattr(
+            "session.engine.save_audit_record", lambda record: saved.append(record),
+        )
+
+        # A fresh ranking question with no prior context -- exactly the
+        # scenario TestAssumptionSourcing above proves produces real,
+        # non-empty declared assumptions -- so this test also proves the
+        # non-trivial case, not just "None survives unchanged".
+        execute_fn = _execute_fn(sqlite_conn)
+        store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=50)
+        record = store.create(owner_id="analyst-1")
+        fresh_sql = (
+            "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.TotalPrice) AS TotalValue "
+            "FROM CustomerContract ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
+            "GROUP BY c.Name ORDER BY TotalValue DESC"
+        )
+
+        with override_settings(default_top_n=1000):
+            turn = _engine(fresh_sql, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
+
+        assert turn.error is None
+        assert turn.ambiguity.assumptions, "sanity: this scenario must produce real assumptions"
+
+        audited = saved[-1]
+        assert audited.config_version_id == get_active_version_id(), (
+            "the audit record must name which configuration version produced "
+            "this answer -- 'which config produced this wrong answer?' is "
+            "exactly the question phase 4's triage needs answered"
+        )
+        assert audited.assumptions == [a.model_dump() for a in turn.ambiguity.assumptions], (
+            "the triage queue reads assumptions off the audit record, never "
+            "a second, duplicated store"
+        )

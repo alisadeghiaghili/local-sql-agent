@@ -788,6 +788,29 @@ class TurnEngine:
     # Audit
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _active_config_version_id_or_none() -> int | None:
+        """The active :mod:`appdb.config_versions` bundle version id, or
+        ``None`` when no versioned application database is reachable.
+
+        Mirrors ``api.runner.cache_prefix_version_for``'s own fallback
+        shape exactly: a caller reaching this line with an unreachable (or
+        never-configured) application database gets ``None`` rather than a
+        raised exception -- this method is always called from inside
+        :meth:`_write_audit`'s own broad ``except``, so nothing here can
+        fail a user's turn either way, but resolving it defensively here
+        (rather than letting a raised exception be swallowed one frame up)
+        keeps the *rest* of the audit record -- question, SQL, guard
+        verdict -- from being lost to an application-database hiccup that
+        has nothing to do with any of them.
+        """
+        try:
+            from appdb.config_versions import get_active_version_id
+
+            return get_active_version_id()
+        except Exception:  # noqa: BLE001 - see docstring
+            return None
+
     def _write_audit(self, request_id: str, turn: Turn) -> None:
         """Build and persist exactly one :class:`AuditRecord` for *turn*.
 
@@ -799,6 +822,10 @@ class TurnEngine:
                 else {"verdict": "allowed", "rule": None, "injected_top": None, "tables_touched": None}
             )
             columns = [c.name for c in turn.result.columns] if turn.result else None
+            assumptions = (
+                [a.model_dump() for a in turn.ambiguity.assumptions]
+                if turn.ambiguity and turn.ambiguity.assumptions else None
+            )
             record = AuditRecord(
                 timestamp=datetime.now(),
                 request_id=request_id,
@@ -814,6 +841,8 @@ class TurnEngine:
                 columns=columns,
                 session_id=turn.session_id,
                 turn_id=turn.turn_id,
+                config_version_id=self._active_config_version_id_or_none(),
+                assumptions=assumptions,
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn

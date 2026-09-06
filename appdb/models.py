@@ -181,6 +181,74 @@ config_bundle_versions = Table(
 )
 
 
+#: Phase 4: wrong-answer feedback and its triage (spec §2, §3;
+#: ``docs/admin-panel-architecture.md`` §3's tier-1 "closes a loop nothing
+#: else closes"). One row per flag an analyst raised on one of their own
+#: turns.
+#:
+#: Deliberately does NOT carry the question, the generated SQL, or any
+#: result data -- spec §2.2: those already exist, keyed by the same
+#: ``session_id``/``turn_id``, in the analyst audit log
+#: (``observability/audit.py``, whose ``session_id``/``turn_id`` fields
+#: exist precisely so this join is possible). Duplicating them here would
+#: create a second place for the same content to leak from and a second
+#: thing to keep consistent, and would put row-adjacent question text in
+#: yet another store. ``request_id`` and ``config_version_id`` are resolved
+#: from that same audit record at flag time (see :mod:`appdb.feedback`) and
+#: stored here only as identifiers -- the same "an id, never the content it
+#: names" category ``observability.audit.AuditRecord.session_id`` already
+#: is.
+turn_feedback = Table(
+    "turn_feedback",
+    metadata,
+    Column("feedback_id", Integer, primary_key=True, autoincrement=True),
+    Column("session_id", String(64), nullable=False),
+    Column("turn_id", String(64), nullable=False),
+    #: The audit record's own request id, resolved by joining on
+    #: (session_id, turn_id) at flag time -- never supplied by the client.
+    #: NULL only if no audit record could be found for this turn (e.g. the
+    #: audit log has since rotated past it).
+    Column("request_id", String(64), nullable=True),
+    Column("reporter_principal_id", String(255), nullable=False),
+    #: One of :data:`appdb.feedback.FEEDBACK_CATEGORIES`.
+    Column("category", String(32), nullable=False),
+    #: The analyst's optional free-text note (spec §2.1) -- never the
+    #: question or the SQL, which the join above already supplies.
+    Column("note", Text, nullable=True),
+    #: The configuration version (:mod:`appdb.config_versions`) active when
+    #: this turn's answer was produced, resolved from the audit record --
+    #: never the version active at flag time, which may already differ.
+    #: NULL when the audit record predates this field or carries no value.
+    Column("config_version_id", Integer, nullable=True),
+    Column("created_at", String(64), nullable=False),
+    #: ``"open"`` until triaged, then ``"resolved"`` -- spec §3's "a triage
+    #: queue that lets items vanish without a decision becomes an inbox
+    #: nobody opens": there is no third state and no delete.
+    Column("status", String(16), nullable=False),
+    #: One of :data:`appdb.feedback.RESOLUTION_OUTCOMES`, set only once
+    #: ``status`` becomes ``"resolved"``.
+    Column("resolution_outcome", String(32), nullable=True),
+    #: Free-text reason -- required for ``"not_a_defect"`` (spec §3.1:
+    #: "recorded with a reason, not silently dropped").
+    Column("resolution_note", Text, nullable=True),
+    #: For ``"alias_fix"``/``"rule_fix"`` outcomes: the id of an existing
+    #: ``config_bundle_versions`` row the admin made the actual edit
+    #: through (``POST /admin/config/versions`` -- phase 3, unchanged by
+    #: this phase) and is linking here for provenance. This table never
+    #: creates or applies a configuration version itself -- see
+    #: :mod:`appdb.feedback`'s module docstring for why that is what makes
+    #: "nothing auto-applies" (spec §3.2) trivially true rather than merely
+    #: asserted.
+    Column("resolution_config_version_id", Integer, nullable=True),
+    #: For the ``"golden_case"`` outcome: the id assigned to the case
+    #: written to the golden-set file (spec §4). NULL for every other
+    #: outcome.
+    Column("resolution_golden_case_id", String(255), nullable=True),
+    Column("resolved_by", String(255), nullable=True),
+    Column("resolved_at", String(64), nullable=True),
+)
+
+
 def create_all(engine: Engine) -> None:
     """Create every table in :data:`metadata` that does not already exist.
 

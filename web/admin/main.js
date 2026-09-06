@@ -126,7 +126,7 @@ function clearNotice() {
  * together, since it is the same key) still renders the others' error
  * state instead of the whole page going blank, and a network error on
  * one endpoint does not block the rest. */
-const CARDS = ["summary", "health", "cache", "config"];
+const CARDS = ["summary", "health", "cache", "config", "feedback"];
 
 async function refreshAll() {
   hideForbiddenBanner();
@@ -149,6 +149,10 @@ async function refreshOne(name) {
       renderCache(await api.cache());
     } else if (name === "config") {
       renderConfig(await api.config());
+    } else if (name === "feedback") {
+      const status = $("feedback-status-filter").value;
+      const [stats, list] = await Promise.all([api.feedbackStats(), api.feedbackList(status)]);
+      renderFeedback(stats, list.feedback || []);
     }
     hideForbiddenBanner();
   } catch (err) {
@@ -171,6 +175,7 @@ async function refreshOne(name) {
 }
 
 $("include-examples-toggle").addEventListener("change", () => refreshOne("summary"));
+$("feedback-status-filter").addEventListener("change", () => refreshOne("feedback"));
 
 /* ── Renderers ───────────────────────────────────────────────────── */
 
@@ -388,4 +393,120 @@ function renderConfig(payload) {
     rows.join("") +
     "</tbody></table></div>"
   );
+}
+
+/* ── Feedback triage (admin panel phase 4, spec §3, §5) ──────────────
+ * The one card on this page that both reads AND writes -- see
+ * admin.js's own comment on resolveFeedback for why that write is
+ * narrow (a fixed, closed-set decision) rather than the free-form write
+ * surface §3.1 of the architecture forbids. */
+
+const RESOLUTION_OUTCOMES = ["alias_fix", "rule_fix", "golden_case", "not_a_defect"];
+const RESOLUTION_LABELS = {
+  alias_fix: "اصلاح مترادف/نام مستعار",
+  rule_fix: "اصلاح قاعدهٔ کسب‌وکار",
+  golden_case: "تبدیل به پروندهٔ طلایی",
+  not_a_defect: "نقص نیست",
+};
+const CATEGORY_LABELS = {
+  wrong_number: "عدد اشتباه",
+  different_question: "پاسخ به سؤال دیگر",
+  wrong_filter_or_period: "فیلتر/بازهٔ زمانی اشتباه",
+  other: "سایر",
+};
+
+function renderFeedback(stats, rows) {
+  const statsBody = $("feedback-stats-body");
+  const tiles = [
+    statTile({ label: "کل بازخوردها", value: fmtNum(stats.flags_total ?? 0) }),
+    statTile({
+      label: "باز", value: fmtNum(stats.flags_open ?? 0),
+      cls: stats.flags_open ? "is-degraded" : "",
+    }),
+    statTile({
+      label: "اندازهٔ مجموعهٔ طلایی", value: fmtNum(stats.golden_set_size ?? 0),
+      sub: stats.golden_set_pending ? `${fmtNum(stats.golden_set_pending)} در انتظار پاسخ` : "همه دارای پاسخ تأییدشده",
+    }),
+  ];
+  if (stats.baseline) {
+    tiles.push(statTile({
+      label: "دقت آخرین baseline",
+      value: Number(stats.baseline.accuracy_pct).toFixed(1), unit: "٪",
+      sub: `${escapeHtml(stats.baseline.mode)} · ${escapeHtml(stats.baseline.generated_at || "")}`,
+    }));
+  } else {
+    tiles.push(statTile({ label: "دقت آخرین baseline", value: "—", sub: "هنوز baseline ثبت نشده" }));
+  }
+  statsBody.innerHTML = `<div class="admin-stats">${tiles.join("")}</div>`;
+
+  const body = $("feedback-body");
+  if (!rows.length) {
+    body.innerHTML = '<p class="admin-loading">بازخوردی یافت نشد.</p>';
+    return;
+  }
+  body.innerHTML = rows.map(feedbackRowHtml).join("");
+  body.querySelectorAll("[data-resolve-id]").forEach((btn) => {
+    btn.addEventListener("click", () => resolveFeedbackRow(btn));
+  });
+}
+
+function feedbackRowHtml(row) {
+  const audit = row.audit;
+  const cls = row.status === "resolved" ? "pass" : "";
+  const questionLine = audit
+    ? `<p class="admin-check-detail">${escapeHtml(audit.question || "")}</p>`
+    : '<p class="admin-check-detail">(دیگر قابل بازیابی از گزارش ممیزی نیست)</p>';
+  const sqlLine = audit && audit.generated_sql
+    ? `<pre class="admin-loading" dir="ltr" style="white-space:pre-wrap">${escapeHtml(audit.generated_sql)}</pre>`
+    : "";
+  const guardLine = audit && audit.guard
+    ? `<span class="admin-status-pill admin-status-${audit.guard.verdict === "allowed" ? "pass" : "fail"}">${escapeHtml(audit.guard.verdict || "")}</span>`
+    : "";
+
+  const noteLine = row.note ? `<p class="admin-check-detail">یادداشت تحلیل‌گر: ${escapeHtml(row.note)}</p>` : "";
+
+  let actionArea;
+  if (row.status === "resolved") {
+    actionArea = (
+      `<p class="admin-check-detail">نتیجه: ${escapeHtml(RESOLUTION_LABELS[row.resolution_outcome] || row.resolution_outcome || "")}` +
+      (row.resolution_note ? ` — ${escapeHtml(row.resolution_note)}` : "") +
+      `</p>`
+    );
+  } else {
+    const options = RESOLUTION_OUTCOMES
+      .map((o) => `<option value="${o}">${escapeHtml(RESOLUTION_LABELS[o])}</option>`)
+      .join("");
+    actionArea = (
+      `<div class="admin-feedback-actions" data-feedback-id="${row.feedback_id}">` +
+      `<select class="admin-toggle fb-outcome">${options}</select>` +
+      `<input type="text" class="fb-note" placeholder="یادداشت (برای «نقص نیست» الزامی است)">` +
+      `<button class="admin-btn-refresh" data-resolve-id="${row.feedback_id}" type="button">ثبت نتیجه</button>` +
+      `</div>`
+    );
+  }
+
+  return (
+    `<div class="admin-check ${cls}" data-row-id="${row.feedback_id}">` +
+    `<span class="admin-check-mark" aria-hidden="true">${row.status === "resolved" ? "✓" : "●"}</span>` +
+    `<span>` +
+    `<span class="admin-check-name">#${row.feedback_id} · ${escapeHtml(CATEGORY_LABELS[row.category] || row.category)}</span> ` +
+    guardLine +
+    questionLine + sqlLine + noteLine + actionArea +
+    `</span></div>`
+  );
+}
+
+async function resolveFeedbackRow(btn) {
+  const wrap = btn.closest("[data-feedback-id]");
+  const feedbackId = wrap.dataset.feedbackId;
+  const outcome = wrap.querySelector(".fb-outcome").value;
+  const note = wrap.querySelector(".fb-note").value;
+  btn.disabled = true;
+  try {
+    await api.resolveFeedback(feedbackId, { outcome, note });
+    await refreshOne("feedback");
+  } catch (err) {
+    showNotice("error", `ثبت نتیجه ناموفق بود: ${err.message || err}`);
+    btn.disabled = false;
+  }
 }

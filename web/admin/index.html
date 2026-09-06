@@ -72,6 +72,25 @@
     </div>
   </section>
 
+  <!-- The feedback loop this panel exists for (spec §3, §5). -->
+  <section class="admin-section" aria-labelledby="feedback-heading">
+    <div class="admin-section-head">
+      <h2 id="feedback-heading">بازخورد و رفع اشکال</h2>
+      <div class="admin-section-actions">
+        <select id="feedback-status-filter" class="admin-toggle">
+          <option value="open">باز</option>
+          <option value="resolved">رفع‌شده</option>
+          <option value="">همه</option>
+        </select>
+        <button class="admin-btn-refresh" data-refresh="feedback" type="button" aria-label="بروزرسانی بازخوردها">↻</button>
+      </div>
+    </div>
+    <div id="feedback-stats-body"></div>
+    <div id="feedback-body">
+      <p class="admin-loading">در حال بارگذاری…</p>
+    </div>
+  </section>
+
   <div class="admin-columns">
     <section class="admin-section" aria-labelledby="cache-heading">
       <div class="admin-section-head">

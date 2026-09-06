@@ -36,6 +36,26 @@ from typing import Any, Literal
 #:     case used to test the harness itself). Rare in practice.
 CaseExpectation = Literal["success", "empty", "out_of_scope", "error"]
 
+#: Whether a case currently participates in the regression gate.
+#:
+#: ``"active"``
+#:     The default -- runs and counts toward ``EvalReport.total``/
+#:     ``passed`` exactly as every case always has.
+#: ``"pending_expected"``
+#:     Admin panel phase 4 (``docs/admin-panel-architecture.md`` §3, the
+#:     phase 4 spec §4): a triaged feedback flag promoted to a golden case
+#:     before anyone has supplied its correct SQL/expected result. A golden
+#:     case with a *wrong* expectation would be worse than no case at all
+#:     -- it would make the regression gate enforce the bug the flag was
+#:     raised about -- so :func:`eval.runner.run_golden_set` skips a
+#:     ``"pending_expected"`` case entirely rather than running it against
+#:     whatever placeholder expectation it might carry. It still appears
+#:     in :func:`eval.runner.load_golden_cases`'s return value (so the
+#:     golden set's *size*, including its still-pending cases, remains
+#:     visible to anyone reading the file directly), and moves to
+#:     ``"active"`` the moment someone edits its ``expected_sql``.
+GoldenCaseStatus = Literal["active", "pending_expected"]
+
 #: Coarse bucket a finished case falls into — used for the error taxonomy
 #: in :class:`EvalReport` and to decide pass/fail.
 CaseStatus = Literal[
@@ -86,6 +106,12 @@ class GoldenCase:
     notes:
         Free-text explanation of *why* this case exists / what it guards
         against (e.g. "Persian digit normalisation must map ۱۴۰۲ -> 1402").
+    status:
+        See :data:`GoldenCaseStatus`. Defaults to ``"active"`` -- every
+        case ever loaded before this field existed has no ``status`` key
+        in its JSON line at all, and :meth:`from_dict` treats an absent
+        key exactly like this default, so no existing golden set changes
+        behaviour.
 
     Examples
     --------
@@ -100,6 +126,18 @@ class GoldenCase:
     'success'
     >>> case.is_out_of_scope
     False
+
+    A ``"pending_expected"`` case may omit ``expected_sql`` entirely --
+    admin panel phase 4's promoted-but-not-yet-answered golden case (spec
+    §4):
+
+    >>> pending = GoldenCase(
+    ...     id="promoted_from_feedback_7",
+    ...     question="How many orders shipped late last quarter?",
+    ...     status="pending_expected",
+    ... )
+    >>> pending.expected_sql is None
+    True
     """
 
     id: str
@@ -110,12 +148,18 @@ class GoldenCase:
     expected_fingerprint: str | None = None
     expected_rows: list[dict[str, Any]] | None = None
     notes: str = ""
+    status: GoldenCaseStatus = "active"
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
             raise ValueError("GoldenCase.id must be a non-empty string")
         if not self.question or not self.question.strip():
             raise ValueError(f"GoldenCase {self.id!r}: question must be non-empty")
+        if self.status == "pending_expected":
+            # No expectation exists yet, by definition (spec §4) -- neither
+            # branch below applies until someone supplies one and moves
+            # this case back to "active".
+            return
         if self.expect != "out_of_scope" and not self.expected_sql:
             raise ValueError(
                 f"GoldenCase {self.id!r}: expected_sql is required unless "
@@ -170,6 +214,7 @@ class GoldenCase:
             "expected_fingerprint": self.expected_fingerprint,
             "expected_rows": self.expected_rows,
             "notes": self.notes,
+            "status": self.status,
         }
 
 

@@ -22,6 +22,7 @@ import { renderPipeline } from "./pipeline.js";
 import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.js";
 import { renderResult, renderWarnings } from "./table.js";
 import { renderLlmStatus, answerWasTruncated, renderTruncationQualifier } from "./llm-status.js";
+import { renderFeedbackControl } from "./feedback.js";
 
 /** Renders *sqlText* into *codeEl*, syntax-highlighted via the vendored
  * Prism (web/assets/vendor/prism.min.js + prism-sql.min.js — loaded as
@@ -72,6 +73,7 @@ function el(tag, className, text) {
  *   onClarify: (turnId: string, field: string, option: string) => void,
  *   onPin?: (turnId: string, field: string, value: string) => void,
  *   onRerun?: (turnId: string) => void,
+ *   onFlag?: (turnId: string, category: string, note: string) => Promise<void>,
  * }} ctx
  */
 export function createTurnCard(turn, ctx) {
@@ -206,6 +208,15 @@ export function createTurnCard(turn, ctx) {
       guardRejected: !!(turn.guard && turn.guard.verdict === "rejected"),
       onRerun: ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : undefined,
     }));
+    // The wrong-answer flag control (admin panel phase 4, spec §2) — only
+    // on a turn that actually produced a result, and only when the host
+    // page wired up onFlag at all (the simulated demo has nowhere real to
+    // send it — see main.js's turnCtx).
+    if (turn.result && ctx.onFlag) {
+      resultCard.appendChild(
+        renderFeedbackControl(turn, (category, note) => ctx.onFlag(turn.turn_id, category, note)),
+      );
+    }
     body.appendChild(tagLate(resultCard));
   }
 
