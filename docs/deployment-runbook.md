@@ -235,3 +235,45 @@ before resuming normal operation:
 This is a process step, not something the application can enforce from
 inside itself: nothing running *after* a restore can know what should
 have stayed revoked *before* it happened.
+
+## 10. Moving the application database to another backend
+
+`python -m scripts.migrate_app_db --from <url> --to <url>` copies the
+application database — keys, role grants, configuration versions,
+feedback — between any two supported backends (admin panel phase 5,
+`docs/admin-panel-architecture.md` §5.4). Starting on SQLite is only safe
+because leaving it is a supported operation, and leaving is the expected
+path: an organisation with no DBA today gains one tomorrow and decides
+its metadata belongs on the managed server.
+
+Run it with `--dry-run` first. It reports, per table, what it would copy
+without writing anything.
+
+**The tool never touches the source.** It copies forward, verifies, and
+stops; pointing `APP_DB_URL` back at the original is the rollback, and it
+needs nothing to have been prepared in advance. The source's content hash
+is printed before and after every run — including a failed one — so that
+claim is checkable rather than asserted.
+
+**A migration that cannot prove equality is a failed migration.** After
+copying, the tool re-reads both databases from scratch and compares row
+counts and a content hash per table. Read that report; do not switch
+`APP_DB_URL` over on the strength of the summary line alone.
+
+**The application must be stopped, or in maintenance mode.** Otherwise a
+write lands in the old database after the copy has read past it, and is
+lost with no error anywhere. The tool refuses to run against a database
+with recent write activity for this reason, and says so.
+
+### The exported artefact is sensitive
+
+The export contains every API key's `key_sha256` hash and every key's
+column-level ACL (`denied_columns_json`). Not secrets in the `.env`
+sense — a hash is not a key — but an inventory of who exists and what
+each one is allowed to see, which is not something to leave in a shared
+folder. The same care that applies to `project_config/` (§2 above:
+gitignored, kept off shared storage) applies here.
+
+The tool writes its export to a temporary file and deletes it when the
+run finishes. If you take a copy deliberately, store it where the
+application database itself is stored, not beside a deployment bundle.
