@@ -1,12 +1,13 @@
 # Local SQL Agent
 
 > Ask your database a question in Persian or English.  
-> Get back precise SQL — generated locally, executed securely, zero data leaves your machine.
+> Get back precise SQL — validated against a closed allowlist before it runs.
+> Built to run fully on-premise: point `OPENAI_BASE_URL` at a local model and no question, schema, or row leaves your network.
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-2235-green)](tests/)
-[![Version](https://img.shields.io/badge/Version-4.4.0-blue)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/Tests-2573-green)](tests/)
+[![Version](https://img.shields.io/badge/Version-4.6.1-blue)](CHANGELOG.md)
 
 ---
 
@@ -124,7 +125,7 @@ its KV cache instead of re-reading the schema on every question.
 
 | | Feature | Detail |
 |---|---|---|
-| 🔒 | **On-premise LLM** | OpenAI-compatible endpoint (vLLM / LM Studio / Ollama /v1). No cloud provider required, no data leaves the host. |
+| 🔒 | **On-premise LLM** | Any OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`). No cloud provider is required — but note `OPENAI_BASE_URL` **defaults to OpenAI's hosted API**, so an on-premise deployment must point it at its own endpoint. Nothing leaves the host once it does. |
 | 🗂️ | **Domain lives outside the engine** | Schema, aliases, metrics, rules and examples are YAML in a gitignored `project_config/`; an AST test fails the build if any of it leaks into source. |
 | 🌐 | **Bilingual** | Persian and English questions handled natively. |
 | 🧩 | **Modular retrieval** | 6 independent retrievers — swap or extend without touching the engine. |
