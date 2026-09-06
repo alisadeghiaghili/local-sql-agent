@@ -2,6 +2,7 @@
 # Install: pip install -r requirements.txt
 
 sqlalchemy>=2.0.0
+alembic>=1.13.0
 sqlglot>=23.0.0
 pyodbc>=5.0.0
 pandas>=2.0.0

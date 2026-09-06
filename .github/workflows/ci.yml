@@ -58,6 +58,11 @@ jobs:
       # marked an assignment +SKIP while leaving the lines that used the
       # variable live, so they raised NameError the moment they ran.
       # Docstrings in this codebase are treated as contract, so run them.
+      # appdb/migrations is Alembic's own scripts directory. env.py is only
+      # valid when Alembic runs it -- it reads context.config, which Alembic
+      # injects -- so importing it for doctest collection raises. Excluded
+      # rather than guarded: it is a migration runner, not a module anyone
+      # imports, and there are no docstrings in it to check.
       - name: Run doctests
         env:
           PROJECT_CONFIG_DIR: project_config.example

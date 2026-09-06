@@ -22,6 +22,8 @@ surfacing as ``RequestValidationError`` (422), not as a 400.
   ───────────────   ──────────────────────────────   ────  ──────
   Auth              UnauthenticatedError              401  yes
                     AdminRequiredError                403  yes
+                    OperationsRequiredError            403  yes
+                    SecurityRequiredError              403  yes
   Input validation  QuestionTooShortError             400  no
                     QuestionTooLongError              400  no
                     InvalidModeError                  400  no
@@ -114,6 +116,27 @@ class AdminRequiredError(NLQError):
     """
     http_status = status.HTTP_403_FORBIDDEN
     error_code = "ADMIN_REQUIRED"
+
+
+class OperationsRequiredError(NLQError):
+    """The caller authenticated, but that principal does not carry the
+    ``operations`` capability (admin panel phase 2 —
+    ``docs/admin-panel-architecture.md`` §2;
+    ``security.auth.Principal.is_operations``) — raised by
+    :func:`api.auth.require_operations` for every operations-gated
+    ``/admin/*`` write route (key lifecycle)."""
+    http_status = status.HTTP_403_FORBIDDEN
+    error_code = "OPERATIONS_REQUIRED"
+
+
+class SecurityRequiredError(NLQError):
+    """The caller authenticated, but that principal does not carry the
+    ``security`` capability (admin panel phase 2 §2;
+    ``security.auth.Principal.is_security``) — raised by
+    :func:`api.auth.require_security` for every security-gated
+    ``/admin/*`` write route (ACL changes, role grants)."""
+    http_status = status.HTTP_403_FORBIDDEN
+    error_code = "SECURITY_REQUIRED"
 
 
 # ---------------------------------------------------------------------------

@@ -202,3 +202,36 @@ Send `report.txt` (or `report.json` via `--json`, for anyone who wants to
 compute their own numbers off the aggregates). Do not send
 `logs/audit_log.jsonl` itself, or `report_internal.txt`, unless that
 decision has been made explicitly and separately.
+
+## 9. A restore of the application database triggers a key review
+
+Admin panel phase 2 (`docs/admin-panel-architecture.md` §5.7) moves API
+keys into the application database (`APP_DB_URL`, or the SQLite fallback
+at `logs/app.db`) so a leaked key can be revoked immediately, without a
+restart. Revocation is recorded as a tombstone (`revoked_at`), never a
+deleted row, specifically so a backup cannot silently undo it — **but a
+restore still reaches back to a point in time before the tombstone
+existed at all**, which reintroduces exactly the key that revocation
+exists to keep out. The backup is the cause of the regression here, not
+the cure for it.
+
+So: whenever the application database is restored from a backup (for any
+reason — disaster recovery, a botched migration, moving to a new host),
+before resuming normal operation:
+
+1. List every key (`GET /admin/keys`, an operations action) and compare
+   its `revoked_at`/`disabled_at` against what you expect — a key you
+   revoked after the backup's timestamp will show up as active again.
+2. Re-revoke anything that should still be revoked. This is idempotent
+   (`POST /admin/keys/{key_sha256}/revoke` on an already-revoked key is a
+   no-op), so doing this defensively for every key revoked in the last
+   backup cycle costs nothing.
+3. If the leak that originally caused a revocation is still live (the
+   same credential could still be circulating), treat the restore itself
+   as a new incident, not merely a maintenance step — the window between
+   the restore completing and this review finishing is a window where
+   that key worked again.
+
+This is a process step, not something the application can enforce from
+inside itself: nothing running *after* a restore can know what should
+have stayed revoked *before* it happened.

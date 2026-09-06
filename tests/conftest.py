@@ -90,6 +90,22 @@ os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 # set before config.py is first imported.
 os.environ.setdefault("SESSION_STORE_PATH", "")
 
+# ---------------------------------------------------------------------------
+# Application database (admin panel, phase 2), in-memory by default
+# ---------------------------------------------------------------------------
+# config.Settings.app_db_url defaults to "" in production, which falls back
+# to a SQLite FILE at app_db_sqlite_path ("logs/app.db") -- the same "would
+# write a real file under this repo's own logs/ directory" problem
+# SESSION_STORE_PATH="" above already exists to avoid, for the same reason:
+# api.auth.AuthMiddleware now resolves a principal by consulting the
+# application database on EVERY request (security.auth.load_all_principals
+# -> appdb.key_store.get_active_principals), regardless of whether a given
+# test cares about the admin panel at all. An in-memory SQLite database
+# (fresh per process, never touching disk) is therefore the right default
+# for the whole suite. Must be set before config.py is first imported, same
+# as RATE_LIMIT_*/SESSION_STORE_PATH above.
+os.environ.setdefault("APP_DB_URL", "sqlite://")
+
 from typing import Any, Iterator
 from unittest.mock import patch
 
@@ -170,6 +186,39 @@ def _no_real_database() -> Iterator[None]:
             yield
     finally:
         get_engine.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_app_db() -> Iterator[None]:
+    """Give every test a fresh, empty application database.
+
+    ``appdb.engine.get_app_engine`` is ``lru_cache``-backed exactly like
+    the warehouse ``get_engine`` above, and the default in-memory SQLite
+    URL (``sqlite://``, set by this conftest above) is held open as a
+    single shared connection (``StaticPool``) for as long as the cached
+    engine lives — so without disposing it between tests, an issued key or
+    granted role from one test would still be visible to the next,
+    exactly the order-dependent leakage ``_no_real_database`` above exists
+    to prevent for the warehouse engine. Disposing before AND after each
+    test (not just after) also protects the first test in a run against
+    any engine another fixture or import happened to build first.
+
+    The key-set cache (``appdb.key_store``'s module-level
+    ``_cached_principals``) is invalidated for the same reason: it is a
+    process-wide cache keyed on nothing test-specific, so a cached merge
+    from one test would otherwise leak into the next until its TTL
+    happened to elapse.
+    """
+    from appdb.engine import dispose_app_engine
+    from appdb.key_store import invalidate_cache
+
+    dispose_app_engine()
+    invalidate_cache()
+    try:
+        yield
+    finally:
+        dispose_app_engine()
+        invalidate_cache()
 
 
 @pytest.fixture(autouse=True)

@@ -667,6 +667,52 @@ class Settings:
     well under a minute at any real request rate and starts getting 429s,
     it just is not punished for one legitimate burst."""
 
+    # ── Admin panel, phase 2: the application database ──────────────────────
+    app_db_url: str = field(
+        default_factory=lambda: os.getenv("APP_DB_URL", "")
+    )
+    """A SQLAlchemy URL for the application database — the key store, role
+    grants, and (see :mod:`session.persistence`) conversational sessions.
+    Empty (the default) falls back to a SQLite file at
+    :attr:`app_db_sqlite_path`, created automatically. A configured value
+    is expected to name a database that **already exists** — this
+    application creates tables inside it, never the database itself (see
+    ``docs/admin-panel-architecture.md`` §5.3): ``CREATE DATABASE`` needs
+    rights a DBA will not grant an application.
+
+    Must never resolve to the same server+database as
+    :attr:`db_connection_url` — :func:`appdb.engine.raise_if_same_database`
+    is checked at start-up (``api/server.py``'s ``lifespan``) and refuses to
+    start otherwise, because the warehouse connection is deliberately
+    read-only (``docs/db-hardening.md``) and the application database needs
+    writes."""
+
+    app_db_sqlite_path: str = field(
+        default_factory=lambda: os.getenv("APP_DB_SQLITE_PATH", "logs/app.db")
+    )
+    """SQLite file used when :attr:`app_db_url` is unset. Defaults to
+    ``logs/app.db`` — alongside ``logs/sessions.db`` and the audit log,
+    introducing no new category of stored-data location. ``*.db`` is
+    already gitignored (see ``tests/test_no_runtime_artifacts_tracked.py``)."""
+
+    key_cache_ttl_seconds: float = field(
+        default_factory=lambda: float(os.getenv("KEY_CACHE_TTL_SECONDS", "5.0"))
+    )
+    """How long (seconds) the in-memory API-key cache
+    (:mod:`appdb.key_store`) serves a database-backed key set before
+    re-querying. Keys move into the application database precisely so a
+    revoked/disabled key can be shut off without a restart
+    (``docs/admin-panel-architecture.md`` §5.5/§5.6) — reading the key
+    table on every single request would mean a network round trip to the
+    application database per request, so this cache exists to avoid that.
+    Every mutation (issue/disable/enable/revoke/ACL change/role grant)
+    invalidates the cache explicitly rather than waiting out this TTL, so
+    it bounds only the *unforced* staleness window — a revocation always
+    takes effect on the very next request regardless of this value. Kept
+    short by default because it is a safety-relevant staleness bound, not
+    a raw performance knob; raise it only if the application database is
+    under measured load from key lookups alone."""
+
     # ── Phase 8: API-key authentication ─────────────────────────────────────
     api_keys_json: str = field(
         default_factory=lambda: os.getenv("API_KEYS_JSON", "")

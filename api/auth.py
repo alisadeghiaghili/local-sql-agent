@@ -43,8 +43,19 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 import config as cfg
-from api.errors import AdminRequiredError, UnauthenticatedError
-from security.auth import ANONYMOUS, ApiKeyConfigError, Principal, load_api_keys, resolve_principal
+from api.errors import (
+    AdminRequiredError,
+    OperationsRequiredError,
+    SecurityRequiredError,
+    UnauthenticatedError,
+)
+from security.auth import (
+    ANONYMOUS,
+    ApiKeyConfigError,
+    Principal,
+    load_all_principals,
+    resolve_principal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +80,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _resolve(request: Request) -> Principal | None:
         try:
-            keys = load_api_keys()
+            keys = load_all_principals()
         except ApiKeyConfigError as exc:
             logger.error("API_KEYS_JSON could not be parsed at request time: %s", exc)
             return None
@@ -123,6 +134,83 @@ def require_admin(principal: Principal = Depends(require_principal)) -> Principa
     """
     if not principal.is_admin:
         raise AdminRequiredError("This API key does not have admin access.")
+    return principal
+
+
+def require_operations(principal: Principal = Depends(require_principal)) -> Principal:
+    """FastAPI dependency for every operations-gated ``/admin/*`` write
+    route (admin panel phase 2 — ``docs/admin-panel-architecture.md`` §2:
+    key lifecycle, and everything else that does not change who can see
+    what data).
+
+    Same shape as :func:`require_admin`: depends on :func:`require_principal`
+    so ``AUTH_REQUIRED``'s own 401 always runs first, and the
+    ``AUTH_REQUIRED=false`` escape hatch resolves to
+    :data:`~security.auth.ANONYMOUS` — which carries no capabilities at
+    all — *before* the capability check, so that escape hatch can never
+    confer this capability either (§2.3).
+
+    Raises
+    ------
+    api.errors.OperationsRequiredError
+        (403) when the resolved principal does not carry
+        :data:`~security.auth.OPERATIONS_CAPABILITY`.
+    """
+    if not principal.is_operations:
+        raise OperationsRequiredError(
+            "This API key does not have the operations admin capability."
+        )
+    return principal
+
+
+def require_security(principal: Principal = Depends(require_principal)) -> Principal:
+    """FastAPI dependency for every security-gated ``/admin/*`` write route
+    (admin panel phase 2 §2: ``denied_columns`` ACL changes, granting
+    either role — "anything that changes who can see what data").
+
+    Same shape as :func:`require_operations` — see that function's
+    docstring for why ``AUTH_REQUIRED=false`` can never confer this
+    capability either.
+
+    Raises
+    ------
+    api.errors.SecurityRequiredError
+        (403) when the resolved principal does not carry
+        :data:`~security.auth.SECURITY_CAPABILITY`.
+    """
+    if not principal.is_security:
+        raise SecurityRequiredError(
+            "This API key does not have the security admin capability."
+        )
+    return principal
+
+
+def require_operations_or_security(
+    principal: Principal = Depends(require_principal),
+) -> Principal:
+    """FastAPI dependency for a route either admin role may reach —
+    mutual visibility with no mutual authority (§2.4): an operations
+    admin can read that a security admin changed something, and a
+    security admin can read that an operations admin did, without either
+    being able to act as the other. Used only by read routes (the admin
+    action log, the role-holders listing) — never by a route that
+    mutates anything, which always declares exactly one of
+    :func:`require_operations` / :func:`require_security` instead.
+
+    Raises
+    ------
+    api.errors.AdminRequiredError
+        (403) when the resolved principal carries neither capability.
+        Reuses phase 1's error code rather than inventing a third one
+        for "neither role" — the caller-facing fact is the same one
+        :func:`require_admin` already reports (no admin surface at all
+        for this principal).
+    """
+    if not (principal.is_operations or principal.is_security):
+        raise AdminRequiredError(
+            "This API key has neither the operations nor the security "
+            "admin capability."
+        )
     return principal
 
 

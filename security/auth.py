@@ -80,6 +80,21 @@ _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 #: so that split is additive to this shape, not a rewrite of it.
 ADMIN_CAPABILITY = "admin"
 
+#: The admin panel's phase 2 two-role split
+#: (``docs/admin-panel-architecture.md`` §2): key lifecycle, domain
+#: knowledge, LLM endpoint settings, and everything else that does not
+#: change who can see what data.
+OPERATIONS_CAPABILITY = "operations"
+
+#: The admin panel's phase 2 two-role split: ``denied_columns`` on any
+#: principal, ``schema.yaml``, ``DB_CONNECTION_URL``, and granting either
+#: role -- "anything that changes who can see what data" (§2's dividing
+#: rule). Deliberately a separate capability from :data:`ADMIN_CAPABILITY`
+#: (phase 1's single read-only capability), which continues to gate
+#: exactly the routes it always gated -- the two-role split is additive to
+#: :attr:`Principal.capabilities`, not a rewrite of it.
+SECURITY_CAPABILITY = "security"
+
 
 @dataclass(frozen=True)
 class Principal:
@@ -134,6 +149,16 @@ class Principal:
     def is_admin(self) -> bool:
         """Whether this principal carries :data:`ADMIN_CAPABILITY`."""
         return ADMIN_CAPABILITY in self.capabilities
+
+    @property
+    def is_operations(self) -> bool:
+        """Whether this principal carries :data:`OPERATIONS_CAPABILITY`."""
+        return OPERATIONS_CAPABILITY in self.capabilities
+
+    @property
+    def is_security(self) -> bool:
+        """Whether this principal carries :data:`SECURITY_CAPABILITY`."""
+        return SECURITY_CAPABILITY in self.capabilities
 
 
 #: The implicit principal used when ``AUTH_REQUIRED=false`` (the
@@ -251,7 +276,34 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
                 f"API_KEYS_JSON[{i}].admin must be a JSON boolean (true/false) "
                 f"-- got {type(raw_admin).__name__}"
             )
-        capabilities = frozenset({ADMIN_CAPABILITY}) if is_admin else frozenset()
+
+        # Admin panel, phase 2 (docs/admin-panel-architecture.md §2): the
+        # two-role split, bootstrapped from the environment the same way
+        # phase 1's single "admin" flag is -- "the first admin of each
+        # kind comes from the environment, never from a web flow" (§2.3).
+        # Each flag is checked the same explicit-bool way as "admin" above,
+        # for the same reason: a typo like "security": "false" (truthy,
+        # being a non-empty string) must fail loudly at parse time rather
+        # than silently granting the security capability.
+        capability_flags: list[str] = []
+        for field_name, capability in (
+            ("operations", OPERATIONS_CAPABILITY),
+            ("security", SECURITY_CAPABILITY),
+        ):
+            raw_value = entry.get(field_name)
+            if raw_value is None:
+                continue
+            if not isinstance(raw_value, bool):
+                raise ApiKeyConfigError(
+                    f"API_KEYS_JSON[{i}].{field_name} must be a JSON boolean "
+                    f"(true/false) -- got {type(raw_value).__name__}"
+                )
+            if raw_value:
+                capability_flags.append(capability)
+
+        capabilities = frozenset(
+            ([ADMIN_CAPABILITY] if is_admin else []) + capability_flags
+        )
 
         if principal_id in seen_ids:
             raise ApiKeyConfigError(
@@ -288,6 +340,28 @@ def load_api_keys() -> dict[str, Principal]:
     ``config.py``'s module docstring.
     """
     return _parse_api_keys(cfg.settings.api_keys_json)
+
+
+def load_all_principals() -> dict[str, Principal]:
+    """``{key_sha256_hex_lowercase: Principal}`` merged from
+    ``API_KEYS_JSON`` and the admin panel's application database (phase 2
+    — ``docs/admin-panel-architecture.md`` §5.5/§5.6), cached with an
+    explicit-invalidation short TTL.
+
+    A deferred import of :mod:`appdb.key_store` — that module imports this
+    one (for :class:`Principal` and :func:`load_api_keys`), so importing
+    it back at module scope here would be circular; deferring it to call
+    time (this function's own body) breaks the cycle the same way this
+    module's docstring already does for
+    :func:`~config.Settings.validate`'s dialect imports. This is the one
+    function in this framework-agnostic module that knows the application
+    database exists at all — see the module docstring's remark that only
+    ``resolve_principal``/``load_api_keys`` (now also this function) would
+    ever need to change for a future auth backend.
+    """
+    from appdb.key_store import get_active_principals
+
+    return get_active_principals()
 
 
 def resolve_principal(
