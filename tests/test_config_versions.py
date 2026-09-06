@@ -565,9 +565,15 @@ class TestExportImportRoundTrip:
         manifest = export_active_version(app_env["export_dir"])
         assert manifest["version_id"] == edited["version_id"]
 
-        # A fresh, empty deployment: its own database and project_config/.
+        # A fresh, empty deployment: its own database and its own
+        # project_config/ on disk. It gets a real one, because every real
+        # deployment has one -- the nine files are a start-up requirement.
+        # With an empty directory here the imported schema.yaml would read
+        # as a schema *change* from an operations principal and be held as a
+        # draft, which is correct behaviour but not what this test is about.
         fresh_db = tmp_path / "fresh_appdb.db"
         fresh_project_dir = tmp_path / "fresh_project_config"
+        shutil.copytree(_EXAMPLE_CONFIG_DIR, fresh_project_dir)
         with cfg.override_settings(
             app_db_url=f"sqlite:///{fresh_db}",
             project_config_dir=str(fresh_project_dir),
@@ -578,8 +584,184 @@ class TestExportImportRoundTrip:
                 imported = import_bundle_from_directory(
                     app_env["export_dir"], actor_principal_id="ops-1", actor_capabilities=_OPS,
                 )
-                assert imported["version_id"] == 1  # the fresh deployment's own first version
+                # The import is proposed on top of the fresh deployment's
+                # own bootstrap version rather than replacing it, so that
+                # it goes through the same validation and role split as
+                # every other configuration change.
+                assert imported["version_id"] == 2
+                assert imported["status"] == "applied"
                 assert imported["files"] == edited["files"]
             finally:
                 dispose_app_engine()
                 invalidate_cache()
+
+
+# ---------------------------------------------------------------------------
+# §3: an import is a configuration change like any other
+# ---------------------------------------------------------------------------
+
+class TestImportIsSubjectToTheSameGates:
+    """An import must not be a way around validation or the role split.
+
+    Import reads a directory an operator configured, and every other route
+    into a new version -- save, restore, approve -- validates, diffs and
+    dry-runs first, and holds a schema.yaml change from an operations-only
+    caller as a draft. Import must do the same, or it is simply the
+    unguarded one of the four.
+    """
+
+    def _staged_bundle(self, app_env, tmp_path, mutate):
+        """Write the active bundle to a directory, with *mutate* applied."""
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        files = dict(get_active_version()["files"])
+        files = mutate(files)
+        for filename, text in files.items():
+            (staged / filename).write_text(text, encoding="utf-8")
+        return staged, files
+
+    def _fresh_deployment(self, tmp_path, name):
+        """A deployment with its own empty database and its own on-disk
+        project_config/ -- the state every real deployment starts in."""
+        project_dir = tmp_path / f"{name}_project_config"
+        shutil.copytree(_EXAMPLE_CONFIG_DIR, project_dir)
+        return cfg.override_settings(
+            app_db_url=f"sqlite:///{tmp_path / f'{name}_appdb.db'}",
+            project_config_dir=str(project_dir),
+            eval_golden_path=str(_EXAMPLE_GOLDEN_PATH),
+        ), project_dir
+
+    def test_an_operations_import_that_changes_schema_is_held_as_a_draft(
+        self, app_env, tmp_path
+    ):
+        table = sorted(yaml.safe_load(
+            get_active_version()["files"]["schema.yaml"]
+        )["tables"])[0]
+        staged, _ = self._staged_bundle(
+            app_env, tmp_path,
+            lambda files: {**files, "schema.yaml": _remove_table(files["schema.yaml"], table)},
+        )
+
+        override, project_dir = self._fresh_deployment(tmp_path, "held")
+        on_disk_before = (project_dir / "schema.yaml").read_text(encoding="utf-8")
+        with override:
+            dispose_app_engine()
+            invalidate_cache()
+            try:
+                imported = import_bundle_from_directory(
+                    staged, actor_principal_id="ops-1", actor_capabilities=_OPS,
+                )
+                assert imported["status"] == "draft", (
+                    "an operations principal imported a bundle that drops a table "
+                    "from the guard's allowlist and it applied immediately -- the "
+                    "schema.yaml role split does not survive the import path"
+                )
+            finally:
+                dispose_app_engine()
+                invalidate_cache()
+        assert (project_dir / "schema.yaml").read_text(encoding="utf-8") == on_disk_before, (
+            "the unapproved schema.yaml was written to disk"
+        )
+
+    def test_an_import_of_an_invalid_bundle_is_refused_not_applied(self, tmp_path):
+        staged = tmp_path / "staged_broken"
+        shutil.copytree(_EXAMPLE_CONFIG_DIR, staged)
+        (staged / "metrics.yaml").write_text("metrics: [oh: dear\n", encoding="utf-8")
+
+        override, project_dir = self._fresh_deployment(tmp_path, "broken")
+        on_disk_before = (project_dir / "metrics.yaml").read_text(encoding="utf-8")
+        with override:
+            dispose_app_engine()
+            invalidate_cache()
+            try:
+                with pytest.raises(ValueError):
+                    import_bundle_from_directory(
+                        staged, actor_principal_id="ops-1", actor_capabilities=_OPS,
+                    )
+            finally:
+                dispose_app_engine()
+                invalidate_cache()
+        assert (project_dir / "metrics.yaml").read_text(encoding="utf-8") == on_disk_before, (
+            "an unparseable bundle was written to disk by the import path"
+        )
+
+
+# ---------------------------------------------------------------------------
+# §6: a configuration change moves the cache key
+# ---------------------------------------------------------------------------
+
+class TestAppliedVersionMovesTheQueryCacheKey:
+    """``api/runner.py`` says its cache key moves so that "a knowledge-base
+    change invalidates stale entries by construction".
+
+    That was true only for the three files that feed the static prefix.
+    ``aliases.yaml``, ``entities.yaml``, ``retrieval_hints.yaml``,
+    ``session_policy.yaml`` and ``memory_policy.yaml`` change what the
+    engine retrieves -- and therefore the SQL it writes -- without changing
+    a byte of the prefix, so the hash stayed put and the cache kept serving
+    the pre-edit answer. An operations admin edits aliases, asks the same
+    question to check, and gets the old answer back with nothing to say
+    why.
+    """
+
+    def _cache_prefix_version(self):
+        from api.runner import cache_prefix_version_for
+        from appdb.config_versions import invalidate_active_version_id_cache
+
+        # Read through the TTL cache rather than out of it, so these
+        # assertions are about what the key is derived from and not about
+        # how recently it happened to be computed.
+        invalidate_active_version_id_cache()
+        return cache_prefix_version_for("You are a T-SQL expert.")
+
+    def test_a_non_prefix_file_edit_moves_the_cache_key(self, app_env):
+        before = self._cache_prefix_version()
+        active = get_active_version()
+        propose_or_apply(
+            {"aliases.yaml": active["files"]["aliases.yaml"] + "\n# an operations edit\n"},
+            based_on_version=active["version_id"],
+            actor_principal_id="ops-1", actor_capabilities=_OPS,
+        )
+        assert self._cache_prefix_version() != before, (
+            "aliases.yaml changed and the query cache key did not move -- every "
+            "cached answer produced under the old aliases is still being served"
+        )
+
+    def test_an_unrelated_setting_does_not_move_the_cache_key(self, app_env):
+        before = self._cache_prefix_version()
+        with cfg.override_settings(max_rows_returned=7):
+            assert self._cache_prefix_version() == before, (
+                "a setting that is not part of the versioned bundle moved the "
+                "cache key, discarding every cached answer for no reason"
+            )
+
+    def test_an_unapplied_draft_does_not_move_the_cache_key(self, app_env):
+        active = get_active_version()
+        propose_or_apply(
+            {"schema.yaml": _remove_table(active["files"]["schema.yaml"], "Customer")},
+            based_on_version=active["version_id"],
+            actor_principal_id="ops-1", actor_capabilities=_OPS,
+        )
+        before = self._cache_prefix_version()
+        assert self._cache_prefix_version() == before
+        assert get_active_version()["version_id"] == active["version_id"]
+
+    def test_an_apply_moves_the_key_immediately_not_after_the_ttl(self, app_env):
+        """The version id is cached on the per-request path, so an apply
+        must invalidate that cache explicitly. Without it the change would
+        be correct only ``config_version_cache_ttl_seconds`` later, and the
+        admin who just made it would still be served the old answer."""
+        from api.runner import cache_prefix_version_for
+
+        prompt = "You are a T-SQL expert."
+        before = cache_prefix_version_for(prompt)  # populates the TTL cache
+        active = get_active_version()
+        propose_or_apply(
+            {"entities.yaml": active["files"]["entities.yaml"] + "\n# edit\n"},
+            based_on_version=active["version_id"],
+            actor_principal_id="ops-1", actor_capabilities=_OPS,
+        )
+        assert cache_prefix_version_for(prompt) != before, (
+            "the applied version did not invalidate the cached version id -- "
+            "the cache key moves only once the TTL elapses"
+        )

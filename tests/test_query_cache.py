@@ -222,7 +222,7 @@ class TestQueryCacheRunnerIntegration:
         calling agent.run."""
         import api.runner as runner_module
         from api.query_cache import query_cache
-        from prompt_engine.static_prefix import prefix_version
+        from api.runner import cache_prefix_version_for
 
         cached_resp = QueryResponse(
             question="سوال", sql="SELECT 1", result=[{"n": 1}],
@@ -230,7 +230,7 @@ class TestQueryCacheRunnerIntegration:
         )
         # run_query below is called with system_prompt="stub" -- store under
         # the same prefix version it will look up with.
-        query_cache.set("سوال", "full", cached_resp, prefix_version=prefix_version("stub"))
+        query_cache.set("سوال", "full", cached_resp, prefix_version=cache_prefix_version_for("stub"))
 
         # Patch agent so any real LLM call raises instantly
         mock_agent = MagicMock()
@@ -268,5 +268,5 @@ class TestQueryCacheRunnerIntegration:
             result = runner_module.run_query("سوال", "stub", mode="full", interpret=False)
 
         mock_agent.run.assert_called_once()
-        from prompt_engine.static_prefix import prefix_version
-        assert query_cache.get("سوال", "full", prefix_version=prefix_version("stub")) == result
+        from api.runner import cache_prefix_version_for
+        assert query_cache.get("سوال", "full", prefix_version=cache_prefix_version_for("stub")) == result

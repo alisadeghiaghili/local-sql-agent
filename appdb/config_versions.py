@@ -111,6 +111,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -375,12 +377,74 @@ def get_active_version() -> dict[str, Any]:
     return _public(row, include_content=True)
 
 
+_version_id_lock = threading.Lock()
+_cached_version_id: int | None = None
+_cached_version_id_at: float = 0.0
+#: Which application database :data:`_cached_version_id` was read from.
+#: Without this the cache is a process-global keyed on nothing, and a
+#: version id read from one database is served for another the moment
+#: ``APP_DB_URL`` is re-pointed -- which is exactly what a test fixture
+#: does between cases, so the failure shows up as a suite that passes
+#: alone and fails in order.
+_cached_version_id_source: str | None = None
+
+
+def invalidate_active_version_id_cache() -> None:
+    """Throw away the cached active version id.
+
+    Called by every function in this module that applies a version, so a
+    change is live in this process on the very next request rather than
+    after ``config_version_cache_ttl_seconds`` elapses.
+    """
+    global _cached_version_id, _cached_version_id_at, _cached_version_id_source
+    with _version_id_lock:
+        _cached_version_id = None
+        _cached_version_id_at = 0.0
+        _cached_version_id_source = None
+
+
 def get_active_version_id() -> int:
     """The current active bundle version's ``version_id`` alone -- the
     "configuration version identifier" :mod:`prompt_engine.static_prefix`'s
     ``prefix_version_for_config`` derives the prefix version from (spec
-    §6)."""
-    return get_active_version()["version_id"]
+    §6).
+
+    This one is on the per-request path: ``api/runner.py`` folds it into
+    every query-cache key, so it reads a single integer column rather than
+    :func:`get_active_version`'s full nine-file snapshot, and caches it
+    for ``cfg.settings.config_version_cache_ttl_seconds`` -- the same
+    short-TTL-plus-explicit-invalidation shape :mod:`appdb.key_store` uses,
+    for the same reason.
+    """
+    global _cached_version_id, _cached_version_id_at, _cached_version_id_source
+    ttl = cfg.settings.config_version_cache_ttl_seconds
+    source = cfg.settings.app_db_url
+    now = time.monotonic()
+    with _version_id_lock:
+        if (
+            _cached_version_id is not None
+            and _cached_version_id_source == source
+            and ttl > 0
+            and now - _cached_version_id_at < ttl
+        ):
+            return _cached_version_id
+
+    engine = get_app_engine()
+    with engine.begin() as conn:
+        _ensure_bootstrapped(conn)
+        version_id = conn.execute(
+            select(config_bundle_versions.c.version_id)
+            .where(config_bundle_versions.c.status == "applied")
+            .order_by(config_bundle_versions.c.version_id.desc())
+            .limit(1)
+        ).scalar()
+    assert version_id is not None  # _ensure_bootstrapped guarantees one applied row
+
+    with _version_id_lock:
+        _cached_version_id = int(version_id)
+        _cached_version_id_at = now
+        _cached_version_id_source = source
+    return int(version_id)
 
 
 def get_version(version_id: int) -> dict[str, Any]:
@@ -544,6 +608,7 @@ def _dry_run_bundle(files: dict[str, str]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _invalidate_runtime_caches(files_changed: Sequence[str]) -> None:
+    invalidate_active_version_id_cache()
     touched_prefix_relevant = False
     for filename in files_changed:
         module_name = _KNOWLEDGE_CACHE_MODULES.get(filename)
@@ -889,14 +954,24 @@ def import_bundle_from_directory(
     """Import a previously exported bundle (see :func:`export_active_version`)
     from *source_dir*.
 
-    On a deployment with no version history yet, this seeds it directly as
-    the bootstrap version -- unconditionally, mirroring
-    :func:`appdb.key_store.bootstrap_from_env`'s own "import once, no
-    validation gate on the very first version" bootstrap semantics (there
-    is nothing yet to validate a first version *against*). On a deployment
-    that already has an active version, this instead goes through the
-    normal :func:`propose_or_apply` path -- validated, diffed, dry-run, and
-    subject to the same schema.yaml draft/approve split as any other edit.
+    This is a configuration change like any other, and takes exactly the
+    same route as one: :func:`propose_or_apply`, so the bundle is parsed
+    and validated through the real loaders, diffed, dry-run against the
+    golden set, and -- when it changes ``schema.yaml`` and the caller holds
+    only the operations capability -- held as a draft rather than applied.
+
+    An earlier shape seeded a bundle *unvalidated* when the deployment had
+    no version history yet, on the reasoning that a first version has
+    nothing to be validated against. That reasoning does not hold: the
+    checks that matter here are not comparisons against a previous version
+    but properties of the bundle itself -- does it parse, does
+    ``schema.yaml`` still describe a coherent allowlist, does the golden
+    set still resolve against it -- and none of them need a predecessor.
+    It also made import the one way into a new version that skipped the
+    role split, in exactly the window (a fresh deployment, before anyone
+    has opened the configuration page) where the first admin action is most
+    likely to be an import. So the history is bootstrapped from disk first,
+    and the import is then proposed on top of it.
     """
     source = Path(source_dir)
     files = {
@@ -905,40 +980,7 @@ def import_bundle_from_directory(
         for filename in CONFIG_FILENAMES
     }
 
-    engine = get_app_engine()
-    with engine.begin() as conn:
-        count = conn.execute(select(func.count()).select_from(config_bundle_versions)).scalar()
-
-    if not count:
-        with engine.begin() as conn:
-            result = conn.execute(
-                config_bundle_versions.insert().values(
-                    status="applied",
-                    content_json=json.dumps(files, sort_keys=True),
-                    content_hash=_hash_content(files),
-                    based_on_version=None,
-                    restored_from_version=None,
-                    restored_file=None,
-                    created_at=_now_iso(),
-                    created_by=actor_principal_id,
-                    created_by_capability=(
-                        SECURITY_CAPABILITY
-                        if SECURITY_CAPABILITY in actor_capabilities
-                        else OPERATIONS_CAPABILITY
-                    ),
-                    reviewed_by=None,
-                    reviewed_at=None,
-                    review_note=None,
-                    diff_json=None,
-                    dry_run_json=None,
-                )
-            )
-            version_id = result.inserted_primary_key[0]
-        _write_bundle_to_disk(files)
-        _invalidate_runtime_caches(CONFIG_FILENAMES)
-        return get_version(version_id)
-
-    active = get_active_version()
+    active = get_active_version()  # bootstraps from disk if nothing exists yet
     return propose_or_apply(
         files,
         based_on_version=active["version_id"],

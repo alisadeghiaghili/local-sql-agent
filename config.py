@@ -891,6 +891,25 @@ class Settings:
     at ``eval_data.example/golden.jsonl`` (alongside ``PROJECT_CONFIG_DIR``)
     to run the dry-run against the committed example data instead."""
 
+    config_version_cache_ttl_seconds: float = field(
+        default_factory=lambda: float(
+            os.getenv("CONFIG_VERSION_CACHE_TTL_SECONDS", "5")
+        )
+    )
+    """How long :mod:`appdb.config_versions` may reuse a cached active
+    version id before re-reading it, mirroring ``key_cache_ttl_seconds``
+    and existing for the same reason: the id is on the per-request path
+    (``api/runner.py`` folds it into every query-cache key, so an applied
+    configuration version invalidates stale answers), and reading it from
+    the application database on every question would be a network round
+    trip per request on an external backend.
+
+    Applying a version invalidates this cache explicitly, so a change is
+    visible immediately in the process that made it; the TTL is what bounds
+    staleness in *other* processes, where the only cost of being late is a
+    few cache hits that should have been misses. Set to ``0`` to disable
+    the cache and read the id every time."""
+
     config_export_dir: str = field(
         default_factory=lambda: os.getenv("CONFIG_EXPORT_DIR", "")
     )
