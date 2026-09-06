@@ -936,6 +936,29 @@ class Settings:
     with its own remote (``docs/admin-panel-architecture.md`` §6.3: "git as
     an output, not as the engine" -- never this project's own repository)."""
 
+    # ── Admin panel, phase 5: migration between backends ────────────────────
+    migration_quiet_window_seconds: float = field(
+        default_factory=lambda: float(
+            os.getenv("MIGRATION_QUIET_WINDOW_SECONDS", "60")
+        )
+    )
+    """How recent a write to the application database may be before
+    :mod:`appdb.migrate` refuses to run (``docs/admin-panel-architecture.md``
+    §5.4/§5.4.1, §3 tier 3's not-yet-built maintenance mode). The tool scans
+    every migrated table's own timestamp columns (``created_at``,
+    ``updated_at``, ...) for the most recent one and compares its age
+    against this window; anything younger means the application was still
+    writing a moment ago and the copy this tool is about to take may not
+    include everything, with no error at the time it is lost (§7).
+
+    ``60`` is a deliberately generous default: this check exists to catch
+    "the operator forgot to stop the application", not to shave seconds off
+    a maintenance window, and a false refusal here costs an operator one
+    re-run a minute later while a false pass risks silently dropped writes.
+    A deployment confident in its own shutdown discipline may lower it; one
+    whose application takes longer than a minute to fully quiesce should
+    raise it instead of routinely overriding the refusal by other means."""
+
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 

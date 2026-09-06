@@ -163,6 +163,36 @@ def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:
         )
 
 
+def build_engine(url: str) -> Engine:
+    """Build a fresh SQLAlchemy engine for *url*, with no table creation and
+    no caching -- the shared per-backend pool logic :func:`get_app_engine`
+    itself uses, factored out so a caller that needs **two** application
+    databases open at once (:mod:`appdb.migrate`'s source and target) can
+    get one engine per URL without fighting ``get_app_engine``'s
+    ``lru_cache(maxsize=1)`` singleton, which only ever holds one engine
+    for whatever ``APP_DB_URL`` currently resolves to.
+
+    A SQLite URL is given ``poolclass=StaticPool`` plus
+    ``check_same_thread=False`` for the same reason :func:`get_app_engine`
+    always has: SQLite's file locking is unreliable under SQLAlchemy's
+    default pool across threads, and an in-memory URL (``sqlite://``)
+    specifically requires a single shared connection or every checkout
+    would see an empty, independent database.
+
+    Deliberately does NOT call :func:`appdb.models.create_all` -- unlike
+    :func:`get_app_engine`, whose whole point is the zero-configuration
+    path, a caller building a second, ad hoc engine (a migration source or
+    target that may not be ready for tables yet) decides for itself
+    whether and when to create them.
+    """
+    made = make_url(url)
+    if made.get_backend_name() == "sqlite":
+        return create_engine(
+            url, poolclass=StaticPool, connect_args={"check_same_thread": False},
+        )
+    return create_engine(url, pool_pre_ping=True)
+
+
 @lru_cache(maxsize=1)
 def get_app_engine() -> Engine:
     """Return the singleton SQLAlchemy engine for the application database.
@@ -172,16 +202,6 @@ def get_app_engine() -> Engine:
     built once, on first call, and reused thereafter. Call
     :func:`dispose_app_engine` to force a fresh engine (test teardown, or a
     changed ``APP_DB_URL`` picked up via ``config.override_settings``).
-
-    A SQLite URL is given ``poolclass=StaticPool`` plus
-    ``check_same_thread=False`` -- a single, shared connection reused
-    across threads, the same discipline
-    ``session.persistence.SessionPersistence`` uses for its own SQLite
-    engine (see that module's docstring): SQLite's file locking is
-    unreliable under SQLAlchemy's default pool for a multi-threaded FastAPI
-    server, and an in-memory SQLite URL (``sqlite://``) specifically
-    requires a *single* shared connection or every checkout would see an
-    empty, independent database.
 
     Every table in :data:`appdb.models.metadata` is created
     (``checkfirst=True``, a no-op if they already exist) the moment the
@@ -196,14 +216,7 @@ def get_app_engine() -> Engine:
     can still do so (``appdb/migrations/``); running both is harmless
     since table creation here is idempotent.
     """
-    url = resolve_app_db_url()
-    made = make_url(url)
-    if made.get_backend_name() == "sqlite":
-        engine = create_engine(
-            url, poolclass=StaticPool, connect_args={"check_same_thread": False},
-        )
-    else:
-        engine = create_engine(url, pool_pre_ping=True)
+    engine = build_engine(resolve_app_db_url())
 
     from appdb.models import create_all
 
