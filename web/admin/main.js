@@ -33,8 +33,19 @@ const $ = (id) => document.getElementById(id);
  * before the module finishes its first pass. */
 const CARDS = [
   "summary", "health", "cache", "config", "feedback",
-  "maintenance", "schemaDrift", "vocabulary", "usage", "authFailures",
+  "maintenance", "keys", "schemaDrift", "vocabulary", "usage", "authFailures",
 ];
+
+/* Cards whose 403 is an ordinary, expected outcome rather than a wrong
+ * credential, and so must render inside the card instead of raising the
+ * page-level "this key is not an admin key" banner.
+ *
+ * The panel's sections do not share one capability: `require_admin`
+ * serves four of them and `require_operations_or_security` the other six,
+ * so a key holding only some of the three legitimately sees a 403 on the
+ * rest. Before phase 7 that produced a banner claiming the key was not an
+ * admin key at all -- which is false, and points at the wrong fix. */
+const CARDS_WHERE_403_IS_A_CAPABILITY_GAP = new Set(["keys"]);
 
 loadPersisted();
 applyTheme();
@@ -171,6 +182,8 @@ async function refreshOne(name) {
       renderFeedback(stats, list.feedback || []);
     } else if (name === "maintenance") {
       renderMaintenance(await api.maintenanceState());
+    } else if (name === "keys") {
+      renderKeys(await loadKeysCard());
     } else if (name === "schemaDrift") {
       renderSchemaDrift(await api.schemaDrift());
     } else if (name === "vocabulary") {
@@ -183,7 +196,12 @@ async function refreshOne(name) {
     hideForbiddenBanner();
   } catch (err) {
     body.innerHTML = "";
-    if (err instanceof AdminForbiddenError) {
+    if (err instanceof AdminForbiddenError && CARDS_WHERE_403_IS_A_CAPABILITY_GAP.has(name)) {
+      body.innerHTML =
+        `<p class="admin-loading">این بخش به نقش <code>operations</code> نیاز دارد و کلید شما آن را ندارد. ` +
+        `کلیدی با <code>--operations</code> (یا <code>--full-admin</code>) صادر کنید — ` +
+        `<code>python -m scripts.issue_api_key</code>.</p>`;
+    } else if (err instanceof AdminForbiddenError) {
       showForbiddenBanner(
         "این کلید، کلید مدیریتی نیست — این کلید معتبر است ولی دسترسی مدیریتی ندارد. " +
         (err.message || ""),
@@ -734,3 +752,201 @@ function renderAuthFailures(summary) {
     `<div class="admin-stats">${tiles.join("")}</div>` +
     (rows.length ? twoColumnTable("آدرس مبدأ", "تعداد", rows) : "");
 }
+
+/* ── Admin panel phase 7: key lifecycle and roles ───────────────────
+ *
+ * The routes behind this card have existed since phase 2 with nothing in
+ * the UI calling them, so issuing a key or granting a role meant the CLI
+ * plus a server restart -- and a revocation that phase 2 made immediate
+ * was, in practice, "immediate once someone reaches a terminal".
+ *
+ * Three things here are not visible from the routes alone, and this card
+ * exists to surface all three at the moment each one matters:
+ *
+ * 1. A key issued through the API starts with EVERY column denied
+ *    (appdb.key_store._maximally_restrictive_denied_columns). It
+ *    authenticates and can read nothing. That is deliberate -- issuing is
+ *    `operations`, and widening what a key can see is `security`'s -- but
+ *    an operations admin who does not know it has just minted a key that
+ *    looks broken to whoever they hand it to.
+ * 2. Disable is reversible. Revoke is not. They are one button apart.
+ * 3. The raw key exists exactly once, in the issue response. Nothing
+ *    stores it -- not the server, not this page.
+ */
+
+/** The two independent reads this card needs. Role holders are fetched
+ * alongside the key list because a role attaches to a principal id rather
+ * than to a key, so a row cannot show its own roles without them. */
+async function loadKeysCard() {
+  const [keys, ops, sec] = await Promise.all([
+    api.listKeys(),
+    api.roleHolders("operations"),
+    api.roleHolders("security"),
+  ]);
+  return {
+    keys: keys.keys || [],
+    operations: new Set(ops.principal_ids || []),
+    security: new Set(sec.principal_ids || []),
+  };
+}
+
+function keyState(row) {
+  if (row.revoked_at) return { label: "ابطال‌شده", cls: "fail" };
+  if (row.disabled_at) return { label: "غیرفعال", cls: "skip" };
+  return { label: "فعال", cls: "pass" };
+}
+
+function renderKeys({ keys, operations, security }) {
+  const body = $("keys-body");
+  if (!keys.length) {
+    body.innerHTML = '<p class="admin-loading">هیچ کلیدی ثبت نشده است.</p>';
+    return;
+  }
+
+  const rows = keys.map((row) => {
+    const st = keyState(row);
+    const denied = row.denied_columns || [];
+    /* "No restriction" and "some columns" are different kinds of fact, and
+     * a bare count makes the first one read as zero of something rather
+     * than the absence of a restriction. */
+    const deniedLabel = denied.length === 0 ? "بدون محدودیت" : `${fmtNum(denied.length)} ستون`;
+    const roleTags =
+      (operations.has(row.principal_id) ? '<span class="key-role">operations</span>' : "") +
+      (security.has(row.principal_id) ? '<span class="key-role">security</span>' : "");
+    const revoked = Boolean(row.revoked_at);
+    const toggleAct = row.disabled_at ? "enable" : "disable";
+    const toggleLabel = row.disabled_at ? "فعال کردن" : "غیرفعال کردن";
+
+    const actions = revoked
+      ? ""
+      : `<button type="button" data-act="${toggleAct}">${toggleLabel}</button>` +
+        '<button type="button" data-act="acl">ستون‌ها</button>' +
+        '<button type="button" data-act="role">نقش‌ها</button>' +
+        '<button type="button" data-act="revoke" class="key-danger">ابطال</button>';
+
+    return `<tr data-hash="${escapeHtml(row.key_sha256)}" data-pid="${escapeHtml(row.principal_id)}">` +
+      `<td><code>${escapeHtml(row.principal_id)}</code>${roleTags}</td>` +
+      `<td>${escapeHtml(row.name)}</td>` +
+      `<td><span class="admin-status-pill admin-status-${st.cls}">${st.label}</span></td>` +
+      `<td>${escapeHtml(row.source === "imported_from_env" ? ".env" : "پنل")}</td>` +
+      `<td>${escapeHtml(deniedLabel)}</td>` +
+      `<td class="key-actions">${actions}</td>` +
+      `</tr>`;
+  });
+
+  body.innerHTML =
+    '<div class="admin-table-wrap"><table class="admin-table">' +
+    "<thead><tr><th>شناسه</th><th>نام</th><th>وضعیت</th><th>منبع</th>" +
+    "<th>ستون‌های ممنوع</th><th>اقدام</th></tr></thead>" +
+    `<tbody>${rows.join("")}</tbody></table></div>` +
+    '<p class="admin-loading">«غیرفعال کردن» برگشت‌پذیر است؛ «ابطال» نیست — ' +
+    "ردیف بایگانی می‌شود و هرگز حذف نمی‌شود، تا بازگرداندن دیتابیس به دیروز " +
+    "کلیدی را که نشت کرده دوباره زنده نکند.</p>";
+
+  body.querySelectorAll("button[data-act]").forEach((btn) => {
+    btn.addEventListener("click", () => onKeyAction(btn));
+  });
+}
+
+async function onKeyAction(btn) {
+  const tr = btn.closest("tr");
+  const hash = tr.dataset.hash;
+  const pid = tr.dataset.pid;
+  const act = btn.dataset.act;
+
+  try {
+    if (act === "disable" || act === "enable") {
+      btn.disabled = true;
+      await (act === "disable" ? api.disableKey(hash) : api.enableKey(hash));
+    } else if (act === "revoke") {
+      /* Typing the id, rather than confirming a yes/no: every row's
+       * buttons sit in the same position, and this is the only one that
+       * cannot be undone. A confirm dialog defends against not reading;
+       * this defends against clicking the right button on the wrong row. */
+      const typed = window.prompt(
+        "ابطال دائمی و بازگشت‌ناپذیر است. برای تأیید، شناسهٔ کلید را تایپ کنید:\n" + pid,
+      );
+      if (typed !== pid) return;
+      btn.disabled = true;
+      await api.revokeKey(hash);
+    } else if (act === "acl") {
+      const answer = window.prompt(
+        "ستون‌هایی که این کلید هرگز نباید ببیند، جدا شده با کاما.\n" +
+        "خالی بگذارید تا هیچ محدودیتی نداشته باشد.",
+        "",
+      );
+      if (answer === null) return;
+      const columns = answer.split(",").map((c) => c.trim()).filter(Boolean);
+      btn.disabled = true;
+      await api.updateKeyAcl(hash, columns);
+    } else if (act === "role") {
+      const answer = window.prompt(
+        "نقش‌های " + pid + "\n" +
+        "برای اعطا: operations یا security\n" +
+        "برای سلب: -operations یا -security",
+      );
+      if (!answer) return;
+      const grant = !answer.trim().startsWith("-");
+      const capability = grant ? answer.trim() : answer.trim().slice(1).trim();
+      if (capability !== "operations" && capability !== "security") {
+        showNotice("error", "نقش باید operations یا security باشد.");
+        return;
+      }
+      btn.disabled = true;
+      await api.changeRole(pid, capability, grant);
+    }
+    await refreshOne("keys");
+  } catch (err) {
+    /* 409 is the server refusing to remove the last holder of a role, and
+     * 403 is this key lacking `security` for an ACL or role change. Both
+     * are real answers rather than failures of this page, so the server's
+     * own message is shown instead of a generic one. */
+    showNotice("error", err.message || String(err));
+    btn.disabled = false;
+  }
+}
+
+/* The one-time reveal. Deliberately not written to localStorage, not put
+ * in the URL, and never re-rendered by a later refresh: this is the only
+ * moment the raw key exists anywhere outside this page's memory, and
+ * every additional place it lands is a place it can be read from later.
+ * It also lives outside `keys-body` so a background refresh of the list
+ * cannot re-render it away while the key it shows is still the only copy
+ * in existence. */
+function revealIssuedKey(payload) {
+  const el = $("keys-reveal");
+  el.hidden = false;
+  el.innerHTML =
+    "<h3>کلید خام — همین حالا کپی کنید</h3>" +
+    "<p>این مقدار فقط همین یک‌بار نمایش داده می‌شود و هیچ‌جا ذخیره نشده است. " +
+    "اگر این صفحه را ببندید، بازیابی‌پذیر نیست.</p>" +
+    `<code class="keys-reveal-value" dir="ltr">${escapeHtml(payload.raw_key)}</code>` +
+    `<p>${fmtNum(payload.raw_key.length)} نویسه. این چیزی است که صاحب کلید در فیلد ` +
+    "بالای صفحه می‌گذارد — در <code>.env</code> نمی‌رود.</p>" +
+    '<p class="keys-reveal-warn">این کلید با <strong>همهٔ ستون‌ها ممنوع</strong> صادر ' +
+    "شده است: احراز هویت می‌شود ولی تا وقتی یک ادمین امنیت با دکمهٔ «ستون‌ها» " +
+    "محدودیتش را باز نکند، هیچ پرس‌وجویی برایش کار نمی‌کند.</p>" +
+    '<button type="button" id="keys-reveal-dismiss">کپی کردم، ببند</button>';
+  $("keys-reveal-dismiss").addEventListener("click", () => {
+    el.hidden = true;
+    el.innerHTML = "";
+  });
+}
+
+$("keys-issue-btn").addEventListener("click", async () => {
+  const principalId = window.prompt("شناسهٔ پایدار کلید (مثلاً analyst-2):");
+  if (!principalId || !principalId.trim()) return;
+  const name = window.prompt("نام قابل خواندن (برای لاگ و ممیزی):");
+  if (!name || !name.trim()) return;
+
+  const btn = $("keys-issue-btn");
+  btn.disabled = true;
+  try {
+    revealIssuedKey(await api.issueKey(principalId.trim(), name.trim()));
+    await refreshOne("keys");
+  } catch (err) {
+    showNotice("error", `صدور کلید ناموفق بود: ${err.message || err}`);
+  } finally {
+    btn.disabled = false;
+  }
+});

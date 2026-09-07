@@ -181,20 +181,100 @@ export class AdminApi {
     return this._get(`/admin/security/auth-failures${qs}`);
   }
 
+  /* ── Admin panel phase 7: key lifecycle and roles ──────────────────
+   * The routes behind these have existed since phase 2
+   * (api/admin_write_routes.py) with no UI calling them, so issuing a key
+   * or granting a role meant the CLI plus a server restart. These are the
+   * panel's first writes that change *who can get in*, so each one is
+   * capability-gated server-side -- operations for the key lifecycle,
+   * security for anything that changes what a key can see
+   * (docs/admin-panel-architecture.md §2's dividing rule) -- and the panel
+   * never guesses at that gate client-side: it makes the call and reports
+   * the server's own 403. */
+
+  /** GET /admin/keys -- every key row's metadata. Never a raw key: those
+   * exist only in the response to the issue call that minted them. */
+  async listKeys() {
+    return this._get("/admin/keys");
+  }
+
+  /** POST /admin/keys -- mint a key. The response carries `raw_key`, the
+   * ONLY time it is ever transmitted; the panel must show it once and
+   * hold it nowhere. Note the server's restrictive default: the new key's
+   * denied_columns is every column in schema.yaml, so it authenticates
+   * but can read nothing until a security admin loosens it. */
+  async issueKey(principalId, name) {
+    return this._post("/admin/keys", { principal_id: principalId, name });
+  }
+
+  /** POST /admin/keys/{hash}/disable -- reversible (operations). */
+  async disableKey(keySha256) {
+    return this._post(`/admin/keys/${encodeURIComponent(keySha256)}/disable`);
+  }
+
+  /** POST /admin/keys/{hash}/enable -- undoes a disable (operations). */
+  async enableKey(keySha256) {
+    return this._post(`/admin/keys/${encodeURIComponent(keySha256)}/enable`);
+  }
+
+  /** POST /admin/keys/{hash}/revoke -- permanent (operations). The row is
+   * tombstoned, never deleted, so restoring the application database to a
+   * point before this call cannot silently un-revoke a leaked key. */
+  async revokeKey(keySha256) {
+    return this._post(`/admin/keys/${encodeURIComponent(keySha256)}/revoke`);
+  }
+
+  /** PATCH /admin/keys/{hash}/acl -- the column ACL (security only). An
+   * empty list means no column restriction at all. */
+  async updateKeyAcl(keySha256, deniedColumns) {
+    return this._patch(`/admin/keys/${encodeURIComponent(keySha256)}/acl`, {
+      denied_columns: deniedColumns,
+    });
+  }
+
+  /** GET /admin/roles/{capability} -- who holds it, from either source
+   * (environment bootstrap or a database grant). Readable by either admin
+   * role: seeing who holds a role is not itself a visibility change. */
+  async roleHolders(capability) {
+    return this._get(`/admin/roles/${encodeURIComponent(capability)}`);
+  }
+
+  /** POST /admin/roles/{principalId} -- grant or revoke (security only).
+   * The server refuses with 409 rather than removing the last holder of
+   * a capability, so the panel surfaces that message as-is. */
+  async changeRole(principalId, capability, grant) {
+    return this._post(`/admin/roles/${encodeURIComponent(principalId)}`, {
+      capability,
+      grant,
+    });
+  }
+
   /** The one chokepoint every admin call above routes through. Always
    * attaches `Authorization: Bearer <key>` when a key is stored (never
    * omitted for an admin route -- unlike web/js/api.js's health(), there
    * is no unauthenticated admin route to degrade to); a call made with no
    * key stored is still attempted, so the server's real 401 (not a
-   * client-side guess) is what tells the operator a key is needed. */
-  async _get(path) {
+   * client-side guess) is what tells the operator a key is needed.
+   *
+   * `_get`, `_post` and `_patch` are thin wrappers over this rather than
+   * three copies of the same auth-and-error block. They were two copies
+   * until phase 7 needed a third verb, at which point a third copy would
+   * have meant three places for a 401/403 distinction to drift apart --
+   * and that distinction is load-bearing: the panel says "this key is not
+   * an admin key" on one and "enter a key" on the other. */
+  async _request(method, path, jsonBody) {
     const headers = {};
     const key = getApiKey();
     if (key) headers["Authorization"] = `Bearer ${key}`;
+    const init = { method, headers, signal: AbortSignal.timeout(20000) };
+    if (jsonBody !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(jsonBody);
+    }
 
     let res;
     try {
-      res = await fetch(`${this.baseUrl}${path}`, { headers, signal: AbortSignal.timeout(20000) });
+      res = await fetch(`${this.baseUrl}${path}`, init);
     } catch (err) {
       throw new AdminApiError(`Network error calling ${path}: ${err.message}`, 0);
     }
@@ -218,42 +298,16 @@ export class AdminApi {
     return res.json();
   }
 
-  /** Same auth/error handling as `_get`, for the one write call this
-   * panel makes (`resolveFeedback` above). */
+  async _get(path) {
+    return this._request("GET", path);
+  }
+
   async _post(path, jsonBody) {
-    const headers = { "Content-Type": "application/json" };
-    const key = getApiKey();
-    if (key) headers["Authorization"] = `Bearer ${key}`;
+    return this._request("POST", path, jsonBody ?? {});
+  }
 
-    let res;
-    try {
-      res = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(jsonBody),
-        signal: AbortSignal.timeout(20000),
-      });
-    } catch (err) {
-      throw new AdminApiError(`Network error calling ${path}: ${err.message}`, 0);
-    }
-
-    if (res.status === 401) {
-      const body = await _safeJson(res);
-      throw new AdminUnauthorizedError(
-        body?.error?.message || body?.detail || "Missing or invalid API key.",
-      );
-    }
-    if (res.status === 403) {
-      const body = await _safeJson(res);
-      throw new AdminForbiddenError(
-        body?.error?.message || body?.detail || "This key does not have admin access.",
-      );
-    }
-    if (!res.ok) {
-      const body = await _safeJson(res);
-      throw new AdminApiError(body?.error?.message || body?.detail || `HTTP ${res.status}`, res.status);
-    }
-    return res.json();
+  async _patch(path, jsonBody) {
+    return this._request("PATCH", path, jsonBody ?? {});
   }
 }
 

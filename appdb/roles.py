@@ -49,6 +49,22 @@ class LastAdminError(RuntimeError):
     """Refusing to revoke the last remaining holder of a capability."""
 
 
+class EnvironmentGrantedRoleError(RuntimeError):
+    """Refusing a revoke that this table cannot carry out.
+
+    A capability held via ``API_KEYS_JSON`` is unioned back into every
+    resolved principal by :func:`appdb.key_store.get_active_principals`,
+    which reads the environment on every load. Deleting a row here cannot
+    remove it -- there may be no row at all -- so the delete would report
+    success while the principal kept the capability, and the very next
+    read of the role holders would still list them.
+
+    Silence was the wrong answer to that: the route returned
+    ``{"granted": false}`` and the panel showed the revoke as done. The
+    correct fix is a restart with an edited ``API_KEYS_JSON``, which is
+    the one thing the caller was not being told."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -116,7 +132,15 @@ def revoke(principal_id: str, capability: str) -> None:
         If *principal_id* is the only current holder of *capability*
         (counting both environment-bootstrapped and database-granted
         holders — see module docstring). The row (if any) is left
-        untouched in this case.
+        untouched in this case. Checked FIRST: when a principal is both
+        the last holder and environment-granted, losing the capability
+        entirely is the larger fact, and that error's own message already
+        points at ``API_KEYS_JSON`` and a restart.
+    EnvironmentGrantedRoleError
+        If *principal_id* holds *capability* through ``API_KEYS_JSON``
+        while someone else holds it too. Without this the delete below
+        removes a row that may not exist, reports success, and leaves the
+        principal holding the capability -- see that error's docstring.
     """
     current_holders = holders(capability)
     if current_holders == {principal_id}:
@@ -125,6 +149,15 @@ def revoke(principal_id: str, capability: str) -> None:
             "they are the only remaining holder of this capability. "
             "Grant it to another principal first, or restore access "
             "through API_KEYS_JSON and a restart if this was a mistake."
+        )
+
+    if principal_id in _env_holders(capability):
+        raise EnvironmentGrantedRoleError(
+            f"{principal_id!r} holds {capability!r} through API_KEYS_JSON, "
+            "not through a grant this table can remove -- revoking it here "
+            "would report success and change nothing. Remove the "
+            f"{capability!r} flag from that principal's API_KEYS_JSON entry "
+            "and restart the server."
         )
 
     engine = get_app_engine()
