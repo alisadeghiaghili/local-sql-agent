@@ -167,8 +167,7 @@ async function refreshHealth() {
     const lines = [`/health: ${h.status}, model ${h.model || "?"}`];
     if (h.llmDetail) lines.push(`LLM: ${h.llmDetail}`);
     if (h.dbDetail) lines.push(`DB: ${h.dbDetail}`);
-    setHealth(h.api, h.llm, h.db, lines.join("
-"));
+    setHealth(h.api, h.llm, h.db, lines.join("\n"));
   } catch {
     setHealth(false, false, false, "بک‌اند در دسترس نیست — uvicorn api.server:app را اجرا کنید یا حالت نمایشی را انتخاب کنید");
   }
