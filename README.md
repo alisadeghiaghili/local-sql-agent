@@ -175,7 +175,9 @@ cp -r project_config.example project_config
 # example files.
 
 # 4. Issue an API key (every route but /health requires one)
-python -m scripts.issue_api_key
+python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
+# ...and one for yourself, with every admin capability:
+python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin
 
 # 5a. CLI
 python app.py
@@ -453,9 +455,11 @@ deliberately not supported — one way in is one thing to reason about.
   key the cache on, own a session, and name in the audit trail. See
   `docs/api-contract-v2.md`'s authentication section for the full rationale.
 - **Never store raw keys:** `API_KEYS_JSON` holds only each key's SHA-256 hex
-  digest (`security/auth.py`). Issue a new key with `python
-  scripts/issue_api_key.py --id <id> --name <name>` — it prints the raw key
-  **once**, never to a file or log.
+  digest (`security/auth.py`). Issue a new key with `python -m
+  scripts.issue_api_key --id <id> --name <name>` — it prints the raw key
+  **once**, never to a file or log. Add `--admin`, `--operations`,
+  `--security`, or `--full-admin` for all three, to grant the admin
+  capabilities `docs/admin-panel-architecture.md` §2 defines.
 - **Fail closed:** with `AUTH_REQUIRED=true` (the default) and no keys
   configured, the server refuses to start rather than run with a front door
   nobody can open. `AUTH_REQUIRED=false` is a deliberate escape hatch that

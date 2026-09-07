@@ -5,6 +5,74 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.7.0] — 2026-09-07
+
+### Added
+
+- **`scripts/issue_api_key.py` can grant all three admin capabilities.**
+  `--operations` and `--security` join `--admin`, plus `--full-admin` for
+  all three at once. All three fields have been parseable by
+  `security/auth.py` since the admin panel's phase 2, but only `--admin`
+  was issuable — so granting the other two meant hand-editing the
+  `API_KEYS_JSON` array, which is exactly the "raw key and digest get
+  confused" territory this script exists to keep operators out of.
+
+- **The script warns when asked for a capability set that produces a
+  partly-403 admin panel.** The panel's ten sections do not sit behind one
+  capability: `require_admin` serves four of them, and
+  `require_operations_or_security` the other six. A key holding only
+  `admin` therefore loads a panel where more than half the sections report
+  a permissions error — which reads as a broken deployment rather than as
+  a decision someone made at issue time. Both partial shapes are now named
+  at issue time, with the flag that fixes them.
+
+### Fixed
+
+- **The raw key is no longer the easy half of the output to miss.** This
+  script prints two strings that go to two different places: the raw key
+  to a browser field, the JSON entry to `.env`. 4.6.1 added a 401 hint for
+  operators who pasted the digest into the key field, on the reasoning
+  that the entry is "the conspicuous, copy-pasteable artefact" — correct,
+  and aimed one step too late. The entry was conspicuous *because this
+  script made it so*, printing both values as equally-weighted flat lines
+  under similar-looking headings; operators reported not registering that
+  a second value existed at all.
+
+  The raw key is now framed, indented, and labelled with its length and
+  its destination, and the two are numbered as sequential steps rather
+  than listed as outputs. Plain ASCII, no colour: this output is routinely
+  piped, redirected, and pasted into tickets.
+
+- **`VERIFY_API_KEY`'s usage hint is spelled for the shell it is printed
+  into.** It read `VERIFY_API_KEY=<raw key> ...` — the POSIX inline-
+  environment form, which PowerShell does not have. On Windows, where
+  `docs/fa/getting-started.md` walks through every setup step in
+  `powershell` blocks, pasting it produced `The term 'VERIFY_API_KEY=...'
+  is not recognized as a name of a cmdlet` — which reads as "this script
+  is broken", the opposite of what a check whose whole job is building
+  confidence should do. The hint now branches on the platform.
+
+### Documentation
+
+- **The capability-to-panel-section mapping is written down**, in
+  `docs/fa/getting-started.md` §2.5.1, `docs/deployment-runbook.md` §1.1,
+  and `.env.example`. It was previously derivable only by reading the
+  `Depends(...)` on each route, which is why "the panel is half 403" had
+  no answer anywhere in the documentation.
+
+- **`docs/fa/getting-started.md` §0.4 says what the pre-flight check does
+  not prove.** Without `VERIFY_API_KEY` it confirms that `API_KEYS_JSON`
+  parses and holds at least one key — not that *your* key authenticates.
+  Passing it while the browser returns 401 was a coherent state with no
+  explanation in the guide.
+
+- Every `python scripts/issue_api_key.py` invocation in the docs is now
+  `python -m scripts.issue_api_key`, matching the form the setup guide has
+  used throughout. README's step 4 also no longer shows the command
+  without its two required arguments.
+
+---
+
 ## [4.6.1] — 2026-09-06
 
 ### Fixed
