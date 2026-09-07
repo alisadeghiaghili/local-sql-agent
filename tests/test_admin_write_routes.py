@@ -352,6 +352,78 @@ class TestLastAdminCannotBeRemovedViaTheRoute:
         assert resp.status_code == 409
 
 
+class TestAnIneffectiveRevokeIsRefusedRatherThanReportedAsDone:
+    """The admin panel's role controls are the first UI to reach this
+    route, and they surfaced a silent one: revoking a capability that a
+    principal holds through ``API_KEYS_JSON`` returned
+    ``200 {"granted": false}`` while the very next read of the holders
+    still listed them. The environment's capabilities are unioned back in
+    on every principal load, so no row deletion here can remove one.
+    """
+
+    def test_revoking_an_env_granted_role_is_a_409(self, client):
+        keys_json = json.dumps([
+            {
+                "id": "security-admin", "name": "Security Admin",
+                "key_sha256": _sha256(RAW_SECURITY_KEY), "security": True,
+            },
+            {
+                "id": "env-ops", "name": "Env Ops",
+                "key_sha256": "f" * 64, "operations": True,
+            },
+        ])
+        with cfg.override_settings(api_keys_json=keys_json):
+            # A second operations holder, so this is not the last-admin path.
+            granted = client.post(
+                "/admin/roles/db-ops",
+                json={"capability": "operations", "grant": True},
+                headers=_auth(RAW_SECURITY_KEY),
+            )
+            assert granted.status_code == 200
+
+            resp = client.post(
+                "/admin/roles/env-ops",
+                json={"capability": "operations", "grant": False},
+                headers=_auth(RAW_SECURITY_KEY),
+            )
+            assert resp.status_code == 409, (
+                "an env-granted role revoke reported success while changing "
+                "nothing -- the panel then showed it as done"
+            )
+            assert "API_KEYS_JSON" in json.dumps(resp.json())
+
+            still = client.get(
+                "/admin/roles/operations", headers=_auth(RAW_SECURITY_KEY),
+            )
+            assert "env-ops" in still.json()["principal_ids"]
+
+    def test_a_database_granted_role_still_revokes_through_the_route(self, client):
+        """The guard must not catch the ordinary case beside it."""
+        keys_json = json.dumps([
+            {
+                "id": "security-admin", "name": "Security Admin",
+                "key_sha256": _sha256(RAW_SECURITY_KEY), "security": True,
+            },
+        ])
+        with cfg.override_settings(api_keys_json=keys_json):
+            for pid in ("db-a", "db-b"):
+                client.post(
+                    f"/admin/roles/{pid}",
+                    json={"capability": "operations", "grant": True},
+                    headers=_auth(RAW_SECURITY_KEY),
+                )
+            resp = client.post(
+                "/admin/roles/db-a",
+                json={"capability": "operations", "grant": False},
+                headers=_auth(RAW_SECURITY_KEY),
+            )
+            assert resp.status_code == 200
+            still = client.get(
+                "/admin/roles/operations", headers=_auth(RAW_SECURITY_KEY),
+            )
+            assert "db-a" not in still.json()["principal_ids"]
+
+
 # ---------------------------------------------------------------------------
 # Mutual visibility (spec §2.4/§5): either role can read the admin-action
 # log; neither can edit or delete it (no such route exists at all).

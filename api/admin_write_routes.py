@@ -84,7 +84,13 @@ from appdb.key_store import (
     set_disabled,
     update_denied_columns,
 )
-from appdb.roles import LastAdminError, grant, holders, revoke
+from appdb.roles import (
+    EnvironmentGrantedRoleError,
+    LastAdminError,
+    grant,
+    holders,
+    revoke,
+)
 from security.auth import OPERATIONS_CAPABILITY, SECURITY_CAPABILITY, Principal
 
 router = APIRouter(prefix="/admin", tags=["admin-write"])
@@ -244,7 +250,12 @@ def admin_change_role(
     else:
         try:
             revoke(principal_id, req.capability)
-        except LastAdminError as exc:
+        except (LastAdminError, EnvironmentGrantedRoleError) as exc:
+            # Both are 409: the request was well-formed and the caller was
+            # authorised, but the state it asks for cannot be reached from
+            # here. Neither is a 400 (nothing about the input is wrong) and
+            # neither may be a silent 200 -- reporting success for a revoke
+            # that leaves the capability in place is precisely the bug.
             raise HTTPException(status_code=409, detail=str(exc))
         action = "role.revoke"
 

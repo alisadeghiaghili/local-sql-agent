@@ -48,7 +48,16 @@ const calls = [];
 let nextResponse = null;
 
 globalThis.fetch = async (url, init) => {
-  calls.push({ url: String(url), headers: { ...((init && init.headers) || {}) } });
+  // method and body are recorded as well as url/headers: phase 7 added
+  // call sites where the verb is part of the contract (a PATCH sent as a
+  // POST reaches a different route entirely) and where the request body
+  // must carry the server's field names rather than the UI's.
+  calls.push({
+    url: String(url),
+    headers: { ...((init && init.headers) || {}) },
+    method: (init && init.method) || "GET",
+    body: init && init.body,
+  });
   return nextResponse;
 };
 
@@ -161,4 +170,111 @@ assert.ok(!(threw instanceof AdminUnauthorizedError) && !(threw instanceof Admin
 assert.equal(threw.message, "boom");
 console.log("[ok] generic non-2xx -> AdminApiError with the real error.message");
 
+// ---------------------------------------------------------------------
+// Scenario 5: phase 7's key-lifecycle and role call sites.
+//
+// These are the panel's first writes that change *who can get in*, so
+// "did it attach a credential" matters more here than anywhere else on
+// the page -- an unauthenticated key-issue call that somehow succeeded
+// would be a way in, not merely a broken card.
+//
+// They also exercise the two verbs scenario 3 never touched. `_get` and
+// `_post` were two hand-written copies of the same auth-and-error block
+// until this phase needed a third; they are now three thin wrappers over
+// one `_request`, and this scenario is what proves PATCH did not get a
+// fourth copy that forgot the header.
+// ---------------------------------------------------------------------
+nextResponse = jsonResponse(200, { keys: [] });
+await api.listKeys();
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "listKeys() must send Authorization");
+
+nextResponse = jsonResponse(200, { raw_key: "r", key_sha256: "h", principal_id: "a", name: "A" });
+await api.issueKey("analyst-2", "Analyst Two");
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "issueKey() must send Authorization");
+assert.equal(lastCall().method, "POST", "issueKey() must be a POST");
+assert.deepEqual(
+  JSON.parse(lastCall().body),
+  { principal_id: "analyst-2", name: "Analyst Two" },
+  "issueKey() must send the server's field names, not the UI's",
+);
+
+nextResponse = jsonResponse(200, { key_sha256: "h", disabled: true });
+await api.disableKey("abc/def");
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "disableKey() must send Authorization");
+assert.ok(
+  lastCall().url.includes("abc%2Fdef"),
+  "the key hash must be percent-encoded into the path, never interpolated raw",
+);
+
+nextResponse = jsonResponse(200, { key_sha256: "h", disabled: false });
+await api.enableKey("h");
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "enableKey() must send Authorization");
+
+nextResponse = jsonResponse(200, { key_sha256: "h", revoked: true });
+await api.revokeKey("h");
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "revokeKey() must send Authorization");
+
+nextResponse = jsonResponse(200, { key_sha256: "h", denied_columns: ["NationalID"] });
+await api.updateKeyAcl("h", ["NationalID"]);
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "updateKeyAcl() must send Authorization");
+assert.equal(lastCall().method, "PATCH", "updateKeyAcl() must be a PATCH");
+assert.deepEqual(JSON.parse(lastCall().body), { denied_columns: ["NationalID"] });
+
+nextResponse = jsonResponse(200, { capability: "operations", principal_ids: [] });
+await api.roleHolders("operations");
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "roleHolders() must send Authorization");
+
+nextResponse = jsonResponse(200, { principal_id: "a", capability: "security", granted: true });
+await api.changeRole("a", "security", true);
+assert.equal(lastCall().headers["Authorization"], expectedAuth, "changeRole() must send Authorization");
+assert.deepEqual(JSON.parse(lastCall().body), { capability: "security", grant: true });
+
+console.log("[ok] every phase-7 key/role call site sends Authorization: Bearer <key>");
+
+// ---------------------------------------------------------------------
+// Scenario 6: a 403 on a key-lifecycle call stays a typed
+// AdminForbiddenError carrying the server's own message.
+//
+// This is the case the panel renders differently from every other 403:
+// an admin key legitimately lacking `operations` is a capability gap, not
+// a wrong credential, and the card says which flag fixes it. That
+// distinction is only possible if the error arrives typed and with the
+// server's message intact rather than flattened into a generic failure.
+// ---------------------------------------------------------------------
+nextResponse = jsonResponse(403, {
+  error: { code: "OPERATIONS_REQUIRED", message: "This API key does not have the operations admin capability." },
+});
+threw = null;
+try {
+  await api.listKeys();
+} catch (err) {
+  threw = err;
+}
+assert.ok(threw instanceof AdminForbiddenError, "a 403 on listKeys must be an AdminForbiddenError");
+assert.match(threw.message, /operations/, "the server's own capability message must survive");
+console.log("[ok] 403 on a key-lifecycle call -> AdminForbiddenError with the server's message");
+
+// ---------------------------------------------------------------------
+// Scenario 7: the 409 the server returns rather than removing the last
+// holder of a role must reach the panel as a plain AdminApiError with its
+// message intact -- the panel shows it verbatim, because "you would have
+// locked yourself out" is information the user needs, and any generic
+// substitute would lose it.
+// ---------------------------------------------------------------------
+nextResponse = jsonResponse(409, {
+  error: { code: "CONFLICT", message: "Refusing to revoke the last holder of 'security'." },
+});
+threw = null;
+try {
+  await api.changeRole("admin-1", "security", false);
+} catch (err) {
+  threw = err;
+}
+assert.ok(threw instanceof AdminApiError);
+assert.ok(!(threw instanceof AdminForbiddenError) && !(threw instanceof AdminUnauthorizedError));
+assert.equal(threw.status, 409);
+assert.match(threw.message, /last holder/);
+console.log("[ok] 409 last-admin refusal reaches the panel with its message intact");
+
 console.log("ALL_SCENARIOS_PASSED");
+

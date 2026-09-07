@@ -5,6 +5,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.8.0] — 2026-09-07
+
+The admin panel can manage keys and roles. Until now it could not, and
+nothing said so: `POST /admin/keys`, the disable/enable/revoke routes, the
+ACL route and the role routes have all existed since phase 2 with no UI
+calling any of them, so issuing a key or granting a role meant the CLI —
+and a revocation phase 2 deliberately made *immediate* was, in practice,
+immediate once someone reached a terminal.
+
+### Added
+
+- **A "کلیدها و دسترسی‌ها" section in the admin panel.** Lists every key
+  with its state, source (`.env` or the panel), and column restriction;
+  issues new keys; disables, re-enables and revokes them; edits a key's
+  `denied_columns`; and grants or revokes either admin role. Each control
+  is gated server-side exactly as its route always was — `operations` for
+  the key lifecycle, `security` for anything that changes what a key can
+  see — and the panel never guesses at that gate client-side: it makes the
+  call and reports the server's own answer.
+
+  Three things the routes alone do not make visible, which this section
+  states at the moment each one matters:
+
+  - A key issued through the API starts with **every** column denied. It
+    authenticates and can read nothing until a security admin loosens it.
+    That split is deliberate, but an operations admin who does not know it
+    has just handed someone a key that looks broken.
+  - Disable is reversible; revoke is not, and they are one button apart.
+    Revoke asks for the key's id to be typed rather than confirmed — every
+    row's buttons sit in the same place, and a confirm dialog defends
+    against not reading, not against clicking the right button on the
+    wrong row.
+  - The raw key exists exactly once, in the issue response. The reveal is
+    not written to `localStorage`, not put in the URL, and never
+    re-rendered by a later refresh.
+
+- **A 403 on a capability-gated card renders inside that card.** The
+  panel's sections do not share one capability, so a key holding only some
+  of the three legitimately sees a 403 on the rest. That previously raised
+  the page-level "this key is not an admin key" banner — false, and
+  pointing at the wrong fix. The keys card now names the missing flag.
+
+### Fixed
+
+- **Revoking a role granted through `API_KEYS_JSON` is refused instead of
+  silently doing nothing.** `appdb.key_store.get_active_principals` unions
+  the environment's capabilities back into every resolved principal on
+  every load, so deleting a row from `admin_principal_roles` cannot remove
+  one — there may be no row at all. The route returned
+  `200 {"granted": false}` and the next read of the holders still listed
+  the principal. It is now a 409 naming the only thing that does work:
+  remove the flag from that entry and restart.
+
+  Found by the new panel section, which is the first caller that made this
+  route clickable. The last-holder rule still takes precedence when both
+  apply — losing a capability entirely is the larger fact, and that error
+  already points at `API_KEYS_JSON` and a restart.
+
+### Changed
+
+- `web/admin/admin.js`'s `_get` and `_post` were two hand-written copies
+  of the same auth-and-error block. Phase 7 needed a third verb, and a
+  third copy would have meant three places for the 401/403 distinction to
+  drift apart — a distinction the panel depends on to tell "enter a key"
+  from "this key lacks a capability". Both are now thin wrappers over one
+  `_request`, alongside the new `_patch`.
+
+- The panel header no longer claims the page only reads. That stopped
+  being true in phase 4.
+
+---
+
 ## [4.7.0] — 2026-09-07
 
 ### Added

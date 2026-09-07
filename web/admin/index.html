@@ -15,7 +15,7 @@
     <span class="brand-mark admin-mark" aria-hidden="true">ADM</span>
     <div class="brand-text">
       <h1>پنل مدیریت</h1>
-      <p>وضعیت استقرار، ممیزی و پیکربندی — این صفحه فقط می‌خواند</p>
+      <p>وضعیت استقرار، ممیزی، پیکربندی و مدیریت کلیدها</p>
     </div>
   </div>
   <div class="topbar-right">
@@ -130,6 +130,30 @@
       </div>
     </section>
   </div>
+
+  <!-- Admin panel phase 7: the key lifecycle and the two admin roles.
+       Every route behind this section has existed since phase 2 with
+       nothing in the UI calling it, so issuing a key or granting a role
+       meant the CLI plus a server restart. This is the panel's first
+       write that changes who can get in, so it sits below the read-only
+       diagnostics rather than above them: nothing here needs to be seen
+       to understand whether the deployment is healthy. -->
+  <section class="admin-section" aria-labelledby="keys-heading">
+    <div class="admin-section-head">
+      <h2 id="keys-heading">کلیدها و دسترسی‌ها</h2>
+      <div class="admin-section-actions">
+        <button class="admin-btn-refresh" id="keys-issue-btn" type="button">صدور کلید تازه</button>
+        <button class="admin-btn-refresh" data-refresh="keys" type="button" aria-label="بروزرسانی کلیدها">↻</button>
+      </div>
+    </div>
+    <!-- The one-time reveal. Lives outside keys-body so a background
+         refresh of the list can never re-render it away while the raw
+         key it is showing is still the only copy in existence. -->
+    <div id="keys-reveal" class="keys-reveal" hidden></div>
+    <div id="keys-body">
+      <p class="admin-loading">در حال بارگذاری…</p>
+    </div>
+  </section>
 
   <!-- Admin panel phase 6: schema drift and vocabulary freshness, both
        read-only diagnostics -- neither applies anything by itself. -->

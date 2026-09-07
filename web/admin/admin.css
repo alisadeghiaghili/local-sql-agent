@@ -440,3 +440,122 @@
   .admin-refresh-all,
   .admin-btn-refresh { transition: none; }
 }
+
+/* ── Admin panel phase 7: keys and roles ────────────────────────────
+ *
+ * Two things carry visual weight here, and deliberately only two: the
+ * one-time raw-key reveal, and the revoke button. Everything else in this
+ * card is an ordinary table, because everything else in this card is
+ * reversible.
+ *
+ * Status colours come from style.css's --status-* tokens rather than the
+ * brand ones, for the reason that file states: brand colour means "our
+ * chrome", status colour means "a fact about the system right now". A
+ * revoke button is the second kind. */
+
+.key-role {
+  display: inline-block;
+  margin-inline-start: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--status-neutral-bg);
+  border: 1px solid var(--border);
+}
+
+.key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.key-actions button {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  color: var(--ink);
+}
+
+.key-actions button:hover:not(:disabled) {
+  border-color: var(--navy-3);
+}
+
+.key-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The only irreversible control on this page. It does not merely need to
+ * differ from its neighbours -- it has to be distinguishable at a glance
+ * from "غیرفعال کردن", which sits directly beside it and means something
+ * recoverable. */
+.key-actions button.key-danger {
+  border-color: var(--status-critical);
+  color: var(--status-critical);
+}
+
+.key-actions button.key-danger:hover:not(:disabled) {
+  background: var(--status-critical);
+  color: #fff;
+}
+
+/* The reveal. Sized and coloured to stop the reader, because the value
+ * inside it is the only copy that will ever exist -- the same reasoning
+ * as scripts/issue_api_key.py's framed block, against the same failure. */
+.keys-reveal {
+  margin: 0 0 1rem;
+  padding: 1rem 1.1rem;
+  border: 2px solid var(--status-warn);
+  border-radius: 10px;
+  background: var(--status-warn-bg);
+  color: var(--ink);
+}
+
+.keys-reveal h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.keys-reveal p {
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+
+.keys-reveal-value {
+  display: block;
+  margin: 0.7rem 0;
+  padding: 0.7rem 0.9rem;
+  border-radius: 8px;
+  background: var(--sql-bg);
+  color: var(--sql-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  /* One click selects the whole key. Partial selection of a 43-character
+   * token is a silent way to copy something that will never authenticate. */
+  user-select: all;
+}
+
+.keys-reveal-warn {
+  border-inline-start: 3px solid var(--status-critical);
+  padding-inline-start: 0.7rem;
+}
+
+.keys-reveal button {
+  font: inherit;
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--ink);
+}

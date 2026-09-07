@@ -16,7 +16,14 @@ import pytest
 import config as cfg
 from appdb.engine import dispose_app_engine
 from appdb.key_store import invalidate_cache
-from appdb.roles import LastAdminError, grant, holders, revoke
+from appdb.roles import (
+    EnvironmentGrantedRoleError,
+    LastAdminError,
+    _db_holders,
+    grant,
+    holders,
+    revoke,
+)
 from security.auth import OPERATIONS_CAPABILITY, SECURITY_CAPABILITY
 
 
@@ -117,3 +124,82 @@ class TestLastAdminProtection:
             assert holders(SECURITY_CAPABILITY) == {"dual-listed"}
             with pytest.raises(LastAdminError):
                 revoke("dual-listed", SECURITY_CAPABILITY)
+
+
+class TestEnvironmentGrantedRolesRefuseAnIneffectiveRevoke:
+    """A capability held through ``API_KEYS_JSON`` cannot be removed by
+    deleting a row from this table: :func:`appdb.key_store.get_active_principals`
+    unions the environment's capabilities back into every resolved
+    principal on every load.
+
+    Before this check, that revoke deleted a row that need not even exist,
+    returned normally, and left the principal holding the capability --
+    and the admin panel, whose role controls are the first UI to reach
+    this route, showed the revoke as done. The next read of the holders
+    still listed them.
+    """
+
+    def test_revoking_an_env_granted_role_is_refused(self, app_db):
+        env_keys_json = json.dumps([
+            {
+                "id": "env-ops", "name": "Env Ops",
+                "key_sha256": "c" * 64, "operations": True,
+            },
+        ])
+        with cfg.override_settings(api_keys_json=env_keys_json):
+            # A second holder, so this is not the last-admin case.
+            grant("db-ops", OPERATIONS_CAPABILITY, granted_by="env-ops")
+
+            with pytest.raises(EnvironmentGrantedRoleError) as excinfo:
+                revoke("env-ops", OPERATIONS_CAPABILITY)
+
+            assert "API_KEYS_JSON" in str(excinfo.value), (
+                "the refusal must name where the capability actually comes "
+                "from, or it only says no without saying what would work"
+            )
+            assert "env-ops" in holders(OPERATIONS_CAPABILITY)
+
+    def test_the_refusal_does_not_delete_a_real_database_grant(self, app_db):
+        """A principal can hold a capability from BOTH sources. The revoke
+        is still refused -- it cannot achieve what it says -- and it must
+        not quietly remove the database half on the way out, which would
+        leave the two sources disagreeing for no visible reason."""
+        env_keys_json = json.dumps([
+            {
+                "id": "dual", "name": "Dual",
+                "key_sha256": "d" * 64, "operations": True,
+            },
+        ])
+        with cfg.override_settings(api_keys_json=env_keys_json):
+            grant("dual", OPERATIONS_CAPABILITY, granted_by="dual")
+            grant("other-ops", OPERATIONS_CAPABILITY, granted_by="dual")
+
+            with pytest.raises(EnvironmentGrantedRoleError):
+                revoke("dual", OPERATIONS_CAPABILITY)
+
+            assert "dual" in _db_holders(OPERATIONS_CAPABILITY), (
+                "the refused revoke removed the database grant anyway"
+            )
+
+    def test_a_purely_database_granted_role_still_revokes(self, app_db):
+        """The new check must not catch the ordinary case it sits beside."""
+        grant("db-only", OPERATIONS_CAPABILITY, granted_by="someone")
+        grant("db-other", OPERATIONS_CAPABILITY, granted_by="someone")
+        revoke("db-only", OPERATIONS_CAPABILITY)
+        assert "db-only" not in holders(OPERATIONS_CAPABILITY)
+
+    def test_last_holder_wins_over_the_environment_check(self, app_db):
+        """When a principal is both the last holder and environment-granted,
+        LastAdminError is the error raised -- the larger fact, and one whose
+        message already points at API_KEYS_JSON and a restart. Asserted so
+        the ordering in revoke() is a decision rather than an accident."""
+        env_keys_json = json.dumps([
+            {
+                "id": "only-env-sec", "name": "Only",
+                "key_sha256": "e" * 64, "security": True,
+            },
+        ])
+        with cfg.override_settings(api_keys_json=env_keys_json):
+            assert holders(SECURITY_CAPABILITY) == {"only-env-sec"}
+            with pytest.raises(LastAdminError):
+                revoke("only-env-sec", SECURITY_CAPABILITY)
