@@ -13,6 +13,7 @@ own manual usage instead, not a unit test.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -66,6 +67,34 @@ class TestCheckApiKeyAuthenticates:
             result = check_api_key_authenticates()
         assert result.status == "PASS"
         assert "1 key(s) configured" in result.detail
+
+    def test_the_hint_is_spelled_for_the_shell_it_is_printed_into(self, monkeypatch):
+        """The hint used to read ``VERIFY_API_KEY=<raw key> ...`` -- the
+        POSIX inline-environment form, which PowerShell does not have.
+
+        This project's setup guide walks Windows operators through every
+        step in ``powershell`` blocks, so on the platform most likely to
+        read this line, pasting it produced ``The term 'VERIFY_API_KEY=...'
+        is not recognized as a name of a cmdlet``. That does not read as
+        "your shell spells this differently"; it reads as "this script is
+        broken", which is the opposite of what a check whose whole job is
+        building confidence should do.
+        """
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        entry = build_entry("analyst-1", "Analyst One", issue_key())
+        with override_settings(auth_required=True, api_keys_json=json.dumps([entry])):
+            result = check_api_key_authenticates()
+
+        assert result.status == "PASS"
+        if os.name == "nt":
+            assert "$env:VERIFY_API_KEY" in result.detail
+            assert "VERIFY_API_KEY=" not in result.detail, (
+                "the POSIX inline-environment form is a parse error in "
+                "PowerShell, which is the shell this line was just printed into"
+            )
+        else:
+            assert "VERIFY_API_KEY=" in result.detail
+            assert "$env:" not in result.detail
 
     def test_verify_api_key_matching_passes_and_names_principal(self, monkeypatch):
         raw_key = issue_key()

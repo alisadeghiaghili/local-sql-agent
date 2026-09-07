@@ -315,6 +315,27 @@ def check_openai_model_exists() -> CheckResult:
     )
 
 
+def _verify_api_key_invocation() -> str:
+    """A copy-pasteable invocation setting ``VERIFY_API_KEY``, for *this* shell.
+
+    The advice this replaces read ``VERIFY_API_KEY=<raw key>`` — the
+    POSIX inline-environment form, which PowerShell does not have. On
+    Windows, where ``docs/fa/getting-started.md`` does its whole setup
+    walk-through in ``powershell`` blocks, pasting it does not fail as a
+    misconfigured check: it fails as ``The term 'VERIFY_API_KEY=...' is
+    not recognized as a name of a cmdlet``, which reads as "this script
+    is broken" rather than "your shell spells this differently".
+
+    Branching on :data:`os.name` rather than printing both forms keeps
+    the hint one line, and gets the common case right: the reader is
+    being told what to type into the shell they just typed something
+    into.
+    """
+    if os.name == "nt":
+        return '$env:VERIFY_API_KEY = "<raw key>"; python -m scripts.verify_deployment'
+    return "VERIFY_API_KEY='<raw key>' python -m scripts.verify_deployment"
+
+
 def check_api_key_authenticates() -> CheckResult:
     """An API key is configured, and (fail-closed) starting the server would
     not immediately refuse to run.
@@ -357,7 +378,7 @@ def check_api_key_authenticates() -> CheckResult:
             "API key authentication", "FAIL",
             "AUTH_REQUIRED is true but API_KEYS_JSON has no configured keys -- "
             "the server refuses to start (see api/server.py's lifespan). Issue "
-            "one with: python scripts/issue_api_key.py --id analyst-1 --name "
+            "one with: python -m scripts.issue_api_key --id analyst-1 --name "
             "\"Jane Analyst\", then set API_KEYS_JSON.",
         )
 
@@ -367,7 +388,7 @@ def check_api_key_authenticates() -> CheckResult:
             "API key authentication", "PASS",
             f"{len(keys)} key(s) configured, AUTH_REQUIRED=true -- the server "
             "will start. To also prove a specific key authenticates end-to-end, "
-            "re-run with VERIFY_API_KEY=<raw key> set in the environment.",
+            f"re-run with VERIFY_API_KEY set: {_verify_api_key_invocation()}",
         )
 
     principal = resolve_principal(f"Bearer {raw_key}", keys)

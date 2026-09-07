@@ -538,7 +538,7 @@ key minted by `scripts/issue_api_key.py` (`secrets.token_urlsafe(32)`, 256
 bits of entropy) is not that. Issue a key with:
 
 ```
-python scripts/issue_api_key.py --id analyst-1 --name "Jane Analyst"
+python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
 ```
 
 It prints the raw key **once**, to stdout only — never to a file or log —

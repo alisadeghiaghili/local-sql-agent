@@ -25,7 +25,7 @@ for this: each analyst enters their own key once, in their own browser, on
 first use — the UI never ships or bakes in a key of its own.
 
 ```bash
-python scripts/issue_api_key.py --id analyst-1 --name "Jane Analyst"
+python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
 ```
 
 This prints the raw key **once** — hand it to that analyst directly (a
@@ -41,6 +41,40 @@ the old one from `key_sha256` alone (that is the point — see
 Repeat for every analyst who will use the UI, plus one more for any other
 real caller/integration, appending each entry to the same `API_KEYS_JSON`
 array (`[{"id": ...}, {"id": ...}]`).
+
+### 1.1 The admin key
+
+At least one key needs the admin capabilities, or the admin panel has
+nobody who can open it. The panel's sections do **not** all sit behind one
+capability — `docs/admin-panel-architecture.md` §2 splits them:
+
+| Capability | Panel sections it unlocks |
+|---|---|
+| `admin` | audit summary, deployment checks, query cache, domain config |
+| `operations` or `security` | maintenance mode, feedback, schema drift, dimension vocabulary, per-analyst usage, auth failures |
+
+So a key holding only `admin` loads a panel where six of the ten sections
+return 403 — which reads as a broken deployment rather than as a
+permissions decision. For a deployment with a single operator, grant all
+three at once:
+
+```bash
+python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin
+```
+
+Where the two-role split is actually being used, grant `admin` alongside
+whichever half that person holds:
+
+```bash
+python -m scripts.issue_api_key --id ops-1 --name "Ops" --admin --operations
+python -m scripts.issue_api_key --id sec-1 --name "Security" --admin --security
+```
+
+The script warns when it is asked for a combination that produces a
+partly-403 panel, so this is checkable at issue time rather than at first
+login. Both admin roles must be bootstrapped from `API_KEYS_JSON` this way:
+the first admin of each kind comes from the environment, never from a web
+flow (§2.3).
 
 ## 2. Set the environment
 
@@ -87,8 +121,21 @@ changing anything persistent:
   the default assumption of 10.
 
 ```bash
-VERIFY_API_KEY=<raw key> VERIFY_EXPECTED_ANALYSTS=15 python scripts/verify_deployment.py
+VERIFY_API_KEY=<raw key> VERIFY_EXPECTED_ANALYSTS=15 python -m scripts.verify_deployment
 ```
+
+PowerShell has no inline environment-variable prefix, so on Windows that
+line is a parse error (`The term 'VERIFY_API_KEY=...' is not recognized`),
+not a failing check. Set them as variables first:
+
+```powershell
+$env:VERIFY_API_KEY = "<raw key>"
+$env:VERIFY_EXPECTED_ANALYSTS = "15"
+python -m scripts.verify_deployment
+$env:VERIFY_API_KEY = $null   # do not leave the raw key in the shell
+```
+
+The script prints whichever form matches the shell it is running in.
 
 Do not proceed to step 4 with any `[FAIL]` outstanding.
 
