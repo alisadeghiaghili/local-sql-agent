@@ -192,7 +192,8 @@ as before this phase.
                                       // from an empty `rows` array.
   },
 
-  "interpretation": "…",
+  "interpretation": "…",             // null unless the request asked for it
+                                     // (`interpret: true` — see §7's note)
   "tier": "T2",                     // T0 cache | T1 template | T2 single-shot | T3 agent
   "warnings": [],
 
@@ -387,10 +388,23 @@ difference.
 | `sql_delta` | `{text}` | SQL types out live |
 | `sql` | `{sql, guard}` | final SQL + guard verdict |
 | `rows` | `{columns, rows, row_count}` | table fills |
-| `interpretation_delta` | `{text}` | summary types out |
+| `interpretation_delta` | `{text}` | summary types out — only when the request set `interpret: true` |
 | `llm` | `llm` object | status strip populates |
 | `done` | `{turn}` | full Turn for the transcript |
 | `error` | `{code, message}` | error banner |
+
+`POST .../turns` takes an optional `interpret` (default `false`). It is
+opt-in because producing a summary sends up to twenty rows of real result
+data to the interpretation backend — the same reason `/query`'s own
+`interpret` has defaulted to `false` since phase 2. The bundled web UI
+exposes it as a per-analyst toggle rather than a deployment setting: the
+person who asked the question is the one who knows whether these
+particular rows should go to a model. `llm.interpret.interpret_rows`'s
+governance gate still refuses to send them to a *remote* backend unless
+`LLM_ALLOW_REMOTE` is explicitly true.
+
+When `interpret` is true the engine also times an `interpret` stage, so
+the `stage` events cover all five steps a client may be drawing.
 
 Streaming matters more than raw latency here: `resolved` and `assumptions`
 arrive in the first few hundred milliseconds, so the user can tell the system

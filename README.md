@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](setup.cfg)
-[![Tests](https://img.shields.io/badge/tests-2%2C605-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-2%2C620-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://python.org)
 [![Release](https://img.shields.io/github/v/release/alisadeghiaghili/local-sql-agent)](https://github.com/alisadeghiaghili/local-sql-agent/releases)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)  
@@ -153,6 +153,7 @@ its KV cache instead of re-reading the schema on every question.
 | 📌 | **Cross-session memory** | Standing preferences the analyst *pins* — never inferred from repetition. A closed, config-declared set, surfaced as an editable assumption chip and re-checked against the column ACL on every turn that would apply it. |
 | 🔑 | **Authentication & column ACL** | API keys on every route but `/health`; per-principal `denied_columns` enforced in the guard, not just partitioned in the cache. |
 | 🧑‍💼 | **Admin panel** | Eleven cards. Read-only diagnostics — audit summary, deployment checks, schema drift, vocabulary freshness, per-analyst usage, failed auth — alongside the narrow writes: maintenance mode, feedback triage, cache control, and key issuance / disable / revoke / column ACLs / role grants. Two admin roles split on one rule: anything that changes *who can see what data* is the security admin's. |
+| 📝 | **Plain-language summary** | Opt-in per question, as a toggle each analyst sets for themselves — producing one sends up to twenty result rows to the model, and the governance gate still refuses a *remote* backend without `LLM_ALLOW_REMOTE`. |
 | 🖥️ | **Analyst web UI** | Static, no build step. Conversation sidebar, generated SQL with highlighting, result table, chart, assumption chips, Excel export — and each analyst's own key in their own browser, never one shared key baked into the page. |
 | 🗄️ | **Multi-dialect** | Generates T-SQL, transpiles, then re-validates in the dialect that will execute. T-SQL and SQLite verified by execution. |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
@@ -161,7 +162,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 2,605 unit + integration tests at 92% coverage, gated at 90%; GitHub Actions CI on Python 3.11–3.13, plus doctests and an offline evaluation gate. |
+| 🧪 | **Test suite** | 2,620 unit + integration tests at 92% coverage, gated at 90%; GitHub Actions CI on Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
@@ -418,7 +419,7 @@ local-sql-agent/
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 2,605 unit + integration tests
+└── tests/                    # 2,620 unit + integration tests
 ```
 
 ---
@@ -431,7 +432,7 @@ pytest tests/test_sql_guard.py -v       # one module
 pytest tests/ eval/tests --cov          # exactly what CI measures
 ```
 
-**2,605 tests at 92% branch coverage**, with the build failing below 90%
+**2,620 tests at 92% branch coverage**, with the build failing below 90%
 (`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
 cover is stated in the same file rather than left to be discovered: the
 interactive wizards and CLI front-ends are excluded by policy — their
@@ -573,7 +574,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 2,605 unit and integration tests at 92% coverage; GitHub Actions CI across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 2,620 unit and integration tests at 92% coverage; GitHub Actions CI across Python 3.11–3.13 |
 
 ---
 

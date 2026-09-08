@@ -303,11 +303,11 @@ export class Api {
   /**
    * Ask a non-streaming turn. Returns a Turn (contract §4).
    */
-  async askTurn(sessionId, question) {
+  async askTurn(sessionId, question, { interpret = false } = {}) {
     const res = await this._fetchV2(`/v2/sessions/${encodeURIComponent(sessionId)}/turns`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, interpret }),
     });
     return res.json();
   }
@@ -320,13 +320,17 @@ export class Api {
    * fetch()+ReadableStream is used instead of EventSource because this is a
    * POST with a body, which EventSource cannot express.
    */
-  async askTurnStreaming(sessionId, question, onEvent, { signal } = {}) {
+  async askTurnStreaming(sessionId, question, onEvent, { signal, interpret = false } = {}) {
     const res = await this._fetchV2(
       `/v2/sessions/${encodeURIComponent(sessionId)}/turns?stream=1`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-        body: JSON.stringify({ question }),
+        // `interpret` decides whether the server sends result rows to the
+        // language model for a summary. Always sent explicitly rather than
+        // omitted, so the request says what it wants instead of relying on
+        // whatever the server's default happens to be.
+        body: JSON.stringify({ question, interpret }),
         signal,
       },
     );

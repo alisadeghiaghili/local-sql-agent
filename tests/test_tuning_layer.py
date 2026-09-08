@@ -89,6 +89,15 @@ _ALLOWED_MODULE_CONSTANTS = {
         "statistical floor -- fewer than 2 repeats cannot measure "
         "determinism at all, it is not a 'less thorough' setting"
     ),
+    "llm/interpret.py::MAX_PREVIEW_ROWS": (
+        "data-governance invariant -- it decides how many rows of real "
+        "query results cross the boundary to the language model. An "
+        "env-overridable version would let a deployment quietly increase "
+        "what leaves the engine by editing one variable, which is exactly "
+        "the shape config.py's 'Three layers' section says must not be a "
+        "knob. It is also written into INTERPRET_TEMPLATE's own wording "
+        "('up to 20 rows shown'), so the two would have to move together"
+    ),
     "eval/fingerprint.py::DEFAULT_FLOAT_PRECISION": (
         "a golden set's expected_fingerprint values are hashed at this "
         "precision; env-tunable would silently desync a deployment from "

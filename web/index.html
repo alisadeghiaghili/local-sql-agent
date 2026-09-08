@@ -89,6 +89,19 @@
         <textarea id="question" rows="2" placeholder="مثلاً «معاملات مشتری‌های تالار سیمان را نشان بده»" dir="auto"></textarea>
         <button class="btn-ask" id="btn-ask" type="button">پرسش</button>
       </div>
+      <!-- Per-analyst, persisted in this browser (js/state.js), and sent
+           on every turn. It is a choice worth exposing rather than a
+           deployment setting because it decides whether up to twenty rows
+           of the analyst's own result go to the language model: the person
+           who asked the question is the one who knows whether these
+           particular rows should. -->
+      <div class="ask-options">
+        <label class="ask-toggle">
+          <input type="checkbox" id="interpret-toggle">
+          <span>تفسیر نتیجه</span>
+        </label>
+        <span class="ask-toggle-hint">خلاصهٔ ساده‌شده، با فرستادن حداکثر ۲۰ ردیف نتیجه به مدل زبانی</span>
+      </div>
       <div class="samples" id="samples">
         <span class="samples-label">داستان نمونه:</span>
         <!-- sample buttons injected by main.js from data.js SCENARIO -->

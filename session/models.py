@@ -172,6 +172,15 @@ class SessionTranscriptResponse(BaseModel):
 
 class AskTurnRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000)
+    interpret: bool = Field(
+        default=False,
+        description=(
+            "If true, add a plain-language summary of the result rows. Sends "
+            "up to 20 real result rows to the interpretation backend, so it "
+            "is opt-in per request -- the same default /query has carried "
+            "since phase 2. The web UI exposes it as a per-analyst toggle."
+        ),
+    )
 
     @field_validator("question")
     @classmethod

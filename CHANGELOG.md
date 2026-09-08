@@ -5,6 +5,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.12.0] — 2026-09-08
+
+### Added
+
+- **The conversational path can summarise its own result, and the analyst
+  decides whether it does.** It never could: `session/engine.py` set
+  `interpretation=None` as a literal from the commit that introduced the
+  file, and never ran an `interpret` stage at all — so the web UI's fifth
+  pipeline step, labelled "تفسیر", could only ever sit at "در انتظار".
+  That was invisible while none of the five steps moved, and conspicuous
+  the moment 4.11.0 made the other four tick.
+
+  Producing a summary sends up to twenty rows of **real query results** to
+  the model, so it is opt-in per request rather than on for a whole
+  deployment: `AskTurnRequest.interpret` defaults to `false`, matching
+  `/query`'s own default since phase 2, and the web UI exposes it as a
+  checkbox under the question box that each analyst sets for themselves
+  and that persists in their own browser. The label states the cost, not
+  just the benefit — the person who asked the question is the one who
+  knows whether these particular rows should go to a model.
+
+  Asking for it also runs an `interpret` stage, so the fifth step reports
+  what actually happened rather than staying decorative.
+
+### Changed
+
+- **The interpretation logic moved to `llm/interpret.py`.** It lived in
+  `api/runner.py`, reachable only from `/query`; the session layer sits
+  below the API layer and cannot import from it. Moved rather than copied,
+  because it carries a data-governance gate — the refusal to send rows to
+  a remote backend without `LLM_ALLOW_REMOTE` — and two copies of a gate
+  is one copy that gets fixed and one that does not.
+  `api.runner._interpret` is now a thin wrapper, and its existing gate
+  tests cover the shared implementation unchanged.
+
+---
+
 ## [4.11.2] — 2026-09-08
 
 ### Fixed
