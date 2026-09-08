@@ -104,3 +104,47 @@ def test_no_hardcoded_version_badge_remains():
         "a hardcoded version badge is back in README.md. Use the dynamic "
         "one (img.shields.io/github/v/release/...) so it cannot go stale."
     )
+
+# ---------------------------------------------------------------------------
+# The enforcement badges
+# ---------------------------------------------------------------------------
+
+#: ``(badge label, the thing that has to still be true, how to check it)``.
+#:
+#: These three badges are a different kind of claim from the coverage
+#: percentage: each says "a build step enforces this", and each links to
+#: the step. That makes them checkable in a way a number is not -- the
+#: failure mode is not drift, it is the backing quietly going away while
+#: the badge stays. A guard deleted in a refactor leaves the README
+#: promising something no longer true, and nothing else would notice.
+_ENFORCEMENT_BADGES = (
+    ("SQL guard", "security/sql_guard.py", "sqlglot"),
+    ("Domain-free engine", "tests/test_no_domain_literals.py", None),
+    ("Doctests", ".github/workflows/ci.yml", "--doctest-modules"),
+)
+
+
+@pytest.mark.parametrize("label, target, must_contain", _ENFORCEMENT_BADGES)
+def test_each_enforcement_badge_links_to_something_that_still_exists(
+    label, target, must_contain,
+):
+    readme = _README.read_text(encoding="utf-8")
+    assert f"[![{label}]" in readme, (
+        f"the {label!r} badge is gone from README.md -- if that was "
+        "deliberate, drop its row from _ENFORCEMENT_BADGES too"
+    )
+    assert f"]({target})" in readme, (
+        f"the {label!r} badge no longer links to {target} -- a badge that "
+        "does not point at its own evidence is just a sticker"
+    )
+
+    path = _REPO_ROOT / target
+    assert path.exists(), (
+        f"README advertises {label!r} and links to {target}, which does "
+        "not exist. The claim outlived the thing enforcing it."
+    )
+    if must_contain is not None:
+        assert must_contain in path.read_text(encoding="utf-8"), (
+            f"{target} no longer contains {must_contain!r}, so the "
+            f"{label!r} badge is claiming an enforcement that is gone"
+        )

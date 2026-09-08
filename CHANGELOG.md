@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.10.3] — 2026-09-08
+
+### Added
+
+- **Three badges for guarantees a build step actually enforces**, each
+  linking to the step that makes it true: `SQL guard: AST allowlist`
+  (`security/sql_guard.py`, parsing with sqlglot rather than matching
+  strings), `engine: no domain literals`
+  (`tests/test_no_domain_literals.py`, which fails the build if a real
+  warehouse name reappears in engine source), and
+  `doctests: enforced in CI` (a required workflow step across fourteen
+  packages, not an optional one).
+
+  `tests/test_readme_claims.py` covers these the way it already covers the
+  coverage figure, but against a different failure: not drift, but the
+  backing quietly going away. Each badge must still be present, still link
+  to its evidence, and that evidence must still exist and still contain
+  the thing being claimed — so a guard deleted in a refactor takes the
+  badge down with it instead of leaving the README promising something
+  that stopped being true.
+
+---
+
 ## [4.10.2] — 2026-09-08
 
 ### Changed
