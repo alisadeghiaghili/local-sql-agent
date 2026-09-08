@@ -962,7 +962,29 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .chart-block { padding: 6px 2px 4px; }
 .chart-takeaway { font-size: 15px; font-weight: 700; margin: 0 0 2px; line-height: 1.5; }
 .chart-subcap { font-size: 11.5px; color: var(--muted); margin: 0 0 10px; }
-.chart-block svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart-block svg {
+  width: 100%; height: auto; display: block;
+  /* The chart's geometry is written left-to-right -- x grows rightward,
+     and `edgeSafeLabel` flips `text-anchor` between "start" and "end" to
+     keep a label inside [0, W]. But `text-anchor` resolves against the
+     INLINE BASE DIRECTION, and this page is dir="rtl", so the SVG
+     inherited rtl and every one of those decisions meant its opposite.
+     Measured: a label clamped to x=2 with anchor "start" rendered at
+     x=-140 -- 140 units outside the box, on the side the clamp existed to
+     protect. Every label the function tried to rescue was precisely the
+     one it threw out.
+
+     Persian text inside is unaffected: the base direction sets where a
+     run is anchored, not how it is shaped, so a Persian label still reads
+     right-to-left within itself. Verified against the real mixed
+     "name · number" label, which renders identically to before. */
+  direction: ltr;
+  /* Was `visible`, which is why a mispositioned label did not merely sit
+     wrong -- it escaped the SVG entirely and drew over the card around
+     it. Clipping turns any future geometry mistake into a cut-off label
+     inside the chart rather than text sprayed across the layout. */
+  overflow: hidden;
+}
 .chart-axis-label { fill: var(--muted); font-family: "Vazirmatn", sans-serif; font-size: 10.5px; }
 .chart-value-label { fill: var(--ink); font-family: Consolas, monospace; font-size: 10.5px; font-weight: 600; }
 .chart-value-label.dim { fill: var(--muted); }
@@ -986,16 +1008,34 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 
 /* ── Figures strip — three tiles for a series, none for a scalar. ── */
 .figures-strip {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  display: grid;
+  /* 140px was sized for counts and percentages. These tiles also carry
+     summed rial figures -- twenty digits and separators -- which at 17px
+     need well over that, so the value simply ran past the tile. */
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   border-block: 1px solid var(--border); background: var(--card-2); margin: 10px 0;
 }
-.figure-tile { padding: 10px 14px; border-inline-start: 1px solid var(--border); }
+.figure-tile {
+  padding: 10px 14px; border-inline-start: 1px solid var(--border);
+  /* A grid item's default min-width is auto, i.e. its content's intrinsic
+     width -- so a `1fr` track does not shrink below a long unbroken
+     number, it overflows instead. This is what lets the track win. */
+  min-width: 0;
+}
 .figure-tile:first-child { border-inline-start: 0; }
 .figure-tile-label {
   display: block; font-size: 9.5px; font-weight: 700; letter-spacing: .4px;
   text-transform: uppercase; color: var(--muted);
 }
-.figure-tile-value { display: block; margin-top: 3px; font-size: 17px; font-weight: 700; }
+.figure-tile-value {
+  display: block; margin-top: 3px; font-weight: 700;
+  /* Shrinks before it wraps, wraps before it overflows. A wrapped rial
+     figure is awkward; a clipped one is wrong, because the digits that
+     get cut are the most significant ones in RTL. */
+  font-size: clamp(13px, 1.6vw, 17px);
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
 
 /* ── View switch (chart <-> table, contract-honouring `chart` shape). ── */
 .view-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; margin-top: 4px; }

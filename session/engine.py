@@ -66,6 +66,7 @@ from security.sql_guard import (
     clean_sql,
     ensure_top,
     extract_touched_tables,
+    pretty_sql,
     transpile_and_revalidate,
     validate_sql,
 )
@@ -284,6 +285,7 @@ class TurnEngine:
         assumption_overrides: dict[str, str] | None = None,
         denied_columns: tuple[str, ...] | None = None,
         memory_entries: dict[str, MemoryEntry] | None = None,
+        on_stage: Callable[[str, str], None] | None = None,
     ) -> Turn:
         """Answer *question* in the context of *record*, and record one audit entry.
 
@@ -327,7 +329,14 @@ class TurnEngine:
             Always returned — never raises an ``NLQError``; see module
             docstring.
         """
-        timer = StageTimer()
+        # `on_stage` is how the SSE endpoint (api/v2_routes.py) learns which
+        # pipeline stage is running WHILE this call is still blocking. This
+        # method runs to completion in a worker thread before its caller
+        # sees a Turn, so without a callback the five stages the web UI
+        # draws could only ever be filled in after the answer had already
+        # arrived -- which is what they did: all five sat at "waiting"
+        # through the whole turn and then the result appeared beside them.
+        timer = StageTimer(on_stage=on_stage)
         req_id = request_id or uuid.uuid4().hex[:12]
         turn_id = f"t_{uuid.uuid4().hex[:8]}"
         index = len(record.turns) + 1
@@ -553,7 +562,14 @@ class TurnEngine:
         rows = df.to_dict(orient="records")
         outcome = _GenOutcome(
             sql=capped,
-            sql_display=clean_sql(raw_outer),
+            # Formatted here, not where the SQL is executed: `sql` stays
+            # byte-for-byte what the guard validated and the database ran,
+            # while `sql_display` is what the UI renders and the copy
+            # button copies. Without this the layout is whatever the model
+            # felt like emitting -- the same deployment produces a tidy
+            # multi-line statement for one question and a single
+            # 300-character line for the next.
+            sql_display=pretty_sql(clean_sql(raw_outer), cfg.settings.sql_dialect),
             guard=GuardVerdict(
                 verdict="allowed", injected_top=injected_top,
                 tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),

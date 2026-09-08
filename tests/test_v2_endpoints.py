@@ -10,6 +10,8 @@ in-memory execute stub — no Ollama or SQL Server required.
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -161,7 +163,37 @@ class TestAskTurn:
 
 
 class TestAskTurnStreaming:
-    def test_stream_emits_contract_events_in_order(self, client_and_engine):
+    """Contract §7's event stream.
+
+    This class used to assert the full sequence as
+    ``["stage", "resolved", ...]`` — exactly one ``stage`` frame, because
+    exactly one was ever sent: a single ``{"stage": "plan"}`` emitted
+    before the engine was even called. The web UI draws five pipeline
+    steps keyed ``understand``/``generate``/``validate``/``execute``/
+    ``interpret``, so that frame matched no step, was silently dropped by
+    ``renderPipeline``'s ``setStage``, and all five sat at "waiting" for
+    the whole turn while the answer appeared beside them.
+
+    Stage frames are now live and there are many, so the assertions split
+    in two: the content events keep their exact contract order, and the
+    stage events are checked for the properties that actually matter —
+    they name steps the UI has, they arrive before the content, and a
+    stage never reports "done" without having reported "running" first.
+    """
+
+    @staticmethod
+    def _events(body: str) -> list[tuple[str, dict]]:
+        out: list[tuple[str, dict]] = []
+        name = None
+        for line in body.splitlines():
+            if line.startswith("event: "):
+                name = line[len("event: "):]
+            elif line.startswith("data: ") and name is not None:
+                out.append((name, json.loads(line[len("data: "):])))
+                name = None
+        return out
+
+    def test_content_events_keep_their_contract_order(self, client_and_engine):
         client, _ = client_and_engine
         sid = client.post("/v2/sessions").json()["session_id"]
         with client.stream(
@@ -171,9 +203,67 @@ class TestAskTurnStreaming:
             assert resp.headers["content-type"].startswith("text/event-stream")
             body = "".join(resp.iter_text())
 
-        events = [line[len("event: "):] for line in body.splitlines() if line.startswith("event:")]
-        assert events == ["stage", "resolved", "assumptions", "sql", "rows", "llm", "done"]
-        assert "done" in body and '"turn"' in body
+        names = [n for n, _ in self._events(body) if n != "stage"]
+        assert names == ["resolved", "assumptions", "sql", "rows", "llm", "done"]
+        assert '"turn"' in body
+
+    def test_stage_events_name_steps_the_ui_actually_draws(self, client_and_engine):
+        """The regression that made this whole class worth splitting: a
+        stage id with no matching element is dropped without a word, so
+        the only symptom is a pipeline that never moves."""
+        client, _ = client_and_engine
+        sid = client.post("/v2/sessions").json()["session_id"]
+        with client.stream(
+            "POST", f"/v2/sessions/{sid}/turns?stream=1", json={"question": "لیست مشتریان"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+        stages = [d for n, d in self._events(body) if n == "stage"]
+        assert stages, "no stage events at all -- the pipeline cannot move"
+
+        ui_steps = {"understand", "generate", "validate", "execute", "interpret"}
+        unknown = {d["stage"] for d in stages} - ui_steps
+        assert not unknown, (
+            f"stage ids {sorted(unknown)} match no step in web/js/render/pipeline.js; "
+            "setStage drops them silently and the step stays at 'waiting'"
+        )
+        assert {d["state"] for d in stages} <= {"running", "done", "error"}
+
+    def test_a_stage_never_finishes_without_having_started(self, client_and_engine):
+        client, _ = client_and_engine
+        sid = client.post("/v2/sessions").json()["session_id"]
+        with client.stream(
+            "POST", f"/v2/sessions/{sid}/turns?stream=1", json={"question": "لیست مشتریان"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+        started: set[str] = set()
+        for name, data in self._events(body):
+            if name != "stage":
+                continue
+            if data["state"] == "running":
+                started.add(data["stage"])
+            else:
+                assert data["stage"] in started, (
+                    f"stage {data['stage']!r} reported {data['state']!r} "
+                    "without ever reporting 'running'"
+                )
+
+    def test_stage_events_arrive_before_the_content_they_describe(self, client_and_engine):
+        """Progress reported after the answer is not progress. If the
+        engine's stages were collected and flushed at the end, every stage
+        frame would land after `sql` and `rows` and the pipeline would
+        still only fill in once the turn was already visible."""
+        client, _ = client_and_engine
+        sid = client.post("/v2/sessions").json()["session_id"]
+        with client.stream(
+            "POST", f"/v2/sessions/{sid}/turns?stream=1", json={"question": "لیست مشتریان"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+        names = [n for n, _ in self._events(body)]
+        assert names.index("stage") < names.index("sql")
+        assert names[-1] == "done"
 
 
 class TestPatchAssumptions:
