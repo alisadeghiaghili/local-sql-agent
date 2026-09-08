@@ -76,6 +76,86 @@ _REASONING_MARKER_RE = re.compile(
 )
 
 
+#: Payload keys :func:`load_extra_body` refuses to let ``LLM_EXTRA_BODY``
+#: set. Everything here decides *which model is asked what*, or is already
+#: a first-class setting with its own validation and its own reporting in
+#: the caller-facing ``llm`` status block: letting an environment variable
+#: quietly redirect ``model``, rewrite ``messages``, or contradict the
+#: ``temperature``/``seed`` that ``observability.llm_status`` reports would
+#: make that block describe a request that was never sent.
+#:
+#: ``max_tokens`` is on the list for the same reason and one more: it is
+#: the setting most likely to be reached for here (see
+#: ``config.Settings.llm_extra_body_json``'s docstring on reasoning models),
+#: and ``LLM_NUM_PREDICT`` is where it belongs -- two places setting one
+#: value, with the status block reading only one of them, is exactly the
+#: kind of disagreement this project fails loudly on elsewhere.
+RESERVED_PAYLOAD_KEYS = frozenset({
+    "model", "messages", "temperature", "top_p", "seed", "max_tokens",
+    "stop", "stream", "n",
+})
+
+
+class ExtraBodyConfigError(ValueError):
+    """``LLM_EXTRA_BODY`` is not a JSON object, or names a reserved key."""
+
+
+def load_extra_body() -> dict[str, Any]:
+    """Parse ``cfg.settings.llm_extra_body_json`` into request fields.
+
+    Read through ``cfg.settings`` on every call rather than cached, so
+    ``config.override_settings()`` is visible immediately -- this project's
+    configuration contract (see ``config.py``'s module docstring).
+
+    Returns
+    -------
+    dict[str, Any]
+        The fields to merge into a chat-completions body. Empty for an
+        unset/blank value, which is the default and sends exactly what
+        this project sent before this setting existed.
+
+    Raises
+    ------
+    ExtraBodyConfigError
+        If the value is present but is not valid JSON, is not a JSON
+        object, or names one of :data:`RESERVED_PAYLOAD_KEYS`. Every one
+        of these is a loud failure rather than a silently-ignored field:
+        an operator who set this to turn a model's reasoning off and got
+        no error has every reason to believe it worked, and the symptom
+        when it did not (an empty response, eventually) points nowhere
+        near the typo that caused it.
+    """
+    raw = (cfg.settings.llm_extra_body_json or "").strip()
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ExtraBodyConfigError(
+            f"LLM_EXTRA_BODY is not valid JSON: {exc}. It must be a JSON "
+            'object, e.g. {"chat_template_kwargs": {"enable_thinking": false}}'
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ExtraBodyConfigError(
+            "LLM_EXTRA_BODY must be a JSON object of request fields, not "
+            f"{type(parsed).__name__} -- these are merged into the request "
+            "body, so there is nothing a list or a bare value could mean."
+        )
+
+    reserved = sorted(RESERVED_PAYLOAD_KEYS.intersection(parsed))
+    if reserved:
+        raise ExtraBodyConfigError(
+            f"LLM_EXTRA_BODY may not set {', '.join(repr(k) for k in reserved)} "
+            "-- those are set from their own settings and reported in the "
+            "llm status block, so overriding them here would make that block "
+            "describe a request that was never sent. Use LLM_NUM_PREDICT, "
+            "LLM_TEMPERATURE, LLM_TOP_P, LLM_SEED and LLM_STOP instead."
+        )
+    return parsed
+
+
 def _normalize_finish_reason(raw_reason: Any) -> str:
     """Map a raw OpenAI-compatible ``finish_reason`` onto this project's contract.
 
@@ -363,6 +443,11 @@ class OpenAIBackend(LLMBackend):
         }
         if cfg.settings.llm_stop:
             payload["stop"] = list(cfg.settings.llm_stop)
+        # Merged last, but unable to reach anything above it:
+        # load_extra_body rejects every key set here (RESERVED_PAYLOAD_KEYS)
+        # rather than letting the merge win, so this can only ever ADD
+        # server-specific fields -- never quietly redirect the request.
+        payload.update(load_extra_body())
         return payload
 
     def generate(self, prompt: str) -> str:
@@ -503,20 +588,27 @@ class OpenAIBackend(LLMBackend):
 
     def generate_structured(self, segments: "PromptSegments", schema: dict) -> tuple[dict, dict[str, Any]]:
         """Constrained decoding via ``response_format: json_schema`` (strict mode)."""
+        structured_payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": segments.flatten()}],
+            "temperature": cfg.settings.llm_temperature,
+            "top_p": cfg.settings.llm_top_p,
+            "seed": cfg.settings.llm_seed,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "result", "schema": schema, "strict": True},
+            },
+        }
+        # Same merge as the unstructured path. A constrained decode is
+        # still a decode: a reasoning model asked for JSON reasons first
+        # and can be cut off mid-object, so an operator who turned
+        # reasoning off for one path has not turned it off at all unless
+        # it applies here too.
+        structured_payload.update(load_extra_body())
         resp = requests.post(
             f"{self._base_url}/chat/completions",
             headers=self._headers,
-            json={
-                "model": self._model,
-                "messages": [{"role": "user", "content": segments.flatten()}],
-                "temperature": cfg.settings.llm_temperature,
-                "top_p": cfg.settings.llm_top_p,
-                "seed": cfg.settings.llm_seed,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {"name": "result", "schema": schema, "strict": True},
-                },
-            },
+            json=structured_payload,
             timeout=self._timeout,
         )
         resp.raise_for_status()
