@@ -6,17 +6,22 @@
 
 [![CI](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](setup.cfg)
-[![Tests](https://img.shields.io/badge/tests-2%2C565-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-2%2C569-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://python.org)
 [![Release](https://img.shields.io/github/v/release/alisadeghiaghili/local-sql-agent)](https://github.com/alisadeghiaghili/local-sql-agent/releases)
-[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)  
+[![SQL guard](https://img.shields.io/badge/SQL%20guard-AST%20allowlist-8A2BE2)](security/sql_guard.py)
+[![Domain-free engine](https://img.shields.io/badge/engine-no%20domain%20literals-8A2BE2)](tests/test_no_domain_literals.py)
+[![Doctests](https://img.shields.io/badge/doctests-enforced%20in%20CI-8A2BE2)](.github/workflows/ci.yml)
 
 <sub>The CI and release badges read GitHub directly. Coverage is enforced
 on every push — the build fails below the 90% gate in
 [`setup.cfg`](setup.cfg) — and the coverage and test figures shown were
-measured at v4.10.1 (`pytest tests/ eval/tests --cov`);
+measured at v4.10.2 (`pytest tests/ eval/tests --cov`);
 `tests/test_readme_claims.py` fails the build if the badge ever claims
-more than the gate actually holds.</sub>
+more than the gate actually holds. The three purple badges are claims a
+build step enforces, not aspirations: each links to the guard that makes
+it true.</sub>
 
 ---
 
@@ -156,7 +161,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 2,565 unit + integration tests at 92% coverage, gated at 90%; GitHub Actions CI on Python 3.11–3.13, plus doctests and an offline evaluation gate. |
+| 🧪 | **Test suite** | 2,569 unit + integration tests at 92% coverage, gated at 90%; GitHub Actions CI on Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
@@ -413,7 +418,7 @@ local-sql-agent/
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 2,565 unit + integration tests
+└── tests/                    # 2,569 unit + integration tests
 ```
 
 ---
@@ -426,7 +431,7 @@ pytest tests/test_sql_guard.py -v       # one module
 pytest tests/ eval/tests --cov          # exactly what CI measures
 ```
 
-**2,565 tests at 92% branch coverage**, with the build failing below 90%
+**2,569 tests at 92% branch coverage**, with the build failing below 90%
 (`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
 cover is stated in the same file rather than left to be discovered: the
 interactive wizards and CLI front-ends are excluded by policy — their
@@ -568,7 +573,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 2,565 unit and integration tests at 92% coverage; GitHub Actions CI across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 2,569 unit and integration tests at 92% coverage; GitHub Actions CI across Python 3.11–3.13 |
 
 ---
 
