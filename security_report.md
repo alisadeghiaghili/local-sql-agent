@@ -52,3 +52,19 @@ The architecture demonstrates a strong defense-in-depth approach, explicitly rej
 
 ## 6. Recommendations
 The repository exhibits excellent security practices, specifically the shift from substring blocking to AST-based SQL validation.
+
+## 7. Deep Dive: SQL Injection Analysis (Additional Findings)
+**Status:** Highly Secure
+
+*   **Parameterization in `retrieval/value_resolver.py`:** A deep dive into the value resolver logic, which is the only component directly converting user input into SQL parameters (for `LIKE` searches), reveals proper parameterization.
+    *   It uses `execute_sql_params` (raw DBAPI layer) to pass user input as parameters, ensuring no interpolation vulnerabilities.
+    *   Wildcards inside the `LIKE` clause (`%`, `_`, `[`) are properly escaped by `_escape_like_wildcards` and matched using an `ESCAPE '\'` clause in the SQL, preventing injection of wildcards to bypass search constraints.
+    *   Table and column names in the `LIKE` query are drawn strictly from an internal `RESOLVABLE_COLUMNS` dictionary (read from schema files), avoiding any potential for table/column injection.
+
+## 8. Deep Dive: Path Traversal Analysis
+**Status:** Secure
+
+*   **Web App Downloads (`webapp/app.py`):** The `/download/<filename>` route explicitly validates filenames against a strict regex: `re.fullmatch(r"output_[0-9]{8}_[0-9]{6}(?:_[0-9]+)?\.csv", filename)`. This completely neutralizes any Path Traversal (e.g., `../../../etc/passwd`) attempts before calling `send_from_directory`.
+
+## Conclusion
+The application shows an exceptional security posture, effectively neutralizing common web vulnerabilities (Path Traversal) and significantly hardening its core feature (NLQ) against SQL Injection through AST-based parsing and parameterized fallback queries.
