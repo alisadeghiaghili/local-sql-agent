@@ -5,6 +5,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.11.1] — 2026-09-08
+
+### Fixed
+
+- **Chart labels rendered outside the chart.** `web/js/render/chart.js`
+  computes every position left-to-right — x grows rightward, and
+  `edgeSafeLabel` flips `text-anchor` between `"start"` and `"end"` to keep
+  a label inside `[0, W]`. But `text-anchor` resolves against the inline
+  base direction, and both host pages are `dir="rtl"`, so the SVG
+  inherited rtl and every one of those decisions meant its opposite.
+
+  Measured in a browser: a label clamped to `x=2` with anchor `"start"`
+  rendered at `x=-140`, 140 units outside the box — on the exact side the
+  clamp existed to protect. Every label the function tried to rescue was
+  precisely the one it threw out. The SVG now pins `direction: ltr`;
+  Persian text inside is unaffected, since base direction sets where a run
+  is anchored, not how it is shaped.
+
+- **A mispositioned label escaped the chart entirely.** `.chart-block svg`
+  carried `overflow: visible`, so a label outside the viewBox drew over
+  the card around it rather than being clipped. Now `hidden`: a future
+  geometry mistake reads as a cut-off label inside the chart instead of
+  text across the layout.
+
+- **Summed rial figures overflowed their summary tile.** The strip's grid
+  tracks were sized at 140px for counts and percentages; a twenty-digit
+  total at 17px needs far more, and a grid item's default `min-width: auto`
+  meant the `1fr` track could not shrink to contain it. Tracks widened,
+  `min-width: 0` so the track wins, and the value now scales down and
+  wraps before it would clip — the digits cut in RTL are the most
+  significant ones.
+
+- **Ranking labels truncated to about twelve characters**, which turns
+  most real company names into an ellipsis and a hint. The category track
+  goes from 130px to 176px; the bars lose the difference and stay legible,
+  where an unreadable label makes the whole ranking unreadable.
+
+### Added
+
+- `tests/web_ui/test_web_ui_chart_direction.py`. The existing chart test
+  drives the real module against a stub DOM with no layout, fonts or bidi
+  algorithm, so this class of bug was structurally invisible to it. The
+  new test asserts the declaration whose absence *was* the defect, and
+  checks its own premise: if `chart.js` ever resolves anchors against the
+  document direction, the test says to delete itself along with the CSS
+  rather than work around it.
+
+---
+
 ## [4.11.0] — 2026-09-08
 
 ### Fixed

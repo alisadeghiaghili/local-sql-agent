@@ -347,7 +347,11 @@ function renderBarChart(rows, labelKey, values, focus) {
   const rowH = 26, gap = 8;
   const n = values.length;
   const H = n * (rowH + gap) + gap;
-  const labelW = 130;
+  // 130 left roughly twelve characters after truncation, which turns most
+  // real company names into an ellipsis and a hint. The bars lose the
+  // difference and are still legible; an unreadable category label makes
+  // the whole ranking unreadable.
+  const labelW = 176;
   const max = Math.max(...values, 1);
 
   // Reserve the trailing gutter from the widest value that will actually
