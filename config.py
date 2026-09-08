@@ -360,6 +360,36 @@ class Settings:
     SQL statement is a few dozen tokens at most; capping this bounds worst-case
     decode latency and protects against a runaway generation looping forever."""
 
+    llm_extra_body_json: str = field(
+        default_factory=lambda: os.getenv("LLM_EXTRA_BODY", "")
+    )
+    """Extra JSON fields merged into every chat-completions request body, as
+    a JSON object. Empty (the default) sends exactly what this project has
+    always sent.
+
+    This exists because "turn the model's reasoning off" has no place in
+    the OpenAI chat-completions schema, and every server spells it
+    differently: vLLM and SGLang take
+    ``{"chat_template_kwargs": {"enable_thinking": false}}`` for Qwen3,
+    Ollama takes ``{"think": false}``, and others use ``reasoning_effort``.
+    Encoding those dialects here would mean this project claiming to know
+    every inference server's private vocabulary, and silently sending the
+    wrong key whenever it guessed wrong. A passthrough says the honest
+    thing instead: these are your server's fields, sent verbatim.
+
+    It matters more than a tuning knob suggests. A reasoning model spends
+    its completion budget thinking before it answers, so with
+    :attr:`llm_num_predict` at its default a Qwen3-class model can consume
+    every token on reasoning and be cut off (``finish_reason: "length"``)
+    before emitting a single character of SQL — which arrives as
+    ``EMPTY_SQL_RESPONSE``, a message about the response rather than about
+    the cause.
+
+    Keys that would let this field change *which model is asked what* are
+    rejected at parse time rather than merged — see
+    :data:`llm.providers.RESERVED_PAYLOAD_KEYS`. Everything else is the
+    operator's business, not this module's."""
+
     llm_stop: tuple[str, ...] = field(default_factory=tuple)
     """Optional stop sequences appended to every request's ``stop`` field.
     Empty by default — most models terminate cleanly at the SQL statement's
@@ -1125,6 +1155,19 @@ class Settings:
                 "dialect. Set SQL_DIALECT to match DB_CONNECTION_URL, or "
                 "fix DB_CONNECTION_URL to point at the intended database."
             )
+
+        # LLM_EXTRA_BODY is parsed on every request, so a malformed value
+        # would otherwise surface as an error on the first question rather
+        # than at start-up -- and the operator most likely to set it is one
+        # who just watched a reasoning model return nothing and is trying to
+        # turn that off. Failing here means a typo is caught by the same
+        # pre-flight run (scripts/verify_deployment.py) that already proves
+        # the rest of the configuration, instead of by an analyst.
+        # Deferred import for the same reason as the two above: llm.providers
+        # imports this module.
+        from llm.providers import load_extra_body
+
+        load_extra_body()
 
 
 @lru_cache(maxsize=1)

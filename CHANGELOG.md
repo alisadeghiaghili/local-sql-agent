@@ -5,6 +5,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.9.0] — 2026-09-08
+
+### Added
+
+- **`LLM_EXTRA_BODY` — server-specific fields, passed through verbatim.**
+  A JSON object merged into every chat-completions request body. Empty by
+  default, which sends exactly what this project has always sent.
+
+  It exists for one concrete failure. A reasoning model spends its
+  completion budget thinking before it answers, so with `LLM_NUM_PREDICT`
+  at its 512-token default a Qwen3-class model can consume every token on
+  reasoning and be cut off before emitting a single character of SQL. That
+  arrives as `EMPTY_SQL_RESPONSE` — a description of the response, not of
+  the cause — after the correction loop has retried it twice.
+
+  Turning that reasoning off is not expressible in the OpenAI
+  chat-completions schema, and every server spells it differently: vLLM and
+  SGLang take `chat_template_kwargs.enable_thinking`, Ollama takes `think`,
+  OpenAI takes `reasoning_effort`. Encoding those dialects here would mean
+  claiming to know every inference server's private vocabulary and silently
+  sending the wrong key whenever the guess was wrong. The passthrough says
+  the honest thing: these are your server's fields.
+
+  ```ini
+  LLM_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false}}
+  ```
+
+  Applies to the structured (`response_format: json_schema`) path too — a
+  constrained decode is still a decode, and a reasoning model asked for
+  JSON reasons first.
+
+  Keys that would let one environment variable contradict the settings the
+  `llm` status block reports are refused at parse time rather than
+  overridden at merge time: `model`, `messages`, `temperature`, `top_p`,
+  `seed`, `max_tokens`, `stop`, `stream`, `n`. The refusal names the
+  setting to use instead. A malformed value fails in `Settings.validate()`
+  — so `scripts/verify_deployment.py` and the server's own start-up gate
+  catch it, rather than an analyst's first question.
+
+### Documentation
+
+- **`LLM_NUM_PREDICT` is documented in `.env.example`.** It never was, so
+  the one setting that explains an empty response from a reasoning model
+  was discoverable only by reading `config.py`. The entry names the
+  signature to look for in the audit record — `finish_reason: "length"`,
+  `completion_tokens` exactly equal to the cap, `reasoning_detected: true`,
+  empty `generated_sql` — because that combination does not look like a
+  token limit from the UI, which reports only that the model returned
+  nothing.
+
+---
+
 ## [4.8.0] — 2026-09-07
 
 The admin panel can manage keys and roles. Until now it could not, and
