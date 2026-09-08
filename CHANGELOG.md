@@ -5,6 +5,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.11.0] — 2026-09-08
+
+### Fixed
+
+- **The web UI's five pipeline steps now actually tick.** They never did.
+  The SSE endpoint emitted exactly one `stage` event, before the engine
+  was even called, naming a stage `"plan"` — an id no step has. So
+  `renderPipeline`'s `setStage` looked for `[data-step="plan"]`, found
+  nothing, and returned without a word; all five steps sat at "در انتظار"
+  for the whole turn while the answer appeared beside them.
+
+  Nothing in the stack was broken enough to notice: the event was
+  well-formed, the stream was valid, the turn was correct, and the one
+  test covering the stream asserted the single frame as if it were the
+  contract.
+
+  Progress is now live. `StageTimer` already knew when each stage started
+  and finished and had no way to say so; it takes an optional observer,
+  `TurnEngine.ask` threads one through, and the endpoint bridges the
+  worker thread back to the event stream with a queue. Each of the five
+  steps reports `running` when it starts and `done` — or `error` — when it
+  ends, including the repeats a correction round genuinely produces.
+
+- **Generated SQL is formatted before it is displayed.** `sql_display` was
+  the model's own text, so its layout was the model's mood: a tidy
+  multi-line statement for one question and a single 300-character line
+  for the next, which reads as the system formatting sometimes and not
+  others. It is now re-rendered with sqlglot — already a dependency, and
+  already the thing that parsed this SQL to validate it.
+
+  Display only. `Turn.sql` stays byte-for-byte what the guard validated
+  and the database ran; re-rendering that would mean the audit trail
+  recorded a statement nobody executed. `pretty_sql` never raises — SQL it
+  cannot re-render is shown as generated, because no formatting problem is
+  worth failing a successful query over.
+
+---
+
 ## [4.10.3] — 2026-09-08
 
 ### Added

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import queue
 import threading
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -343,6 +344,99 @@ async def ask_turn(
     return await _ask_turn_bounded(session_id, req.question, principal)
 
 
+# ---------------------------------------------------------------------------
+# Live stage progress (contract §7's `stage` events)
+# ---------------------------------------------------------------------------
+
+#: ``StageTimer`` stage name -> the pipeline step the web UI draws.
+#:
+#: The two vocabularies are deliberately different sizes. The timer measures
+#: what is worth *timing* (``plan`` and ``prompt`` are separate costs in the
+#: audit record); the UI shows what is worth *watching*, and "working out
+#: what you meant" is one thing to a reader whether or not the prompt build
+#: is counted separately. Both fold onto ``understand``.
+#:
+#: A stage absent from this map emits no event rather than inventing a step
+#: id the UI has no element for. That silence is exactly what used to
+#: happen for every stage: the endpoint sent one frame naming stage
+#: ``"plan"``, ``renderPipeline`` looked for a ``[data-step="plan"]`` that
+#: does not exist, and `setStage` returned without doing anything. Five
+#: steps then sat at "waiting" for the whole turn while the answer arrived
+#: beside them.
+_STAGE_TO_UI_STEP: dict[str, str] = {
+    "plan": "understand",
+    "prompt": "understand",
+    "llm": "generate",
+    "guard": "validate",
+    "execute": "execute",
+    "interpret": "interpret",
+}
+
+#: Sentinel put on the queue by the worker thread when the turn is over, so
+#: the draining loop stops on a value rather than on a timeout it would
+#: have to guess the length of.
+_STAGES_DONE = object()
+
+
+async def _ask_turn_streaming_stages(
+    session_id: str, question: str, principal: Principal,
+):
+    """Run one turn, yielding ``(ui_step, state)`` as each stage happens,
+    then finally ``("", turn)``.
+
+    ``TurnEngine.ask`` is blocking and runs in a worker thread, so its
+    progress cannot be awaited -- it has to be *pushed* out. The bridge is
+    a plain :class:`queue.Queue`: the worker thread puts stage transitions
+    on it from inside :class:`~observability.timing.StageTimer`, and this
+    coroutine drains it without blocking the event loop by waiting on the
+    queue in a thread of its own (``asyncio.to_thread(queue.get)``).
+
+    A queue rather than ``loop.call_soon_threadsafe`` because the producer
+    is deep inside synchronous engine code that has no business knowing an
+    event loop exists, let alone which one. ``StageTimer`` takes a plain
+    callable; this keeps it that way.
+    """
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+    system_prompt = _require_system_prompt()
+    memory_entries = _load_memory_entries_for(principal)
+
+    events: "queue.Queue[Any]" = queue.Queue()
+
+    def on_stage(name: str, state: str) -> None:
+        step = _STAGE_TO_UI_STEP.get(name)
+        if step is not None:
+            events.put((step, state))
+
+    def run() -> Turn:
+        try:
+            return get_turn_engine().ask(
+                record, question, system_prompt,
+                denied_columns=principal.denied_columns,
+                memory_entries=memory_entries,
+                on_stage=on_stage,
+            )
+        finally:
+            # In a `finally` so a raising turn still releases the drain
+            # loop below; otherwise a failed turn would hang the response
+            # on a queue that nothing will ever put to again.
+            events.put(_STAGES_DONE)
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    while True:
+        item = await asyncio.to_thread(events.get)
+        if item is _STAGES_DONE:
+            break
+        yield item
+
+    turn = await task
+    get_session_store().sync_turn(record, turn)
+    yield ("", turn)
+
+
 def _sse_event(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
@@ -350,22 +444,33 @@ def _sse_event(name: str, data: dict) -> str:
 async def _turn_event_stream(session_id: str, question: str, principal: Principal):
     """Yield SSE events per contract §7.
 
-    Known limitation (mirrors ``api/server.py::_query_event_stream``):
-    this is not per-token streaming. ``TurnEngine.ask`` still runs
-    end-to-end as one blocking call before any event beyond the initial
-    ``stage`` frame is emitted; what this DOES provide is the contract's
-    exact event vocabulary and ordering, plus an immediate first byte so
-    a client doesn't sit on a blank connection.
+    ``stage`` events are live: :func:`_ask_turn_streaming_stages` bridges
+    the worker thread running ``TurnEngine.ask`` back to this generator, so
+    each pipeline step is reported as it starts and as it finishes rather
+    than all at once at the end. Everything after them (``resolved``,
+    ``sql``, ``rows``, ...) still arrives together, because the engine
+    computes them together -- this is not per-token streaming, and the
+    content events are emitted once there is content to emit.
     """
-    yield _sse_event("stage", {"stage": "plan", "state": "start"})
+    turn: Turn | None = None
     try:
-        turn = await _ask_turn_bounded(session_id, question, principal)
+        async for step, payload in _ask_turn_streaming_stages(
+            session_id, question, principal,
+        ):
+            if step:
+                yield _sse_event("stage", {"stage": step, "state": payload})
+            else:
+                turn = payload
     except HTTPException as exc:
         yield _sse_event("error", {"code": "SESSION_NOT_FOUND", "message": str(exc.detail)})
         return
     except Exception as exc:  # noqa: BLE001 - surfaced as an SSE error event
         logger.exception("Unexpected error while streaming turn for session=%s", session_id)
         yield _sse_event("error", {"code": "INTERNAL_ERROR", "message": str(exc)})
+        return
+
+    if turn is None:  # pragma: no cover - the generator always yields it last
+        yield _sse_event("error", {"code": "INTERNAL_ERROR", "message": "no turn produced"})
         return
 
     yield _sse_event(

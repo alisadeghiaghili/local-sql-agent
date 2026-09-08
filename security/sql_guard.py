@@ -1867,3 +1867,61 @@ def transpile_and_revalidate(
         )
 
     return transpiled
+
+def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
+    """Re-render *sql* with sqlglot's pretty printer, for **display only**.
+
+    The SQL a client shows is whatever the model happened to emit. Models
+    are inconsistent about it: the same deployment produces a clean
+    multi-line statement for one question and a single 300-character line
+    for the next, and the reader has no way to tell that this says nothing
+    about the query -- it looks like the system formats sometimes and not
+    others. Formatting here makes the presentation a property of this
+    codebase rather than of the model's mood.
+
+    Display only, and deliberately not applied to the string that runs.
+    ``Turn.sql`` stays byte-for-byte what the guard validated and the
+    database executed; ``Turn.sql_display`` is what the UI renders and the
+    copy button copies. Re-rendering the executed SQL would mean the audit
+    trail recorded a statement nobody ran.
+
+    Never raises. A statement sqlglot cannot re-render is returned
+    unchanged: this is cosmetic, and there is no version of "the SQL could
+    not be prettified" worth failing a successful query over. The same
+    reasoning applies to the empty case.
+
+    Parameters
+    ----------
+    sql:
+        The statement to format.
+    dialect:
+        sqlglot dialect to parse and render in. Defaults to :data:`_DIALECT`
+        and is passed explicitly by callers that know the deployment's
+        configured one -- this module reads no configuration of its own,
+        the same way :func:`validate_sql` and :func:`extract_touched_tables`
+        take theirs as a parameter.
+
+    Examples
+    --------
+    >>> print(pretty_sql("SELECT a, b FROM t WHERE a = 1", dialect="tsql"))
+    SELECT
+      a,
+      b
+    FROM t
+    WHERE
+      a = 1
+
+    Unparseable input comes back untouched rather than raising:
+
+    >>> pretty_sql("this is not sql at all ((", dialect="tsql")
+    'this is not sql at all (('
+    """
+    if not sql or not sql.strip():
+        return sql
+    try:
+        rendered = sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)
+    except Exception:  # noqa: BLE001 - cosmetic; see docstring
+        return sql
+    if not rendered:
+        return sql
+    return rendered[0]

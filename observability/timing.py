@@ -43,6 +43,7 @@ Usage::
 from __future__ import annotations
 
 import functools
+import logging
 import threading
 import time
 from contextlib import AbstractContextManager, contextmanager
@@ -54,6 +55,8 @@ from typing import Callable, ClassVar, Iterator, TypeVar
 STAGE_NAMES: tuple[str, ...] = (
     "plan", "prompt", "llm", "guard", "execute", "interpret",
 )
+
+logger = logging.getLogger(__name__)
 
 _F = TypeVar("_F", bound=Callable[..., object])
 
@@ -107,10 +110,30 @@ class StageTimer:
 
     STAGES: ClassVar[frozenset[str]] = frozenset(STAGE_NAMES)
 
-    def __init__(self) -> None:
+    def __init__(self, on_stage: Callable[[str, str], None] | None = None) -> None:
         self._start = time.perf_counter()
         self._durations: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._on_stage = on_stage
+
+    def _notify(self, name: str, state: str) -> None:
+        """Tell the observer a stage changed state, and never let it break
+        the request.
+
+        An observer here is a *reporting* concern -- the SSE bridge in
+        ``api/v2_routes.py`` pushing progress to a browser. A turn that
+        succeeded must not be turned into a failure because the thing
+        watching it fell over, so an exception from the callback is logged
+        and swallowed. The timing itself is unaffected either way: it is
+        recorded in ``_timed``'s ``finally``, which does not depend on
+        this.
+        """
+        if self._on_stage is None:
+            return
+        try:
+            self._on_stage(name, state)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.exception("stage observer failed for %r -> %r", name, state)
 
     def stage(self, name: str) -> AbstractContextManager[None]:
         """Context manager timing one block of code as stage *name*.
@@ -147,12 +170,21 @@ class StageTimer:
     @contextmanager
     def _timed(self, name: str) -> Iterator[None]:
         t0 = time.perf_counter()
+        self._notify(name, "running")
+        failed = False
         try:
             yield
+        except BaseException:
+            # "done" would claim this stage completed. It did not, and the
+            # UI draws the two differently -- a stage that errored is where
+            # the reader should be looking.
+            failed = True
+            raise
         finally:
             elapsed = time.perf_counter() - t0
             with self._lock:
                 self._durations[name] = self._durations.get(name, 0.0) + elapsed
+            self._notify(name, "error" if failed else "done")
 
     def record(self, name: str, seconds: float) -> None:
         """Manually add *seconds* to stage *name*'s running total.
