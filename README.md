@@ -209,9 +209,11 @@ python -m scripts.verify_deployment
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
 | `CACHE_TTL_SECONDS` | `300` | Query cache TTL in seconds (`0` = disabled) |
 | `CACHE_MAX_SIZE` | `256` | Maximum number of cached query results |
+| `LLM_NUM_PREDICT` | `512` | Max tokens the model may generate (`max_tokens`). Too low for a **reasoning** model, which spends this budget thinking before it answers — see `.env.example` |
+| `LLM_EXTRA_BODY` | *(empty)* | JSON object merged into every chat-completions request. How you turn a model's reasoning off, since that is not in the OpenAI schema and every server spells it differently |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
-| `API_KEYS_JSON` | *(empty)* | JSON array of `{"id","name","key_sha256","denied_columns"?}` — see [Authentication](#authentication-phase-8) |
+| `API_KEYS_JSON` | *(empty)* | JSON array of `{"id","name","key_sha256","denied_columns"?,"admin"?,"operations"?,"security"?}` — see [Authentication](#authentication-phase-8) |
 | `AUTH_REQUIRED` | `true` | Fail-closed auth gate; `false` is a logged escape hatch |
 | `APP_DOCS_PUBLIC` | `false` | Serve `/docs` `/redoc` `/openapi.json` without credentials |
 | `PROJECT_CONFIG_DIR` | `project_config` | Where the domain YAML lives. No silent fallback to the example directory |

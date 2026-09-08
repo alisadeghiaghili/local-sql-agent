@@ -227,8 +227,13 @@ Before sending it, sanity-check the top of the report:
 - `records_by_model` — confirms the week's traffic is real (not
   `mock:stub`/`ollama:test` left over from local development).
 - `finish_reason distribution` — any non-trivial `length` count means
-  `llm_num_predict` was too low for at least some real questions and
-  should be raised.
+  `llm_num_predict` was too low for at least some real questions. Raising
+  it is one fix; if the model is a reasoning one (Qwen3, DeepSeek-R1,
+  gpt-oss) and `reasoning_detected` is true on those records, turning its
+  reasoning off with `LLM_EXTRA_BODY` is the cheaper one — those tokens
+  are paid for and waited on either way. A `length` count paired with
+  empty SQL is the extreme case and now reports itself as
+  `LLM_OUTPUT_TRUNCATED`; see `.env.example`'s `LLM_NUM_PREDICT` entry.
 - `cache_behaviour`'s `prefix_cache_hit_rate` — the first real measurement
   of whether Phase 2's static-prefix latency premise actually held under
   real traffic.

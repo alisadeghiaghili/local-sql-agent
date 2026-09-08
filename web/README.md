@@ -112,6 +112,12 @@ tools. Instead:
   conversation) before entering one and the UI prompts you to fill it in
   first. Get your key from whoever administers this deployment — they
   issue it with `scripts/issue_api_key.py`, one per analyst.
+- **Once a key is stored the field collapses** to `کلید: ذخیره شده ✓` and
+  a "تغییر کلید" button (`main.js::updateKeyStatus`). It used to stay on
+  screen permanently, and — because the field is cleared after a save — it
+  was always empty. An empty password box is what a page shows when you
+  are signed *out*, so analysts read it that way and re-entered a key they
+  already had.
 - The key is saved in this browser's `localStorage` (via `js/apikey.js`)
   and sent as `Authorization: Bearer <key>` on every authenticated call.
   It is never logged, never put in a URL, and never echoed back in an
@@ -125,12 +131,18 @@ tools. Instead:
   `(principal, ip)` — one shared key collapses both back into "the whole
   office looks like one caller", which is exactly the shape a shared
   service key had before this UI existed.
-- A `401` (missing or rejected key) clears the stored key and re-prompts
-  with "کلید API رد شد یا نامعتبر است" instead of a generic error. A
-  `429` is shown as a rate-limit notice, not a query/model failure — the
-  server's error body says so explicitly and this UI passes that through.
-- Change or clear your key any time from the same "کلید API" field in the
-  top bar (visible whenever **زندهٔ API** mode is active).
+- A `401` marks the key rejected and reveals the entry field again, but
+  **deliberately does not clear it**. The raw key is printed exactly once
+  by `scripts/issue_api_key.py` and cannot be recovered, and a 401 is not
+  always the key's fault — a server restarted with a different
+  `API_KEYS_JSON`, or an application database briefly unreachable,
+  produces one from a perfectly good key. Clearing it turned a transient
+  server condition into "find that 43-character string again". Clearing is
+  now only ever deliberate, via "حذف کلید". A `429` is shown as a
+  rate-limit notice, not a query/model failure — the server's error body
+  says so explicitly and this UI passes that through.
+- Change or clear your key any time from the same control in the top bar
+  (visible whenever **زندهٔ API** mode is active).
 
 **As of Phase 3, the backend implements `/v2/*`** (`api/v2_routes.py`,
 mounted onto `api/server.py`) — sessions, turns (including `?stream=1`
