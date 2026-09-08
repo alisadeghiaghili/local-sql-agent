@@ -5,6 +5,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.11.2] — 2026-09-08
+
+### Fixed
+
+- **The admin panel laid out its English output right-to-left.** The page
+  is `dir="rtl"`, which is right for its Persian chrome and wrong for what
+  it displays: deployment-check cards carry
+  `scripts/verify_deployment.py`'s own text — exceptions, SQL, connection
+  URLs, Windows paths. Rendered RTL, `Settings.validate()` displayed as
+  `()Settings.validate`, and a connection URL broke across lines in the
+  wrong order. This is output an operator reads character by character to
+  find a typo in. The check card is now LTR as a block, since its name,
+  status pill and detail are one English sentence.
+
+- **The keys table showed `.env` as `env.`** Its leading dot is a neutral
+  character, so an RTL paragraph moved it to the end — a filename
+  displayed wrong, in the column that says where a key came from. Cells in
+  that table, and values in the key/value lists, now take direction from
+  their own content (`unicode-bidi: plaintext`), because the same field
+  legitimately holds a Persian maintenance note on one row and a path on
+  the next.
+
+- **Principal ids and role names are isolated**, so a hyphen inside
+  `ops-1` cannot be reordered by the surrounding paragraph — the treatment
+  `style.css` already gives numbers via `.num`.
+
+### Added
+
+- `tests/web_ui/test_web_ui_admin_direction.py`. The `.env` case is why
+  these are assertions rather than a review habit: four characters, looks
+  almost right, and invisible in the markup. It was found by rendering the
+  panel and looking at it.
+
+### Checked, and already correct
+
+The rest of the panel was audited against the same failures found in the
+analyst UI — page-level overflow, content clipped outside a scrollable
+ancestor, labels rendered outside their container — at 1280px, 900px and
+760px. None of them are present: the panel has no SVG, so the chart's
+anchor bug does not apply, and the topbar inherits the wrapping fix from
+4.11.1's shared `style.css`.
+
+---
+
 ## [4.11.1] — 2026-09-08
 
 ### Fixed

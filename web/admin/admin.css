@@ -144,6 +144,20 @@
   /* The stripe is the state. Colour alone would fail a colour-blind
    * reader, so the label carries the word too. */
   border-inline-start: 3px solid var(--status-neutral);
+  /* These cards are the only part of this Persian panel whose content is
+     entirely English: scripts/verify_deployment.py writes the check names
+     and details, and what they carry is exception text, SQL, connection
+     URLs and file paths. Laid out RTL, that content is not merely
+     right-aligned -- it is reordered. "Settings.validate()" rendered as
+     "()Settings.validate", and a connection URL broke across lines in the
+     wrong order, which is exactly the shape of output an operator reads
+     character by character to find a typo in.
+
+     LTR for the whole card rather than plaintext per line, because the
+     name, the status pill and the detail are one English sentence and
+     should align as one. */
+  direction: ltr;
+  text-align: left;
   min-width: 0;
 }
 
@@ -343,6 +357,11 @@
   padding: 7px 12px;
   font-size: 0.8rem;
   border-block-end: 1px solid var(--border);
+  /* A value here can be Persian (a maintenance note) or English (a path,
+     an endpoint, a principal id), and the markup cannot know which.
+     `plaintext` takes each value's direction from its own first strong
+     character instead of forcing one on both. */
+  unicode-bidi: plaintext;
 }
 
 .admin-kv dt { color: var(--muted); white-space: nowrap; }
@@ -455,6 +474,12 @@
 
 .key-role {
   display: inline-block;
+  /* Role names and principal ids are identifiers, not prose. `isolate`
+     keeps each one a self-contained LTR run so a hyphenated id like
+     "ops-1" cannot be reordered by the surrounding RTL paragraph -- the
+     same treatment style.css already gives numbers via `.num`. */
+  direction: ltr;
+  unicode-bidi: isolate;
   margin-inline-start: 0.4rem;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
@@ -462,6 +487,23 @@
   color: var(--muted);
   background: var(--status-neutral-bg);
   border: 1px solid var(--border);
+}
+
+#keys-body code {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Cells in this table mix languages per row: a principal id and ".env"
+   are LTR, a name and "بدون محدودیت" are RTL. `plaintext` lets each cell
+   take its direction from its own content.
+
+   ".env" is the reason this is not optional. Its leading dot is a neutral
+   character, so under an RTL paragraph it reorders to the END and the
+   cell reads "env." -- a filename, displayed wrong, in the column that
+   tells an operator where a key came from. */
+#keys-body td {
+  unicode-bidi: plaintext;
 }
 
 .key-actions {
