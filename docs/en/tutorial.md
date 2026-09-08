@@ -705,6 +705,8 @@ curl -X POST http://localhost:8000/query \
 | Exception | HTTP | When |
 |---|---|---|
 | `OutOfScopeError` | 422 | Model returns `OUT_OF_SCOPE` sentinel |
+| `EmptySQLResponseError` | 502 | Model finished cleanly and returned nothing |
+| `TruncatedSQLResponseError` | 502 | Model hit `LLM_NUM_PREDICT` before emitting any SQL — the usual signature of a reasoning model spending its whole budget thinking. Not retried: nothing about it depends on the question. Raise the cap, or turn reasoning off with `LLM_EXTRA_BODY` |
 | `ModelTimeoutError` | 504 | LLM request exceeded timeout |
 | `ModelUnavailableError` | 503 | LLM endpoint unreachable after all retries |
 | `QueryExecutionError` | 500 | SQL Server execution failure |

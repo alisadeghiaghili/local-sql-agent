@@ -324,7 +324,12 @@ Phase 2 latency work measurable.
 (`choices[0].finish_reason`), never a caller-supplied literal — a response
 cut short by `llm_num_predict` reads `"length"`, not `"stop"`, which is the
 one distinction that separates "the model is bad at SQL" from "raise the
-token budget" when reading a week of production logs. The set grew from
+token budget" when reading a week of production logs. `"length"` together
+with an empty `sql` is the extreme of that: the model was cut off before
+it emitted anything, which a reasoning model does routinely when the token
+budget is smaller than the reasoning it does. That pair surfaces as
+`error.code = "LLM_OUTPUT_TRUNCATED"` rather than `"EMPTY_SQL_RESPONSE"`,
+and is never retried — nothing about it depends on the question. The set grew from
 the original four values (`stop | length | schema_violation | error`) to
 add `content_filter` (a moderation block) and `tool_calls` (the model tried
 to call a function instead of answering) — both real values an

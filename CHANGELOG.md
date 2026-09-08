@@ -5,6 +5,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.10.1] — 2026-09-08
+
+Documentation catch-up for 4.9.0 and 4.10.0, which shipped code without
+updating the prose that described it.
+
+### Fixed
+
+- **`web/README.md` said a 401 clears the stored key.** It has not since
+  4.10.0 — the opposite is now true, and deliberately so. This was a
+  documented promise the code no longer kept.
+
+### Documentation
+
+- **`docs/fa/getting-started.md` §2.9 — "مدل ریزنینگ و «جوابی نگرفتم»".**
+  The whole failure, end to end: why a reasoning model returns nothing at
+  the default token cap, the four audit fields that identify it *together*
+  (`finish_reason: length`, `completion_tokens` exactly at the cap,
+  `reasoning_detected: true`, empty SQL), and the two fixes with a
+  per-server table for `LLM_EXTRA_BODY`. Including the warning that
+  matters most: a server silently ignores a field it does not recognise,
+  so the effect has to be confirmed in the audit record rather than
+  assumed. This is the guide the deployment that hit this actually
+  follows, and it said nothing about any of it.
+
+- The Persian troubleshooting table gains rows for `LLM_OUTPUT_TRUNCATED`
+  and for the pre-4.10.0 form of the same failure, and its 401 row now
+  says the stored key is no longer cleared.
+
+- §2.2 notes that the key field collapses once a key is saved — a reader
+  looking for the field after saving is not signed out.
+
+- `README.md`'s configuration reference gains `LLM_NUM_PREDICT` and
+  `LLM_EXTRA_BODY`, neither of which was listed, and its `API_KEYS_JSON`
+  row now shows the three capability flags 4.7.0 made issuable.
+
+- `docs/en/tutorial.md`'s error table gains `EmptySQLResponseError` and
+  `TruncatedSQLResponseError`; `docs/api-contract-v2.md` says what
+  `finish_reason: "length"` with empty SQL now surfaces as; and
+  `docs/deployment-runbook.md`'s "raise `llm_num_predict`" advice now
+  names the cheaper alternative for a reasoning model.
+
+---
+
 ## [4.10.0] — 2026-09-08
 
 ### Fixed
