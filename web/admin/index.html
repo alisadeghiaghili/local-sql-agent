@@ -23,10 +23,16 @@
       <input type="text" id="live-base-input" dir="ltr" aria-label="نشانی بک‌اند" class="live-base-input">
       <button class="live-base-connect" id="live-base-connect" type="button">اتصال</button>
     </div>
+    <!-- Same two-state key control as the analyst UI (web/index.html) --
+         see the comment there for why an always-visible empty password
+         box was read as "signed out". -->
     <div class="live-key-row" id="live-key-row">
       <span class="live-key-status" id="live-key-status"></span>
-      <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید مدیریتی" autocomplete="off">
-      <button class="live-key-save" id="live-key-save" type="button">ذخیره</button>
+      <span class="live-key-entry" id="live-key-entry">
+        <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید مدیریتی" autocomplete="off">
+        <button class="live-key-save" id="live-key-save" type="button">ذخیره</button>
+      </span>
+      <button class="live-key-change" id="live-key-change" type="button" hidden>تغییر کلید</button>
       <button class="live-key-clear" id="live-key-clear" type="button">حذف</button>
     </div>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-label="تغییر پوسته">

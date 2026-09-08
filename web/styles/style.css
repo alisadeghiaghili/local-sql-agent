@@ -211,7 +211,15 @@ button { font-family: inherit; }
   flex-wrap: wrap;
 }
 
-.brand { display: flex; align-items: center; gap: 14px; }
+/* min-width:0 on both topbar halves, and on the text inside the brand.
+ * Without it a flex item refuses to shrink below its content's intrinsic
+ * width, so the two halves of this bar simply overflowed their container
+ * rather than wrapping -- and in RTL that overflow runs off the LEFT edge
+ * into negative coordinates, where nothing can scroll to it. Below about
+ * 1400px that silently put the API-key controls and the mode switch
+ * outside the window. */
+.brand { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 0 1 auto; }
+.brand-text { min-width: 0; }
 .brand-mark {
   width: 46px; height: 46px; border-radius: 12px;
   background: var(--teal);
@@ -222,11 +230,18 @@ button { font-family: inherit; }
 .brand-text h1 { font-size: 21px; font-weight: 700; line-height: 1.15; }
 .brand-text p { font-size: 12.5px; color: #cbd5e1; margin-top: 2px; }
 
-.topbar-right { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.topbar-right {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  /* Wraps onto its own line before it overflows, and stays anchored to
+     the inline-end of the bar when it does. row-gap keeps the wrapped
+     rows from touching. */
+  flex: 1 1 auto; min-width: 0; justify-content: flex-end; row-gap: 10px;
+}
 
 .mode-switch {
   display: inline-flex; border: 1px solid rgba(255, 255, 255, .22);
   border-radius: 999px; overflow: hidden;
+  flex: 0 0 auto;  /* a segmented control must never be squeezed apart */
 }
 .mode-btn {
   background: transparent; color: #cbd5e1; border: 0;
@@ -240,22 +255,28 @@ button { font-family: inherit; }
  * comment): it was deployment configuration, not an analyst-facing
  * control. Still configurable — see web/js/config.js. */
 
-.live-key-row { display: flex; gap: 6px; align-items: center; }
+.live-key-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+/* The entry field and its save button travel together: hiding the pair is
+   what collapses this control to "کلید: ذخیره شده ✓ [تغییر کلید]" once a
+   key is stored (main.js::updateKeyStatus). `display:flex` would override
+   the [hidden] attribute, hence the explicit :not([hidden]). */
+.live-key-entry { display: none; gap: 6px; align-items: center; min-width: 0; }
+.live-key-entry:not([hidden]) { display: flex; }
 .live-key-status {
   font-size: 11.5px; font-weight: 600; color: #cbd5e1; white-space: nowrap;
 }
 .live-key-status.set { color: var(--status-good); }
 .live-key-status.unset { color: var(--status-warn); }
 .live-key-input {
-  min-width: 0; width: 180px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
+  min-width: 0; flex: 1 1 160px; width: 180px; max-width: 100%; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); color: #fff;
 }
 .live-key-input::placeholder { color: #cbd5e1; }
-.live-key-save, .live-key-clear {
+.live-key-save, .live-key-clear, .live-key-change {
   border: 1px solid rgba(255, 255, 255, .3); border-radius: 8px;
   background: transparent; color: #e2e8f0; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
-.live-key-save:hover, .live-key-clear:hover { background: rgba(255, 255, 255, .12); }
+.live-key-save:hover, .live-key-clear:hover, .live-key-change:hover { background: rgba(255, 255, 255, .12); }
 
 .theme-toggle {
   display: inline-flex; align-items: center; gap: 6px;

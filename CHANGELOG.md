@@ -5,6 +5,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.10.0] — 2026-09-08
+
+### Fixed
+
+- **A completion cut off at the token cap is named as such, and not
+  retried.** When a reasoning model spends its whole budget thinking, the
+  response is empty with `finish_reason="length"`. The correction loop
+  treated that as bad SQL and re-prompted twice — "the SQL query you
+  generated failed / --- FAILED SQL --- (nothing) / --- ERROR --- LLM
+  returned an empty response" — which cannot succeed, because nothing
+  about the truncation depends on the question. Three rounds, ~17 seconds,
+  one certain outcome.
+
+  It now returns on the first round with `LLM_OUTPUT_TRUNCATED` and a
+  message naming the limit in force, `LLM_NUM_PREDICT`, and
+  `LLM_EXTRA_BODY`. `EMPTY_SQL_RESPONSE` stays for its own case — a model
+  that stopped cleanly and said nothing — which may well differ on a
+  retry, so that path still retries. Both the v2 conversational path and
+  `/query` make the distinction.
+
+- **The web UI no longer looks signed out while holding a valid key.** The
+  key field is cleared after a save, so in live mode an empty password box
+  sat in the topbar permanently — which is what a page shows when you are
+  signed *out*, and analysts read it that way and re-entered a key they
+  already had. With a key stored, the control now collapses to
+  `کلید: ذخیره شده ✓` plus a "تغییر کلید" button; the entry field appears
+  only when there is no key, or when the server has rejected the one
+  stored. Same change in the admin panel, where it was worse: an empty
+  login box beside ten loaded cards.
+
+- **A 401 no longer destroys the stored key.** The raw key is printed
+  exactly once by `scripts/issue_api_key.py` and is not recoverable, and a
+  401 is not always the key's fault — a server restarted with a different
+  `API_KEYS_JSON`, or an application database briefly unreachable, produces
+  one from a perfectly good key. The UI kept clearing it, turning a
+  transient server condition into "find that 43-character string again".
+  The key is now kept and marked rejected, with the entry field revealed
+  so a genuinely bad key can still be replaced.
+
+- **The RTL topbar no longer pushes its own controls off the screen.**
+  Neither half of the bar could shrink below its content width (no
+  `min-width: 0`), so instead of wrapping it overflowed — and in RTL that
+  overflow runs off the *left* edge into negative coordinates, where
+  nothing can scroll to it. Below roughly 1400px this silently put the
+  API-key controls and the mode switch outside the window. Both halves now
+  shrink and wrap, and the collapsed key control removes ~300px of width
+  that was causing it in the first place.
+
+---
+
 ## [4.9.0] — 2026-09-08
 
 ### Added

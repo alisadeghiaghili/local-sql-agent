@@ -32,10 +32,24 @@
          top-bar control every analyst sees. The API-key field below is
          NOT part of that — it is the analyst's own identity, not
          deployment config, so it stays. -->
+    <!-- Two states, never both (main.js::updateKeyStatus). With a key
+         stored this collapses to a status pill and a "change" button; the
+         entry field appears only when there is no key, or when the server
+         has rejected the stored one.
+
+         It used to be one state: an always-visible, always-empty password
+         box (the field is cleared after a save, so it is empty whenever
+         anyone looks at it). An empty login box is what a page shows when
+         you are signed OUT, so analysts read it that way and re-entered a
+         key they already had — and it is ~300px of topbar that pushed the
+         rest of these controls off the edge of the screen in RTL. -->
     <div class="live-key-row" id="live-key-row" hidden>
       <span class="live-key-status" id="live-key-status"></span>
-      <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید API خود را وارد کنید" autocomplete="off">
-      <button class="live-key-save" id="live-key-save" type="button">ذخیره کلید</button>
+      <span class="live-key-entry" id="live-key-entry">
+        <input type="password" id="live-key-input" dir="ltr" aria-label="کلید API" class="live-key-input" placeholder="کلید API خود را وارد کنید" autocomplete="off">
+        <button class="live-key-save" id="live-key-save" type="button">ذخیره</button>
+      </span>
+      <button class="live-key-change" id="live-key-change" type="button" hidden>تغییر کلید</button>
       <button class="live-key-clear" id="live-key-clear" type="button">حذف کلید</button>
     </div>
     <button class="memory-toggle" id="memory-toggle" type="button" aria-haspopup="dialog" aria-controls="memory-panel" aria-expanded="false">
