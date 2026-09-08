@@ -4,10 +4,19 @@
 > Get back precise SQL — validated against a closed allowlist before it runs.
 > Built to run fully on-premise: point `OPENAI_BASE_URL` at a local model and no question, schema, or row leaves your network.
 
-[![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://python.org)
-[![Tests](https://img.shields.io/badge/Tests-2573-green)](tests/)
-[![Version](https://img.shields.io/badge/Version-4.6.1-blue)](CHANGELOG.md)
+[![CI](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](setup.cfg)
+[![Tests](https://img.shields.io/badge/tests-2%2C565-brightgreen)](tests/)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://python.org)
+[![Release](https://img.shields.io/github/v/release/alisadeghiaghili/local-sql-agent)](https://github.com/alisadeghiaghili/local-sql-agent/releases)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)
+
+<sub>The CI and release badges read GitHub directly. Coverage is enforced
+on every push — the build fails below the 90% gate in
+[`setup.cfg`](setup.cfg) — and the coverage and test figures shown were
+measured at v4.10.1 (`pytest tests/ eval/tests --cov`);
+`tests/test_readme_claims.py` fails the build if the badge ever claims
+more than the gate actually holds.</sub>
 
 ---
 
@@ -138,6 +147,8 @@ its KV cache instead of re-reading the schema on every question.
 | 🗂️ | **Many conversations, kept** | A conversation index that survives a restart: sessions, turns and titles persist for `session_retention_days`. Result **rows never touch the disk** — a stored row could not be re-checked against an ACL that changed after it was written. |
 | 📌 | **Cross-session memory** | Standing preferences the analyst *pins* — never inferred from repetition. A closed, config-declared set, surfaced as an editable assumption chip and re-checked against the column ACL on every turn that would apply it. |
 | 🔑 | **Authentication & column ACL** | API keys on every route but `/health`; per-principal `denied_columns` enforced in the guard, not just partitioned in the cache. |
+| 🧑‍💼 | **Admin panel** | Eleven cards. Read-only diagnostics — audit summary, deployment checks, schema drift, vocabulary freshness, per-analyst usage, failed auth — alongside the narrow writes: maintenance mode, feedback triage, cache control, and key issuance / disable / revoke / column ACLs / role grants. Two admin roles split on one rule: anything that changes *who can see what data* is the security admin's. |
+| 🖥️ | **Analyst web UI** | Static, no build step. Conversation sidebar, generated SQL with highlighting, result table, chart, assumption chips, Excel export — and each analyst's own key in their own browser, never one shared key baked into the page. |
 | 🗄️ | **Multi-dialect** | Generates T-SQL, transpiles, then re-validates in the dialect that will execute. T-SQL and SQLite verified by execution. |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
 | 💾 | **LRU query cache** | Thread-safe TTL + LRU cache, partitioned by visibility scope so two principals never share a result they should not. |
@@ -145,7 +156,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 2,235 unit + integration tests; GitHub Actions CI on Python 3.11–3.13. |
+| 🧪 | **Test suite** | 2,565 unit + integration tests at 92% coverage, gated at 90%; GitHub Actions CI on Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
@@ -402,7 +413,7 @@ local-sql-agent/
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── en/tutorial.md        #   full English tutorial
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 2,235 unit + integration tests
+└── tests/                    # 2,565 unit + integration tests
 ```
 
 ---
@@ -412,8 +423,16 @@ local-sql-agent/
 ```bash
 pytest tests/ -v                        # all tests
 pytest tests/test_sql_guard.py -v       # one module
-pytest --cov=. --cov-report=html        # with coverage report
+pytest tests/ eval/tests --cov          # exactly what CI measures
 ```
+
+**2,565 tests at 92% branch coverage**, with the build failing below 90%
+(`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
+cover is stated in the same file rather than left to be discovered: the
+interactive wizards and CLI front-ends are excluded by policy — their
+value is in being run by a human — and `database/schema_inspector.py` and
+`relationship_map.py` are excluded as a declared ratchet, with the reason
+and the condition for their return written next to the exclusion.
 
 CI runs on every push via GitHub Actions across Python 3.11, 3.12 and
 3.13, with doctests, coverage, and an offline evaluation gate. It runs
@@ -549,7 +568,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 2,235 unit and integration tests; GitHub Actions CI across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 2,565 unit and integration tests at 92% coverage; GitHub Actions CI across Python 3.11–3.13 |
 
 ---
 

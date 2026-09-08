@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.10.2] — 2026-09-08
+
+### Changed
+
+- **Coverage gate raised 85% → 90%.** The README now advertises the
+  measured figure, and a badge saying 92% with a gate at 85 is a number
+  nobody is holding: coverage could fall seven points with every build
+  still green and the README still claiming otherwise. Measured coverage
+  is 92.84%, so 90 leaves real headroom without letting the claim rot.
+
+- **README badges rebuilt around what can be verified.** The CI status
+  and the release version now read GitHub directly and cannot go stale.
+  Coverage, test count, Python versions and licence remain fixed
+  strings — every one of them re-measured for this release, because two
+  were wrong: `Tests-2573` never matched any real count, and
+  `Version-4.6.1` was three releases behind.
+
+### Added
+
+- **`tests/test_readme_claims.py` watches the coverage badge.** The real
+  percentage cannot be measured from inside the run being measured, but
+  the relationship between the advertised figure and the gate enforcing
+  it is a pure configuration fact, and that gap is the failure mode. The
+  build now fails if the badge promises more than `fail_under` holds up,
+  if the gate moves up without the badge following, or if a hardcoded
+  version badge comes back. Same idea as `tests/test_version.py`, applied
+  to the claim whose truth lives in another file.
+
+### Documentation
+
+- **The README described a project three releases old.** Its feature table
+  had no admin panel and no analyst web UI — the two largest things
+  shipped since it was written — and stated the test count as 2,235 in
+  three separate places. The configuration reference, corrected in 4.10.1,
+  is now joined by a Tests section that says what the coverage number does
+  *not* cover: the interactive wizards excluded by policy, and the two
+  modules excluded as a declared ratchet.
+
+---
+
 ## [4.10.1] — 2026-09-08
 
 Documentation catch-up for 4.9.0 and 4.10.0, which shipped code without
