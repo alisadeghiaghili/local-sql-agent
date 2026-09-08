@@ -305,7 +305,9 @@ def delete_session(session_id: str, principal: Principal = Depends(require_princ
 # ---------------------------------------------------------------------------
 
 
-async def _ask_turn_bounded(session_id: str, question: str, principal: Principal) -> Turn:
+async def _ask_turn_bounded(
+    session_id: str, question: str, principal: Principal, *, interpret: bool = False,
+) -> Turn:
     """Run the (blocking) turn engine off the event loop.
 
     Mirrors ``api/server.py``'s ``_run_query_bounded`` — ``TurnEngine.ask``
@@ -322,6 +324,7 @@ async def _ask_turn_bounded(session_id: str, question: str, principal: Principal
     turn = await asyncio.to_thread(
         get_turn_engine().ask, record, question, system_prompt,
         denied_columns=principal.denied_columns, memory_entries=memory_entries,
+        interpret=interpret,
     )
     get_session_store().sync_turn(record, turn)
     return turn
@@ -337,11 +340,13 @@ async def ask_turn(
 ):
     if request.query_params.get("stream") in ("1", "true"):
         return StreamingResponse(
-            _turn_event_stream(session_id, req.question, principal),
+            _turn_event_stream(session_id, req.question, principal, req.interpret),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    return await _ask_turn_bounded(session_id, req.question, principal)
+    return await _ask_turn_bounded(
+        session_id, req.question, principal, interpret=req.interpret,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +384,7 @@ _STAGES_DONE = object()
 
 
 async def _ask_turn_streaming_stages(
-    session_id: str, question: str, principal: Principal,
+    session_id: str, question: str, principal: Principal, interpret: bool = False,
 ):
     """Run one turn, yielding ``(ui_step, state)`` as each stage happens,
     then finally ``("", turn)``.
@@ -418,6 +423,7 @@ async def _ask_turn_streaming_stages(
                 denied_columns=principal.denied_columns,
                 memory_entries=memory_entries,
                 on_stage=on_stage,
+                interpret=interpret,
             )
         finally:
             # In a `finally` so a raising turn still releases the drain
@@ -441,7 +447,9 @@ def _sse_event(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
-async def _turn_event_stream(session_id: str, question: str, principal: Principal):
+async def _turn_event_stream(
+    session_id: str, question: str, principal: Principal, interpret: bool = False,
+):
     """Yield SSE events per contract §7.
 
     ``stage`` events are live: :func:`_ask_turn_streaming_stages` bridges
@@ -455,7 +463,7 @@ async def _turn_event_stream(session_id: str, question: str, principal: Principa
     turn: Turn | None = None
     try:
         async for step, payload in _ask_turn_streaming_stages(
-            session_id, question, principal,
+            session_id, question, principal, interpret,
         ):
             if step:
                 yield _sse_event("stage", {"stage": step, "state": payload})

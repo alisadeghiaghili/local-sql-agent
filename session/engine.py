@@ -48,6 +48,7 @@ from llm.router import (
     TaskType,
     build_prompt_segments,
 )
+from llm.interpret import interpret_rows
 from llm.sql_agent import MAX_CORRECTION_ATTEMPTS
 from observability.audit import AuditRecord, save_audit_record
 from observability.llm_status import (
@@ -286,6 +287,7 @@ class TurnEngine:
         denied_columns: tuple[str, ...] | None = None,
         memory_entries: dict[str, MemoryEntry] | None = None,
         on_stage: Callable[[str, str], None] | None = None,
+        interpret: bool = False,
     ) -> Turn:
         """Answer *question* in the context of *record*, and record one audit entry.
 
@@ -383,6 +385,24 @@ class TurnEngine:
             inherited=basis_decision.inherited,
         )
 
+        # Opt-in per request, never per deployment: this sends real result
+        # rows to the model, and it is the analyst asking the question who
+        # is in a position to say whether these particular rows should go.
+        # `/query` has made the same call since phase 2 (`interpret`
+        # defaults to False there too).
+        #
+        # Timed as its own stage so the web UI's fifth pipeline step
+        # reports what actually happened. Until this existed the engine
+        # never ran an `interpret` stage at all, so that step could only
+        # ever sit at "waiting" -- invisible while none of the five moved,
+        # and conspicuous the moment the other four started ticking.
+        interpretation: str | None = None
+        if interpret and outcome.result is not None and outcome.result.rows:
+            with timer.stage("interpret"):
+                interpretation = interpret_rows(
+                    self._router, resolved_question or question, outcome.result.rows,
+                ) or None
+
         turn = Turn(
             turn_id=turn_id,
             session_id=record.session_id,
@@ -395,7 +415,7 @@ class TurnEngine:
             ambiguity=ambiguity_block,
             guard=outcome.guard,
             result=outcome.result,
-            interpretation=None,
+            interpretation=interpretation,
             tier=outcome.tier,
             warnings=outcome.warnings,
             llm=outcome.llm_status,

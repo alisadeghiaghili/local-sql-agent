@@ -16,7 +16,7 @@ import {
   SCENARIO_SESSIONS, SCENARIO_MEMORY, getSimulatedSessionTurns, FULL_TURNS_BY_ID,
 } from "./data.js";
 import {
-  state, loadPersisted, persistTheme, persistSessionId,
+  state, loadPersisted, persistTheme, persistSessionId, persistInterpret,
   applyTheme, addTurn, findTurn, resetTranscript, resolveActiveSessionId,
   resolveBootMode, resolveBootBaseUrl,
 } from "./state.js";
@@ -85,6 +85,13 @@ function wireTopbar() {
     updateKeyStatus();  // leaves the "rejected" state: a new key was given
     showNotice("ok", "کلید API ذخیره شد — این کلید فقط در همین مرورگر نگه‌داری می‌شود.");
     refreshHealth();
+  });
+
+  // Per-analyst, persisted, and read fresh on every ask (see askLive).
+  const interpretToggle = $("interpret-toggle");
+  interpretToggle.checked = state.interpret;
+  interpretToggle.addEventListener("change", () => {
+    persistInterpret(interpretToggle.checked);
   });
 
   $("live-key-change").addEventListener("click", () => {
@@ -916,7 +923,7 @@ async function askLive(q) {
         default:
           break;
       }
-    });
+    }, { interpret: state.interpret });
   } catch (err) {
     if (err instanceof V2NotSupportedError) {
       document.getElementById(`turn-${working.turn_id}`)?.remove();

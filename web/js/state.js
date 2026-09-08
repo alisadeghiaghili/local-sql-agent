@@ -7,6 +7,7 @@
 const STORAGE_THEME_KEY = "lsa-web-theme";
 const STORAGE_BASE_KEY = "lsa-web-base";
 const STORAGE_SESSION_KEY = "lsa-web-session-id";
+const STORAGE_INTERPRET_KEY = "lsa-web-interpret";
 
 export const state = {
   // "live" is the default. A deployment is live and the analysts opening
@@ -28,6 +29,11 @@ export const state = {
   sessions: [], // SessionSummary[] — the conversation-list sidebar's index
   turns: [], // Turn[] rendered so far, in order
   memory: null, // {entries, rememberable} | null — the memory panel's last fetch
+  // Whether each turn asks for a plain-language summary. Off by default,
+  // matching the API: an interpretation sends up to twenty rows of real
+  // result data to the model, and defaulting that on would be deciding
+  // for the analyst rather than asking them.
+  interpret: false,
   busy: false,
   nextScriptedIndex: 0, // pointer into SCENARIO.turns for the "sample" flow
 };
@@ -45,6 +51,18 @@ export function loadPersisted() {
     const s = localStorage.getItem(STORAGE_SESSION_KEY);
     if (s) state.sessionId = s;
   } catch { /* ignore — reload just won't return the analyst to the same conversation */ }
+  try {
+    state.interpret = localStorage.getItem(STORAGE_INTERPRET_KEY) === "1";
+  } catch { /* ignore — the toggle just won't survive a reload */ }
+}
+
+/** Remembers the analyst's interpretation choice for this browser. */
+export function persistInterpret(on) {
+  state.interpret = !!on;
+  try {
+    if (state.interpret) localStorage.setItem(STORAGE_INTERPRET_KEY, "1");
+    else localStorage.removeItem(STORAGE_INTERPRET_KEY);
+  } catch { /* ignore — it just won't survive a reload */ }
 }
 
 /** Remembers which conversation the analyst was on, so a reload returns

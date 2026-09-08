@@ -99,6 +99,7 @@ from llm.base import LLMBackend
 from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record
+from llm.interpret import format_numbers, interpret_rows
 from observability.llm_status import (
     build_llm_status,
     finish_reason_from_meta,
@@ -1036,89 +1037,20 @@ def _safe_run(
         raise err
 
 
-_THOUSAND_SEP = r"[ \u00A0\u202F\u2009\u066C]"  # space, NBSP, NNBSP, thin space, ٬
-
-# Numbers already written with thousands separators (e.g. "143 066 295 000").
-_SEPARATED_NUMBER_RE = re.compile(
-    rf"(?<!\d)\d{{1,3}}(?:{_THOUSAND_SEP}\d{{3}})+(?!\d)"
-)
-
-
-def _thousands_separate(number: str) -> str:
-    """Insert comma thousands separators into a digit string (ASCII or Persian)."""
-    digits = list(number)
-    for i in range(len(digits) - 3, 0, -3):
-        digits.insert(i, ",")
-    return "".join(digits)
-
-
-def _format_numbers(text: str) -> str:
-    """Normalize large numbers to comma thousands-separators.
-
-    Handles both bare runs (``12000000000``) and numbers already separated
-    with spaces / NBSP / thin space (``143 066 295 000``).  4-digit Persian
-    years like ``1402`` are left alone.
-    """
-    def _to_commas(match: re.Match) -> str:
-        digits = "".join(ch for ch in match.group(0) if ch.isdigit())
-        return _thousands_separate(digits)
-
-    text = _SEPARATED_NUMBER_RE.sub(_to_commas, text)
-    text = re.sub(r"\d{5,}", lambda m: _thousands_separate(m.group(0)), text)
-    return text
+# The number formatting and the interpretation itself moved to
+# llm/interpret.py when session/engine.py needed them too: the session
+# layer sits below this one and cannot import from it, and a
+# data-governance gate is the last thing worth having two copies of.
+# Re-exported under their original private names so this module's existing
+# callers -- and tests/test_runner_interpret_gate.py -- keep working.
+_format_numbers = format_numbers
 
 
 def _interpret(agent: SQLAgent, question: str, rows: list[dict]) -> str:
-    """Ask the router to summarise *rows* in natural language.
+    """Summarise *rows* for *question*. See :func:`llm.interpret.interpret_rows`.
 
-    Routed via ``agent._router.generate_text_for_task(TaskType.INTERPRETATION,
-    ...)`` — the same task-based chain, fallback, and governance machinery
-    ``SQLAgent.run`` uses for SQL generation, applied here to the
-    interpretation task. ``generate_text_for_task`` (rather than
-    ``generate_for_task``) is used deliberately: this prompt is entirely
-    per-request row data and a question, with no static prefix worth
-    segmenting for provider-side caching, so the plain
-    ``LLMBackend.generate`` call is the right primitive, not
-    ``generate_with_meta_segments``.
-
-    Data-governance gate (Phase 2 task 5)
-    --------------------------------------
-    This function sends up to 20 rows of REAL query results to whichever
-    backend the interpretation task routes to. As long as that backend is
-    local/trusted (a self-hosted endpoint, or the ``mock`` stub), that is exactly this product's
-    premise ("runs on your infrastructure"). The moment it is a hosted
-    provider (:class:`~llm.providers.OpenAIBackend` pointed at a hosted
-    API), sending row data there is a
-    genuine data-exfiltration path, and it must not happen silently just
-    because ``LLM_PROVIDER`` was set — see ``llm.router``'s module
-    docstring. ``LLMRouter._governance_check`` (refuse unless
-    ``cfg.settings.llm_allow_remote`` is explicitly ``True``) already
-    raises :class:`~llm.router.RemoteProviderNotAllowedError` *before* any
-    backend method is called; this function catches that and is loud on
-    its own terms: an ``ERROR``-level log naming the backend and the
-    row count that was about to be sent, distinct from the generic
-    "Interpretation failed (non-fatal)" warning below so the refusal is
-    never mistaken for an ordinary transport hiccup.
+    Kept as a wrapper rather than replaced at the call site because it
+    takes an ``SQLAgent`` while the shared function takes the router
+    directly -- the agent is only ever consulted for ``_router`` here.
     """
-    preview_text = "\n".join(str(r) for r in rows[:20]) or "(empty result set)"
-    prompt = _INTERPRET_TEMPLATE.format(question=question, rows=preview_text)
-    try:
-        route_result = agent._router.generate_text_for_task(TaskType.INTERPRETATION, prompt)
-    except RemoteProviderNotAllowedError as exc:
-        logger.error(
-            "REFUSED interpretation: %d result row(s) would be sent to a remote LLM "
-            "provider without LLM_ALLOW_REMOTE=true (%s). Set LLM_ALLOW_REMOTE=true to "
-            "explicitly opt this deployment into sending query-result data to a hosted "
-            "provider. Interpretation skipped for this request.",
-            len(rows), exc,
-        )
-        return ""
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Interpretation failed (non-fatal): %s", exc)
-        return ""
-    summary = (route_result.text or "").strip()
-    # Belt-and-suspenders: the model may still write toman despite the prompt rule.
-    summary = re.sub(r"toman", "Rial", summary.replace("تومان", "ریال"), flags=re.IGNORECASE)
-    # Normalize price numbers to comma thousands-separators.
-    summary = _format_numbers(summary)
-    return summary
+    return interpret_rows(agent._router, question, rows)
