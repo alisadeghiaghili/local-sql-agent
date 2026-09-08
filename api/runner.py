@@ -86,6 +86,7 @@ from api.errors import (
     InjectionAttemptError,
     InvalidSQLResponseError,
     EmptySQLResponseError,
+    TruncatedSQLResponseError,
     ModelUnavailableError,
     ModelTimeoutError,
     QueryExecutionError,
@@ -98,7 +99,12 @@ from llm.base import LLMBackend
 from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record
-from observability.llm_status import build_llm_status, finish_reason_from_meta
+from observability.llm_status import (
+    build_llm_status,
+    finish_reason_from_meta,
+    is_truncated_empty_completion,
+    truncated_output_message,
+)
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import prefix_version_for_config
@@ -197,6 +203,12 @@ _LLM_COMPLETED_ERRORS: frozenset[type[NLQError]] = frozenset({
     InjectionAttemptError,
     InvalidSQLResponseError,
     EmptySQLResponseError,
+    # A truncated completion is a completed call: the endpoint answered,
+    # and its own finish_reason ("length") is the single most diagnostic
+    # fact about it. Leaving it out of this set would rewrite that to
+    # "error" -- erasing, from the audit log, the one field that says the
+    # token cap was the cause.
+    TruncatedSQLResponseError,
     DatabaseConnectionError,
     QueryTimeoutError,
     QueryExecutionError,
@@ -826,7 +838,16 @@ def _safe_generate_sql_only(
         raise ModelUnavailableError(str(exc))
 
     if not raw or not raw.strip():
-        err = EmptySQLResponseError("LLM returned an empty response.")
+        # Same distinction the v2 engine draws (session/engine.py): a
+        # completion cut off at the token cap before it emitted anything
+        # is a configuration ceiling, not an empty answer, and only one of
+        # those two has a fix the operator can act on.
+        if is_truncated_empty_completion(raw or "", finish_reason_from_meta(llm_meta)):
+            err = TruncatedSQLResponseError(
+                truncated_output_message(cfg.settings.llm_num_predict)
+            )
+        else:
+            err = EmptySQLResponseError("LLM returned an empty response.")
         err.llm_meta = llm_meta  # type: ignore[attr-defined]
         raise err
 

@@ -82,9 +82,17 @@ function wireTopbar() {
     if (!val.trim()) return;
     setApiKey(val);
     $("live-key-input").value = "";
-    updateKeyStatus();
+    updateKeyStatus();  // leaves the "rejected" state: a new key was given
     showNotice("ok", "کلید API ذخیره شد — این کلید فقط در همین مرورگر نگه‌داری می‌شود.");
     refreshHealth();
+  });
+
+  $("live-key-change").addEventListener("click", () => {
+    // Reveals the entry field without touching the stored key, so a
+    // mistyped replacement does not leave the analyst with neither.
+    $("live-key-entry").hidden = false;
+    $("live-key-change").hidden = true;
+    $("live-key-input").focus();
   });
 
   $("live-key-clear").addEventListener("click", () => {
@@ -96,23 +104,52 @@ function wireTopbar() {
   updateKeyStatus();
 }
 
-/* ── API key status pill (topbar) ─────────────────────────────────── */
-function updateKeyStatus() {
+/* ── API key state (topbar) ────────────────────────────────────────
+ * Three states, because "a key is stored" and "the server accepts it"
+ * are different facts and the difference is actionable:
+ *
+ *   stored    -> pill + "تغییر کلید". No entry field: an empty password
+ *                box is what a signed-OUT page shows, and this one is
+ *                always empty (it is cleared after a save), so leaving it
+ *                on screen told every analyst they were logged out.
+ *   unset     -> entry field, no clear/change button (nothing to clear).
+ *   rejected  -> entry field AND the stored key kept. The key is printed
+ *                exactly once by scripts/issue_api_key.py and is not
+ *                recoverable, so a 401 -- which can be transient, e.g. a
+ *                server restarted mid-configuration -- must not destroy
+ *                the analyst's only copy of it. They can retype it, or
+ *                clear it deliberately.
+ */
+function updateKeyStatus(rejected = false) {
   const el = $("live-key-status");
-  if (hasApiKey()) {
+  const entry = $("live-key-entry");
+  const change = $("live-key-change");
+  const clear = $("live-key-clear");
+  const stored = hasApiKey();
+
+  if (rejected) {
+    el.textContent = "کلید: رد شد";
+    el.className = "live-key-status unset";
+  } else if (stored) {
     el.textContent = "کلید: ذخیره شده ✓";
     el.className = "live-key-status set";
   } else {
     el.textContent = "کلید: تنظیم نشده";
     el.className = "live-key-status unset";
   }
+
+  const showEntry = rejected || !stored;
+  entry.hidden = !showEntry;
+  change.hidden = showEntry;
+  clear.hidden = !stored;
 }
 
 /** Reveal the key row, focus its input, and explain why — used both on
  * first live use and after a 401 (see handleLiveError). Never puts the
  * key itself, or any prior value, into the input or this message. */
-function promptForApiKey(message) {
+function promptForApiKey(message, { rejected = false } = {}) {
   $("live-key-row").hidden = false;
+  updateKeyStatus(rejected);
   showNotice("warn", message);
   $("live-key-input").focus();
 }
@@ -924,8 +961,18 @@ function handleLiveError(err) {
   // cleared and the analyst is re-prompted immediately (never shown the
   // key itself, only this message).
   if (err instanceof UnauthorizedError) {
-    clearApiKey();
-    promptForApiKey("کلید API رد شد یا نامعتبر است — لطفاً یک کلید جدید وارد کنید.");
+    // Deliberately does NOT clear the stored key. It was printed once by
+    // scripts/issue_api_key.py and is unrecoverable, and a 401 is not
+    // always the key's fault -- a server restarted with a different
+    // API_KEYS_JSON, or an app database briefly unreachable, produces one
+    // from a perfectly good key. Destroying it here made a transient
+    // server condition into "find that 43-character string again".
+    promptForApiKey(
+      "سرور کلید ذخیره‌شده را نپذیرفت (۴۰۱). اگر کلید درست است، ممکن است " +
+      "سرور تازه ری‌استارت شده باشد؛ دوباره امتحان کنید. در غیر این صورت " +
+      "کلید تازه‌ای وارد کنید — کلید فعلی پاک نشده است.",
+      { rejected: true },
+    );
     return;
   }
   // 429: client-side rate limiting, not a query or model failure — see

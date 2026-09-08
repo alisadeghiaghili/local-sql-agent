@@ -62,6 +62,8 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from observability.llm_status import TRUNCATED_OUTPUT_ERROR_CODE
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,6 +191,20 @@ class EmptySQLResponseError(NLQError):
     """LLM returned an empty or whitespace-only response."""
     http_status = status.HTTP_502_BAD_GATEWAY
     error_code = "EMPTY_SQL_RESPONSE"
+
+
+class TruncatedSQLResponseError(NLQError):
+    """LLM was cut off at its token cap before emitting any SQL.
+
+    A distinct code from :class:`EmptySQLResponseError` because the two
+    have distinct fixes and only one of them is the operator's. "Empty"
+    sends the reader to the model, the prompt and the schema; this one
+    names ``LLM_NUM_PREDICT`` and ``LLM_EXTRA_BODY``, which is where the
+    problem actually is -- see
+    :func:`observability.llm_status.is_truncated_empty_completion`.
+    """
+    http_status = status.HTTP_502_BAD_GATEWAY
+    error_code = TRUNCATED_OUTPUT_ERROR_CODE
 
 
 class InvalidSQLResponseError(NLQError):

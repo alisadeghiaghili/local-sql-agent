@@ -394,6 +394,52 @@ def build_llm_status(
     )
 
 
+#: Error code for "the model was cut off before it finished", as distinct
+#: from ``EMPTY_SQL_RESPONSE``'s "the model returned nothing". Both produce
+#: an unusable answer; only one of them is fixed by a configuration change,
+#: and saying "empty" for a truncation sends the reader looking at the
+#: model, the prompt, and the schema instead of at ``LLM_NUM_PREDICT``.
+TRUNCATED_OUTPUT_ERROR_CODE = "LLM_OUTPUT_TRUNCATED"
+
+
+def is_truncated_empty_completion(text: str, finish_reason: str | None) -> bool:
+    """True when *text* is empty **because** the model hit its token cap.
+
+    The two conditions are only diagnostic together. An empty completion
+    that stopped cleanly is a model that had nothing to say; a truncated
+    completion that produced text is a partial answer the guard will
+    reject on its own terms. It is the pair -- nothing emitted, and cut
+    off mid-generation -- that identifies a completion budget consumed
+    before the answer began.
+
+    That is the ordinary failure mode of a reasoning model. Qwen3,
+    DeepSeek-R1 and gpt-oss reason first and answer second, so with
+    ``LLM_NUM_PREDICT`` too low for the reasoning they do, every token is
+    spent thinking and the answer never starts.
+    """
+    return not text.strip() and finish_reason == "length"
+
+
+def truncated_output_message(max_tokens: int) -> str:
+    """The operator-facing explanation for :func:`is_truncated_empty_completion`.
+
+    Names the setting, the number currently in force, and the two ways
+    out, because the symptom points nowhere near either of them: from the
+    UI this looks like the model returned nothing, which invites exactly
+    the wrong investigation.
+    """
+    return (
+        f"The model hit its {max_tokens}-token completion limit before "
+        "producing any SQL (finish_reason=length with empty content). This "
+        "is the usual signature of a reasoning model spending its whole "
+        "completion budget thinking before it answers. Either raise "
+        "LLM_NUM_PREDICT (2048-4096 suits a reasoning model), or turn the "
+        "model's reasoning off with LLM_EXTRA_BODY -- for Qwen3 on vLLM or "
+        'SGLang: {"chat_template_kwargs":{"enable_thinking":false}}. '
+        "Retrying will not help: nothing about this depends on the question."
+    )
+
+
 def finish_reason_from_meta(meta: Mapping[str, Any] | None) -> str:
     """The real ``finish_reason`` a completed LLM call produced, or ``"stop"``.
 

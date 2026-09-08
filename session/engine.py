@@ -50,7 +50,13 @@ from llm.router import (
 )
 from llm.sql_agent import MAX_CORRECTION_ATTEMPTS
 from observability.audit import AuditRecord, save_audit_record
-from observability.llm_status import build_llm_status, finish_reason_from_meta
+from observability.llm_status import (
+    TRUNCATED_OUTPUT_ERROR_CODE,
+    build_llm_status,
+    finish_reason_from_meta,
+    is_truncated_empty_completion,
+    truncated_output_message,
+)
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
@@ -689,6 +695,24 @@ class TurnEngine:
             )
 
             if not raw.strip():
+                # A completion cut off at the token cap before it emitted
+                # anything is not a bad answer to correct -- it is a
+                # configuration ceiling, and the correction loop cannot
+                # move it. Retrying spends the same budget on the same
+                # reasoning to reach the same truncation, three times over,
+                # and then reports "empty response": a description of the
+                # symptom that points at the model rather than at the
+                # setting. Returned on the FIRST round for that reason.
+                if is_truncated_empty_completion(
+                    raw, finish_reason_from_meta(route_result.meta)
+                ):
+                    return _GenOutcome(
+                        error=TurnErrorInfo(
+                            code=TRUNCATED_OUTPUT_ERROR_CODE,
+                            message=truncated_output_message(cfg.settings.llm_num_predict),
+                        ),
+                        llm_status=llm_status, tier=None,
+                    )
                 last_error = "LLM returned an empty response."
                 if correction_round == self._max_corrections:
                     return _GenOutcome(

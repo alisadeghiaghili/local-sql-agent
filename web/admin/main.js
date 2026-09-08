@@ -87,6 +87,12 @@ function wireTopbar() {
     refreshAll();
   });
 
+  $("live-key-change").addEventListener("click", () => {
+    $("live-key-entry").hidden = false;
+    $("live-key-change").hidden = true;
+    $("live-key-input").focus();
+  });
+
   $("live-key-clear").addEventListener("click", () => {
     clearApiKey();
     $("live-key-input").value = "";
@@ -106,15 +112,33 @@ function updateThemeLabel() {
   $("theme-toggle-label").textContent = labels[state.theme];
 }
 
-function updateKeyStatus() {
+/* Same three states as the analyst UI (web/js/main.js) -- see that
+ * function's comment. The panel's own version of the problem was worse:
+ * an admin key is entered once and then every card on the page depends on
+ * it, so an always-empty password box beside ten loaded cards is a
+ * standing invitation to re-enter a key that was never lost. */
+function updateKeyStatus(rejected = false) {
   const el = $("live-key-status");
-  if (hasApiKey()) {
+  const entry = $("live-key-entry");
+  const change = $("live-key-change");
+  const clear = $("live-key-clear");
+  const stored = hasApiKey();
+
+  if (rejected) {
+    el.textContent = "کلید: رد شد";
+    el.className = "live-key-status unset";
+  } else if (stored) {
     el.textContent = "کلید: ذخیره شده ✓";
     el.className = "live-key-status set";
   } else {
     el.textContent = "کلید: تنظیم نشده";
     el.className = "live-key-status unset";
   }
+
+  const showEntry = rejected || !stored;
+  entry.hidden = !showEntry;
+  change.hidden = showEntry;
+  clear.hidden = !stored;
 }
 
 function tickClock() {
@@ -207,7 +231,18 @@ async function refreshOne(name) {
         (err.message || ""),
       );
     } else if (err instanceof AdminUnauthorizedError) {
-      showNotice("error", "کلید API وارد نشده یا نامعتبر است. یک کلید مدیریتی وارد کنید.");
+      // Marks the stored key as rejected rather than only saying "enter a
+      // key": with a key already stored, that message read as "you are
+      // signed out" when the real state was "the server said no to what
+      // you have". The key itself is kept -- it is unrecoverable, and a
+      // 401 can be a restarted server rather than a bad key.
+      updateKeyStatus(hasApiKey());
+      showNotice(
+        "error",
+        hasApiKey()
+          ? "سرور کلید ذخیره‌شده را نپذیرفت (۴۰۱). کلید پاک نشده — اگر سرور تازه ری‌استارت شده دوباره امتحان کنید، وگرنه کلید مدیریتی تازه‌ای وارد کنید."
+          : "کلید API وارد نشده است. یک کلید مدیریتی وارد کنید.",
+      );
     } else if (err instanceof AdminApiError) {
       body.innerHTML = `<p class="admin-loading">خطا: ${escapeHtml(err.message)}</p>`;
     } else {
