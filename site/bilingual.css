@@ -1,1 +1,106 @@
-@import url('https://fonts.googleapis.com/css2?family=Lalezar&display=swap');.header-actions{display:flex;align-items:center;gap:10px}.language-toggle{width:38px;height:38px;border:1px solid var(--line);color:var(--acid);background:transparent;font:600 12px 'Noto Sans Arabic',Manrope,sans-serif;cursor:pointer;transition:.2s}.language-toggle:hover{background:var(--acid);color:#102010}html[lang="fa"] body{font-family:'Noto Sans Arabic',Tahoma,sans-serif;letter-spacing:0}html[lang="fa"] h1,html[lang="fa"] h2,html[lang="fa"] h3{font-family:Lalezar,'Noto Sans Arabic',sans-serif;font-weight:400;letter-spacing:0;line-height:1.3}html[lang="fa"] h1{line-height:1.18}html[lang="fa"] .hero-copy,html[lang="fa"] .intro>div,html[lang="fa"] .architecture-head,html[lang="fa"] .start>div:first-child,html[lang="fa"] .feature,html[lang="fa"] .principles article{text-align:right}html[lang="fa"] .lede,html[lang="fa"] .intro p,html[lang="fa"] .principles p,html[lang="fa"] .feature p,html[lang="fa"] .architecture-head>p:last-child,html[lang="fa"] .start>div>p{line-height:2.05}html[lang="fa"] .hero{direction:rtl}html[lang="fa"] .arrow{left:27px;right:auto}html[lang="fa"] .terminal{direction:ltr;text-align:left}html[lang="fa"] .architecture-head{direction:rtl}html[lang="fa"] .architecture-head .section-kicker{direction:ltr;text-align:right}html[lang="en"] .question{direction:ltr;text-align:left}html[lang="en"] .question p{direction:ltr;text-align:left}.install-card,.install-card pre,.install-card code{direction:ltr!important;text-align:left!important;unicode-bidi:plaintext}.install-top,.install-footer{direction:ltr;text-align:left}@media(max-width:800px){.language-toggle{width:34px;height:34px}}
+@import url("https://fonts.googleapis.com/css2?family=Lalezar&display=swap");
+
+html[lang="fa"] h1 em,
+html[lang="fa"] h2 em {
+  font-family: Peyda, "Noto Sans Arabic", sans-serif;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.language-toggle {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  color: var(--acid);
+  background: transparent;
+  font:
+    600 12px "Noto Sans Arabic",
+    Manrope,
+    sans-serif;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.language-toggle:hover {
+  background: var(--acid);
+  color: #102010;
+}
+html[lang="fa"] body {
+  font-family: "Noto Sans Arabic", Tahoma, sans-serif;
+  letter-spacing: 0;
+}
+html[lang="fa"] h1,
+html[lang="fa"] h2,
+html[lang="fa"] h3 {
+  font-family: Lalezar, "Noto Sans Arabic", sans-serif;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+html[lang="fa"] h1 {
+  line-height: 1.18;
+}
+html[lang="fa"] .hero-copy,
+html[lang="fa"] .intro > div,
+html[lang="fa"] .architecture-head,
+html[lang="fa"] .start > div:first-child,
+html[lang="fa"] .feature,
+html[lang="fa"] .principles article {
+  text-align: right;
+}
+html[lang="fa"] .lede,
+html[lang="fa"] .intro p,
+html[lang="fa"] .principles p,
+html[lang="fa"] .feature p,
+html[lang="fa"] .architecture-head > p:last-child,
+html[lang="fa"] .start > div > p {
+  line-height: 2.05;
+}
+html[lang="fa"] .hero {
+  direction: rtl;
+}
+html[lang="fa"] .arrow {
+  left: 27px;
+  right: auto;
+}
+html[lang="fa"] .terminal {
+  direction: ltr;
+  text-align: left;
+}
+html[lang="fa"] .architecture-head {
+  direction: rtl;
+}
+html[lang="fa"] .architecture-head .section-kicker {
+  direction: ltr;
+  text-align: right;
+}
+html[lang="en"] .question {
+  direction: ltr;
+  text-align: left;
+}
+html[lang="en"] .question p {
+  direction: ltr;
+  text-align: left;
+}
+.install-card,
+.install-card pre,
+.install-card code {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: plaintext;
+}
+.install-top,
+.install-footer {
+  direction: ltr;
+  text-align: left;
+}
+@media (max-width: 800px) {
+  .language-toggle {
+    width: 34px;
+    height: 34px;
+  }
+}
