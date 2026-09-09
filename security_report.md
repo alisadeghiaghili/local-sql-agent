@@ -47,8 +47,9 @@ The FastAPI application employs several standard security middleware components.
 **Findings & Recommendations for Improvement:**
 - **Database Least Privilege:** The `docs/db-hardening.md` outlines excellent database hardening steps (dedicated read-only login, explicit `DENY` grants, Resource Governor).
   - *Action:* These are currently documented steps. **Recommendation:** Automate the verification of these privileges during deployment (e.g., adding a script to `scripts/verify_deployment.py` that asserts the DB connection cannot execute `INSERT` or `DROP`).
-- **Dependency Management:**
-  - *Action:* Ensure regular scanning of `requirements.txt` using tools like `pip-audit` or Dependabot, especially for core libraries like `FastAPI`, `SQLAlchemy`, and `sqlglot`.
+- **Dependency Management (SCA):**
+  - *Action:* Conducted Software Composition Analysis (SCA) using `pip-audit` on `requirements.txt` and `requirements-dev.txt`. **Finding:** No known vulnerabilities (CVEs) were found in the current dependencies.
+  - *Recommendation:* Integrate `pip-audit` into the CI/CD pipeline to continuously monitor for vulnerable dependencies.
 - **Subprocess Security:** Bandit highlighted low-severity warnings regarding the use of the `subprocess` module in test and utility scripts.
   - *Action:* While generally acceptable in tests, ensure no user-controlled input ever reaches a `subprocess.run()` call without strict validation and using `shell=False`.
 
