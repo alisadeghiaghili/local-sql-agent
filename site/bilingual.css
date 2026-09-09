@@ -24,57 +24,59 @@ html[lang="fa"] h2 em {
     sans-serif;
   cursor: pointer;
   transition: 0.2s;
+  appearance: none;
+  text-align: center;
 }
 .language-toggle:hover {
   background: var(--acid);
   color: #102010;
 }
-html[lang="fa"] body {
+:is(html[lang="fa"], html[lang="ar"]) body {
   font-family: "Noto Sans Arabic", Tahoma, sans-serif;
   letter-spacing: 0;
 }
-html[lang="fa"] h1,
-html[lang="fa"] h2,
-html[lang="fa"] h3 {
+:is(html[lang="fa"], html[lang="ar"]) h1,
+:is(html[lang="fa"], html[lang="ar"]) h2,
+:is(html[lang="fa"], html[lang="ar"]) h3 {
   font-family: Lalezar, "Noto Sans Arabic", sans-serif;
   font-weight: 400;
   letter-spacing: 0;
   line-height: 1.3;
 }
-html[lang="fa"] h1 {
+:is(html[lang="fa"], html[lang="ar"]) h1 {
   line-height: 1.18;
 }
-html[lang="fa"] .hero-copy,
-html[lang="fa"] .intro > div,
-html[lang="fa"] .architecture-head,
-html[lang="fa"] .start > div:first-child,
-html[lang="fa"] .feature,
-html[lang="fa"] .principles article {
+:is(html[lang="fa"], html[lang="ar"]) .hero-copy,
+:is(html[lang="fa"], html[lang="ar"]) .intro > div,
+:is(html[lang="fa"], html[lang="ar"]) .architecture-head,
+:is(html[lang="fa"], html[lang="ar"]) .start > div:first-child,
+:is(html[lang="fa"], html[lang="ar"]) .feature,
+:is(html[lang="fa"], html[lang="ar"]) .principles article {
   text-align: right;
 }
-html[lang="fa"] .lede,
-html[lang="fa"] .intro p,
-html[lang="fa"] .principles p,
-html[lang="fa"] .feature p,
-html[lang="fa"] .architecture-head > p:last-child,
-html[lang="fa"] .start > div > p {
+:is(html[lang="fa"], html[lang="ar"]) .lede,
+:is(html[lang="fa"], html[lang="ar"]) .intro p,
+:is(html[lang="fa"], html[lang="ar"]) .principles p,
+:is(html[lang="fa"], html[lang="ar"]) .feature p,
+:is(html[lang="fa"], html[lang="ar"]) .architecture-head > p:last-child,
+:is(html[lang="fa"], html[lang="ar"]) .start > div > p {
   line-height: 2.05;
 }
-html[lang="fa"] .hero {
+:is(html[lang="fa"], html[lang="ar"]) .hero {
   direction: rtl;
 }
-html[lang="fa"] .arrow {
+:is(html[lang="fa"], html[lang="ar"]) .arrow {
   left: 27px;
   right: auto;
 }
-html[lang="fa"] .terminal {
+:is(html[lang="fa"], html[lang="ar"]) .terminal {
   direction: ltr;
   text-align: left;
 }
-html[lang="fa"] .architecture-head {
+:is(html[lang="fa"], html[lang="ar"]) .architecture-head {
   direction: rtl;
 }
-html[lang="fa"] .architecture-head .section-kicker {
+:is(html[lang="fa"], html[lang="ar"]) .architecture-head .section-kicker {
   direction: ltr;
   text-align: right;
 }

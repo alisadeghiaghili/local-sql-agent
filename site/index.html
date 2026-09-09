@@ -1,12 +1,257 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><meta name="description" content="Local SQL Agent — bilingual, private natural-language analytics for your warehouse."><meta name="theme-color" content="#07100f"><title>Local SQL Agent — your data stays yours</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="bilingual.css"></head>
-<body><div class="grid-noise"></div><header class="topbar shell"><a class="brand" href="#top"><span class="brand-mark">↗</span> LOCAL SQL AGENT</a><nav><a href="#how-it-works">Architecture</a><a href="#principles">Principles</a><a href="#start">Start local</a></nav><div class="header-actions"><button class="language-toggle" id="languageToggle" type="button" aria-label="Switch site language">فا</button><a class="source-link" href="https://github.com/alisadeghiaghili/local-sql-agent" target="_blank" rel="noreferrer">View source <span>↗</span></a></div></header>
-<main id="top"><section class="hero shell"><div class="hero-copy"><p class="eyebrow"><i></i> PRIVATE BY ARCHITECTURE</p><h1>Ask in your language.<br><em>Query on your terms.</em></h1><p class="lede">A local natural-language SQL agent for sensitive warehouses. Persian or English in; secure, inspectable SQL out. No cloud dependency. No data leaving your machine.</p><div class="hero-actions"><a class="button primary" href="#start">Run it locally <span>↓</span></a><a class="button quiet" href="#how-it-works">Explore the engine <span>→</span></a></div><div class="hero-proof"><span><b>6</b> scoped retrievers</span><span><b>AST</b> SQL guard</span><span><b>2</b> verified dialects</span></div></div>
-<div class="terminal-wrap"><div class="terminal-glow"></div><article class="terminal"><div class="terminal-top"><span class="live-dot"></span><span>LOCAL / ANALYST SESSION</span><span class="terminal-id">#8E12</span></div><div class="question" dir="rtl"><span>سؤال</span><p id="questionText">۱۰ مشتری برتر از نظر مبلغ خرید در سال ۱۴۰۳ کدام‌اند؟</p></div><div class="terminal-divider"></div><div class="sql-label"><span>GENERATED SQL</span><button id="newQuery" type="button">next example ↻</button></div><pre id="sqlText"><code><span class="kw">SELECT TOP</span> <span class="num">10</span><br>  c.Name,<br>  <span class="fn">SUM</span>(o.TotalAmount) <span class="kw">AS</span> PurchaseValue<br><span class="kw">FROM</span> Sales_Fact.<span class="table">Order</span> o<br><span class="kw">JOIN</span> Sales_Dim.<span class="table">Customer</span> c <span class="kw">ON</span> o.CustomerID = c.ID<br><span class="kw">WHERE</span> d.JalaliYear = <span class="num">1403</span><br><span class="kw">GROUP BY</span> c.Name <span class="kw">ORDER BY</span> PurchaseValue <span class="kw">DESC</span></code></pre><div class="terminal-result"><span><i></i> Guard verified</span><span>10 rows</span><span>1.24s</span><span>Excel ready ↓</span></div></article><div class="terminal-caption"><span></span> Every query stays in your network.</div></div></section>
-<section class="ticker"><div><span>ON-PREMISE</span><b>✦</b><span>PERSIAN + ENGLISH</span><b>✦</b><span>SQLGLOT GUARD</span><b>✦</b><span>CONVERSATIONAL CONTEXT</span><b>✦</b><span>OPENAI-COMPATIBLE LOCAL MODELS</span><b>✦</b><span>ON-PREMISE</span></div></section>
-<section class="intro shell" id="principles"><p class="section-kicker">01 / WHY IT EXISTS</p><div><h2>Cloud Text-to-SQL is a bad default for sensitive data.</h2><p>The premise here is different: your warehouse, terminology, access rules and model endpoint stay under your control. Local SQL Agent turns natural-language analysis into a governed data workflow—not a black box.</p></div></section>
-<section class="principles shell"><article><span class="number">01</span><h3>Your domain<br>is not a prompt.</h3><p>Schema, aliases, metrics, rules and examples live as portable YAML—outside the engine and outside source control when they need to.</p><span class="arrow">↘</span></article><article><span class="number">02</span><h3>Safety is not<br>a disclaimer.</h3><p>An AST-based allowlist and column ACL validate generated SQL before execution. DDL, DML and injection attempts stop at the gate.</p><span class="arrow">↘</span></article><article><span class="number">03</span><h3>Context should<br>compound.</h3><p>Follow-up questions compose against prior SQL as a CTE. Assumptions stay visible, editable and auditable with the answer.</p><span class="arrow">↘</span></article></section>
-<section class="architecture shell" id="how-it-works"><div class="architecture-head"><p class="section-kicker">02 / THE ENGINE</p><h2>Small context.<br><em>Strong answers.</em></h2><p>Rather than pouring an entire warehouse into a model context, the retrieval pipeline selects what the current question needs.</p></div><div class="pipeline"><div class="pipe-start"><span>QUESTION</span><strong>فارسی / English</strong></div><div class="pipe-line"></div><div class="pipe-group"><span class="pipe-title">SCOPED CONTEXT</span><div class="retrievers"><span>Entity</span><span>Fact</span><span>Relationship</span><span>Rule</span><span>Example</span><span>Value</span></div></div><div class="pipe-line"></div><div class="pipe-group"><span class="pipe-title">LOCAL REASONING</span><strong>Prompt Builder</strong><small>stable prefix · cached</small></div><div class="pipe-line"></div><div class="pipe-end"><span>SQL GUARD</span><strong>validate → execute</strong><i>✓</i></div></div></section>
-<section class="features shell"><div class="feature"><span>01</span><h3>Bring your own local model</h3><p>Connect an OpenAI-compatible endpoint: Ollama, LM Studio, vLLM or your own <code>/v1</code> server.</p></div><div class="feature"><span>02</span><h3>Built for bilingual analysis</h3><p>Ask questions naturally in Persian or English without translating your analysts—or your business vocabulary.</p></div><div class="feature"><span>03</span><h3>Designed for production scrutiny</h3><p>Authentication, ACL-aware caching, structured exports, audit trails and an evaluation harness are first-class parts of the engine.</p></div></section>
-<section class="start shell" id="start"><div><p class="section-kicker">03 / GET STARTED</p><h2>Keep your data<br><em>where it belongs.</em></h2><p>Point the agent at your own warehouse, configure your domain vocabulary, and run it entirely inside your environment.</p><a class="button primary" href="https://github.com/alisadeghiaghili/local-sql-agent" target="_blank" rel="noreferrer">Read the documentation <span>↗</span></a></div><div class="install-card"><div class="install-top"><span>QUICK START</span><button id="copyCommand" type="button">copy</button></div><pre><code><span class="comment"># clone and install</span><br>git clone https://github.com/alisadeghiaghili/local-sql-agent.git<br>cd local-sql-agent<br>pip install -r requirements.txt<br><br><span class="comment"># configure your domain, then run</span><br>python app.py</code></pre><div class="install-footer">Python 3.11+ <span>·</span> local LLM endpoint <span>·</span> your SQL warehouse</div></div></section></main>
-<footer class="shell"><span>LOCAL SQL AGENT</span><span>PRIVATE ANALYTICS, WITHOUT THE COMPROMISE.</span><a href="https://github.com/alisadeghiaghili/local-sql-agent" target="_blank" rel="noreferrer">GitHub ↗</a></footer><script src="script.js"></script><script src="fix-direction.js"></script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Local SQL Agent — bilingual, private natural-language analytics for your warehouse."
+    />
+    <meta name="theme-color" content="#07100f" />
+    <title>Local SQL Agent — your data stays yours</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="bilingual.css" />
+  </head>
+  <body>
+    <div class="grid-noise"></div>
+    <header class="topbar shell">
+      <a class="brand" href="#top"
+        ><span class="brand-mark">↗</span> LOCAL SQL AGENT</a
+      >
+      <nav>
+        <a href="#how-it-works">Architecture</a
+        ><a href="#principles">Principles</a><a href="#start">Start local</a>
+      </nav>
+      <div class="header-actions">
+        <select
+          class="language-toggle"
+          id="languageToggle"
+          aria-label="Site language"
+        >
+          <option value="en">EN</option>
+          <option value="fa">FA</option>
+          <option value="de">DE</option>
+          <option value="ar">AR</option>
+          <option value="tr">TR</option>
+        </select>
+        <a
+          class="source-link"
+          href="https://github.com/alisadeghiaghili/local-sql-agent"
+          target="_blank"
+          rel="noreferrer"
+          >View source <span>↗</span></a
+        >
+      </div>
+    </header>
+    <main id="top">
+      <section class="hero shell">
+        <div class="hero-copy">
+          <p class="eyebrow"><i></i> PRIVATE BY ARCHITECTURE</p>
+          <h1>Ask in your language.<br /><em>Query on your terms.</em></h1>
+          <p class="lede">
+            A local natural-language SQL agent for sensitive warehouses. Persian
+            or English in; secure, inspectable SQL out. No cloud dependency. No
+            data leaving your machine.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#start"
+              >Run it locally <span>↓</span></a
+            ><a class="button quiet" href="#how-it-works"
+              >Explore the engine <span>→</span></a
+            >
+          </div>
+          <div class="hero-proof">
+            <span><b>6</b> scoped retrievers</span
+            ><span><b>AST</b> SQL guard</span
+            ><span><b>2</b> verified dialects</span>
+          </div>
+        </div>
+        <div class="terminal-wrap">
+          <div class="terminal-glow"></div>
+          <article class="terminal">
+            <div class="terminal-top">
+              <span class="live-dot"></span><span>LOCAL / ANALYST SESSION</span
+              ><span class="terminal-id">#8E12</span>
+            </div>
+            <div class="question" dir="rtl">
+              <span>سؤال</span>
+              <p id="questionText">
+                ۱۰ مشتری برتر از نظر مبلغ خرید در سال ۱۴۰۳ کدام‌اند؟
+              </p>
+            </div>
+            <div class="terminal-divider"></div>
+            <div class="sql-label">
+              <span>GENERATED SQL</span
+              ><button id="newQuery" type="button">next example ↻</button>
+            </div>
+            <pre
+              id="sqlText"
+            ><code><span class="kw">SELECT TOP</span> <span class="num">10</span><br>  c.Name,<br>  <span class="fn">SUM</span>(o.TotalAmount) <span class="kw">AS</span> PurchaseValue<br><span class="kw">FROM</span> Sales_Fact.<span class="table">Order</span> o<br><span class="kw">JOIN</span> Sales_Dim.<span class="table">Customer</span> c <span class="kw">ON</span> o.CustomerID = c.ID<br><span class="kw">WHERE</span> d.JalaliYear = <span class="num">1403</span><br><span class="kw">GROUP BY</span> c.Name <span class="kw">ORDER BY</span> PurchaseValue <span class="kw">DESC</span></code></pre>
+            <div class="terminal-result">
+              <span><i></i> Guard verified</span><span>10 rows</span
+              ><span>1.24s</span><span>Excel ready ↓</span>
+            </div>
+          </article>
+          <div class="terminal-caption">
+            <span></span> Every query stays in your network.
+          </div>
+        </div>
+      </section>
+      <section class="ticker">
+        <div>
+          <span>ON-PREMISE</span><b>✦</b><span>PERSIAN + ENGLISH</span><b>✦</b
+          ><span>SQLGLOT GUARD</span><b>✦</b><span>CONVERSATIONAL CONTEXT</span
+          ><b>✦</b><span>OPENAI-COMPATIBLE LOCAL MODELS</span><b>✦</b
+          ><span>ON-PREMISE</span>
+        </div>
+      </section>
+      <section class="intro shell" id="principles">
+        <p class="section-kicker">01 / WHY IT EXISTS</p>
+        <div>
+          <h2>Cloud Text-to-SQL is a bad default for sensitive data.</h2>
+          <p>
+            The premise here is different: your warehouse, terminology, access
+            rules and model endpoint stay under your control. Local SQL Agent
+            turns natural-language analysis into a governed data workflow—not a
+            black box.
+          </p>
+        </div>
+      </section>
+      <section class="principles shell">
+        <article>
+          <span class="number">01</span>
+          <h3>Your domain<br />is not a prompt.</h3>
+          <p>
+            Schema, aliases, metrics, rules and examples live as portable
+            YAML—outside the engine and outside source control when they need
+            to.
+          </p>
+          <span class="arrow">↘</span>
+        </article>
+        <article>
+          <span class="number">02</span>
+          <h3>Safety is not<br />a disclaimer.</h3>
+          <p>
+            An AST-based allowlist and column ACL validate generated SQL before
+            execution. DDL, DML and injection attempts stop at the gate.
+          </p>
+          <span class="arrow">↘</span>
+        </article>
+        <article>
+          <span class="number">03</span>
+          <h3>Context should<br />compound.</h3>
+          <p>
+            Follow-up questions compose against prior SQL as a CTE. Assumptions
+            stay visible, editable and auditable with the answer.
+          </p>
+          <span class="arrow">↘</span>
+        </article>
+      </section>
+      <section class="architecture shell" id="how-it-works">
+        <div class="architecture-head">
+          <p class="section-kicker">02 / THE ENGINE</p>
+          <h2>Small context.<br /><em>Strong answers.</em></h2>
+          <p>
+            Rather than pouring an entire warehouse into a model context, the
+            retrieval pipeline selects what the current question needs.
+          </p>
+        </div>
+        <div class="pipeline">
+          <div class="pipe-start">
+            <span>QUESTION</span><strong>فارسی / English</strong>
+          </div>
+          <div class="pipe-line"></div>
+          <div class="pipe-group">
+            <span class="pipe-title">SCOPED CONTEXT</span>
+            <div class="retrievers">
+              <span>Entity</span><span>Fact</span><span>Relationship</span
+              ><span>Rule</span><span>Example</span><span>Value</span>
+            </div>
+          </div>
+          <div class="pipe-line"></div>
+          <div class="pipe-group">
+            <span class="pipe-title">LOCAL REASONING</span
+            ><strong>Prompt Builder</strong
+            ><small>stable prefix · cached</small>
+          </div>
+          <div class="pipe-line"></div>
+          <div class="pipe-end">
+            <span>SQL GUARD</span><strong>validate → execute</strong><i>✓</i>
+          </div>
+        </div>
+      </section>
+      <section class="features shell">
+        <div class="feature">
+          <span>01</span>
+          <h3>Bring your own local model</h3>
+          <p>
+            Connect an OpenAI-compatible endpoint: Ollama, LM Studio, vLLM or
+            your own <code>/v1</code> server.
+          </p>
+        </div>
+        <div class="feature">
+          <span>02</span>
+          <h3>Built for bilingual analysis</h3>
+          <p>
+            Ask questions naturally in Persian or English without translating
+            your analysts—or your business vocabulary.
+          </p>
+        </div>
+        <div class="feature">
+          <span>03</span>
+          <h3>Designed for production scrutiny</h3>
+          <p>
+            Authentication, ACL-aware caching, structured exports, audit trails
+            and an evaluation harness are first-class parts of the engine.
+          </p>
+        </div>
+      </section>
+      <section class="start shell" id="start">
+        <div>
+          <p class="section-kicker">03 / GET STARTED</p>
+          <h2>Keep your data<br /><em>where it belongs.</em></h2>
+          <p>
+            Point the agent at your own warehouse, configure your domain
+            vocabulary, and run it entirely inside your environment.
+          </p>
+          <a
+            class="button primary"
+            href="https://github.com/alisadeghiaghili/local-sql-agent"
+            target="_blank"
+            rel="noreferrer"
+            >Read the documentation <span>↗</span></a
+          >
+        </div>
+        <div class="install-card">
+          <div class="install-top">
+            <span>QUICK START</span
+            ><button id="copyCommand" type="button">copy</button>
+          </div>
+          <pre><code><span class="comment"># clone and install</span><br>git clone https://github.com/alisadeghiaghili/local-sql-agent.git<br>cd local-sql-agent<br>pip install -r requirements.txt<br><br><span class="comment"># configure your domain, then run</span><br>python app.py</code></pre>
+          <div class="install-footer">
+            Python 3.11+ <span>·</span> local LLM endpoint <span>·</span> your
+            SQL warehouse
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="shell">
+      <span>LOCAL SQL AGENT</span
+      ><span>PRIVATE ANALYTICS, WITHOUT THE COMPROMISE.</span
+      ><a
+        href="https://github.com/alisadeghiaghili/local-sql-agent"
+        target="_blank"
+        rel="noreferrer"
+        >GitHub ↗</a
+      >
+    </footer>
+    <script src="script.js"></script>
+    <script src="fix-direction.js"></script>
+  </body>
+</html>
