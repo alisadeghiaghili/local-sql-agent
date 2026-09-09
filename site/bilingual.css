@@ -4,7 +4,7 @@ html[lang="fa"] h1 em,
 html[lang="fa"] h2 em {
   font-family: Peyda, "Noto Sans Arabic", sans-serif;
   font-style: normal;
-  font-weight: 700;
+  font-weight: 300;
 }
 
 .header-actions {
