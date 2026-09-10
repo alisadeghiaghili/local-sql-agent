@@ -3,6 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Finding 2's last layer: this page and web/admin/index.html are served
+     by whatever static host sits in front of them (a plain file server,
+     nginx, ...) -- a different origin than the FastAPI app, whose own
+     response headers (api/middleware.py's SecurityHeadersMiddleware)
+     never reach a document fetched from somewhere else. A <meta> policy
+     travels WITH the document, so it applies no matter what serves it.
+     script-src is deliberately 'self' only, with no 'unsafe-inline': every
+     script this page loads is a real file (assets/vendor/prism*.min.js,
+     js/main.js), so an injected inline handler -- the exact shape the
+     audit reproduced through main.js's escapeHtml/data-pid gap -- has
+     nowhere to run even if every other layer fails. connect-src is left
+     open because the backend base URL is deliberately end-user
+     configurable (web/js/config.js's DEFAULT_BASE_URL, the persisted
+     value in web/js/state.js, the admin panel's own "اتصال" control) --
+     narrowing it to one origin would break that by design. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src *; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'">
 <title>عامل هوشمند SQL — گفتگوی تحلیلی</title>
 <link rel="stylesheet" href="styles/fonts.css">
 <link rel="stylesheet" href="styles/style.css">
