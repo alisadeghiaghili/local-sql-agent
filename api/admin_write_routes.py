@@ -108,7 +108,19 @@ class IssueKeyRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    principal_id: str = Field(..., min_length=1, max_length=255)
+    # Finding 2 (admin panel stored XSS): principal_id used to be
+    # constrained by length only. The audit issued a key whose id was
+    # `analyst-x" onmouseover="alert(1)` and the server returned 200 --
+    # the id then round-tripped, quote intact, into web/admin/main.js's
+    # data-pid/data-hash attributes. A principal id is a token, not free
+    # text, and a token containing a quote or a newline is already a
+    # mistake in every place it can end up (an HTML attribute, a log
+    # line, a CSV cell) even before this specific sink -- restricting the
+    # character set here is defence in depth that holds regardless of
+    # what any downstream renderer does or forgets to do.
+    principal_id: str = Field(
+        ..., min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._-]+$"
+    )
     name: str = Field(..., min_length=1, max_length=255)
 
 

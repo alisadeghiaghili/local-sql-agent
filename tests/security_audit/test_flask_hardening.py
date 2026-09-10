@@ -51,6 +51,23 @@ _APP_PY = _REPO_ROOT / "webapp" / "app.py"
 _TEMPLATES = _REPO_ROOT / "webapp" / "templates"
 
 
+@pytest.fixture()
+def configured_admin_user(monkeypatch):
+    """Supply the variable finding 16 makes mandatory.
+
+    Once ``ADMIN_USER`` has no default, building an app without it is a
+    startup failure -- which is the point, and which every test that wants
+    a *working* app therefore has to satisfy. It is deliberately a
+    per-test fixture rather than anything session-wide: setting it once
+    for the whole run would also satisfy
+    ``test_a_missing_admin_user_is_a_startup_failure_not_a_guess``
+    accidentally, and that test exists precisely to prove the variable is
+    not optional.
+    """
+    monkeypatch.setenv("ADMIN_USER", "pentest-admin")
+    return "pentest-admin"
+
+
 class TestNoRealIdentityIsHardcoded:
     def test_admin_user_has_no_baked_in_default(self):
         src = _APP_PY.read_text(encoding="utf-8")
@@ -64,14 +81,24 @@ class TestNoRealIdentityIsHardcoded:
 
     def test_a_missing_admin_user_is_a_startup_failure_not_a_guess(self, monkeypatch):
         """Silently picking some default would reintroduce the finding. An
-        unset privileged account is a misconfiguration and should say so."""
+        unset privileged account is a misconfiguration and should say so.
+
+        Both the import and the reload sit inside ``pytest.raises`` on
+        purpose. Whether ``webapp.app`` is already cached from an earlier
+        test decides *which* of the two raises, and the guarantee under
+        test is the same either way: with the variable unset, this module
+        must refuse to come up. Putting only the reload inside the context
+        manager would make the test pass or error depending on collection
+        order -- and would tempt a reader into pre-importing the module
+        somewhere global just to stabilise it, which quietly sets
+        ``ADMIN_USER`` for the whole session and hides the very failure
+        this asserts.
+        """
         monkeypatch.delenv("ADMIN_USER", raising=False)
         import importlib
 
-        import webapp.app as webapp_app
-
         with pytest.raises((RuntimeError, ValueError, SystemExit)):
-            importlib.reload(webapp_app)
+            importlib.reload(importlib.import_module("webapp.app"))
 
     def test_no_persian_or_personal_username_literal_remains(self):
         """Blunt sweep for the specific value and its shape."""
@@ -85,7 +112,7 @@ class TestLoginIsThrottled:
     """Parity with the FastAPI side, which the audit measured returning 429
     with Retry-After after roughly thirty failures."""
 
-    def test_repeated_failures_are_eventually_refused(self, monkeypatch, tmp_path):
+    def test_repeated_failures_are_eventually_refused(self, configured_admin_user):
         import webapp.app as webapp_app
 
         app = webapp_app.create_app()
@@ -113,7 +140,7 @@ class TestSessionCookiesAreHardened:
             ("SESSION_COOKIE_SAMESITE", "Strict"),
         ],
     )
-    def test_cookie_flag_is_set_explicitly(self, setting, expected):
+    def test_cookie_flag_is_set_explicitly(self, setting, expected, configured_admin_user):
         import webapp.app as webapp_app
 
         app = webapp_app.create_app()
@@ -135,7 +162,7 @@ class TestPostFormsCarryACsrfToken:
             f"webapp/templates/{template} posts with no CSRF token"
         )
 
-    def test_a_post_without_a_token_is_rejected(self, monkeypatch):
+    def test_a_post_without_a_token_is_rejected(self, configured_admin_user):
         import webapp.app as webapp_app
 
         app = webapp_app.create_app()
