@@ -8,10 +8,13 @@
  * whatever it has on failure — see data.js t_04 (guard-rejected, no
  * result) and t_05 (LLM transport failure, no sql/guard/result at all).
  *
- * The generated-SQL block is syntax-highlighted via the vendored Prism
- * (see highlightSql below) — presentation only, and never the source of
- * truth for the copy button, which always copies the exact original
- * `turn.sql_display || turn.sql` text.
+ * The generated-SQL block is prettified then syntax-highlighted:
+ * client-side prettify (vendored sql-formatter) is a FALLBACK for when the
+ * Turn only carries raw `sql` — live mode normally arrives with
+ * `sql_display` already rendered by `security/sql_guard.pretty_sql`.
+ * Highlighting is the vendored Prism. Both layers are presentation only,
+ * and never the source of truth for the copy button, which always copies
+ * the exact `turn.sql_display || turn.sql` text.
  */
 
 "use strict";
@@ -24,28 +27,45 @@ import { renderResult, renderWarnings } from "./table.js";
 import { renderLlmStatus, answerWasTruncated, renderTruncationQualifier } from "./llm-status.js";
 import { renderFeedbackControl } from "./feedback.js";
 
+/** Client-side SQL prettify for display. Never used as copy source of truth.
+ *
+ * Live turns usually already carry `sql_display` from the backend
+ * (`pretty_sql` / sqlglot). This covers the other cases: simulated data
+ * that only has `sql`, older turns, or a backend that omitted
+ * `sql_display`. Uses the vendored `window.sqlFormatter` (T-SQL) when
+ * present; otherwise returns *sqlText* unchanged.
+ *
+ * @param {string} sqlText
+ * @returns {string} prettified SQL, or *sqlText* if formatting is unavailable
+ */
+function formatSqlForDisplay(sqlText) {
+  if (!sqlText) return sqlText;
+  try {
+    if (window.sqlFormatter && typeof window.sqlFormatter.format === "function") {
+      return window.sqlFormatter.format(sqlText, {
+        language: "tsql",
+        keywordCase: "upper",
+      });
+    }
+  } catch {
+    /* Cosmetic only — fall through to the raw text. */
+  }
+  return sqlText;
+}
+
 /** Renders *sqlText* into *codeEl*, syntax-highlighted via the vendored
  * Prism (web/assets/vendor/prism.min.js + prism-sql.min.js — loaded as
  * plain `<script>` tags in index.html, so `window.Prism` is a global, not
  * an import; see that file's comment on why: no build step here).
  *
  * Highlighting is PRESENTATION ONLY. `codeEl.textContent` is always set
- * to the exact, unmodified *sqlText* first; highlighting then REPLACES
- * the element's markup with Prism's span-wrapped version of that exact
- * same text (Prism only wraps characters in `<span class="token ...">`,
- * it does not add, remove, or reorder any of them — reading the
- * highlighted element's `.textContent` back still yields *sqlText*
- * unchanged). If `window.Prism`/`Prism.languages.sql` is missing (script
- * blocked, offline asset removed) or `Prism.highlight` throws for any
- * reason, this catches it and leaves the plain textContent already set —
- * the SQL itself must never disappear or corrupt because a decoration
- * layer failed.
+ * to the exact *sqlText* first; highlighting then REPLACES the element's
+ * markup with Prism's span-wrapped version of that exact same text. If
+ * `window.Prism`/`Prism.languages.sql` is missing or `Prism.highlight`
+ * throws, the plain textContent already set is left alone.
  *
- * Separately, and more importantly: nothing here is the copy-button's
- * source of truth. The "کپی" button below always copies `turn.sql_display
- * || turn.sql` directly from the Turn object, never anything read out of
- * this (or any) DOM node — so even if this function's output were ever
- * wrong, copying the generated SQL would still be unaffected. */
+ * The copy button never reads this DOM node — it copies
+ * `turn.sql_display || turn.sql` directly from the Turn object. */
 function highlightSql(codeEl, sqlText) {
   codeEl.textContent = sqlText;
   try {
@@ -170,7 +190,11 @@ export function createTurnCard(turn, ctx) {
     pre.dir = "ltr";
     const code = document.createElement("code");
     code.className = "language-sql";
-    highlightSql(code, turn.sql_display || turn.sql);
+    // Display path: backend sql_display wins as-is (pretty_sql already ran).
+    // Client prettify is a fallback for raw Turn.sql only. Copy path above
+    // stays on the Turn object — never this rendered text.
+    const displaySql = turn.sql_display || formatSqlForDisplay(turn.sql);
+    highlightSql(code, displaySql);
     pre.appendChild(code);
     sqlSection.appendChild(pre);
 

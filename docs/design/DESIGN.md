@@ -148,6 +148,37 @@ dependency"; a font request to Google is a brand lie.
 
 Spacing uses an 4px base: 4 / 8 / 12 / 16 / 20 / 24 / 32.
 
+### 4.5 SQL code surface
+
+The generated-SQL block is an **always-dark editor surface** in both UI
+themes. Its colours are **not** chrome brand aliases — brand teal is wrong
+for reading a SELECT list against near-black.
+
+| Token | Hex | Role |
+|---|---|---|
+| `--sql-bg` | `#0d1117` | Code ground |
+| `--sql-text` | `#e6edf3` | Base text / identifiers |
+| `--sql-keyword` | `#79c0ff` | SELECT, FROM, WHERE, TOP, AS, DESC |
+| `--sql-number` | `#e3b341` | Literals |
+| `--sql-function` | `#d2a8ff` | SUM, COUNT, … |
+| `--sql-string` | `#a5d6ff` | Quoted strings |
+| `--sql-operator` | `#8b949e` | `=`, `<`, punctuation |
+| `--sql-comment` | `#8b949e` | Comments (italic) |
+
+**Prettify + highlight pipeline (display only):**
+
+1. Live turns usually carry `Turn.sql_display` from
+   `security/sql_guard.pretty_sql` (sqlglot) — shown as-is.
+2. If only raw `Turn.sql` exists, the client prettifies with the vendored
+   `sql-formatter` (T-SQL) before Prism highlighting.
+3. Copy always uses `Turn.sql_display || Turn.sql` from the Turn object —
+   never the prettified or highlighted DOM text.
+4. Any formatter/highlighter failure falls back to plain text; the SQL
+   never disappears.
+
+Covered by `tests/web_ui/test_web_ui_sql_highlight.py` /
+`run_sql_highlight.mjs`.
+
 ---
 
 ## 5. Information architecture
