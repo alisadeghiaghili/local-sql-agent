@@ -32,6 +32,16 @@ now live on ``Settings`` like everything else (see ``config.py``'s
 ``LOG_DIR`` was already a ``Settings`` field throughout, so the log
 *directory* itself has always been resolved through ``cfg.settings.log_dir``
 at call time.
+
+File permissions
+-----------------
+A file freshly created by :func:`append_jsonl` is ``chmod``'d to ``0o600``
+(owner read/write only) immediately after the write that creates it — see
+that function's own "File permissions" section for the full reasoning
+(Finding 18, 2026 audit: nothing this project wrote to disk restricted its
+own permissions, and this is the logger every sensitive JSONL record in
+the project — the query log, the compliance audit trail — is written
+through).
 """
 
 from __future__ import annotations
@@ -165,6 +175,27 @@ def append_jsonl(
         user-facing operation because of a logging problem (see
         :func:`save_log`) are responsible for catching this.
 
+    File permissions (Finding 18, 2026 audit)
+    -------------------------------------------
+    Every log this function writes through -- the query log, and via
+    :mod:`observability.audit` the compliance audit trail -- holds
+    verbatim analyst questions and the generated SQL, and the audit log
+    is the one this project's own security review names as sensitive
+    enough that "world-readable" was itself the finding: a repo-wide grep
+    for ``chmod``/``0o600``/``umask`` turned up nothing, so every file
+    this application creates lands at whatever the process umask happens
+    to be (``0644`` on a typical Linux host -- readable by every local
+    account). A brand-new file is now ``chmod``'d to ``0o600`` (owner
+    read/write only) immediately after the write that creates it; a
+    write to an already-existing file (the overwhelmingly common case —
+    almost every write appends to yesterday's still-open file, not a
+    fresh one) leaves its mode alone, on the assumption that whatever set
+    it on creation is the operator's intended policy. Guarded with
+    ``if os.name != "nt"`` — Windows has no POSIX mode-bit model this
+    maps onto; see ``tests/security_audit/test_secret_file_permissions.py``,
+    which skips its live-permission assertion on Windows for the same
+    reason but still asserts this source calls ``chmod`` unconditionally.
+
     Examples
     --------
     >>> import tempfile, os, json
@@ -193,6 +224,12 @@ def append_jsonl(
             current_size = os.path.getsize(path)
             if current_size + line_size > max_bytes:
                 _rotate(path, backup_count)
+        # Checked AFTER any rotation above (which, on a size trip, renames
+        # *path* out of the way), so this correctly reflects whether the
+        # write below is about to CREATE a file rather than append to one
+        # that is already there -- see "File permissions" above for why
+        # that distinction is what gates the chmod call.
+        creating = not os.path.exists(path)
         # newline="" disables Python's universal-newline translation, so a
         # "\n" in *line* is written as a single 0x0A byte on every platform
         # (not "\r\n" on Windows). This keeps JSONL files byte-consistent
@@ -201,6 +238,8 @@ def append_jsonl(
         with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write(line)
             fh.flush()
+        if creating and os.name != "nt":
+            os.chmod(path, 0o600)
 
 
 def save_log(log: QueryLog) -> None:

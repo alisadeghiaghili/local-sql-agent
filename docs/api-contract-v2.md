@@ -548,7 +548,18 @@ other transport are deliberately unsupported, so there is exactly one way
 in to reason about.
 
 Configuration is `API_KEYS_JSON`, a JSON array of
-`{"id", "name", "key_sha256", "denied_columns"?}` objects. Only the
+`{"id", "name", "key_sha256", "denied_columns"?}` objects. `denied_columns`
+is optional, and **omitting it is not the same as denying everything**: an
+entry with no `denied_columns` field gets no column restriction at all,
+the opposite of a key issued through the admin panel, which defaults to
+deny-all (`appdb.key_store._maximally_restrictive_denied_columns()`). That
+asymmetry is deliberate — flipping the env-key default to deny-all would
+silently revoke access from every existing deployment mid-upgrade — but it
+is a decision every `API_KEYS_JSON` entry has to make explicitly.
+`security/auth.py::_parse_api_keys` logs a `WARNING` for any entry that
+omits the field entirely; write `"denied_columns": []` once unrestricted
+access is actually intended, and the warning stops (see Finding 6, 2026
+audit). Only the
 SHA-256 hex digest of a key is ever stored — never the raw key. Comparison
 is `hmac.compare_digest`, walking every configured key with no early exit
 on a prefix match. Plain SHA-256, not bcrypt/argon2, is correct here: those

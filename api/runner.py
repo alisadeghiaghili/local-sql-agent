@@ -287,7 +287,11 @@ def run_query(
     # sharing the single partition it always has. A real principal always
     # gets a real scope key -- including an all-access one, which still
     # partitions away from the unscoped "" default used by non-HTTP callers.
-    cache_scope = _scope_key_of(principal) if principal is not None else ""
+    # memory_used=None named explicitly (Finding 8, 2026 audit): this is
+    # the /query path, which has no session and therefore no memory
+    # entries to fold in -- "no memory was used" is this call's actual
+    # answer, stated rather than defaulted to.
+    cache_scope = _scope_key_of(principal, memory_used=None) if principal is not None else ""
     # Column-level ACL (Phase 8): the seam security.sql_guard.validate_sql
     # has always accepted but that, before this phase, nothing populated.
     # None (no principal) applies no restriction -- pre-Phase-8 behaviour.
@@ -836,7 +840,21 @@ def _safe_generate_sql_only(
             detail=str(exc),
         )
     except RuntimeError as exc:
-        raise ModelUnavailableError(str(exc))
+        # Finding 11 (2026 audit): this used to pass the raw exception
+        # text straight through as the constructor's positional (i.e.
+        # client-facing) argument, which put the internal LLM endpoint's
+        # scheme, host and port, the retry policy, and the client
+        # library's own exception text into `message` -- the ONLY field
+        # the client sees. `detail` exists on every NLQError precisely so
+        # the operator-facing text and the client-facing text can differ;
+        # this was the one call site that left it unused. The summary
+        # below is deliberately generic: everything an analyst can act on
+        # ("try again") is in it, and nothing an attacker probing the
+        # network can use is.
+        raise ModelUnavailableError(
+            "The language model is currently unreachable. Please try again.",
+            detail=str(exc),
+        )
 
     if not raw or not raw.strip():
         # Same distinction the v2 engine draws (session/engine.py): a
@@ -1017,7 +1035,16 @@ def _safe_run(
     except RuntimeError as exc:
         msg = str(exc)
         if "unreachable" in msg.lower():
-            err = ModelUnavailableError(msg)
+            # Finding 11 (2026 audit): msg here is a raw RuntimeError
+            # string that can carry the LLM endpoint's host and port (see
+            # the identical fix a few clauses up in
+            # _safe_generate_sql_only). A generic summary goes in
+            # `message` (client-facing); the raw text goes in `detail`
+            # (operator-facing, logs only).
+            err = ModelUnavailableError(
+                "The language model is currently unreachable. Please try again.",
+                detail=msg,
+            )
         elif "LOCK_TIMEOUT" in msg or "lock timeout" in msg.lower():
             err = QueryTimeoutError(
                 "Query timed out waiting for database lock.",

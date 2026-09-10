@@ -174,7 +174,10 @@ its KV cache instead of re-reading the schema on every question.
 # 1. Clone and install
 git clone https://github.com/alisadeghiaghili/local-sql-agent.git
 cd local-sql-agent
-pip install -r requirements.txt
+pip install -r requirements.lock   # exact, audited pins — see requirements.txt's own
+                                    # header and docs/deployment-runbook.md for why this
+                                    # is preferred over `pip install -r requirements.txt`
+                                    # (floors only) for anything beyond quick local hacking
 
 # 2. Configure
 cp .env.example .env

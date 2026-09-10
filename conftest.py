@@ -79,6 +79,32 @@ def _running_against_example_config() -> bool:
         return False
 
 
+@pytest.fixture(autouse=True)
+def _reset_health_cache_between_tests():
+    """Start every test with a cold ``api.health`` probe cache.
+
+    Finding 3's fix (``api/health.py``) makes ``check_health()`` reuse a
+    probe result for :data:`api.health.HEALTH_CACHE_TTL_SECONDS`. That is
+    the point in production -- it is what stops an unauthenticated caller
+    from draining the connection pool ``/query`` shares -- but it is
+    exactly wrong across a test suite: ``tests/test_health.py`` calls
+    ``check_health()`` repeatedly in the same process, each time with a
+    *different* monkeypatched probe result, and expects each call to
+    reflect its own patch. Without this reset, whichever test happens to
+    run first inside the TTL window "wins" and every later one silently
+    observes its stale, cached answer instead of exercising its own
+    mocks -- a suite that still prints green while testing nothing.
+    ``tests/security_audit/test_health_probe_cache.py`` already resets
+    the cache itself (it is testing the cache), so this fixture is
+    redundant there and harmless everywhere else.
+    """
+    import api.health as health
+
+    health.reset_health_cache()
+    yield
+    health.reset_health_cache()
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if not _running_against_example_config():
         return

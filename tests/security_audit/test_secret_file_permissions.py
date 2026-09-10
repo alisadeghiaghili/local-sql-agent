@@ -91,17 +91,19 @@ class TestOtherSecretsAndSensitiveDataAreRestricted:
     would object to finding world-readable on a shared host."""
 
     @_posix_only
-    def test_the_audit_log_is_not_world_readable(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    def test_the_audit_log_is_not_world_readable(self, tmp_path):
+        """``append_jsonl`` takes a full path, not a name relative to
+        ``LOG_DIR`` -- an earlier draft of this test assumed otherwise and
+        could not have passed on any platform."""
         from logs.logger import append_jsonl
 
-        append_jsonl("audit_probe.jsonl", {"question": "q", "sql": "SELECT 1"})
+        target = tmp_path / "audit_probe.jsonl"
+        append_jsonl(str(target), {"question": "q", "sql": "SELECT 1"})
 
-        written = list(tmp_path.glob("audit_probe.jsonl"))
-        assert written, "append_jsonl wrote nothing to LOG_DIR"
-        assert _mode(written[0]) & 0o007 == 0, (
-            f"{written[0].name} is world-readable ({oct(_mode(written[0]))}). It "
-            "holds verbatim analyst questions and the SQL they produced"
+        assert target.exists(), "append_jsonl wrote nothing at the path it was given"
+        assert _mode(target) & 0o007 == 0, (
+            f"{target.name} is world-readable ({oct(_mode(target))}). It holds "
+            "verbatim analyst questions and the SQL they produced"
         )
 
 
