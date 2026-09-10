@@ -698,7 +698,12 @@ def resolve_value(
         execute_fn = _default_execute_fn
 
     denied = {c.lower() for c in principal.denied_columns}
-    scope = scope_key(principal)
+    # memory_used=None named explicitly (Finding 8, 2026 audit): this
+    # resolver has no memory entries to fold in -- it is a plain
+    # (mention, table, column) lookup against the warehouse, not a
+    # conversational turn -- so "no memory was used" is this call's
+    # actual, stated answer rather than a silently-inherited default.
+    scope = scope_key(principal, memory_used=None)
 
     any_allowlisted = False
     pairs: list[tuple[str, str]] = []

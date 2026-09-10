@@ -44,7 +44,37 @@ from __future__ import annotations
 from core.models import RetrievalContext
 from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
 from prompt_engine.templates import PROMPT_TEMPLATE, SUFFIX_TEMPLATE
+from prompt_engine.untrusted import UNTRUSTED_INSTRUCTION, fence_untrusted
 from schema_data.registry import SchemaRegistry
+
+
+def _render_resolved_values(resolved_values: dict[str, list[str]] | None) -> str:
+    """Render *resolved_values* as a fenced, explicitly-labelled block.
+
+    Finding 19 (2026 audit): a value in *resolved_values* was read out of
+    the live warehouse by :func:`retrieval.value_resolver.resolve_value`
+    (or :mod:`retrieval.dimension_vocabulary`) because it matched
+    something in the analyst's question — it is exchange data, not
+    something either this codebase or the analyst wrote. Splicing it into
+    the prompt as bare prose (the pre-fix behaviour of
+    ``prompt_engine/builder.py``, via ``context.filters``) put it on equal
+    footing with the actual instructions. Every value here goes through
+    :func:`~prompt_engine.untrusted.fence_untrusted` instead, preceded by
+    :data:`~prompt_engine.untrusted.UNTRUSTED_INSTRUCTION` so the fence
+    has a stated meaning rather than being two mysterious tokens.
+
+    Returns ``""`` for ``None``/empty input, so an unaffected caller's
+    prompt is byte-identical to before this section existed — an empty
+    ``RESOLVED WAREHOUSE VALUES`` block is not exercised further.
+    """
+    if not resolved_values:
+        return ""
+    lines = [
+        f"{identifier}: {', '.join(str(v) for v in values)}"
+        for identifier, values in resolved_values.items()
+    ]
+    body = "\n".join(lines)
+    return f"{UNTRUSTED_INSTRUCTION}\n{fence_untrusted(body)}"
 
 
 class PromptBuilder:
@@ -80,9 +110,10 @@ class PromptBuilder:
     def build(
         question: str,
         system_prompt: str,
-        context: RetrievalContext,
+        context: RetrievalContext | None = None,
         *,
         session_context: str = "",
+        resolved_values: dict[str, list[str]] | None = None,
     ) -> str:
         """Build a complete prompt string for the LLM backend.
 
@@ -98,6 +129,10 @@ class PromptBuilder:
             by :class:`~retrieval.context_retriever.ContextRetriever`. Only
             ``context.filters`` is used on the static path (see the module
             docstring); every field is used on the retrieval fallback path.
+            Defaults to an empty :class:`~core.models.RetrievalContext`
+            (no tables, no filters) so a caller that only wants to exercise
+            *resolved_values* — e.g. a test asserting the fence in
+            isolation — need not construct one.
         session_context:
             Prior-turn context for a conversational session (see
             ``docs/api-contract-v2.md`` §8's "session context" block —
@@ -106,6 +141,22 @@ class PromptBuilder:
             when there is no session, which is every call today —
             sessions are not yet implemented. Always placed in the
             variable suffix, never the static prefix.
+        resolved_values:
+            ``{"Table.Column": [value, ...]}`` for warehouse values that
+            matched the question (Finding 19, 2026 audit) — the same
+            identifier shape :attr:`observability.audit.AuditRecord
+            .resolved_columns` already uses. Rendered into its own
+            ``RESOLVED WAREHOUSE VALUES`` section, fenced via
+            :func:`prompt_engine.untrusted.fence_untrusted` so the model
+            is told, in the prompt itself, that this span is data rather
+            than instruction — see ``prompt_engine/untrusted.py``'s module
+            docstring. Deliberately **separate** from ``context.filters``:
+            that dict already mixes values taken from the question's own
+            text with values matched against the live warehouse, with no
+            way to tell the two apart once merged — see
+            ``prompt_engine/templates.py``'s ``SUFFIX_TEMPLATE`` comment.
+            ``None`` (the default) renders an empty section, byte-identical
+            to a prompt built before this parameter existed.
 
         Returns
         -------
@@ -149,13 +200,30 @@ class PromptBuilder:
         ...     )
         >>> "Top buyers" in fallback_prompt
         True
+
+        A resolved warehouse value arrives fenced, not as bare prose
+        (Finding 19, 2026 audit) — ``context`` is optional when only this
+        is being exercised:
+
+        >>> from prompt_engine.untrusted import UNTRUSTED_OPEN
+        >>> fenced_prompt = PromptBuilder.build(
+        ...     "گزارش فولاد مبارکه", "You are a T-SQL expert.",
+        ...     resolved_values={"Supplier.Customer_Name": ["فولاد مبارکه"]},
+        ... )
+        >>> before = fenced_prompt.split("فولاد مبارکه")[0]
+        >>> UNTRUSTED_OPEN in before
+        True
         """
+        if context is None:
+            context = RetrievalContext()
         if should_use_static_prefix(system_prompt):
             return PromptBuilder.build_static(
-                question, system_prompt, context, session_context=session_context
+                question, system_prompt, context,
+                session_context=session_context, resolved_values=resolved_values,
             )
         return PromptBuilder._build_retrieval(
-            question, system_prompt, context, session_context=session_context
+            question, system_prompt, context,
+            session_context=session_context, resolved_values=resolved_values,
         )
 
     @staticmethod
@@ -165,6 +233,7 @@ class PromptBuilder:
         context: RetrievalContext,
         *,
         session_context: str = "",
+        resolved_values: dict[str, list[str]] | None = None,
     ) -> str:
         """Static-prefix path: cached prefix + a small variable suffix.
 
@@ -173,12 +242,12 @@ class PromptBuilder:
         :func:`~prompt_engine.static_prefix.build_static_prefix`, which is
         cached and therefore byte-identical across calls with the same
         ``system_prompt`` — the whole point of this path (see module
-        docstring). Only ``context.filters``, ``session_context``, and
-        ``question`` vary.
+        docstring). Only ``context.filters``, ``session_context``,
+        ``resolved_values``, and ``question`` vary.
 
         Parameters
         ----------
-        question, system_prompt, context, session_context:
+        question, system_prompt, context, session_context, resolved_values:
             As in :meth:`build`.
 
         Returns
@@ -200,6 +269,7 @@ class PromptBuilder:
         filters = "\n".join(f"{key}: {value}" for key, value in context.filters.items())
         suffix = SUFFIX_TEMPLATE.format(
             filters=filters,
+            resolved_values=_render_resolved_values(resolved_values),
             session_context=session_context,
             question=question,
         )
@@ -212,6 +282,7 @@ class PromptBuilder:
         context: RetrievalContext,
         *,
         session_context: str = "",
+        resolved_values: dict[str, list[str]] | None = None,
     ) -> str:
         """Retrieval-fallback path: only the retrieved tables/rules/examples.
 
@@ -247,6 +318,7 @@ class PromptBuilder:
             schema=schema_context,
             relationships=relationships,
             filters=filter_context,
+            resolved_values=_render_resolved_values(resolved_values),
             examples=example_context,
             question=question,
         )

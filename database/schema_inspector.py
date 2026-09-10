@@ -258,9 +258,26 @@ def _fetch_samples(
     else:
         full = table_name
 
-    # Quote identifiers with double-quotes (ANSI SQL; works on all dialects)
-    col_q  = f'"{column_name}"'
-    tbl_q  = ".".join(f'"{p}"' for p in full.split("."))
+    # Finding 10 (2026 audit): identifiers used to be hand-quoted with
+    # f'"{name}"', which does not double an embedded `"` the way real
+    # ANSI quoting must -- a column or table name containing a quote
+    # (low risk in practice, since these come from the database
+    # catalogue via SQLAlchemy's own Inspector, not from a user
+    # question -- but a genuine correctness bug if the catalogue ever
+    # has one) would produce SQL with an unterminated identifier instead
+    # of a safely escaped one. `engine.dialect.identifier_preparer.quote`
+    # is the dialect's own quoting rule (handles the doubling, and the
+    # right quote character per dialect) and is what every other
+    # identifier-quoting call site in this codebase already delegates to.
+    # NOT bindparams: a bind parameter carries a *value* into a query,
+    # never an *identifier* -- there is no bind-parameter syntax for
+    # "the name of a column", which is what col_q/tbl_q are here.
+    preparer = engine.dialect.identifier_preparer
+    col_q = preparer.quote(column_name)
+    tbl_q = (
+        f"{preparer.quote(schema)}.{preparer.quote(table_name)}"
+        if schema else preparer.quote(table_name)
+    )
 
     sql = text(
         f"SELECT DISTINCT {col_q} "
@@ -287,10 +304,14 @@ def _fetch_row_count(
     schema: str | None,
     table_name: str,
 ) -> int | None:
+    # Finding 10 (2026 audit): see the identical fix and reasoning in
+    # _fetch_samples just above -- hand-rolled f'"{name}"' quoting does
+    # not double an embedded quote; the dialect's own preparer does.
+    preparer = engine.dialect.identifier_preparer
     if schema:
-        full = f'"{schema}"."{table_name}"'
+        full = f"{preparer.quote(schema)}.{preparer.quote(table_name)}"
     else:
-        full = f'"{table_name}"'
+        full = preparer.quote(table_name)
     try:
         with engine.connect() as conn:
             result = conn.execute(text(f"SELECT COUNT(*) FROM {full}"))
