@@ -12,9 +12,13 @@
      'self' only, no 'unsafe-inline' -- this page's only script is main.js. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src *; base-uri 'none'; form-action 'self'; object-src 'none'">
 <title>پنل مدیریت — عامل هوشمند SQL</title>
+<link rel="stylesheet" href="../styles/tokens.css">
 <link rel="stylesheet" href="../styles/fonts.css">
 <link rel="stylesheet" href="../styles/style.css">
 <link rel="stylesheet" href="admin.css">
+<style>
+  .icon { display: inline-block; vertical-align: -0.15em; flex: 0 0 auto; }
+</style>
 </head>
 <body class="admin-body">
 
@@ -44,10 +48,13 @@
       <button class="live-key-clear" id="live-key-clear" type="button">حذف</button>
     </div>
     <button class="theme-toggle" id="theme-toggle" type="button" aria-label="تغییر پوسته">
-      <span id="theme-toggle-icon" aria-hidden="true">🌓</span>
+      <svg class="icon" id="theme-toggle-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 019.5 4a7 7 0 1010.5 10.5z"/></svg>
       <span id="theme-toggle-label">پوسته</span>
     </button>
-    <button class="admin-refresh-all" id="admin-refresh-all" type="button">↻ بروزرسانی</button>
+    <button class="admin-refresh-all" id="admin-refresh-all" type="button">
+      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+      بروزرسانی
+    </button>
   </div>
 </header>
 

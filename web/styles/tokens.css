@@ -1,0 +1,177 @@
+/* web/styles/tokens.css — the only place colours, radii, and focus rings
+ * are defined for the product UI. style.css and admin.css consume these;
+ * they never redefine a hex value.
+ *
+ * Light mode on bare :root. Dark mode ONLY redefines the same custom
+ * properties — never introduces a colour that exists solely inside a
+ * media query or [data-theme] block. --sql-* is the exception that
+ * proves the rule: the SQL code surface is always-dark, so those tokens
+ * are declared once and never flipped.
+ *
+ * See docs/design/DESIGN.md §4.
+ */
+
+:root {
+  /* Brand / chrome */
+  --navy: #0e2a47;
+  --navy-2: #14375c;
+  --navy-3: #1b436e;
+  --teal: #0d9488;
+  --teal-d: #0b7a70;
+  --teal-l: #e7f6f2;
+
+  /* Surface */
+  --bg: #f4f6fa;
+  --card: #ffffff;
+  --card-2: #f8fafc;
+  --border: #e2e8f0;
+  --ink: #1f2937;
+  --muted: #64748b;
+
+  /* Legacy aliases still used by a few components */
+  --green: #10b981;
+  --red: #e5484d;
+  --amber: #f59e0b;
+
+  /* SQL code surface — always-dark editor palette. Not chrome brand. */
+  --sql-bg: #0d1117;
+  --sql-text: #e6edf3;
+  --sql-keyword: #79c0ff;
+  --sql-number: #e3b341;
+  --sql-function: #d2a8ff;
+  --sql-string: #a5d6ff;
+  --sql-operator: #8b949e;
+  --sql-comment: #8b949e;
+
+  /* Status — a fact about the system right now, never brand. */
+  --status-good: #10b981;
+  --status-good-bg: #e9f9f1;
+  --status-warn: #f59e0b;
+  --status-warn-bg: #fef6e7;
+  --status-critical: #e5484d;
+  --status-critical-bg: #fdeeee;
+  --status-neutral: #64748b;
+  --status-neutral-bg: #eef1f5;
+
+  /* Source of assumption (third colour axis) */
+  --source-question: #0d9488;
+  --source-question-bg: #e7f6f2;
+  --source-session: #6366f1;
+  --source-session-bg: #eef0fd;
+  --source-default: #64748b;
+  --source-default-bg: #eef1f5;
+  --source-policy: #b45309;
+  --source-policy-bg: #fbf1e0;
+  --source-memory: #be185d;
+  --source-memory-bg: #fce8f1;
+
+  /* Geometry */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .05);
+  --focus-ring: 0 0 0 3px rgba(13, 148, 136, .35);
+
+  /* Type scale (see DESIGN.md §4.4) */
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 21px;
+}
+
+/* Dark mode via OS preference, unless the page has an explicit choice. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --navy: #16324f;
+    --navy-2: #1c3f61;
+    --navy-3: #234c74;
+    --teal: #14b8a6;
+    --teal-d: #0d9488;
+    --teal-l: #113330;
+    --bg: #0b1220;
+    --card: #131c2e;
+    --card-2: #182238;
+    --border: #263349;
+    --ink: #e5e9f0;
+    --muted: #94a3b8;
+    --green: #34d399;
+    --red: #f87171;
+    --amber: #fbbf24;
+    /* --sql-* intentionally unchanged: always-dark code surface. */
+
+    --status-good: #34d399;
+    --status-good-bg: #10261e;
+    --status-warn: #fbbf24;
+    --status-warn-bg: #2b230f;
+    --status-critical: #f87171;
+    --status-critical-bg: #2b1414;
+    --status-neutral: #94a3b8;
+    --status-neutral-bg: #1c2536;
+
+    --source-question: #2dd4bf;
+    --source-question-bg: #102a27;
+    --source-session: #818cf8;
+    --source-session-bg: #1e2144;
+    --source-default: #94a3b8;
+    --source-default-bg: #1c2536;
+    --source-policy: #f0b95e;
+    --source-policy-bg: #2e2410;
+    --source-memory: #f472b6;
+    --source-memory-bg: #341126;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
+    --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
+  }
+}
+
+/* Explicit toggle wins over OS preference in both directions. */
+:root[data-theme="dark"] {
+  --navy: #16324f;
+  --navy-2: #1c3f61;
+  --navy-3: #234c74;
+  --teal: #14b8a6;
+  --teal-d: #0d9488;
+  --teal-l: #113330;
+  --bg: #0b1220;
+  --card: #131c2e;
+  --card-2: #182238;
+  --border: #263349;
+  --ink: #e5e9f0;
+  --muted: #94a3b8;
+  --green: #34d399;
+  --red: #f87171;
+  --amber: #fbbf24;
+  /* --sql-* intentionally unchanged: always-dark code surface. */
+
+  --status-good: #34d399;
+  --status-good-bg: #10261e;
+  --status-warn: #fbbf24;
+  --status-warn-bg: #2b230f;
+  --status-critical: #f87171;
+  --status-critical-bg: #2b1414;
+  --status-neutral: #94a3b8;
+  --status-neutral-bg: #1c2536;
+
+  --source-question: #2dd4bf;
+  --source-question-bg: #102a27;
+  --source-session: #818cf8;
+  --source-session-bg: #1e2144;
+  --source-default: #94a3b8;
+  --source-default-bg: #1c2536;
+  --source-policy: #f0b95e;
+  --source-policy-bg: #2e2410;
+  --source-memory: #f472b6;
+  --source-memory-bg: #341126;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
+  --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}

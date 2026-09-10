@@ -391,6 +391,8 @@ Release checklist (each train):
 | D8 | Self-host all fonts | Offline / privacy pitch is a lie otherwise |
 | D9 | `webapp/` frozen **only after auth path is proven** | API keys ≠ Flask passwords; see §3.1 |
 | D10 | 5.0.0 major | Analyst muscle memory breaks; call it out |
+| D11 | User menu owns theme + language + API key | Topbar stays readable; identity and prefs in one place |
+| D12 | Chrome i18n fa/en via `web/js/i18n.js` | Engine is bilingual; shell must not be Persian-only forever |
 
 ---
 

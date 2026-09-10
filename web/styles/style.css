@@ -4,168 +4,11 @@
  * append-only transcript. RTL-first: the document sets dir="rtl", and every
  * spacing rule below uses logical properties so the layout mirrors correctly.
  * SQL, tables of numbers, and raw identifiers stay dir="ltr" inline — see the
- * `[dir="ltr"]` rules at the bottom of each relevant section. */
+ * `[dir="ltr"]` rules at the bottom of each relevant section.
+ *
+ * Design tokens live in tokens.css — this file never redefines a hex. */
 
-/* ── Design tokens ───────────────────────────────────────────────────
- * Every colour is defined here, on bare :root, for light mode. Dark mode
- * ONLY redefines these same custom properties — never introduces a colour
- * that exists solely inside a media query or [data-theme] block. */
-:root {
-  --navy: #0e2a47;
-  --navy-2: #14375c;
-  --navy-3: #1b436e;
-  --teal: #0d9488;
-  --teal-d: #0b7a70;
-  --teal-l: #e7f6f2;
-  --bg: #f4f6fa;
-  --card: #ffffff;
-  --card-2: #f8fafc;
-  --border: #e2e8f0;
-  --ink: #1f2937;
-  --muted: #64748b;
-  --green: #10b981;
-  --red: #e5484d;
-  --amber: #f59e0b;
-  /* SQL code surface — always-dark editor palette, independent of chrome
-   * brand hues. NOT redefined in dark mode: the code block is dark in both
-   * themes, so these stay fixed (see assets/vendor/prism-sql-theme.css). */
-  --sql-bg: #0d1117;
-  --sql-text: #e6edf3;
-  --sql-keyword: #79c0ff;
-  --sql-number: #e3b341;
-  --sql-function: #d2a8ff;
-  --sql-string: #a5d6ff;
-  --sql-operator: #8b949e;
-  --sql-comment: #8b949e;
-
-  /* Status semantics — deliberately NOT teal/navy. Brand colour means
-   * "this is our product's chrome"; status colour means "this is a fact
-   * about the system's health right now". Keeping them visually distinct
-   * is what lets a reader tell "teal card border" from "healthy pill" at a
-   * glance instead of parsing text. */
-  --status-good: #10b981;
-  --status-good-bg: #e9f9f1;
-  --status-warn: #f59e0b;
-  --status-warn-bg: #fef6e7;
-  --status-critical: #e5484d;
-  --status-critical-bg: #fdeeee;
-  --status-neutral: #64748b;
-  --status-neutral-bg: #eef1f5;
-
-  --source-question: #0d9488;
-  --source-question-bg: #e7f6f2;
-  --source-session: #6366f1;
-  --source-session-bg: #eef0fd;
-  --source-default: #64748b;
-  --source-default-bg: #eef1f5;
-  --source-policy: #b45309;
-  --source-policy-bg: #fbf1e0;
-  /* memory — the fifth source. Deliberately its own hue (magenta/pink):
-   * not brand (teal/navy), not status (green/amber/red/grey), and not any
-   * of the other four source hues above. */
-  --source-memory: #be185d;
-  --source-memory-bg: #fce8f1;
-
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .05);
-  --focus-ring: 0 0 0 3px rgba(13, 148, 136, .35);
-}
-
-/* Dark mode via OS preference, unless the page has an explicit choice. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --navy: #16324f;
-    --navy-2: #1c3f61;
-    --navy-3: #234c74;
-    --teal: #14b8a6;
-    --teal-d: #0d9488;
-    --teal-l: #113330;
-    --bg: #0b1220;
-    --card: #131c2e;
-    --card-2: #182238;
-    --border: #263349;
-    --ink: #e5e9f0;
-    --muted: #94a3b8;
-    --green: #34d399;
-    --red: #f87171;
-    --amber: #fbbf24;
-    /* --sql-* intentionally unchanged: always-dark code surface. */
-
-    --status-good: #34d399;
-    --status-good-bg: #10261e;
-    --status-warn: #fbbf24;
-    --status-warn-bg: #2b230f;
-    --status-critical: #f87171;
-    --status-critical-bg: #2b1414;
-    --status-neutral: #94a3b8;
-    --status-neutral-bg: #1c2536;
-
-    --source-question: #2dd4bf;
-    --source-question-bg: #102a27;
-    --source-session: #818cf8;
-    --source-session-bg: #1e2144;
-    --source-default: #94a3b8;
-    --source-default-bg: #1c2536;
-    --source-policy: #f0b95e;
-    --source-policy-bg: #2e2410;
-    --source-memory: #f472b6;
-    --source-memory-bg: #341126;
-
-    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
-    --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
-  }
-}
-
-/* Explicit toggle wins over OS preference in both directions. */
-:root[data-theme="dark"] {
-  --navy: #16324f;
-  --navy-2: #1c3f61;
-  --navy-3: #234c74;
-  --teal: #14b8a6;
-  --teal-d: #0d9488;
-  --teal-l: #113330;
-  --bg: #0b1220;
-  --card: #131c2e;
-  --card-2: #182238;
-  --border: #263349;
-  --ink: #e5e9f0;
-  --muted: #94a3b8;
-  --green: #34d399;
-  --red: #f87171;
-  --amber: #fbbf24;
-  /* --sql-* intentionally unchanged: always-dark code surface. */
-
-  --status-good: #34d399;
-  --status-good-bg: #10261e;
-  --status-warn: #fbbf24;
-  --status-warn-bg: #2b230f;
-  --status-critical: #f87171;
-  --status-critical-bg: #2b1414;
-  --status-neutral: #94a3b8;
-  --status-neutral-bg: #1c2536;
-
-  --source-question: #2dd4bf;
-  --source-question-bg: #102a27;
-  --source-session: #818cf8;
-  --source-session-bg: #1e2144;
-  --source-default: #94a3b8;
-  --source-default-bg: #1c2536;
-  --source-policy: #f0b95e;
-  --source-policy-bg: #2e2410;
-  --source-memory: #f472b6;
-  --source-memory-bg: #341126;
-
-  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
-  --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-}
+@import url("tokens.css");
 
 /* ── Reset ───────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -293,6 +136,72 @@ button { font-family: inherit; }
   color: #e2e8f0; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
 .theme-toggle:hover { background: rgba(255, 255, 255, .16); }
+
+/* ── User menu (theme · language · API key) ───────────────────────── */
+.user-menu { position: relative; flex: 0 0 auto; }
+.user-menu-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 999px; padding: 6px 12px;
+  color: #e2e8f0; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  font-family: inherit;
+}
+.user-menu-btn:hover { background: rgba(255, 255, 255, .16); }
+.user-menu-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.user-avatar {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--teal); color: #fff;
+  display: grid; place-items: center; font-size: 10px; font-weight: 800;
+}
+.user-menu-panel {
+  position: absolute; inset-inline-end: 0; top: calc(100% + 8px);
+  width: min(320px, 92vw);
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px; z-index: 60;
+  display: flex; flex-direction: column; gap: 14px;
+  text-align: start;
+}
+.user-menu-panel[hidden] { display: none; }
+.um-section { display: flex; flex-direction: column; gap: 8px; }
+.um-label {
+  font-size: 11px; font-weight: 800; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.um-segment {
+  display: flex; border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; background: var(--card-2);
+}
+.um-segment button {
+  flex: 1; border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 12.5px; font-weight: 700; padding: 8px 10px;
+  cursor: pointer;
+}
+.um-segment button:hover { color: var(--ink); background: var(--card); }
+.um-segment button.active { background: var(--teal); color: #fff; }
+.um-segment button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.user-menu-panel .live-key-row { color: var(--ink); }
+.user-menu-panel .live-key-status { color: var(--muted); }
+.user-menu-panel .live-key-status.set { color: var(--status-good); }
+.user-menu-panel .live-key-status.unset { color: var(--status-warn); }
+.user-menu-panel .live-key-input {
+  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  border-radius: 8px; padding: 6px 10px; font-size: 12.5px; min-width: 0; flex: 1 1 140px;
+}
+.user-menu-panel .live-key-input::placeholder { color: var(--muted); }
+.user-menu-panel .live-key-save,
+.user-menu-panel .live-key-change,
+.user-menu-panel .live-key-clear {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+  color: var(--ink); padding: 6px 12px; font-size: 12.5px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+}
+.user-menu-panel .live-key-save:hover,
+.user-menu-panel .live-key-change:hover,
+.user-menu-panel .live-key-clear:hover { background: var(--card-2); }
+.um-hint { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
 
 .health { display: flex; gap: 8px; flex-wrap: wrap; }
 .pill {

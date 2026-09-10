@@ -28,6 +28,7 @@ import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
 import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
 import { ensureTsqlPrismReady } from "./sql-display.js";
+import { t, loadLang, setLang, applyLang } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -50,7 +51,9 @@ state.baseUrl = DEFAULT_BASE_URL;
 loadPersisted();
 state.mode = resolveBootMode(params, state.mode);
 state.baseUrl = resolveBootBaseUrl(params, state.baseUrl);
+state.lang = loadLang();
 applyTheme();
+applyLang(state.lang);
 
 let api = new Api(state.baseUrl);
 
@@ -69,16 +72,9 @@ setMode(state.mode);
 tickClock();
 setInterval(tickClock, 1000);
 
-/* ── Theme ─────────────────────────────────────────────────────────── */
+/* ── Theme / user menu ─────────────────────────────────────────────── */
 function wireTopbar() {
-  $("theme-toggle").addEventListener("click", () => {
-    const order = ["system", "light", "dark"];
-    const next = order[(order.indexOf(state.theme) + 1) % order.length];
-    persistTheme(next);
-    applyTheme();
-    updateThemeLabel();
-  });
-  updateThemeLabel();
+  wireUserMenu();
 
   $("mode-simulated").addEventListener("click", () => setMode("simulated"));
   $("mode-live").addEventListener("click", () => setMode("live"));
@@ -89,7 +85,7 @@ function wireTopbar() {
     setApiKey(val);
     $("live-key-input").value = "";
     updateKeyStatus();  // leaves the "rejected" state: a new key was given
-    showNotice("ok", "کلید API ذخیره شد — این کلید فقط در همین مرورگر نگه‌داری می‌شود.");
+    showNotice("ok", t("apiKeyStoredNotice"));
     refreshHealth();
   });
 
@@ -112,9 +108,78 @@ function wireTopbar() {
     clearApiKey();
     $("live-key-input").value = "";
     updateKeyStatus();
-    showNotice("warn", "کلید API حذف شد. برای پرسیدن سؤال در حالت زندهٔ API باید دوباره یک کلید وارد کنید.");
+    showNotice("warn", t("apiKeyClearedNotice"));
   });
   updateKeyStatus();
+  updateThemeSegment();
+  updateLangSegment();
+}
+
+/** User menu: theme, language, API key — one popover, not topbar clutter. */
+function wireUserMenu() {
+  const btn = $("user-menu-btn");
+  const panel = $("user-menu-panel");
+  if (!btn || !panel) return;
+
+  const close = () => {
+    panel.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+  };
+  const open = () => {
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+  };
+
+  btn.addEventListener("click", () => {
+    if (panel.hidden) open();
+    else close();
+  });
+  document.addEventListener("click", (e) => {
+    if (panel.hidden) return;
+    if (!$("user-menu").contains(/** @type {Node} */ (e.target))) close();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !panel.hidden) {
+      close();
+      btn.focus();
+    }
+  });
+
+  $("theme-segment").querySelectorAll("button[data-theme-val]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const val = b.getAttribute("data-theme-val");
+      if (val === "system" || val === "light" || val === "dark") {
+        persistTheme(val);
+        applyTheme();
+        updateThemeSegment();
+      }
+    });
+  });
+
+  $("lang-segment").querySelectorAll("button[data-lang]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const lang = b.getAttribute("data-lang");
+      if (lang === "fa" || lang === "en") {
+        state.lang = lang;
+        setLang(lang);
+        updateLangSegment();
+        updateKeyStatus();
+        setMode(state.mode); // refresh foot strings in the new language
+      }
+    });
+  });
+}
+
+function updateThemeSegment() {
+  document.querySelectorAll("#theme-segment button[data-theme-val]").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-theme-val") === state.theme);
+  });
+}
+
+function updateLangSegment() {
+  document.querySelectorAll("#lang-segment button[data-lang]").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-lang") === state.lang);
+  });
 }
 
 /* ── API key state (topbar) ────────────────────────────────────────
@@ -141,13 +206,13 @@ function updateKeyStatus(rejected = false) {
   const stored = hasApiKey();
 
   if (rejected) {
-    el.textContent = "کلید: رد شد";
+    el.textContent = t("apiKeyRejected");
     el.className = "live-key-status unset";
   } else if (stored) {
-    el.textContent = "کلید: ذخیره شده ✓";
+    el.textContent = t("apiKeySaved");
     el.className = "live-key-status set";
   } else {
-    el.textContent = "کلید: تنظیم نشده";
+    el.textContent = t("apiKeyUnset");
     el.className = "live-key-status unset";
   }
 
@@ -157,19 +222,18 @@ function updateKeyStatus(rejected = false) {
   clear.hidden = !stored;
 }
 
-/** Reveal the key row, focus its input, and explain why — used both on
- * first live use and after a 401 (see handleLiveError). Never puts the
- * key itself, or any prior value, into the input or this message. */
+/** Open the user menu and focus the API-key input — used on first live
+ * use and after a 401. Never puts the key itself into the input. */
 function promptForApiKey(message, { rejected = false } = {}) {
-  $("live-key-row").hidden = false;
+  const panel = $("user-menu-panel");
+  const btn = $("user-menu-btn");
+  if (panel && btn) {
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+  }
   updateKeyStatus(rejected);
   showNotice("warn", message);
   $("live-key-input").focus();
-}
-
-function updateThemeLabel() {
-  const labels = { system: "پوسته: سیستم", light: "پوسته: روشن", dark: "پوسته: تیره" };
-  $("theme-toggle-label").textContent = labels[state.theme];
 }
 
 /* ── Mode switch ───────────────────────────────────────────────────── */
@@ -177,26 +241,23 @@ function setMode(mode) {
   state.mode = mode;
   $("mode-simulated").classList.toggle("active", mode === "simulated");
   $("mode-live").classList.toggle("active", mode === "live");
-  $("live-key-row").hidden = mode !== "live";
   updateKeyStatus();
 
   const foot = $("foot-mode");
   if (mode === "simulated") {
-    foot.textContent = "حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.";
-    setHealth(true, true, true, "شبیه‌سازی‌شده — بدون اتصال واقعی");
+    foot.textContent =
+      state.lang === "en"
+        ? "Demo mode — data is synthetic; no real query has run."
+        : "حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.";
+    setHealth(true, true, true, "simulated");
   } else {
-    foot.textContent = `حالت زندهٔ API — بک‌اند: ${state.baseUrl}`;
-    // Always checked, including at boot (live is the default mode now —
-    // see state.js) — an analyst opening a live deployment against an
-    // unreachable backend must see that honestly and immediately
-    // (refreshHealth's catch branch below says exactly what to do about
-    // it), never a silent "در حال بررسی..." that never resolves.
+    foot.textContent =
+      state.lang === "en"
+        ? `Live API — backend: ${state.baseUrl}`
+        : `حالت زندهٔ API — بک‌اند: ${state.baseUrl}`;
     refreshHealth();
   }
 
-  // Each mode has its own conversation index (simulated demo data vs. the
-  // real backend) — (re)resolve which session is active and load it every
-  // time the mode is entered, including at boot.
   refreshSessionsForMode();
 }
 

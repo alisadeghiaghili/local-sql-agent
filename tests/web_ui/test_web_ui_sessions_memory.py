@@ -57,6 +57,7 @@ _STATE_JS = _WEB_JS / "state.js"
 _TABLE_JS = _WEB_JS / "render" / "table.js"
 _CHART_JS = _WEB_JS / "render" / "chart.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
+_ICONS_JS = _WEB_JS / "icons.js"
 _EXPORT_JS = _WEB_JS / "export.js"
 _SESSIONS_JS = _WEB_JS / "render" / "sessions.js"
 _MEMORY_JS = _WEB_JS / "render" / "memory.js"
@@ -120,6 +121,9 @@ def _prepare_copies(tmp_path: Path) -> dict[str, Path]:
     sessions_src = _SESSIONS_JS.read_text(encoding="utf-8")
     memory_src = _MEMORY_JS.read_text(encoding="utf-8")
 
+    assumptions_src = assumptions_src.replace(
+        'from "../icons.js"', 'from "./icons.mjs"'
+    ).replace('from "./icons.js"', 'from "./icons.mjs"')
     api_src = _subn_or_fail(_APIKEY_IMPORT, 'import { getApiKey } from "./apikey.mjs";', api_src, "api.js -> apikey.js")
     table_src = _subn_or_fail(_CHART_IMPORT, 'import { renderChartAndTable } from "./chart.mjs";', table_src, "table.js -> chart.js")
     table_src = _subn_or_fail(_EXPORT_IMPORT, 'import { downloadResultAsCsv } from "./export.mjs";', table_src, "table.js -> export.js")
@@ -163,6 +167,7 @@ def _prepare_copies(tmp_path: Path) -> dict[str, Path]:
     paths["sessions"].write_text(sessions_src, encoding="utf-8")
     paths["memory"].write_text(memory_src, encoding="utf-8")
     paths["num"].write_text(_NUM_JS.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "icons.mjs").write_text(_ICONS_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return paths
 
 
