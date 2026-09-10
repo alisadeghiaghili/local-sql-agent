@@ -26,8 +26,17 @@
   --green: #10b981;
   --red: #e5484d;
   --amber: #f59e0b;
-  --sql-bg: #0f1b2d;
-  --sql-text: #9fd8d3;
+  /* SQL code surface — always-dark editor palette, independent of chrome
+   * brand hues. NOT redefined in dark mode: the code block is dark in both
+   * themes, so these stay fixed (see assets/vendor/prism-sql-theme.css). */
+  --sql-bg: #0d1117;
+  --sql-text: #e6edf3;
+  --sql-keyword: #79c0ff;
+  --sql-number: #e3b341;
+  --sql-function: #d2a8ff;
+  --sql-string: #a5d6ff;
+  --sql-operator: #8b949e;
+  --sql-comment: #8b949e;
 
   /* Status semantics — deliberately NOT teal/navy. Brand colour means
    * "this is our product's chrome"; status colour means "this is a fact
@@ -81,8 +90,7 @@
     --green: #34d399;
     --red: #f87171;
     --amber: #fbbf24;
-    --sql-bg: #0a121f;
-    --sql-text: #9fd8d3;
+    /* --sql-* intentionally unchanged: always-dark code surface. */
 
     --status-good: #34d399;
     --status-good-bg: #10261e;
@@ -126,8 +134,7 @@
   --green: #34d399;
   --red: #f87171;
   --amber: #fbbf24;
-  --sql-bg: #0a121f;
-  --sql-text: #9fd8d3;
+  /* --sql-* intentionally unchanged: always-dark code surface. */
 
   --status-good: #34d399;
   --status-good-bg: #10261e;

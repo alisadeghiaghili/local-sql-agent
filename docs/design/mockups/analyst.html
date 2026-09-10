@@ -12,7 +12,9 @@
     --ink: #1f2937; --muted: #64748b;
     --status-good: #10b981; --status-warn: #f59e0b; --status-critical: #e5484d;
     --status-good-bg: #e9f9f1; --status-warn-bg: #fef6e7; --status-critical-bg: #fdeeee;
-    --sql-bg: #0f1b2d; --sql-text: #9fd8d3;
+    --sql-bg: #0d1117; --sql-text: #e6edf3;
+    --sql-keyword: #79c0ff; --sql-number: #e3b341; --sql-function: #d2a8ff;
+    --sql-string: #a5d6ff; --sql-operator: #8b949e; --sql-comment: #8b949e;
     --source-question: #0d9488; --source-session: #6366f1; --source-policy: #b45309;
     --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
     --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.05);
@@ -147,9 +149,10 @@
     font-family: Consolas, "Cascadia Code", monospace; font-size: 12.5px; line-height: 1.55;
     direction: ltr; text-align: left; overflow-x: auto;
   }
-  .sql-body .kw { color: #7dd3fc; }
-  .sql-body .fn { color: #f0abfc; }
-  .sql-body .num { color: #fde68a; }
+  .sql-body .kw { color: var(--sql-keyword); font-weight: 600; }
+  .sql-body .fn { color: var(--sql-function); }
+  .sql-body .num { color: var(--sql-number); }
+  .sql-body .op { color: var(--sql-operator); }
   .sql-body[hidden] { display: none; }
 
   .result-card {
@@ -464,7 +467,8 @@
   (۲) نوار مراحل لاغر هنگام stream، بعد از done خلاصه می‌شود — پنج کارت حذف، progress نه.
   (۳) تاپ‌بار: برند + یک سلامت + منوی کاربر. حذف: پیل سه‌تایی، کلید حالت، فیلد کلید inline.
   (۴) کامپوزر پایین پیش‌فرض است ولی هنوز قفل نشده (D3) — ابزار پرسش است، نه چت.
-  (۵) SQL نمونه join درست دارد.
+  (۵) SQL: پالت ادیتور تیره (keyword آبی، عدد طلایی، تابع بنفش) + prettify کلاینتی وقتی فقط raw sql هست؛
+      copy همیشه از Turn object، هرگز از DOM. backend با pretty_sql/sqlglot قبلاً فرمت می‌کند.
   <br><b>هنوز نکشیده‌ایم:</b> دارک‌مود، ۳۷۵px، popover سلامت، منوی کاربر/کلید، flow کامل Excel.
 </div>
 </body>

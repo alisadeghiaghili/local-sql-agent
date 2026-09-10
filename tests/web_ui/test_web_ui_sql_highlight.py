@@ -1,36 +1,41 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""Regression test for SQL syntax highlighting: ``web/js/render/turn.js``'s
-``highlightSql``, which now decorates the generated-SQL block with the
-vendored Prism (``web/assets/vendor/prism.min.js`` / ``prism-sql.min.js``).
+"""Regression test for SQL display formatting and syntax highlighting.
 
-Highlighting must be presentation ONLY. The risk this test exists to catch:
+``web/js/render/turn.js`` prettifies then highlights the generated-SQL
+block:
+
+* client-side prettify (vendored ``sql-formatter``) runs ONLY when the
+  Turn has raw ``sql`` and no ``sql_display`` — live mode normally ships
+  ``sql_display`` from ``security/sql_guard.pretty_sql`` and that string
+  is shown as-is;
+* highlighting uses the vendored Prism (``web/assets/vendor/prism*.js``).
+
+Both layers must be presentation ONLY. The risk this test exists to catch:
 a future change that makes the copy button read the SQL back out of the
-(now-decorated) DOM -- e.g. `codeEl.innerText` -- instead of the Turn
-object's own `sql`/`sql_display` string, which would silently start
-copying Prism's markup, or a mangled re-serialization of it, instead of
-runnable SQL. A second, equally real risk: a highlighting failure (Prism
-not loaded, or `Prism.highlight` throwing) that blanks or corrupts the
-visibly rendered SQL instead of just skipping the decoration.
+(now-decorated, now-prettified) DOM -- e.g. `codeEl.innerText` -- instead
+of the Turn object's own `sql`/`sql_display` string, which would silently
+start copying Prism markup or a client-reformatted variant instead of the
+display SQL the contract names. A second, equally real risk: a highlighting
+or formatting failure that blanks or corrupts the visibly rendered SQL
+instead of just skipping the decoration.
 
 This drives the REAL ``web/js/render/turn.js`` (and its full real render
-dependency chain -- ``pipeline.js``, ``assumptions.js``, ``table.js``,
-``chart.js``, ``export.js``, ``llm-status.js``) under Node (see
-``run_sql_highlight.mjs`` in this directory for the full scenario list and
-its DOM shim) with a mocked ``window.Prism`` / ``navigator.clipboard``, and
-asserts, at the actual boundary that matters:
+dependency chain) under Node (see ``run_sql_highlight.mjs``) with mocked
+``window.Prism`` / ``window.sqlFormatter`` / ``navigator.clipboard``, and
+asserts:
 
-* Prism highlighting actually runs (real ``.token`` elements appear) AND
-  reading the highlighted element's ``textContent`` back still equals the
-  exact original SQL string -- entities (``<``, ``&``) round-trip
-  correctly, not just plain alphanumeric text;
-* the copy button copies that exact original string to the clipboard, for
-  both a plain ``sql`` turn and one carrying a distinct ``sql_display``
-  (which must win, exactly as it did before this change);
+* Prism highlighting actually runs (real ``.token`` elements) AND reading
+  the highlighted element's ``textContent`` back still equals the exact
+  string that was highlighted;
+* the copy button copies the exact Turn object string for plain ``sql``,
+  distinct ``sql_display``, prettified-only-raw, and both failure modes;
+* client prettify reformats display when only raw sql is present, never
+  re-prettifies an existing ``sql_display``, and a throwing formatter
+  falls back to the raw text;
 * with no ``window.Prism`` at all, and separately with a throwing
   ``Prism.highlight``, the SQL still renders as plain, uncorrupted text
-  and copy still works -- highlighting failing must never hide or corrupt
-  the SQL itself.
+  and copy still works.
 """
 
 from __future__ import annotations

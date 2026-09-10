@@ -3,53 +3,51 @@
  * Token colours for the generated-SQL block (web/js/render/turn.js),
  * highlighted with the vendored Prism core + SQL language component in
  * this same directory (prism.min.js, prism-sql.min.js — see
- * web/README.md's "Font"/offline-requirement note; same reasoning
- * applies here: no CDN, ever).
+ * web/README.md's offline-requirement note; no CDN, ever).
  *
- * This file is NOT Prism's official theme CSS — Prism ships no offline
- * theme that is also aware of this app's light/dark token system, so one
- * upstream file cannot satisfy both "vendored, no CDN" and "adapts to
- * both themes" at once. Every colour below is `var(--...)`, reusing
- * custom properties already defined in styles/style.css's :root (and its
- * @media (prefers-color-scheme: dark) / [data-theme="dark"] overrides) —
- * nothing here is a new, hardcoded hex value. That is what makes this
- * file theme-safe for free: the moment style.css's tokens flip for dark
- * mode, so do these, without this file needing its own media queries.
+ * This file is NOT Prism's official theme CSS. The SQL box (.sql-box)
+ * is an always-dark code surface in BOTH UI themes — same as most code
+ * editors — so the token colours below are a fixed editor palette, not
+ * aliases of the chrome brand tokens. Brand teal is right for a button;
+ * it is the wrong hue family for reading a SELECT list against near-black.
  *
- * Note the SQL box (.sql-box, styles/style.css) uses --sql-bg/--sql-text
- * for its background/base text colour in BOTH themes — it is, on
- * purpose, styled like a conventional "always-dark" code block rather
- * than flipping to a light background in light mode (the same as most
- * code editors/terminals). Every token colour below is chosen to stay
- * legible against that dark background in EITHER theme variant of the
- * underlying token (light-mode and dark-mode `--teal`, `--amber`, etc.
- * are both mid-to-bright tones — see style.css — so contrast against the
- * dark box holds up whichever theme mode is active).
+ * Palette (aligned to a conventional dark editor / terminal SQL look):
+ *   keyword   — cool blue   (SELECT, FROM, WHERE, TOP, AS, DESC, …)
+ *   number    — gold        (TOP 10, year literals, …)
+ *   function  — violet      (SUM, COUNT, …)
+ *   string    — sky         (N'…', '…')
+ *   operator  — grey        (=, <, +, …)
+ *   comment   — grey italic
+ *
+ * These values are declared on bare :root in styles/style.css as
+ * --sql-* custom properties so both this file and any future code surface
+ * share one place. Dark mode does NOT redefine them: the SQL box stays
+ * dark either way.
  */
 
 .sql-box .token.keyword {
-  color: var(--teal);
+  color: var(--sql-keyword, #79c0ff);
   font-weight: 600;
 }
 .sql-box .token.string,
 .sql-box .token.identifier {
-  color: var(--amber);
+  color: var(--sql-string, #a5d6ff);
 }
 .sql-box .token.number,
 .sql-box .token.boolean {
-  color: var(--source-session);
+  color: var(--sql-number, #e3b341);
 }
 .sql-box .token.comment {
-  color: var(--muted);
+  color: var(--sql-comment, #8b949e);
   font-style: italic;
 }
 .sql-box .token.function {
-  color: var(--source-memory);
+  color: var(--sql-function, #d2a8ff);
 }
 .sql-box .token.variable {
-  color: var(--source-policy);
+  color: var(--sql-string, #a5d6ff);
 }
 .sql-box .token.operator,
 .sql-box .token.punctuation {
-  color: var(--muted);
+  color: var(--sql-operator, #8b949e);
 }

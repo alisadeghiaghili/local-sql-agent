@@ -26,6 +26,11 @@
 //   throws, the SQL still renders as plain, correct, uncorrupted text and
 //   still copies correctly -- a decoration failure must never hide or
 //   corrupt the SQL itself.
+// * client-side prettify (`window.sqlFormatter`) reformats the DISPLAYED
+//   text when only raw `sql` is present, and is skipped entirely when
+//   `sql_display` already exists -- and in every case the copy button
+//   still receives the exact Turn object string, never the prettified
+//   rendering. A throwing formatter is treated like a missing one.
 //
 // web/ ships no package.json / node_modules by design, so this brings its
 // own minimal DOM shim (same spirit as run_result_shapes.mjs's), extended
@@ -353,5 +358,72 @@ card.el.querySelector("button.btn-copy").click();
 await flushMicrotasks();
 assert.equal(clipboardCalls[0], SQL, "copy must still work correctly when Prism.highlight throws");
 console.log("[ok] a throwing Prism.highlight is caught: plain correct text still renders, copy still works");
+
+/* ── Scenario 5: window.sqlFormatter present, turn has ONLY raw sql (no
+ * sql_display). Display must show the prettified text; copy must still
+ * receive the exact original raw sql from the Turn object. ───────────── */
+
+const ONE_LINE_SQL = "SELECT TOP 10 c.Name, SUM(o.TotalAmount) AS PurchaseValue FROM Sales_Fact.[Order] o WHERE d.JalaliYear = 1403 ORDER BY PurchaseValue DESC";
+
+globalThis.window.Prism = { languages: { sql: {} }, highlight: (text) => fakeHighlight(text) };
+globalThis.window.sqlFormatter = {
+  format(text, _opts) {
+    assert.equal(_opts.language, "tsql", "client prettify must target the tsql dialect");
+    assert.equal(_opts.keywordCase, "upper", "client prettify must upper-case keywords");
+    // Tiny deterministic stand-in for the vendored library: break before
+    // major clauses. Enough to prove display was reformatted and copy was not.
+    return String(text).replace(/\s+(FROM|WHERE|ORDER BY|GROUP BY)\s+/gi, "\n$1 ");
+  },
+};
+
+clipboardCalls = [];
+turn = baseTurn({ sql: ONE_LINE_SQL, sql_display: undefined, turn_id: "t_test5" });
+card = createTurnCard(turn, noopCtx);
+codeEl = card.el.querySelector("code.language-sql");
+assert.ok(codeEl.textContent.includes("\n"), "client prettify must insert line breaks into the displayed SQL when only raw sql is present");
+assert.ok(codeEl.textContent.includes("\nFROM "), "prettified display must break before FROM");
+assert.notEqual(codeEl.textContent, ONE_LINE_SQL, "display must not be the raw one-liner when sqlFormatter is available");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], ONE_LINE_SQL, "copy must still receive the exact original Turn.sql, never the client-prettified rendering");
+console.log("[ok] sqlFormatter prettifies the display; copy stays on the exact Turn.sql");
+
+/* ── Scenario 6: sql_display already present (backend pretty_sql) --
+ * client prettify must NOT run on it. Copy stays sql_display. ──────── */
+
+const BACKEND_PRETTY = "SELECT\n  a,\n  b\nFROM t\nWHERE\n  a = 1";
+let formatCallsOnDisplay = 0;
+globalThis.window.sqlFormatter = {
+  format(text, _opts) {
+    formatCallsOnDisplay += 1;
+    return String(text).replace(/\s+(FROM|WHERE)\s+/gi, "\n$1 ");
+  },
+};
+clipboardCalls = [];
+turn = baseTurn({ sql: "SELECT a, b FROM t WHERE a = 1", sql_display: BACKEND_PRETTY, turn_id: "t_test6" });
+card = createTurnCard(turn, noopCtx);
+codeEl = card.el.querySelector("code.language-sql");
+assert.equal(formatCallsOnDisplay, 0, "client prettify must not reformat an existing sql_display (backend already produced it)");
+assert.equal(codeEl.textContent, BACKEND_PRETTY, "sql_display is shown as-is when present");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], BACKEND_PRETTY, "copy yields sql_display exactly");
+console.log("[ok] existing sql_display is not re-prettified client-side; copy matches");
+
+/* ── Scenario 7: sqlFormatter THROWS -- display falls back to the exact
+ * Turn.sql, copy still works. Cosmetic failure must not hide SQL. ────── */
+
+globalThis.window.sqlFormatter = {
+  format() { throw new Error("boom — simulated sql-formatter failure"); },
+};
+clipboardCalls = [];
+turn = baseTurn({ sql: ONE_LINE_SQL, turn_id: "t_test7" });
+assert.doesNotThrow(() => { card = createTurnCard(turn, noopCtx); }, "a throwing sqlFormatter.format must not propagate out of createTurnCard");
+codeEl = card.el.querySelector("code.language-sql");
+assert.equal(codeEl.textContent, ONE_LINE_SQL, "a throwing formatter must leave the exact original SQL text rendered");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], ONE_LINE_SQL, "copy must still work when sqlFormatter throws");
+console.log("[ok] a throwing sqlFormatter is caught: raw SQL still renders, copy still works");
 
 console.log("ALL_SCENARIOS_PASSED");
