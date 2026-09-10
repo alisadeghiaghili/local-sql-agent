@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ماک ادمین — Local SQL Agent 5.0</title>
+<style>
+  :root {
+    --navy: #0e2a47; --navy-2: #14375c; --navy-3: #1b436e;
+    --teal: #0d9488; --teal-d: #0b7a70; --teal-l: #e7f6f2;
+    --bg: #f4f6fa; --card: #ffffff; --card-2: #f8fafc; --border: #e2e8f0;
+    --ink: #1f2937; --muted: #64748b;
+    --status-good: #10b981; --status-warn: #f59e0b; --status-critical: #e5484d;
+    --status-good-bg: #e9f9f1; --status-warn-bg: #fef6e7; --status-critical-bg: #fdeeee; --status-neutral-bg: #eef1f5;
+    --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.05);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+    background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.6;
+  }
+  .topbar {
+    background: var(--navy); color: #fff; display: flex; align-items: center;
+    justify-content: space-between; padding: 12px 20px; gap: 16px;
+    border-bottom: 3px solid var(--navy-3);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 36px; height: 36px; border-radius: 9px; background: var(--navy-3);
+    display: grid; place-items: center; font-weight: 800; font-size: 11px;
+  }
+  .brand h1 { font-size: 15px; font-weight: 700; }
+  .brand p { font-size: 11px; color: #94a3b8; }
+  .topbar-right { display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: #cbd5e1; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--status-good);
+    display: inline-block; margin-inline-end: 6px;
+  }
+
+  .jump {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--card); border-bottom: 1px solid var(--border);
+    display: flex; gap: 4px; overflow-x: auto; padding: 8px 16px;
+  }
+  .jump a {
+    flex: 0 0 auto; text-decoration: none; color: var(--muted); font-size: 12px; font-weight: 700;
+    padding: 6px 12px; border-radius: var(--radius-pill); white-space: nowrap;
+  }
+  .jump a:hover { background: var(--card-2); color: var(--ink); }
+  .jump a.on { background: var(--navy); color: #fff; }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; display: flex; flex-direction: column; gap: 22px; }
+
+  .rail {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  }
+  .rail-item {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 16px; border-inline-start: 4px solid var(--status-neutral);
+  }
+  .rail-item.good { border-inline-start-color: var(--status-good); }
+  .rail-item.warn { border-inline-start-color: var(--status-warn); background: var(--status-warn-bg); }
+  .rail-item.crit { border-inline-start-color: var(--status-critical); background: var(--status-critical-bg); }
+  .rail-item .lab { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .rail-item .val { font-size: 22px; font-weight: 800; margin-top: 4px; color: var(--navy); }
+  .rail-item.crit .val { color: var(--status-critical); }
+  .rail-item.warn .val { color: #92400e; }
+  .rail-item .sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  section.sec { scroll-margin-top: 56px; }
+  .sec-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .sec-head h2 { font-size: 14px; font-weight: 800; color: var(--navy); }
+  .sec-head .meta { font-size: 11.5px; color: var(--muted); }
+
+  .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+  .check {
+    display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 9px;
+    border-inline-start: 3px solid var(--status-good);
+    direction: ltr; text-align: left;
+  }
+  .check.fail { border-inline-start-color: var(--status-critical); background: var(--status-critical-bg); }
+  .check.skip { border-inline-start-color: var(--status-neutral); }
+  .check .mark { font-weight: 800; font-size: 12px; color: var(--status-good); }
+  .check.fail .mark { color: var(--status-critical); }
+  .check.skip .mark { color: var(--muted); }
+  .check .name { font-size: 12.5px; font-weight: 700; }
+  .check .det { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  .figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .fig {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;
+  }
+  .fig .l { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+  .fig .v { font-size: 22px; font-weight: 800; color: var(--navy); margin-top: 4px; direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  th, td { padding: 9px 12px; text-align: start; border-bottom: 1px solid var(--border); }
+  th { background: var(--card-2); font-size: 11px; color: var(--muted); font-weight: 700; }
+  tr:last-child td { border-bottom: 0; }
+  td code { font-family: Consolas, monospace; font-size: 12px; direction: ltr; unicode-bidi: isolate; }
+
+  .foot {
+    max-width: 1100px; margin: 0 auto; padding: 16px; font-size: 12px; color: var(--muted);
+    border-top: 1px solid var(--border);
+  }
+
+  .legend {
+    max-width: 1100px; margin: 24px auto 40px; padding: 0 16px;
+    font-size: 12.5px; color: var(--muted); line-height: 1.8;
+  }
+  .legend b { color: var(--navy); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">ADM</span>
+    <div>
+      <h1>پنل مدیریت</h1>
+      <p>استقرار، ممیزی، کلیدها</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span><span class="live-dot"></span>خودکار ۳۰ثانیه</span>
+    <span>آخرین: ۱۲:۰۴</span>
+  </div>
+</header>
+
+<nav class="jump" aria-label="بخش‌ها">
+  <a class="on" href="#overview">نمای کلی</a>
+  <a href="#maintenance">تعمیر</a>
+  <a href="#checks">بررسی‌ها</a>
+  <a href="#audit">ممیزی</a>
+  <a href="#feedback">بازخورد</a>
+  <a href="#cache">کش</a>
+  <a href="#config">پیکربندی</a>
+  <a href="#keys">کلیدها</a>
+  <a href="#schema">شِما</a>
+  <a href="#usage">مصرف</a>
+  <a href="#auth">احراز</a>
+</nav>
+
+<div class="wrap">
+
+  <div class="rail" id="overview">
+    <div class="rail-item good">
+      <div class="lab">بررسی‌های استقرار</div>
+      <div class="val">۱۱ / ۱۲</div>
+      <div class="sub">۱ خطا · prefix-cache</div>
+    </div>
+    <div class="rail-item good">
+      <div class="lab">بازخورد باز</div>
+      <div class="val">۳</div>
+      <div class="sub">۲ این هفته</div>
+    </div>
+    <div class="rail-item good">
+      <div class="lab">حالت تعمیر</div>
+      <div class="val" style="font-size:16px;padding-top:6px">خاموش</div>
+      <div class="sub">تحلیل‌گران فعال‌اند</div>
+    </div>
+    <div class="rail-item warn">
+      <div class="lab">نرخ کش پیشوند</div>
+      <div class="val">۶۴٪</div>
+      <div class="sub">هدف ≥ ۸۰٪ — بی‌صدا می‌شکند</div>
+    </div>
+  </div>
+
+  <section class="sec" id="maintenance">
+    <div class="sec-head">
+      <h2>حالت تعمیر و نگهداری</h2>
+      <span class="meta">خاموش · قابل فعال‌سازی از CLI</span>
+    </div>
+  </section>
+
+  <section class="sec" id="checks">
+    <div class="sec-head">
+      <h2>بررسی‌های استقرار</h2>
+      <span class="meta">شدت قبل از عدد خوانده می‌شود</span>
+    </div>
+    <div class="checks">
+      <div class="check"><span class="mark">PASS</span><div><div class="name">settings.validate()</div><div class="det">all required fields present</div></div></div>
+      <div class="check"><span class="mark">PASS</span><div><div class="name">database.ping()</div><div class="det">14 ms</div></div></div>
+      <div class="check fail"><span class="mark">FAIL</span><div><div class="name">llm.prefix_cache_rate</div><div class="det">0.64 &lt; threshold 0.80</div></div></div>
+      <div class="check skip"><span class="mark">SKIP</span><div><div class="name">warehouse.readonly_login</div><div class="det">not configured in this env</div></div></div>
+    </div>
+  </section>
+
+  <section class="sec" id="audit">
+    <div class="sec-head">
+      <h2>ممیزی</h2>
+      <span class="meta">۳۰ روز اخیر</span>
+    </div>
+    <div class="figures">
+      <div class="fig"><div class="l">پرسش‌ها</div><div class="v">1,284</div></div>
+      <div class="fig"><div class="l">نرخ موفقیت</div><div class="v">91%</div></div>
+      <div class="fig"><div class="l">رد گارد</div><div class="v">37</div></div>
+      <div class="fig"><div class="l">میانه زمان</div><div class="v">1.8s</div></div>
+    </div>
+  </section>
+
+  <section class="sec" id="feedback">
+    <div class="sec-head">
+      <h2>بازخورد و رفع اشکال</h2>
+      <span class="meta">باز · ۳</span>
+    </div>
+    <table>
+      <thead><tr><th>دسته</th><th>یادداشت</th><th>نوبت</th><th>وضعیت</th></tr></thead>
+      <tbody>
+        <tr><td>عدد اشتباه</td><td>مبلغ حلقه سیمان دو برابر است</td><td><code>t_18</code></td><td>باز</td></tr>
+        <tr><td>SQL نادرست</td><td>join تاریخ افتاده</td><td><code>t_22</code></td><td>باز</td></tr>
+        <tr><td>کندی</td><td>بالای ۸ ثانیه</td><td><code>t_31</code></td><td>باز</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="sec" id="keys">
+    <div class="sec-head">
+      <h2>کلیدها و دسترسی‌ها</h2>
+      <span class="meta">نوشتن — پایین‌تر از تشخیص‌ها</span>
+    </div>
+    <table>
+      <thead><tr><th>شناسه</th><th>نقش</th><th>منبع</th><th>اقدام</th></tr></thead>
+      <tbody>
+        <tr><td><code>ops-1</code></td><td><code>admin</code></td><td><code>.env</code></td><td>ابطال</td></tr>
+        <tr><td><code>analyst-a</code></td><td><code>analyst</code></td><td>صدور پنل</td><td>ابطال</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+
+<footer class="foot">هیچ پرس‌وجویی روی انبار داده اجرا نمی‌شود. خواندن فقط.</footer>
+
+<div class="legend">
+  <b>نسبت به ۴٫۱۲:</b>
+  (۱) ریل نمای کلی بالای همه‌چیز — اولین چیزی که می‌بینی «آیا چیزی سوخته؟».
+  (۲) نوار پرش چسبان — دیگر اسکرول بی‌پایان.
+  (۳) refresh سراسری ۳۰ثانیه + زمان آخرین — نه ↻ روی هر بخش.
+  (۴) نوار شدت و جهت LTR برای خروجی انگلیسی حفظ شده.
+</div>
+</body>
+</html>
