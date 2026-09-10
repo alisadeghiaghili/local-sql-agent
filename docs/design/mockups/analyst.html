@@ -13,6 +13,7 @@
     --status-good: #10b981; --status-warn: #f59e0b; --status-critical: #e5484d;
     --status-good-bg: #e9f9f1; --status-warn-bg: #fef6e7; --status-critical-bg: #fdeeee;
     --sql-bg: #0f1b2d; --sql-text: #9fd8d3;
+    --source-question: #0d9488; --source-session: #6366f1; --source-policy: #b45309;
     --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
     --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.05);
     --focus: 0 0 0 3px rgba(13,148,136,.35);
@@ -210,6 +211,47 @@
   }
   .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: var(--ink); }
 
+  /* Trust surface — contract §5/§7: never in the drawer */
+  .resolved {
+    border-inline-start: 3px solid var(--teal); background: var(--teal-l);
+    border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13.5px;
+  }
+  .resolved .lab {
+    font-size: 11px; font-weight: 800; color: var(--teal-d);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .chips .lead { font-size: 12px; color: var(--muted); font-weight: 700; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: var(--radius-pill); padding: 5px 12px; font-size: 12px; font-weight: 700;
+    border: 1px solid color-mix(in srgb, var(--source-question) 35%, transparent);
+    background: #e7f6f2; color: var(--source-question);
+  }
+  .chip.session { background: #eef0fd; color: var(--source-session); border-color: color-mix(in srgb, var(--source-session) 35%, transparent); }
+  .chip.policy { background: #fbf1e0; color: var(--source-policy); border-color: color-mix(in srgb, var(--source-policy) 35%, transparent); cursor: default; }
+  .chip button {
+    border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 11px; padding: 0;
+  }
+  .clarify { display: flex; flex-wrap: wrap; gap: 8px; }
+  .clarify button {
+    border: 1px solid var(--border); background: var(--card); border-radius: var(--radius-pill);
+    padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--ink);
+  }
+  .clarify button:hover { border-color: var(--teal); color: var(--teal-d); background: var(--teal-l); }
+
+  .stages {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    font-size: 11.5px; color: var(--muted); font-weight: 600;
+  }
+  .stages .st {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 9px; border-radius: var(--radius-pill);
+    background: var(--card); border: 1px solid var(--border);
+  }
+  .stages .st.done { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 30%, transparent); background: var(--status-good-bg); }
+  .stages .st.live { color: var(--teal-d); border-color: var(--teal); background: var(--teal-l); }
+
   .banner {
     margin: 0 auto 0; max-width: 880px; width: 100%;
     padding: 0 20px;
@@ -293,19 +335,43 @@
           ده مشتری برتر از نظر مبلغ خرید در سال ۱۴۰۳
         </div>
 
+        <div class="resolved">
+          <div class="lab">برداشت سامانه از پرسش</div>
+          ده مشتری برتر بر اساس مبلغ کل خرید (ریال) در سال شمسی ۱۴۰۳
+        </div>
+
+        <div class="chips">
+          <span class="lead">فرض‌ها</span>
+          <span class="chip">سال شمسی ۱۴۰۳ <button type="button" aria-label="ویرایش">✎</button> <button type="button" aria-label="سنجاق">📌</button></span>
+          <span class="chip session">مرجع: نشست جاری <button type="button" aria-label="ویرایش">✎</button></span>
+          <span class="chip policy">دامنه: فقط معاملات تسویه‌شده</span>
+        </div>
+
+        <div class="clarify">
+          <button type="button">فقط حلقه سیمان؟</button>
+          <button type="button">مبلغ تسویه‌شده یا قرارداد؟</button>
+        </div>
+
+        <div class="stages" aria-label="مراحل پردازش">
+          <span class="st done">✓ طرح</span>
+          <span class="st done">✓ SQL</span>
+          <span class="st done">✓ گارد</span>
+          <span class="st done">✓ اجرا</span>
+          <span class="st">— تفسیر</span>
+          <span style="margin-inline-start:6px">۱٫۲ ثانیه</span>
+        </div>
+
         <div class="outcome">
           <span class="ok">✓ گارد مجاز</span>
           <span class="sep">·</span>
           <span>۱۰ ردیف</span>
-          <span class="sep">·</span>
-          <span>۱٫۲ ثانیه</span>
           <span class="sep">·</span>
           <span>TOP 10</span>
         </div>
 
         <div class="sql-card">
           <button class="sql-head" type="button" onclick="const b=this.nextElementSibling; b.hidden=!b.hidden; this.querySelector('.chev').textContent=b.hidden?'نمایش SQL':'پنهان'">
-            <span class="label">SQL تولیدشده</span>
+            <span class="label">SQL تولیدشده · گارد ✓</span>
             <span class="acts">
               <span class="chip-act">کپی</span>
               <span class="chip-act chev">پنهان</span>
@@ -342,11 +408,10 @@
         </div>
 
         <details class="drawer">
-          <summary>جزئیات — pipeline، فرض‌ها، وضعیت مدل، تفسیر</summary>
+          <summary>جزئیات — زمان‌بندی pipeline، وضعیت مدل، تفسیر، بازخورد</summary>
           <div class="drawer-body">
-            <div class="kv"><span class="k">مراحل</span><span class="v">۵/۵ کامل</span></div>
+            <div class="kv"><span class="k">زمان‌ها</span><span class="v num" dir="ltr">plan 4ms · llm 980ms · exec 210ms</span></div>
             <div class="kv"><span class="k">مدل</span><span class="v">qwen2.5-coder · local</span></div>
-            <div class="kv"><span class="k">فرض</span><span class="v">سال شمسی ۱۴۰۳</span></div>
             <div class="kv"><span class="k">تفسیر</span><span class="v" style="font-weight:500;color:var(--muted)">خاموش (ارسال ردیف به مدل)</span></div>
             <div class="kv"><span class="k">بازخورد</span><span class="v">علامت‌گذاری پاسخ اشتباه</span></div>
           </div>
@@ -358,12 +423,14 @@
           <span class="idx">پرسش ۲</span>
           از بین همان‌ها، فقط حلقه سیمان
         </div>
+        <div class="stages">
+          <span class="st done">✓</span><span class="st done">✓</span><span class="st done">✓</span><span class="st done">✓</span><span class="st">—</span>
+          <span>ادامهٔ پرسش ۱ · ۰٫۸ ثانیه</span>
+        </div>
         <div class="outcome">
           <span class="ok">✓ گارد مجاز</span>
           <span class="sep">·</span>
           <span>۲ ردیف</span>
-          <span class="sep">·</span>
-          <span>ادامهٔ پرسش ۱</span>
         </div>
       </article>
 
@@ -371,8 +438,8 @@
 
     <div class="callout">
       <div class="callout-inner">
-        حالت نمایشی در تاپ‌بار نیست — فقط با <span dir="ltr" class="num">?live=0</span> یا فلگ دیباگ.
-        «داستان نمونه» هم در تولید دیده نمی‌شود.
+        حالت نمایشی در تاپ‌بار نیست — فقط با <span dir="ltr" class="num">?live=0</span>.
+        فرض‌ها و برداشت سامانه <b>بالای نتیجه</b> می‌مانند (قرارداد §۵/§۷) — در drawer پنهان نمی‌شوند.
       </div>
     </div>
 
@@ -392,12 +459,13 @@
 </div>
 
 <div class="legend">
-  <b>چه چیزی نسبت به ۴٫۱۲ عوض شده:</b>
-  (۱) تاپ‌بار فقط برند + یک سلامت + منوی کاربر — بدون پیل سه‌تایی، بدون کلید حالت، بدون فیلد کلید inline.
-  (۲) کامپوزر به پایین — ترنسکریپت فضای عمودی را می‌گیرد.
-  (۳) نوبت با «خط نتیجه» شروع می‌شود، نه پنج کارت تو در تو. SQL پس از اولین موفقیت جمع است.
-  (۴) pipeline / LLM / تفسیر در drawer جزئیات.
-  (۵) SQL نمونه join درست دارد (alias پیشین <span class="num" dir="ltr">d</span> ساختگی نیست).
+  <b>پس از خودانتقادی (§۱۴b DESIGN):</b>
+  (۱) برداشت سامانه + فرض‌ها + شفاف‌سازی‌ها <b>قبل از نتیجه</b> — نه در drawer. این قرارداد محصول است.
+  (۲) نوار مراحل لاغر هنگام stream، بعد از done خلاصه می‌شود — پنج کارت حذف، progress نه.
+  (۳) تاپ‌بار: برند + یک سلامت + منوی کاربر. حذف: پیل سه‌تایی، کلید حالت، فیلد کلید inline.
+  (۴) کامپوزر پایین پیش‌فرض است ولی هنوز قفل نشده (D3) — ابزار پرسش است، نه چت.
+  (۵) SQL نمونه join درست دارد.
+  <br><b>هنوز نکشیده‌ایم:</b> دارک‌مود، ۳۷۵px، popover سلامت، منوی کاربر/کلید، flow کامل Excel.
 </div>
 </body>
 </html>
