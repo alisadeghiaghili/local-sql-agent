@@ -14,6 +14,7 @@ from datetime import datetime
 import pandas as pd
 
 import config as cfg
+from exporters.sanitize import defuse_formula
 
 # Expose settings at module level so tests can patch "exporters.excel_exporter.settings"
 settings = cfg.settings
@@ -34,6 +35,17 @@ def export_excel(df: pd.DataFrame) -> str:
         _settings.export_dir,
         f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
     )
+
+    # Finding 15: this workbook is opened by the one program that treats a
+    # cell starting with =/+/-/@ as a formula to execute, not text to
+    # display. Only object-dtype columns can hold a string in the first
+    # place -- mapping every column through defuse_formula would be a
+    # silent no-op for numeric/datetime dtypes anyway, but restricting the
+    # `.map` to `object` columns keeps that a documented decision instead
+    # of an accident of defuse_formula's own non-string passthrough.
+    df = df.copy()
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].map(defuse_formula)
 
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Result")

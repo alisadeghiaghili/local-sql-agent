@@ -276,9 +276,22 @@ $("cache-clear-btn").addEventListener("click", async () => {
 /* ── Renderers ───────────────────────────────────────────────────── */
 
 function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = String(s);
-  return div.innerHTML;
+  /* This used to be the `textContent` -> `innerHTML` idiom, which only
+   * encodes what matters inside a *text node* (&, < and >). Two call
+   * sites (renderKeys' data-pid/data-hash, the vocabulary card's
+   * data-vocab-refresh) used its output to build an HTML *attribute*
+   * instead, where `"` and `'` are exactly the characters that matter --
+   * the audit's finding 2 reproduced a real onmouseover attribute break-
+   * out through that gap. Encode all five characters explicitly so this
+   * function is safe wherever the next caller puts it, text node or
+   * attribute, rather than being correct only for the position it was
+   * first written for. */
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /** Format a rate that may arrive as 0..1, as a percentage, or as null. */
@@ -700,24 +713,49 @@ function renderSchemaDrift(report) {
 function renderVocabulary(payload) {
   const body = $("vocabulary-body");
   const columns = payload.columns || [];
-  const rows = columns.map((c) => {
+
+  const wrap = document.createElement("div");
+  wrap.className = "admin-table-wrap";
+  const table = document.createElement("table");
+  table.className = "admin-table";
+  table.innerHTML =
+    "<thead><tr><th>ستون</th><th>وضعیت</th><th>تعداد مقدار</th>" +
+    "<th>آخرین بروزرسانی</th><th></th></tr></thead>";
+  const tbody = document.createElement("tbody");
+
+  columns.forEach((c) => {
     const freshCls = c.cached ? (c.is_fresh ? "pass" : "skip") : "fail";
     const freshLabel = c.cached ? (c.is_fresh ? "تازه" : "کهنه") : "هرگز";
     const failureNote = c.last_failure
       ? `<span class="admin-status-pill admin-status-fail">آخرین تلاش ناموفق</span>`
       : "";
-    return `<tr>
-      <td dir="ltr">${escapeHtml(c.table)}.${escapeHtml(c.column)}</td>
-      <td><span class="admin-status-pill admin-status-${freshCls}">${escapeHtml(freshLabel)}</span> ${failureNote}</td>
-      <td class="num">${c.value_count === null ? "—" : escapeHtml(fmtNum(c.value_count))}</td>
-      <td dir="ltr">${escapeHtml(c.fetched_at || "—")}</td>
-      <td><button class="admin-btn-refresh" data-vocab-refresh="${escapeHtml(c.table)}|${escapeHtml(c.column)}" type="button">بازخوانی</button></td>
-    </tr>`;
+
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td dir="ltr">${escapeHtml(c.table)}.${escapeHtml(c.column)}</td>` +
+      `<td><span class="admin-status-pill admin-status-${freshCls}">${escapeHtml(freshLabel)}</span> ${failureNote}</td>` +
+      `<td class="num">${c.value_count === null ? "—" : escapeHtml(fmtNum(c.value_count))}</td>` +
+      `<td dir="ltr">${escapeHtml(c.fetched_at || "—")}</td>`;
+
+    const actionTd = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "admin-btn-refresh";
+    btn.type = "button";
+    btn.textContent = "بازخوانی";
+    /* Same reasoning as renderKeys' data-pid/data-hash: table/column
+     * reach the DOM as `dataset` assignments, never interpolated into a
+     * quoted `data-vocab-refresh="..."` attribute string, so neither
+     * value can break out of an attribute regardless of its contents. */
+    btn.dataset.vocabRefresh = `${c.table}|${c.column}`;
+    actionTd.appendChild(btn);
+    tr.appendChild(actionTd);
+    tbody.appendChild(tr);
   });
-  body.innerHTML =
-    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
-    "<th>ستون</th><th>وضعیت</th><th>تعداد مقدار</th><th>آخرین بروزرسانی</th><th></th>" +
-    `</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  body.innerHTML = "";
+  body.appendChild(wrap);
 
   body.querySelectorAll("[data-vocab-refresh]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -838,7 +876,16 @@ function renderKeys({ keys, operations, security }) {
     return;
   }
 
-  const rows = keys.map((row) => {
+  const wrap = document.createElement("div");
+  wrap.className = "admin-table-wrap";
+  const table = document.createElement("table");
+  table.className = "admin-table";
+  table.innerHTML =
+    "<thead><tr><th>شناسه</th><th>نام</th><th>وضعیت</th><th>منبع</th>" +
+    "<th>ستون‌های ممنوع</th><th>اقدام</th></tr></thead>";
+  const tbody = document.createElement("tbody");
+
+  keys.forEach((row) => {
     const st = keyState(row);
     const denied = row.denied_columns || [];
     /* "No restriction" and "some columns" are different kinds of fact, and
@@ -859,24 +906,38 @@ function renderKeys({ keys, operations, security }) {
         '<button type="button" data-act="role">نقش‌ها</button>' +
         '<button type="button" data-act="revoke" class="key-danger">ابطال</button>';
 
-    return `<tr data-hash="${escapeHtml(row.key_sha256)}" data-pid="${escapeHtml(row.principal_id)}">` +
+    const tr = document.createElement("tr");
+    /* Set through the element's own `dataset`, not interpolated into a
+     * quoted `data-hash="..."` / `data-pid="..."` attribute string
+     * (finding 2's actual sink). A value assigned this way is DOM text,
+     * never re-parsed as markup, so a principal_id containing a `"`
+     * cannot break out of an attribute -- there is no such attribute
+     * string for it to break out of, whatever escapeHtml does or does
+     * not encode. */
+    tr.dataset.hash = row.key_sha256;
+    tr.dataset.pid = row.principal_id;
+    tr.innerHTML =
       `<td><code>${escapeHtml(row.principal_id)}</code>${roleTags}</td>` +
       `<td>${escapeHtml(row.name)}</td>` +
       `<td><span class="admin-status-pill admin-status-${st.cls}">${st.label}</span></td>` +
       `<td>${escapeHtml(row.source === "imported_from_env" ? ".env" : "پنل")}</td>` +
       `<td>${escapeHtml(deniedLabel)}</td>` +
-      `<td class="key-actions">${actions}</td>` +
-      `</tr>`;
+      `<td class="key-actions">${actions}</td>`;
+    tbody.appendChild(tr);
   });
 
-  body.innerHTML =
-    '<div class="admin-table-wrap"><table class="admin-table">' +
-    "<thead><tr><th>شناسه</th><th>نام</th><th>وضعیت</th><th>منبع</th>" +
-    "<th>ستون‌های ممنوع</th><th>اقدام</th></tr></thead>" +
-    `<tbody>${rows.join("")}</tbody></table></div>` +
-    '<p class="admin-loading">«غیرفعال کردن» برگشت‌پذیر است؛ «ابطال» نیست — ' +
-    "ردیف بایگانی می‌شود و هرگز حذف نمی‌شود، تا بازگرداندن دیتابیس به دیروز " +
-    "کلیدی را که نشت کرده دوباره زنده نکند.</p>";
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+
+  body.innerHTML = "";
+  body.appendChild(wrap);
+  const note = document.createElement("p");
+  note.className = "admin-loading";
+  note.textContent =
+    "«غیرفعال کردن» برگشت‌پذیر است؛ «ابطال» نیست — ردیف بایگانی می‌شود و هرگز " +
+    "حذف نمی‌شود، تا بازگرداندن دیتابیس به دیروز کلیدی را که نشت کرده دوباره " +
+    "زنده نکند.";
+  body.appendChild(note);
 
   body.querySelectorAll("button[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => onKeyAction(btn));
