@@ -159,13 +159,76 @@ class SessionStore:
             owner_id=owner_id,
         )
         with self._lock:
-            while len(self._sessions) >= self._max_size:
-                self._sessions.popitem(last=False)  # evict least-recently-active
+            self._make_room_for(owner_id)
             self._sessions[session_id] = record
         if self._persistence is not None:
             iso = created_at.isoformat()
             self._persistence.upsert_session(session_id, owner_id, None, iso, iso)
         return record
+
+    def _sessions_for_owner(self, owner_id: str | None) -> int:
+        """How many hot-set sessions currently belong to *owner_id*.
+
+        Callers must already hold :attr:`_lock`. ``None`` is a bucket like
+        any other here — callers with no principal (``AUTH_REQUIRED=false``)
+        all share it, exactly reproducing this store's pre-Finding-20
+        behaviour for that configuration (a single shared quota, same as
+        the single shared store used to be for everyone).
+        """
+        return sum(1 for rec in self._sessions.values() if rec.owner_id == owner_id)
+
+    def _oldest_session_for_owner(self, owner_id: str | None) -> str | None:
+        """The least-recently-active session belonging to *owner_id*, or
+        ``None`` if it owns none. Callers must already hold :attr:`_lock`.
+
+        ``self._sessions`` is ordered oldest/least-recently-used first
+        (``get`` calls ``move_to_end`` on every touch, exactly as
+        ``api.query_cache.QueryCache`` does), so the first matching entry
+        in iteration order is that owner's own oldest — not merely the
+        first session created, but the first one *this owner* has not
+        touched in the longest time, which is the same eviction quality
+        the old global policy provided before this fix scoped it per owner.
+        """
+        for sid, rec in self._sessions.items():
+            if rec.owner_id == owner_id:
+                return sid
+        return None
+
+    def _make_room_for(self, owner_id: str | None) -> None:
+        """Evict just enough to make room for one more session owned by
+        *owner_id*, without ever touching another owner's session.
+
+        Finding 20 (2026 audit): before this fix, ``create()`` evicted the
+        single globally least-recently-active session once the store hit
+        ``max_size`` — regardless of who owned it. One principal creating
+        sessions fast enough (a script, a retried client, or deliberate
+        abuse) could evict every other principal's working set out from
+        under them. Persistence is on by default, so that eviction cost a
+        rehydration rather than data loss — a performance problem, not a
+        breach — but it becomes a real loss the moment persistence is
+        ever disabled, and either way it is not this principal's session
+        to evict.
+
+        The fix keeps ``max_size`` as the outer bound (the store still
+        will not grow without limit) but changes *whose* session pays for
+        a new one: this owner's own oldest, first to keep this owner
+        under the same ``max_size`` ceiling by themselves, and again if
+        the store is still globally full because OTHER owners occupy it
+        (this owner is the one asking for room, so this owner pays).
+        If this owner has no session left to give up — every occupied
+        slot belongs to someone else — eviction stops rather than
+        reaching for another owner's session; a bounded, temporary excess
+        over ``max_size`` is the correct trade against silently deleting
+        a principal's session it has no right to touch.
+        """
+        while (
+            self._sessions_for_owner(owner_id) >= self._max_size
+            or len(self._sessions) >= self._max_size
+        ):
+            victim = self._oldest_session_for_owner(owner_id)
+            if victim is None:
+                return
+            del self._sessions[victim]
 
     def get(self, session_id: str) -> SessionRecord | None:
         """Return the live session, or ``None`` if unknown / expired-and-not-
@@ -217,8 +280,12 @@ class SessionStore:
             title=row["title"],
         )
         with self._lock:
-            while len(self._sessions) >= self._max_size:
-                self._sessions.popitem(last=False)
+            # Same per-owner quota as create() -- see _make_room_for's
+            # docstring (Finding 20, 2026 audit). Rehydration re-admits a
+            # session into the hot set exactly the way create() admits a
+            # new one, so it must not evict a *different* owner's session
+            # to make room either.
+            self._make_room_for(row["owner_id"])
             self._sessions[session_id] = record
         return record
 

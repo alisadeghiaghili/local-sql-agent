@@ -68,6 +68,7 @@ def admin_summary(
     says which mode produced it (``"aggregate_safe"`` or
     ``"aggregate_with_examples"``), per that function's own contract.
     """
+    from observability.audit import audit_write_failures
     from scripts.analyze_audit_log import build_report, iter_records, resolve_log_paths
 
     # Mirrors scripts/analyze_audit_log.py's own default glob (the active
@@ -79,7 +80,18 @@ def admin_summary(
     # unlike the standalone script's own "run from the repo root" convention.
     paths = resolve_log_paths([f"{cfg.settings.log_dir}/audit_log.jsonl*"])
     records = list(iter_records(paths))
-    return build_report(records, include_examples=include_examples)
+    report = build_report(records, include_examples=include_examples)
+    # Finding 4 (2026 audit): a full disk, a permissions change, or
+    # someone making the log unwritable used to leave this report's
+    # numbers looking normal -- every one of them is *derived from the
+    # log*, so a query that ran but never got recorded is invisible to
+    # every field above. audit_write_failures() is the one counter here
+    # that is NOT read from the log itself, precisely so a broken audit
+    # trail shows up even when the log it would have shown up in cannot
+    # be written. See observability/audit.py's "Observable failure"
+    # section.
+    report["audit_write_failures"] = audit_write_failures()
+    return report
 
 
 # ---------------------------------------------------------------------------

@@ -54,7 +54,12 @@ from api.errors import register_handlers
 from api.maintenance import require_not_in_maintenance
 from core.provenance import log_startup_notice
 from core.version import __version__
-from api.middleware import RequestIDMiddleware, RateLimitMiddleware, ConcurrencyMiddleware
+from api.middleware import (
+    ConcurrencyMiddleware,
+    RateLimitMiddleware,
+    RequestIDMiddleware,
+    SecurityHeadersMiddleware,
+)
 from api.models import (
     QueryRequest,
     QueryResponse,
@@ -285,17 +290,22 @@ app = FastAPI(
 )
 
 # --- Middleware (order matters: outer → inner) ---
-# 1. ConcurrencyMiddleware  — innermost: applied after rate-limit passes
-# 2. RateLimitMiddleware    — per-IP (or per-principal) token-bucket (429 on excess)
-# 3. AuthMiddleware         — resolves request.state.principal (Phase 8) --
+# 1. ConcurrencyMiddleware   — innermost: applied after rate-limit passes
+# 2. RateLimitMiddleware     — per-IP (or per-principal) token-bucket (429 on excess)
+# 3. AuthMiddleware          — resolves request.state.principal (Phase 8) --
 #                              must run before RateLimitMiddleware so it can
 #                              bucket on principal id, and after RequestID so
 #                              its own logging can carry the request id
-# 4. RequestIDMiddleware    — stamps X-Request-ID first so all downstream
+# 4. RequestIDMiddleware     — stamps X-Request-ID first so all downstream
 #                              middleware can log it
-# 5. CORSMiddleware         — outermost: a preflight OPTIONS request must
-#                              get CORS headers even when every other
-#                              layer would otherwise reject it
+# 5. CORSMiddleware          — a preflight OPTIONS request must get CORS
+#                              headers even when every other layer would
+#                              otherwise reject it
+# 6. SecurityHeadersMiddleware — outermost of all: must wrap even the
+#                              exception-handling middleware FastAPI installs
+#                              beneath every add_middleware() layer, so an
+#                              error response carries the same headers as a
+#                              200 (Finding 7, 2026 audit)
 #
 # FastAPI/Starlette applies add_middleware() in REVERSE order, so the last
 # add_middleware() call becomes the outermost layer.
@@ -317,6 +327,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Outermost of all: see the middleware-ordering comment above for why
+# SecurityHeadersMiddleware has to be the very last add_middleware() call.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # --- v2 conversational session routes (docs/api-contract-v2.md §3) ---
 app.include_router(v2_routes.router)

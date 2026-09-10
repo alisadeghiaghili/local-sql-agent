@@ -105,6 +105,14 @@ class ContextRetriever:
         filters = ValueRetriever.retrieve(question)
 
         value_clarifications = []
+        # Finding 19 (2026 audit): the subset of `filters` that actually
+        # came from a warehouse read, tagged separately so PromptBuilder
+        # can fence it -- see RetrievalContext.resolved_values's own
+        # docstring for why this is additive to `filters`, not instead of
+        # it. ValueRetriever's static alias/pattern matches (already in
+        # `filters` at this point) are config, not warehouse content, and
+        # are deliberately never added here.
+        resolved_values: dict[str, list[str]] = {}
         # Only entity tables the static pass left unresolved are worth
         # consulting the prefetched vocabulary for -- ValueRetriever already
         # won for anything already in `filters` (see the precedence note
@@ -120,6 +128,9 @@ class ContextRetriever:
             )
             if match_result.filters:
                 filters = {**filters, **match_result.filters}
+                resolved_values = {
+                    table: [value] for table, value in match_result.filters.items()
+                }
             value_clarifications.extend(match_result.clarifications)
 
         return RetrievalContext(
@@ -131,4 +142,5 @@ class ContextRetriever:
             examples=examples,
             filters=filters,
             value_clarifications=value_clarifications,
+            resolved_values=resolved_values,
         )

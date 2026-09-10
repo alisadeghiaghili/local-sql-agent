@@ -244,6 +244,27 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
         raw_denied = entry.get("denied_columns")
         if raw_denied is None:
             denied_columns: tuple[str, ...] = ()
+            # Finding 6 (2026 audit): a key issued through the admin panel
+            # gets appdb.key_store._maximally_restrictive_denied_columns()
+            # -- deny-all by default. An env-configured key that simply
+            # omits this field gets the opposite: NO restriction at all,
+            # because `()` denies nothing. That asymmetry is defensible
+            # (flipping this default would silently revoke column access
+            # from every existing deployment mid-upgrade -- see
+            # docs/api-contract-v2.md's API_KEYS_JSON section), but being
+            # silent about it is not: an operator who forgot the field,
+            # rather than deciding against it, would have no way to find
+            # out short of reading this source file. An entry that writes
+            # `"denied_columns": []` has made the decision explicitly and
+            # does NOT warn -- see the branch below.
+            logger.warning(
+                "API_KEYS_JSON[%d] (id=%r) has no denied_columns field -- "
+                "this principal gets NO column restriction. A panel-issued "
+                "key would default to deny-all; an env-configured key does "
+                "not. Set \"denied_columns\": [] explicitly to silence this "
+                "warning once the unrestricted access is intentional.",
+                i, principal_id,
+            )
         elif isinstance(raw_denied, list) and all(isinstance(c, str) for c in raw_denied):
             denied_columns = tuple(raw_denied)
         else:
@@ -410,7 +431,7 @@ def resolve_principal(
     return match
 
 
-def scope_key(principal: Principal, memory_used: Mapping[str, str] | None = None) -> str:
+def scope_key(principal: Principal, memory_used: Mapping[str, str] | None) -> str:
     """The query-cache partition key for *principal* — Phase 8's cache seam,
     extended (§5) to also fold in the memory entries that influenced the
     current query.
@@ -428,9 +449,23 @@ def scope_key(principal: Principal, memory_used: Mapping[str, str] | None = None
         ``{key: value}`` for exactly the memory entries that actually
         changed this turn's resolved filters (the ``used`` return value of
         :func:`session.memory.apply_memory_to_assumptions`) — **not** the
-        caller's whole stored memory set. ``None`` (the default, and every
-        pre-§5 call site) omits memory from the key entirely, unchanged
-        from Phase 8's original behaviour.
+        caller's whole stored memory set. ``None`` omits memory from the
+        key entirely, unchanged from Phase 8's original behaviour before
+        §5 added this parameter.
+
+        Deliberately **required, with no default** (Finding 8, 2026
+        audit): every call site existing when this parameter was added
+        omitted it, which was harmless only because nothing yet cached
+        along the memory-aware path — see the ``# SECURITY`` note at
+        ``session/engine.py``'s "future T0 cache tier" marker for exactly
+        where that stops being true. A default that is silently correct
+        today and silently wrong the day someone wires that tier is worse
+        than no default: whoever adds that caller would inherit
+        ``None`` by doing nothing, and two analysts with different pinned
+        memory would share a cache entry neither of them can see is
+        shared. Forcing every caller to write ``memory_used=None`` (when
+        that really is the answer) or the real mapping (when it is not)
+        makes "no memory was used" a stated fact instead of an assumption.
 
         Memory-derived filters change the answer, so two principals with
         different stored preferences must never share a cache entry for a
@@ -442,15 +477,16 @@ def scope_key(principal: Principal, memory_used: Mapping[str, str] | None = None
 
     Examples
     --------
-    >>> scope_key(Principal(id="a", name="A")) == scope_key(Principal(id="b", name="B"))
+    >>> scope_key(Principal(id="a", name="A"), memory_used=None) == \\
+    ...     scope_key(Principal(id="b", name="B"), memory_used=None)
     True
-    >>> scope_key(Principal(id="a", name="A", denied_columns=("X",))) == \\
-    ...     scope_key(Principal(id="b", name="B", denied_columns=("X",)))
+    >>> scope_key(Principal(id="a", name="A", denied_columns=("X",)), memory_used=None) == \\
+    ...     scope_key(Principal(id="b", name="B", denied_columns=("X",)), memory_used=None)
     True
-    >>> scope_key(Principal(id="a", name="A", denied_columns=("X",))) == \\
-    ...     scope_key(Principal(id="a", name="A", denied_columns=("Y",)))
+    >>> scope_key(Principal(id="a", name="A", denied_columns=("X",)), memory_used=None) == \\
+    ...     scope_key(Principal(id="a", name="A", denied_columns=("Y",)), memory_used=None)
     False
-    >>> scope_key(Principal(id="a", name="A")) == \\
+    >>> scope_key(Principal(id="a", name="A"), memory_used=None) == \\
     ...     scope_key(Principal(id="a", name="A"), memory_used={"scope": "x"})
     False
     >>> scope_key(Principal(id="a", name="A"), memory_used={"scope": "x"}) == \\
