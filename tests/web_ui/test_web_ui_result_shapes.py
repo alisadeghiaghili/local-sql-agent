@@ -40,6 +40,7 @@ _NUM_JS = _WEB_JS / "num.js"
 _TABLE_JS = _WEB_JS / "render" / "table.js"
 _CHART_JS = _WEB_JS / "render" / "chart.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
+_ICONS_JS = _WEB_JS / "icons.js"
 _EXPORT_JS = _WEB_JS / "export.js"
 _HARNESS = Path(__file__).resolve().parent / "run_result_shapes.mjs"
 
@@ -94,6 +95,9 @@ def _prepare_copy(tmp_path: Path) -> Path:
     assumptions_src = _ASSUMPTIONS_JS.read_text(encoding="utf-8")
     export_src = _EXPORT_JS.read_text(encoding="utf-8")
 
+    assumptions_src = assumptions_src.replace(
+        'from "../icons.js"', 'from "./icons.mjs"'
+    ).replace('from "./icons.js"', 'from "./icons.mjs"')
     table_src = _subn_or_fail(_CHART_IMPORT, 'import { renderChartAndTable } from "./chart.mjs";', table_src, "table.js -> chart.js")
     table_src = _subn_or_fail(_EXPORT_IMPORT, 'import { downloadResultAsCsv } from "./export.mjs";', table_src, "table.js -> export.js")
     table_src = _subn_or_fail(_ASSUMPTIONS_IMPORT, 'import { SOURCE_LABELS } from "./assumptions.mjs";', table_src, "table.js -> assumptions.js")
@@ -111,6 +115,7 @@ def _prepare_copy(tmp_path: Path) -> Path:
     chart_mjs.write_text(chart_src, encoding="utf-8")
     assumptions_mjs.write_text(assumptions_src, encoding="utf-8")
     export_mjs.write_text(export_src, encoding="utf-8")
+    (tmp_path / "icons.mjs").write_text(_ICONS_JS.read_text(encoding="utf-8"), encoding="utf-8")
     # num.js is shared by every renderer (see web/js/num.js): one place
     # that decides how a number looks, after seven modules each decided
     # separately. Staging it here is what lets those imports resolve.

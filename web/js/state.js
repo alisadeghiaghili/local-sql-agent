@@ -8,6 +8,7 @@ const STORAGE_THEME_KEY = "lsa-web-theme";
 const STORAGE_BASE_KEY = "lsa-web-base";
 const STORAGE_SESSION_KEY = "lsa-web-session-id";
 const STORAGE_INTERPRET_KEY = "lsa-web-interpret";
+const STORAGE_LANG_KEY = "lsa-web-lang";
 
 export const state = {
   // "live" is the default. A deployment is live and the analysts opening
@@ -25,6 +26,7 @@ export const state = {
   mode: "live", // "simulated" | "live"
   baseUrl: "http://localhost:8000",
   theme: "system", // "system" | "light" | "dark"
+  lang: "fa", // "fa" | "en" — chrome only; questions may be either
   sessionId: null,
   sessions: [], // SessionSummary[] — the conversation-list sidebar's index
   turns: [], // Turn[] rendered so far, in order
@@ -54,6 +56,10 @@ export function loadPersisted() {
   try {
     state.interpret = localStorage.getItem(STORAGE_INTERPRET_KEY) === "1";
   } catch { /* ignore — the toggle just won't survive a reload */ }
+  try {
+    const lang = localStorage.getItem(STORAGE_LANG_KEY);
+    if (lang === "fa" || lang === "en") state.lang = lang;
+  } catch { /* ignore — default fa */ }
 }
 
 /** Remembers the analyst's interpretation choice for this browser. */

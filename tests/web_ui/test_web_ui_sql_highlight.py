@@ -48,6 +48,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _WEB_JS = _REPO_ROOT / "web" / "js"
 _NUM_JS = _WEB_JS / "num.js"
 _SQL_DISPLAY_JS = _WEB_JS / "sql-display.js"
+_ICONS_JS = _WEB_JS / "icons.js"
 _TURN_JS = _WEB_JS / "render" / "turn.js"
 _PIPELINE_JS = _WEB_JS / "render" / "pipeline.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
@@ -69,6 +70,9 @@ _NODE = shutil.which("node")
 _SQL_DISPLAY_IMPORT_IN_TURN = re.compile(
     r'^import \{ copySourceOfTruth, displaySqlForTurn, highlightSql \} from "\.\./sql-display\.js";$',
     re.MULTILINE,
+)
+_ICONS_IMPORT_IN_ASSUMPTIONS = re.compile(
+    r'^import \{ icon \} from "\.\./icons\.js";$', re.MULTILINE,
 )
 _PIPELINE_IMPORT = re.compile(r'^import \{ renderPipeline \} from "\./pipeline\.js";$', re.MULTILINE)
 _ASSUMPTIONS_IMPORT_IN_TURN = re.compile(
@@ -129,11 +133,17 @@ def _prepare_copies(tmp_path: Path) -> Path:
     llm_status_src = _LLM_STATUS_JS.read_text(encoding="utf-8")
     feedback_src = _FEEDBACK_JS.read_text(encoding="utf-8")
     sql_display_src = _SQL_DISPLAY_JS.read_text(encoding="utf-8")
+    icons_src = _ICONS_JS.read_text(encoding="utf-8")
 
     turn_src = _subn_or_fail(
         _SQL_DISPLAY_IMPORT_IN_TURN,
         'import { copySourceOfTruth, displaySqlForTurn, highlightSql } from "./sql-display.mjs";',
         turn_src, "turn.js -> sql-display.js",
+    )
+    assumptions_src = _subn_or_fail(
+        _ICONS_IMPORT_IN_ASSUMPTIONS,
+        'import { icon } from "./icons.mjs";',
+        assumptions_src, "assumptions.js -> icons.js",
     )
     turn_src = _subn_or_fail(_PIPELINE_IMPORT, 'import { renderPipeline } from "./pipeline.mjs";', turn_src, "turn.js -> pipeline.js")
     turn_src = _subn_or_fail(
@@ -182,6 +192,7 @@ def _prepare_copies(tmp_path: Path) -> Path:
     (tmp_path / "llm-status.mjs").write_text(llm_status_src, encoding="utf-8")
     (tmp_path / "feedback.mjs").write_text(feedback_src, encoding="utf-8")
     (tmp_path / "sql-display.mjs").write_text(sql_display_src, encoding="utf-8")
+    (tmp_path / "icons.mjs").write_text(icons_src, encoding="utf-8")
     # num.js is shared by every renderer (see web/js/num.js): one place
     # that decides how a number looks, after seven modules each decided
     # separately. Staging it is what lets those imports resolve.
