@@ -427,42 +427,30 @@ await flushMicrotasks();
 assert.equal(clipboardCalls[0], ONE_LINE_SQL, "copy must still work when sqlFormatter throws");
 console.log("[ok] a throwing sqlFormatter is caught: raw SQL still renders, copy still works");
 
-/* ── Scenario 8: T-SQL Prism patch — [Order] must not be a bare keyword
- * token, and N'…' must be one string token. Drives the real
- * patchPrismForTsql against a hand-built language object shaped like the
- * vendored prism-sql component. ─────────────────────────────────────── */
+/* ── Scenario 8: T-SQL Prism patch — classic script
+ * web/js/prism-tsql-patch.js installs bracket identifiers and N'' strings
+ * and is idempotent. Driven against a hand-built language object shaped
+ * like the vendored prism-sql component. ─────────────────────────────── */
 
 {
-  // Minimal stand-in for Prism.languages.sql before the patch: keyword
-  // matches ORDER (which would wrongly claim the word inside [Order]).
-  const fakeLang = {
-    keyword: /\b(?:SELECT|FROM|WHERE|ORDER|BY|AS|TOP|AND)\b/i,
-    number: /\b\d+\b/,
-    string: /'(?:[^']|'')*'/,
-    function: /\b(?:SUM|COUNT)\b(?=\s*\()/i,
-    operator: /[=<>]/,
-  };
-  const fakePrism = {
-    languages: { sql: fakeLang },
-    highlight(text) {
-      // Not a real tokenizer — we only assert which rules the patch
-      // installed, via the language object itself.
-      return text;
-    },
-  };
-  sqlDisplay.patchPrismForTsql(fakePrism);
-  assert.equal(fakeLang.__tsqlPatched, true, "patch must mark the language object");
-  const ids = Array.isArray(fakeLang.identifier) ? fakeLang.identifier : [fakeLang.identifier].filter(Boolean);
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const patchSrc = readFileSync(resolve("web/js/prism-tsql-patch.js"), "utf8");
+  const sandboxWindow = { Prism: { languages: { sql: {} } } };
+  const fn = new Function("window", patchSrc + "\n;return window;");
+  fn(sandboxWindow);
+  assert.equal(typeof sandboxWindow.patchPrismForTsql, "function", "classic patch must expose window.patchPrismForTsql");
+  const lang = sandboxWindow.Prism.languages.sql;
+  assert.equal(lang.__tsqlPatched, true, "patch must mark the language object");
+  const ids = Array.isArray(lang.identifier) ? lang.identifier : [lang.identifier].filter(Boolean);
   assert.ok(ids.length >= 1, "patch must install a bracketed-identifier rule");
-  const bracketRule = ids[0];
-  assert.ok(bracketRule.pattern.test("[Order]"), "bracketed identifier rule must match [Order]");
-  const strings = Array.isArray(fakeLang.string) ? fakeLang.string : [fakeLang.string].filter(Boolean);
+  assert.ok(ids[0].pattern.test("[Order]"), "bracketed identifier rule must match [Order]");
+  const strings = Array.isArray(lang.string) ? lang.string : [lang.string].filter(Boolean);
   assert.ok(strings.length >= 1, "patch must install a national-string rule");
   assert.ok(strings[0].pattern.test("N'cement'"), "national string rule must match N'cement'");
-  // Idempotent.
-  sqlDisplay.patchPrismForTsql(fakePrism);
-  assert.equal(Array.isArray(fakeLang.identifier) ? fakeLang.identifier.length : 1, ids.length, "second patch call must not stack rules");
-  console.log("[ok] T-SQL Prism patch installs bracket identifiers and N'' strings, idempotently");
+  sandboxWindow.patchPrismForTsql(sandboxWindow.Prism);
+  assert.equal(Array.isArray(lang.identifier) ? lang.identifier.length : 1, ids.length, "second patch call must not stack rules");
+  console.log("[ok] classic T-SQL Prism patch installs bracket identifiers and N'' strings, idempotently");
 }
 
 console.log("ALL_SCENARIOS_PASSED");

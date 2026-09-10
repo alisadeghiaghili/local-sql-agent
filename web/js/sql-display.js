@@ -14,9 +14,11 @@
  *      contract — clause-per-line — without re-flowing work the backend
  *      already did.
  *
- *   3. Highlighting: vendored Prism + a small T-SQL patch (bracketed
- *      identifiers, N'…' national strings). Failure at any layer leaves
- *      the previous layer's text intact.
+ *   3. Highlighting: vendored Prism. The T-SQL grammar patch
+ *      (bracketed identifiers, N'…' national strings) lives in
+ *      prism-tsql-patch.js as a classic script so it shares Prism's
+ *      realm — see that file. Failure at any layer leaves the previous
+ *      layer's text intact.
  *
  * Loaded as a plain ES module from turn.js. Prism and sql-formatter are
  * globals from classic <script> tags in index.html (no build step — see
@@ -99,62 +101,18 @@ export function displaySqlForTurn(turn) {
 }
 
 /**
- * Patch Prism's generic SQL grammar for the T-SQL shapes this product
- * actually emits (see `security/sql_guard.pretty_sql` and the engine's
- * generated statements).
+ * Ensure the T-SQL Prism patch has been applied.
  *
- * Fixes two real mis-highlights found by running the vendored Prism
- * against a T-SQL sample:
+ * The patch is installed by web/js/prism-tsql-patch.js (classic script,
+ * same realm as Prism). This re-enters it if needed so module callers do
+ * not need to know about load order.
  *
- * * `[Order]` was tokenised as the keyword `ORDER` inside the brackets —
- *   a table name painted as a reserved word. Bracketed identifiers are
- *   now one `identifier` token.
- * * `N'cement'` left the `N` outside the string token. The national
- *   string prefix is now part of the string.
- *
- * Idempotent: sets a flag on the language object so a second call is a
- * no-op. Safe to call when Prism or the SQL component is missing.
- *
- * @param {object | null | undefined} Prism - the global Prism namespace
  * @returns {void}
  */
-export function patchPrismForTsql(Prism) {
-  if (!Prism || !Prism.languages || !Prism.languages.sql) return;
-  const sql = Prism.languages.sql;
-  if (sql.__tsqlPatched) return;
-
-  // Bracketed identifier: [Order], [Sales_Fact]. Must win over the bare
-  // keyword rule that would otherwise claim the word inside the brackets.
-  const bracketId = {
-    pattern: /(^|[^@\[\]])(?:\[(?:[^\]\r\n]|]]|\\[\s\S])*\])/,
-    lookbehind: true,
-    greedy: true,
-    inside: {
-      punctuation: /^\[|\]$/,
-    },
-  };
-
-  const existingIds = sql.identifier
-    ? Array.isArray(sql.identifier)
-      ? sql.identifier
-      : [sql.identifier]
-    : [];
-  sql.identifier = [bracketId, ...existingIds];
-
-  // National string: N'…'. Keep the generic string rules after it.
-  const nationalString = {
-    pattern: /(^|[^@\w])N'(?:[^']|'')*'/i,
-    lookbehind: true,
-    greedy: true,
-  };
-  const existingStrings = sql.string
-    ? Array.isArray(sql.string)
-      ? sql.string
-      : [sql.string]
-    : [];
-  sql.string = [nationalString, ...existingStrings];
-
-  sql.__tsqlPatched = true;
+export function ensureTsqlPrismReady() {
+  if (typeof window !== "undefined" && typeof window.patchPrismForTsql === "function") {
+    window.patchPrismForTsql(window.Prism);
+  }
 }
 
 /**
@@ -172,7 +130,7 @@ export function highlightSql(codeEl, displaySql, Prism) {
   const lib = Prism !== undefined ? Prism : (typeof window !== "undefined" ? window.Prism : undefined);
   codeEl.textContent = displaySql;
   try {
-    patchPrismForTsql(lib);
+    ensureTsqlPrismReady();
     if (lib && lib.languages && lib.languages.sql) {
       codeEl.innerHTML = lib.highlight(displaySql, lib.languages.sql, "sql");
     }
