@@ -67,6 +67,21 @@ Anything that does not is decoration and is removed.
 
 There is one product UI. Auth is an API concern, not a second frontend.
 
+### 3.1 Auth dependency (blocker for retiring `webapp/`)
+
+`webapp/` authenticates with username/password sessions. `web/` authenticates
+with an API key in `localStorage`. Those are different models.
+
+`webapp/` is therefore **frozen** immediately (no new features; security
+fixes only), and **not deleted** until one of these is true:
+
+- Operators already issue per-analyst API keys via the admin panel and
+  `web/` is the production entry point, **or**
+- FastAPI gains a session/login path that replaces Flask's, with tests.
+
+Deleting a live login surface without a replacement is an outage, not a
+cleanup.
+
 ---
 
 ## 4. Design tokens
@@ -169,17 +184,42 @@ transcript after turn two.
 
 ### 5.2 Turn anatomy (production default)
 
+**Contract first.** `docs/api-contract-v2.md` §5 and §7 are not optional:
+
+- `resolved_question` is "the system showing its work" — visible when present.
+- Assumption chips appear **before the result** so a misunderstanding is
+  caught *before* the number is trusted.
+- SSE `stage` events exist to drive a live pipeline strip; `resolved` and
+  `assumptions` arrive in the first few hundred ms precisely so the analyst
+  can correct course before generation finishes.
+- Clarifications are one-click offers, not a modal gate.
+- Guard verdict belongs next to the SQL it applies to.
+
 A successful turn renders, in order:
 
 1. **Question bubble** (navy) — always.
-2. **Outcome line** — `N ردیف · ۱٫۲ ثانیه · گارد ✓` — always.
-3. **SQL** — collapsed after first success this session; expanded on first turn and on failure.
-4. **Result** — table, chart, scalar, zero-rows, or omitted-rows — always.
-5. **Details drawer** (collapsed) — pipeline, assumptions editor, clarifications,
-   LLM status strip, warnings, interpretation, feedback.
+2. **Resolved question** — only when present; teal-bordered, labelled
+   «برداشت سامانه». Never buried.
+3. **Basis line** — when this turn refines an earlier one (jump link).
+4. **Assumption chips** (editable + pin) + **clarification offers** — when
+   `ambiguity` is non-empty. Visible, not in a drawer.
+5. **Stage strip** — slim five-step progress while streaming; collapses to
+   a one-line summary (`۵/۵ · ۱٫۲ ثانیه`) on `done`. Not five cards.
+6. **Outcome line** — `N ردیف · گارد ✓/✕ · TOP n` — always after done.
+7. **SQL** — expanded on first turn, on failure, and while streaming;
+   collapsible afterwards. Guard pill + rule live in the SQL header.
+8. **Result** — table, chart, scalar, zero-rows, or omitted-rows — always
+   when rows exist or when "no rows" is itself the answer.
+9. **Details drawer** (collapsed) — full pipeline timings, LLM status strip,
+   warnings, interpretation (with truncation qualifier above it), feedback
+   control, export options beyond the primary Excel action.
 
-Pipeline visualization is **not** on every production turn. It lives in the
-details drawer and in `?demo=1` / simulated mode only.
+**What stays out of the default turn chrome:** five equal nested cards,
+LLM status strip on every turn, sample-story buttons, mode switch.
+
+**What never goes in the drawer:** assumptions, clarifications, resolved
+question, guard verdict. Those are the product's trust surface. Hiding them
+is a product regression dressed as IA cleanup.
 
 ### 5.3 Admin
 
@@ -313,13 +353,13 @@ Release checklist (each train):
 |---|---|---|
 | D1 | `web/` is the only product UI | Two product models cannot share one engine claim |
 | D2 | Mode switch leaves chrome | Synthetic data next to live is an integrity hazard |
-| D3 | Composer moves to bottom | Transcript is the product; the box is secondary after ask |
-| D4 | Turn defaults to outcome-first | Five nested cards bury the answer |
-| D5 | Pipeline not on every production turn | Tutorial asset ≠ analyst chrome |
+| D3 | Composer: **bottom is default, top is under review** | Transcript-first after turn two; but this is an ask-tool, not a chat app — A/B the first week of 5.0 pilot before freezing |
+| D4 | Turn is outcome-first **but trust UI stays visible** | Contract §5/§7: assumptions and resolved question before the result |
+| D5 | Pipeline becomes a **slim stage strip**, not five cards, not hidden | SSE `stage` events exist for progressive feedback; cards were the problem, progress was not |
 | D6 | Admin gets sticky nav + health rail | Ten equal sections is not ops design |
 | D7 | No emoji icons | Uncontrolled rendering; no a11y story |
 | D8 | Self-host all fonts | Offline / privacy pitch is a lie otherwise |
-| D9 | `webapp/` frozen | Auth is API work; not a second frontend |
+| D9 | `webapp/` frozen **only after auth path is proven** | API keys ≠ Flask passwords; see §3.1 |
 | D10 | 5.0.0 major | Analyst muscle memory breaks; call it out |
 
 ---
@@ -334,6 +374,35 @@ Interactive HTML (open in a browser, no server):
 
 These are **approval artefacts**. Implementation starts only after they are
 accepted or explicitly revised.
+
+Still missing before 5.0 freeze (see §14b): dark mode, 375px, health/user
+overlays, export flow, empty/loading states.
+
+---
+
+## 14b. Self-audit (post-draft)
+
+The first draft of this policy made three product errors. They are recorded
+here so the same shortcut is not retaken:
+
+| Error | Why it was wrong | Correction |
+|---|---|---|
+| Assumptions/clarifications in the details drawer | Violates api-contract §5/§7; burying the trust surface | Chips stay above the result |
+| Pipeline fully hidden on production turns | SSE `stage` events and "show your work" thesis depend on it | Slim strip → collapse to summary line |
+| `webapp/` removal treated as pure UI debt | Flask login may be the only production auth | Freeze first; remove only after auth path (§3.1) |
+
+Also still open (not blocking mockup approval, blocking 5.0 DoD):
+
+- Dark-mode mockup (policy claims dark is first-class; mockups are light-only).
+- 375px mockup.
+- Health popover, user menu, memory drawer, API-key entry — specified in §5.1,
+  not drawn.
+- Excel/export full flow (format, large result, truncated rows).
+- Empty session / first-run / loading skeletons.
+- Whether product chrome ships an English locale (engine is bilingual; UI is
+  Persian-only today).
+- Inventory of `tests/web_ui/*` assertions that the new markup will break —
+  Train B must extend them, not delete them.
 
 ---
 
