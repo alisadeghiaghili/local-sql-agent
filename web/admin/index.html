@@ -55,23 +55,66 @@
       <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
       بروزرسانی
     </button>
+    <span class="admin-last-updated" id="admin-last-updated" aria-live="polite"></span>
   </div>
 </header>
+
+<nav class="admin-jump" id="admin-jump" aria-label="بخش‌ها">
+  <a href="#overview">نمای کلی</a>
+  <a href="#sec-maintenance">تعمیر</a>
+  <a href="#sec-health">بررسی‌ها</a>
+  <a href="#sec-stats">ممیزی</a>
+  <a href="#sec-feedback">بازخورد</a>
+  <a href="#sec-cache">کش</a>
+  <a href="#sec-config">پیکربندی</a>
+  <a href="#sec-keys">کلیدها</a>
+  <a href="#sec-schema">شِما</a>
+  <a href="#sec-vocab">واژگان</a>
+  <a href="#sec-usage">مصرف</a>
+  <a href="#sec-auth">احراز</a>
+</nav>
 
 <main class="admin-layout">
 
   <div id="admin-forbidden-banner" class="admin-banner admin-banner-warn" hidden></div>
   <div id="admin-notice-area"></div>
 
+  <!-- Health summary rail: the first thing an operator reads. Answers
+       "is anything on fire?" without scrolling ten sections. -->
+  <section class="admin-summary-rail" id="overview" aria-label="نمای کلی">
+    <div class="rail-item" id="rail-maintenance">
+      <div class="rail-lab">حالت تعمیر</div>
+      <div class="rail-val">—</div>
+      <div class="rail-sub">—</div>
+    </div>
+    <div class="rail-item" id="rail-checks">
+      <div class="rail-lab">بررسی‌های استقرار</div>
+      <div class="rail-val">—</div>
+      <div class="rail-sub">—</div>
+    </div>
+    <div class="rail-item" id="rail-feedback">
+      <div class="rail-lab">بازخورد باز</div>
+      <div class="rail-val">—</div>
+      <div class="rail-sub">—</div>
+    </div>
+    <div class="rail-item" id="rail-cache">
+      <div class="rail-lab">کش پرس‌وجو</div>
+      <div class="rail-val">—</div>
+      <div class="rail-sub">—</div>
+    </div>
+  </section>
+
   <!-- Maintenance mode leads even the deployment checks: it is an
        operations action that stops analyst queries, so its current state
        is the single most important fact on this page whenever it is on.
        The panel itself must never depend on maintenance being off to
        render this section. -->
-  <section class="admin-section" aria-labelledby="maintenance-heading">
+  <section class="admin-section" id="sec-maintenance" aria-labelledby="maintenance-heading">
     <div class="admin-section-head">
       <h2 id="maintenance-heading">حالت تعمیر و نگهداری</h2>
-      <button class="admin-btn-refresh" data-refresh="maintenance" type="button" aria-label="بروزرسانی وضعیت تعمیر">↻</button>
+      <button class="admin-btn-refresh" data-refresh="maintenance" type="button" aria-label="بروزرسانی وضعیت تعمیر">
+        <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+      </button>
     </div>
     <div id="maintenance-body">
       <p class="admin-loading">در حال بارگذاری…</p>
@@ -81,10 +124,12 @@
   <!-- Deployment checks lead, because they are the only thing on this page
        that might need action right now. State is encoded as a severity
        stripe, so a failure reads before any number does. -->
-  <section class="admin-section" aria-labelledby="rail-heading">
+  <section class="admin-section" id="sec-health" aria-labelledby="rail-heading">
     <div class="admin-section-head">
       <h2 id="rail-heading">بررسی‌های استقرار</h2>
-      <button class="admin-btn-refresh" data-refresh="health" type="button" aria-label="بروزرسانی بررسی‌های استقرار">↻</button>
+      <button class="admin-btn-refresh" data-refresh="health" type="button" aria-label="بروزرسانی بررسی‌های استقرار">
+        <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+      </button>
     </div>
     <div id="health-body" class="admin-rail">
       <p class="admin-loading">در حال بارگذاری…</p>
@@ -92,7 +137,7 @@
   </section>
 
   <!-- The figures are the point of this page, so they lead the detail. -->
-  <section class="admin-section" aria-labelledby="stats-heading">
+  <section class="admin-section" id="sec-stats" aria-labelledby="stats-heading">
     <div class="admin-section-head">
       <h2 id="stats-heading">ممیزی</h2>
       <div class="admin-section-actions">
@@ -100,7 +145,9 @@
           <input type="checkbox" id="include-examples-toggle">
           <span>نمونهٔ سؤال‌های واقعی</span>
         </label>
-        <button class="admin-btn-refresh" data-refresh="summary" type="button" aria-label="بروزرسانی ممیزی">↻</button>
+        <button class="admin-btn-refresh" data-refresh="summary" type="button" aria-label="بروزرسانی ممیزی">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
     </div>
     <div id="summary-body">
@@ -109,7 +156,7 @@
   </section>
 
   <!-- The feedback loop this panel exists for (spec §3, §5). -->
-  <section class="admin-section" aria-labelledby="feedback-heading">
+  <section class="admin-section" id="sec-feedback" aria-labelledby="feedback-heading">
     <div class="admin-section-head">
       <h2 id="feedback-heading">بازخورد و رفع اشکال</h2>
       <div class="admin-section-actions">
@@ -118,7 +165,9 @@
           <option value="resolved">رفع‌شده</option>
           <option value="">همه</option>
         </select>
-        <button class="admin-btn-refresh" data-refresh="feedback" type="button" aria-label="بروزرسانی بازخوردها">↻</button>
+        <button class="admin-btn-refresh" data-refresh="feedback" type="button" aria-label="بروزرسانی بازخوردها">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
     </div>
     <div id="feedback-stats-body"></div>
@@ -128,12 +177,14 @@
   </section>
 
   <div class="admin-columns">
-    <section class="admin-section" aria-labelledby="cache-heading">
+    <section class="admin-section" id="sec-cache" aria-labelledby="cache-heading">
       <div class="admin-section-head">
         <h2 id="cache-heading">کش پرس‌وجو</h2>
         <div class="admin-section-actions">
           <button class="admin-btn-refresh" id="cache-clear-btn" type="button">پاک کردن کش</button>
-          <button class="admin-btn-refresh" data-refresh="cache" type="button" aria-label="بروزرسانی کش">↻</button>
+          <button class="admin-btn-refresh" data-refresh="cache" type="button" aria-label="بروزرسانی کش">
+            <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+          </button>
         </div>
       </div>
       <div id="cache-body">
@@ -141,10 +192,12 @@
       </div>
     </section>
 
-    <section class="admin-section" aria-labelledby="config-heading">
+    <section class="admin-section" id="sec-config" aria-labelledby="config-heading">
       <div class="admin-section-head">
         <h2 id="config-heading">پیکربندی دامنه</h2>
-        <button class="admin-btn-refresh" data-refresh="config" type="button" aria-label="بروزرسانی پیکربندی">↻</button>
+        <button class="admin-btn-refresh" data-refresh="config" type="button" aria-label="بروزرسانی پیکربندی">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
       <div id="config-body">
         <p class="admin-loading">در حال بارگذاری…</p>
@@ -159,12 +212,14 @@
        write that changes who can get in, so it sits below the read-only
        diagnostics rather than above them: nothing here needs to be seen
        to understand whether the deployment is healthy. -->
-  <section class="admin-section" aria-labelledby="keys-heading">
+  <section class="admin-section" id="sec-keys" aria-labelledby="keys-heading">
     <div class="admin-section-head">
       <h2 id="keys-heading">کلیدها و دسترسی‌ها</h2>
       <div class="admin-section-actions">
         <button class="admin-btn-refresh" id="keys-issue-btn" type="button">صدور کلید تازه</button>
-        <button class="admin-btn-refresh" data-refresh="keys" type="button" aria-label="بروزرسانی کلیدها">↻</button>
+        <button class="admin-btn-refresh" data-refresh="keys" type="button" aria-label="بروزرسانی کلیدها">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
     </div>
     <!-- The one-time reveal. Lives outside keys-body so a background
@@ -179,20 +234,24 @@
   <!-- Admin panel phase 6: schema drift and vocabulary freshness, both
        read-only diagnostics -- neither applies anything by itself. -->
   <div class="admin-columns">
-    <section class="admin-section" aria-labelledby="schema-drift-heading">
+    <section class="admin-section" id="sec-schema" aria-labelledby="schema-drift-heading">
       <div class="admin-section-head">
         <h2 id="schema-drift-heading">انحراف شِما</h2>
-        <button class="admin-btn-refresh" data-refresh="schemaDrift" type="button" aria-label="بررسی انحراف شِما">↻</button>
+        <button class="admin-btn-refresh" data-refresh="schemaDrift" type="button" aria-label="بررسی انحراف شِما">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
       <div id="schemaDrift-body">
         <p class="admin-loading">در حال بارگذاری…</p>
       </div>
     </section>
 
-    <section class="admin-section" aria-labelledby="vocabulary-heading">
+    <section class="admin-section" id="sec-vocab" aria-labelledby="vocabulary-heading">
       <div class="admin-section-head">
         <h2 id="vocabulary-heading">تازگی واژگان ابعاد</h2>
-        <button class="admin-btn-refresh" data-refresh="vocabulary" type="button" aria-label="بروزرسانی واژگان">↻</button>
+        <button class="admin-btn-refresh" data-refresh="vocabulary" type="button" aria-label="بروزرسانی واژگان">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
       <div id="vocabulary-body">
         <p class="admin-loading">در حال بارگذاری…</p>
@@ -203,20 +262,24 @@
   <!-- Admin panel phase 6: per-analyst usage/rate-limit pressure, and
        failed-authentication visibility. -->
   <div class="admin-columns">
-    <section class="admin-section" aria-labelledby="usage-heading">
+    <section class="admin-section" id="sec-usage" aria-labelledby="usage-heading">
       <div class="admin-section-head">
         <h2 id="usage-heading">مصرف هر تحلیل‌گر</h2>
-        <button class="admin-btn-refresh" data-refresh="usage" type="button" aria-label="بروزرسانی مصرف">↻</button>
+        <button class="admin-btn-refresh" data-refresh="usage" type="button" aria-label="بروزرسانی مصرف">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
       <div id="usage-body">
         <p class="admin-loading">در حال بارگذاری…</p>
       </div>
     </section>
 
-    <section class="admin-section" aria-labelledby="auth-failures-heading">
+    <section class="admin-section" id="sec-auth" aria-labelledby="auth-failures-heading">
       <div class="admin-section-head">
         <h2 id="auth-failures-heading">تلاش‌های ناموفق احراز هویت</h2>
-        <button class="admin-btn-refresh" data-refresh="authFailures" type="button" aria-label="بروزرسانی احراز هویت">↻</button>
+        <button class="admin-btn-refresh" data-refresh="authFailures" type="button" aria-label="بروزرسانی احراز هویت">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
       </div>
       <div id="authFailures-body">
         <p class="admin-loading">در حال بارگذاری…</p>
