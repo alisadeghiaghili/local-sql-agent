@@ -1,17 +1,19 @@
-/* web/js/render/turn.js — composes one full turn card, per the anatomy in
- * the brief: question -> resolved_question -> basis -> assumption chips ->
- * clarifications -> pipeline -> SQL -> result -> warnings -> llm status ->
- * interpretation.
+/* web/js/render/turn.js — one turn card.
  *
- * Built to tolerate partial/null Turn data throughout, because contract §6
- * requires the LLM block (and the rest of the card) to still render
- * whatever it has on failure — see data.js t_04 (guard-rejected, no
- * result) and t_05 (LLM transport failure, no sql/guard/result at all).
+ * Anatomy (DESIGN.md §5.2, api-contract §5/§7 — trust surface stays visible):
  *
- * The generated-SQL block is prettified then syntax-highlighted by
- * web/js/sql-display.js (client prettify for one-liners, Prism + T-SQL
- * patch for colour). Both layers are presentation only; the copy button
- * always copies copySourceOfTruth(turn) — Turn.sql_display || Turn.sql.
+ *   question
+ *   resolved_question          (when present)
+ *   basis                      (when refines)
+ *   assumption chips + clarifications
+ *   stage strip                (slim; full list in the drawer)
+ *   outcome line               (rows · guard · top)
+ *   SQL                        (collapsible; expanded on first/failure)
+ *   result
+ *   details drawer             (pipeline, LLM, warnings, interpretation, feedback)
+ *
+ * Partial/null Turn data is tolerated throughout (contract §6).
+ * SQL display: web/js/sql-display.js. Copy: copySourceOfTruth(turn).
  */
 
 "use strict";
@@ -19,7 +21,7 @@
 import { fmt } from "../num.js";
 import { copySourceOfTruth, displaySqlForTurn, highlightSql } from "../sql-display.js";
 
-import { renderPipeline } from "./pipeline.js";
+import { renderPipeline, renderStageStrip } from "./pipeline.js";
 import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.js";
 import { renderResult, renderWarnings } from "./table.js";
 import { renderLlmStatus, answerWasTruncated, renderTruncationQualifier } from "./llm-status.js";
@@ -41,6 +43,7 @@ function el(tag, className, text) {
  *   onPin?: (turnId: string, field: string, value: string) => void,
  *   onRerun?: (turnId: string) => void,
  *   onFlag?: (turnId: string, category: string, note: string) => Promise<void>,
+ *   progressive?: boolean,
  * }} ctx
  */
 export function createTurnCard(turn, ctx) {
@@ -74,22 +77,22 @@ export function createTurnCard(turn, ctx) {
   const body = el("div", "turn-body");
   root.appendChild(body);
 
-  // 2. Resolved question.
+  // 2. Resolved question — trust surface, never in the drawer.
   if (turn.resolved_question) {
     const card = el("div", "resolved-card");
     const label = el("div", "resolved-label");
-    label.innerHTML = `<span aria-hidden="true">🧭</span> برداشت سامانه از پرسش`;
+    label.textContent = "برداشت سامانه از پرسش";
     const text = el("div", "resolved-text", turn.resolved_question);
     card.appendChild(label);
     card.appendChild(text);
     body.appendChild(tagEarly(card));
   }
 
-  // 3. Basis indicator.
+  // 3. Basis.
   const basisRow = renderBasis(turn.basis, ctx.onJumpToTurn);
   if (basisRow) body.appendChild(tagEarly(basisRow));
 
-  // 4. Assumption chips.
+  // 4. Assumption chips + clarifications — contract §5/§7, above the result.
   const assumptions = renderAssumptions(
     turn.ambiguity && turn.ambiguity.assumptions,
     (field, value) => ctx.onEditAssumption(turn.turn_id, field, value),
@@ -97,21 +100,25 @@ export function createTurnCard(turn, ctx) {
   );
   if (assumptions) body.appendChild(tagEarly(assumptions));
 
-  // 5. Clarification offers.
   const clarifications = renderClarifications(
     turn.ambiguity && turn.ambiguity.clarifications,
     (field, option) => ctx.onClarify(turn.turn_id, field, option),
   );
   if (clarifications) body.appendChild(tagEarly(clarifications));
 
-  // 6. Pipeline.
-  const pipelineCard = el("div", "card pipeline-card");
-  pipelineCard.appendChild(el("div", "card-title", "مراحل پردازش"));
-  const pipeline = renderPipeline();
-  pipelineCard.appendChild(pipeline.el);
-  body.appendChild(pipelineCard);
+  // 5. Slim stage strip (progress while streaming; summary after).
+  const strip = renderStageStrip();
+  body.appendChild(strip.el);
+  if (progressive) earlyEls.push(strip.el);
 
-  // Error banner (if the turn failed outright — e.g. LLM transport error).
+  // Full pipeline list lives in the drawer; setStage drives both.
+  const pipelineList = renderPipeline();
+  function setStage(key, state) {
+    strip.setStage(key, state);
+    pipelineList.setStage(key, state);
+  }
+
+  // Error banner.
   if (turn.error) {
     const banner = el("div", "error-banner");
     banner.setAttribute("role", "alert");
@@ -121,15 +128,33 @@ export function createTurnCard(turn, ctx) {
     body.appendChild(tagLate(banner));
   }
 
-  // 7. SQL.
+  // 6. Outcome line — always after a settled turn.
+  const outcome = buildOutcomeLine(turn);
+  if (outcome) body.appendChild(outcome);
+
+  // 7. SQL — collapsible; expanded when there is no result yet or on failure.
   const sqlSection = el("div", "card sql-card-inner");
   if (turn.sql) {
     const titleRow = el("div", "card-title-row");
-    titleRow.appendChild(el("span", "card-title", "SQL تولیدشده"));
+    const sqlTitle = el("span", "card-title");
+    sqlTitle.textContent = turn.guard && turn.guard.verdict === "allowed"
+      ? "SQL تولیدشده · گارد ✓"
+      : turn.guard && turn.guard.verdict === "rejected"
+        ? "SQL تولیدشده · گارد ✕"
+        : "SQL تولیدشده";
+    titleRow.appendChild(sqlTitle);
+
+    const acts = el("div", "sql-title-acts");
     const copyBtn = el("button", "btn-copy", "کپی");
     copyBtn.type = "button";
     copyBtn.addEventListener("click", () => copyToClipboard(copySourceOfTruth(turn), copyBtn));
-    titleRow.appendChild(copyBtn);
+    acts.appendChild(copyBtn);
+
+    const toggleBtn = el("button", "btn-copy sql-collapse", "پنهان");
+    toggleBtn.type = "button";
+    toggleBtn.setAttribute("aria-expanded", "true");
+    acts.appendChild(toggleBtn);
+    titleRow.appendChild(acts);
     sqlSection.appendChild(titleRow);
 
     const pre = document.createElement("pre");
@@ -158,15 +183,30 @@ export function createTurnCard(turn, ctx) {
     if (turn.guard && turn.guard.verdict === "rejected" && turn.guard.rule) {
       sqlSection.appendChild(el("div", "guard-rule", turn.guard.rule));
     }
+
+    // Collapse after a successful result is already on screen (DESIGN §5.2).
+    const startCollapsed = !!(turn.result && turn.guard && turn.guard.verdict === "allowed");
+    if (startCollapsed) {
+      pre.hidden = true;
+      meta.hidden = true;
+      toggleBtn.setAttribute("aria-expanded", "false");
+      toggleBtn.textContent = "نمایش SQL";
+    }
+    toggleBtn.addEventListener("click", () => {
+      const open = pre.hidden;
+      pre.hidden = !open;
+      meta.hidden = !open;
+      toggleBtn.setAttribute("aria-expanded", String(open));
+      toggleBtn.textContent = open ? "پنهان" : "نمایش SQL";
+    });
+
     body.appendChild(tagLate(sqlSection));
   } else if (!turn.error) {
-    // No SQL and no error — unexpected but render honestly rather than
-    // silently omitting the section.
     sqlSection.appendChild(el("div", "empty-result", "SQL تولید نشد."));
     body.appendChild(tagLate(sqlSection));
   }
 
-  // 8. Result + row count/truncated + 9. warnings.
+  // 8. Result.
   if (!turn.error) {
     const resultCard = el("div", "card");
     resultCard.appendChild(el("div", "card-title", "نتیجه"));
@@ -175,36 +215,43 @@ export function createTurnCard(turn, ctx) {
       guardRejected: !!(turn.guard && turn.guard.verdict === "rejected"),
       onRerun: ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : undefined,
     }));
-    // The wrong-answer flag control (admin panel phase 4, spec §2) — only
-    // on a turn that actually produced a result, and only when the host
-    // page wired up onFlag at all (the simulated demo has nowhere real to
-    // send it — see main.js's turnCtx).
-    if (turn.result && ctx.onFlag) {
-      resultCard.appendChild(
-        renderFeedbackControl(turn, (category, note) => ctx.onFlag(turn.turn_id, category, note)),
-      );
-    }
     body.appendChild(tagLate(resultCard));
   }
 
-  const warningsEl = renderWarnings(turn.warnings);
-  if (warningsEl) body.appendChild(tagLate(warningsEl));
+  // 9. Details drawer — timings, LLM, warnings, interpretation, feedback.
+  const drawer = el("details", "turn-details");
+  const drawerSummary = el("summary", "turn-details-summary", "جزئیات — pipeline، مدل، تفسیر، بازخورد");
+  drawer.appendChild(drawerSummary);
+  const drawerBody = el("div", "turn-details-body");
 
-  // 10. LLM status strip.
+  const pipeWrap = el("div", "card pipeline-card");
+  pipeWrap.appendChild(el("div", "card-title", "مراحل پردازش"));
+  pipeWrap.appendChild(pipelineList.el);
+  drawerBody.appendChild(pipeWrap);
+
+  const warningsEl = renderWarnings(turn.warnings);
+  if (warningsEl) drawerBody.appendChild(warningsEl);
+
   const llmCard = el("div", "card");
   llmCard.appendChild(renderLlmStatus(turn.llm));
-  body.appendChild(tagLate(llmCard));
+  drawerBody.appendChild(llmCard);
 
-  // 11. Interpretation. Truncation (finish_reason: "length") qualifies the
-  // WHOLE answer, so it renders above the interpretation text, read first,
-  // in the status warning colour — not a footnote below it.
   if (turn.interpretation) {
     const interpCard = el("div", "card");
     if (answerWasTruncated(turn.llm)) interpCard.appendChild(renderTruncationQualifier());
     interpCard.appendChild(el("div", "card-title", "تفسیر"));
     interpCard.appendChild(el("p", "interpretation-text", turn.interpretation));
-    body.appendChild(tagLate(interpCard));
+    drawerBody.appendChild(interpCard);
   }
+
+  if (turn.result && ctx.onFlag) {
+    const flagWrap = el("div", "card");
+    flagWrap.appendChild(renderFeedbackControl(turn, (category, note) => ctx.onFlag(turn.turn_id, category, note)));
+    drawerBody.appendChild(flagWrap);
+  }
+
+  drawer.appendChild(drawerBody);
+  body.appendChild(tagLate(drawer));
 
   collapseBtn.addEventListener("click", () => {
     const collapsed = root.classList.toggle("collapsed");
@@ -216,7 +263,42 @@ export function createTurnCard(turn, ctx) {
   function revealLate() { lateEls.forEach((n) => { n.hidden = false; }); }
   if (!progressive) { revealEarly(); revealLate(); }
 
-  return { el: root, pipeline, revealEarly, revealLate };
+  return {
+    el: root,
+    pipeline: { setStage, el: pipelineList.el, steps: pipelineList.steps },
+    revealEarly,
+    revealLate,
+  };
+}
+
+/** One-line outcome: rows · guard · TOP. Always after a settled turn. */
+function buildOutcomeLine(turn) {
+  if (turn.error && !turn.guard && !turn.result) return null;
+  const row = el("div", "turn-outcome");
+  if (turn.guard) {
+    const ok = turn.guard.verdict === "allowed";
+    row.appendChild(el("span", ok ? "outcome-ok" : "outcome-bad",
+      ok ? "✓ گارد مجاز" : "✕ گارد رد شد"));
+  }
+  if (turn.result && turn.result.row_count !== undefined && turn.result.row_count !== null) {
+    row.appendChild(el("span", "outcome-sep", "·"));
+    row.appendChild(el("span", "", `${fmt(turn.result.row_count)} ردیف`));
+  }
+  if (turn.guard && turn.guard.injected_top !== null && turn.guard.injected_top !== undefined) {
+    row.appendChild(el("span", "outcome-sep", "·"));
+    row.appendChild(el("span", "num", `TOP ${turn.guard.injected_top}`));
+  }
+  if (turn.timings && turn.timings.total_ms) {
+    row.appendChild(el("span", "outcome-sep", "·"));
+    const secs = turn.timings.total_ms / 1000;
+    row.appendChild(el("span", "num", `${secs.toFixed(1)}s`));
+  }
+  if (turn.ambiguity && turn.ambiguity.is_ambiguous) {
+    row.appendChild(el("span", "outcome-sep", "·"));
+    row.appendChild(el("span", "outcome-warn", "مبهم — با مفروضات"));
+  }
+  if (!row.childNodes.length) return null;
+  return row;
 }
 
 function summarize(turn) {

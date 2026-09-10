@@ -74,7 +74,9 @@ _SQL_DISPLAY_IMPORT_IN_TURN = re.compile(
 _ICONS_IMPORT_IN_ASSUMPTIONS = re.compile(
     r'^import \{ icon \} from "\.\./icons\.js";$', re.MULTILINE,
 )
-_PIPELINE_IMPORT = re.compile(r'^import \{ renderPipeline \} from "\./pipeline\.js";$', re.MULTILINE)
+_PIPELINE_IMPORT = re.compile(
+    r'^import \{ renderPipeline, renderStageStrip \} from "\./pipeline\.js";$', re.MULTILINE
+)
 _ASSUMPTIONS_IMPORT_IN_TURN = re.compile(
     r'^import \{ renderBasis, renderAssumptions, renderClarifications \} from "\./assumptions\.js";$', re.MULTILINE,
 )
@@ -145,7 +147,11 @@ def _prepare_copies(tmp_path: Path) -> Path:
         'import { icon } from "./icons.mjs";',
         assumptions_src, "assumptions.js -> icons.js",
     )
-    turn_src = _subn_or_fail(_PIPELINE_IMPORT, 'import { renderPipeline } from "./pipeline.mjs";', turn_src, "turn.js -> pipeline.js")
+    turn_src = _subn_or_fail(
+        _PIPELINE_IMPORT,
+        'import { renderPipeline, renderStageStrip } from "./pipeline.mjs";',
+        turn_src, "turn.js -> pipeline.js",
+    )
     turn_src = _subn_or_fail(
         _ASSUMPTIONS_IMPORT_IN_TURN,
         'import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.mjs";',
