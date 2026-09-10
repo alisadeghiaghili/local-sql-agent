@@ -27,10 +27,16 @@ import { createTurnCard } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
 import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
+import { ensureTsqlPrismReady } from "./sql-display.js";
 
 const $ = (id) => document.getElementById(id);
 
 /* ── Boot ──────────────────────────────────────────────────────────── */
+// T-SQL Prism patch must run before the first Prism.tokenize — Prism
+// expands greedy grammar rules in place on first use. Patching after a
+// highlight has already run makes the next one throw. See sql-display.js.
+ensureTsqlPrismReady();
+
 const params = new URLSearchParams(location.search);
 // Deploy-time default (web/js/config.js) first; loadPersisted() then
 // overrides it with a localStorage value if one was ever saved (e.g. an

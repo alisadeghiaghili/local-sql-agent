@@ -244,7 +244,7 @@ One module owns how generated SQL looks: `js/sql-display.js`.
 |---|---|
 | **Copy source of truth** | `Turn.sql_display \|\| Turn.sql`, verbatim. The copy button never reads the DOM. |
 | **Display** | Multi-line input (backend `pretty_sql`, scenario SQL) is left alone. One-liners go through vendored [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (`language: tsql`, `keywordCase: upper`, `tabWidth: 2`). |
-| **Highlight** | Vendored Prism + a small T-SQL patch: `[Bracketed]` identifiers are one token (not the keyword inside), and `N'…'` national strings include the `N`. |
+| **Highlight** | Vendored Prism + `js/prism-tsql-patch.js` (classic script): `[Bracketed]` identifiers are one token, `N'…'` includes the `N`. |
 | **Theme** | Fixed always-dark editor palette (`--sql-*` in `styles/style.css`) — keyword blue, number gold, function violet. Not chrome brand hues. |
 
 Assets, no CDN (same offline rule as the font):
@@ -252,6 +252,7 @@ Assets, no CDN (same offline rule as the font):
 - `assets/vendor/sql-formatter.min.js`
 - `assets/vendor/prism.min.js` / `prism-sql.min.js`
 - `assets/vendor/prism-sql-theme.css`
+- `js/prism-tsql-patch.js` (classic script after Prism; same realm)
 
 Both decoration layers are presentation only. If Prism or sql-formatter is
 missing or throws, the previous layer's text stays: the SQL never disappears
