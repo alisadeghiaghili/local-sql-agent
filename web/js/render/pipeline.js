@@ -12,8 +12,58 @@ const STEPS = [
   { key: "interpret", label: "تفسیر — خلاصهٔ ساده‌شدهٔ نتیجه" },
 ];
 
-/** Builds the <ol> and returns { el, setStage } where setStage(key, state)
- * updates one step's visual state ("running" | "done" | "error" | null). */
+/** Slim stage strip for the default turn chrome (DESIGN.md §5.2).
+ *
+ * Five dots/labels, not five cards. `setStage` matches renderPipeline so
+ * SSE `stage` events and simulated timers drive both the strip and the
+ * full list in the details drawer.
+ *
+ * @returns {{ el: HTMLElement, setStage: (key: string, state: string | null) => void, steps: string[] }}
+ */
+export function renderStageStrip() {
+  const root = document.createElement("div");
+  root.className = "stage-strip";
+  root.setAttribute("role", "status");
+  root.setAttribute("aria-live", "polite");
+
+  const items = {};
+  STEPS.forEach((step, i) => {
+    const item = document.createElement("span");
+    item.className = "stage-strip-item";
+    item.dataset.step = step.key;
+    const mark = document.createElement("span");
+    mark.className = "stage-strip-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = String(i + 1);
+    const short = document.createElement("span");
+    short.className = "stage-strip-label";
+    // Short labels for the strip; the full sentence lives in the drawer.
+    short.textContent = step.label.split("—")[0].trim();
+    item.appendChild(mark);
+    item.appendChild(short);
+    root.appendChild(item);
+    items[step.key] = item;
+  });
+
+  const summary = document.createElement("span");
+  summary.className = "stage-strip-summary";
+  root.appendChild(summary);
+
+  function setStage(key, stateName) {
+    const item = items[key];
+    if (!item) return;
+    item.classList.remove("running", "done", "error");
+    if (stateName) item.classList.add(stateName);
+    const done = Object.values(items).filter((n) => n.classList.contains("done")).length;
+    const err = Object.values(items).some((n) => n.classList.contains("error"));
+    if (err) summary.textContent = "ناتمام — خطا";
+    else if (done >= STEPS.length) summary.textContent = `${done}/${STEPS.length}`;
+    else if (done > 0) summary.textContent = `${done}/${STEPS.length}`;
+    else summary.textContent = "";
+  }
+
+  return { el: root, setStage, steps: STEPS.map((s) => s.key) };
+}
 export function renderPipeline() {
   const ol = document.createElement("ol");
   ol.className = "steps";
