@@ -152,17 +152,13 @@
 </footer>
 
 <!-- Vendored locally, no CDN (offline requirement — see web/README.md).
-     Presentation only: web/js/render/turn.js falls back to plain,
-     unhighlighted text if this fails to load or throws, and the
-     copy button always copies the exact original SQL text regardless
-     of whether highlighting or client-side prettifying ran — see that
-     file's comment. sql-formatter is the same vendored build the Flask
-     webapp already shipped; live mode usually arrives already prettified
-     as Turn.sql_display (security/sql_guard.pretty_sql), and this is the
-     client-side fallback when only raw Turn.sql is present. -->
-<script src="assets/vendor/sql-formatter.min.js"></script>
-<script src="assets/vendor/prism.min.js" data-manual></script>
-<script src="assets/vendor/prism-sql.min.js" data-manual></script>
+     Display pipeline lives in web/js/sql-display.js: sql-formatter
+     prettifies one-liners only (multi-line sql_display / scenario SQL is
+     left alone), Prism + a T-SQL patch colour the block. Copy always uses
+     Turn.sql_display || Turn.sql, never this DOM. -->
+<script src="assets/vendor/sql-formatter.min.js" defer></script>
+<script src="assets/vendor/prism.min.js" data-manual defer></script>
+<script src="assets/vendor/prism-sql.min.js" data-manual defer></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

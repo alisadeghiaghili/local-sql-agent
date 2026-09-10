@@ -19,7 +19,7 @@
 | A1 | Extract `web/styles/tokens.css` from `style.css` | Markup: tokens file linked; no duplicate hex in style.css |
 | A2 | `web/assets/icons/` SVG sprite + `icons.js` | No emoji in `index.html` / `admin/index.html` |
 | A3 | Replace chrome emoji | Snapshot of class names on topbar controls |
-| A4 | **SQL display:** vendored `sql-formatter` client fallback + editor-grade `--sql-*` palette | `test_web_ui_sql_highlight.py` (prettify + highlight + copy exactness) |
+| A4 | **SQL display:** `web/js/sql-display.js` (sql-formatter one-liners only + Prism T-SQL patch + editor palette) | `test_web_ui_sql_highlight.py` (prettify + highlight + copy exactness) |
 
 Commits: `refactor(web): extract design tokens`, `feat(web): add icon set`, `refactor(web): replace chrome emoji with icons`, `feat(web): prettify and highlight generated SQL like a code editor`
 

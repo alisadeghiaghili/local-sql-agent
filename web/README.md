@@ -236,23 +236,30 @@ directory was copied without `web/assets/fonts/`), `styles/fonts.css` falls
 through to `"Segoe UI", Tahoma` which render Persian adequately on Windows
 but without Vazirmatn's Persian-specific metrics.
 
-## SQL highlighting
+## SQL display (prettify + highlight)
 
-The generated-SQL block is syntax-highlighted with
-[Prism](https://prismjs.com/), vendored locally (core + the SQL language
-component) under `web/assets/vendor/prism.min.js` /
-`prism-sql.min.js` — no CDN, same offline requirement as the font above.
-`web/assets/vendor/prism-sql-theme.css` maps Prism's token classes to this
-app's own existing colour tokens (`--teal`, `--amber`, `--muted`, etc. —
-see `styles/style.css`), so it already adapts to both the light and dark
-theme rather than shipping Prism's own hardcoded theme colours.
+One module owns how generated SQL looks: `js/sql-display.js`.
 
-Highlighting is presentation only (`web/js/render/turn.js`'s
-`highlightSql`): it always sets the code element's plain text first, and
-only then overlays Prism's markup, falling back silently to the plain
-text if Prism ever fails to load or throws. The "کپی" (copy) button never
-reads from that markup — it always copies the exact original SQL string
-from the Turn object.
+| Layer | What it does |
+|---|---|
+| **Copy source of truth** | `Turn.sql_display \|\| Turn.sql`, verbatim. The copy button never reads the DOM. |
+| **Display** | Multi-line input (backend `pretty_sql`, scenario SQL) is left alone. One-liners go through vendored [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (`language: tsql`, `keywordCase: upper`, `tabWidth: 2`). |
+| **Highlight** | Vendored Prism + a small T-SQL patch: `[Bracketed]` identifiers are one token (not the keyword inside), and `N'…'` national strings include the `N`. |
+| **Theme** | Fixed always-dark editor palette (`--sql-*` in `styles/style.css`) — keyword blue, number gold, function violet. Not chrome brand hues. |
+
+Assets, no CDN (same offline rule as the font):
+
+- `assets/vendor/sql-formatter.min.js`
+- `assets/vendor/prism.min.js` / `prism-sql.min.js`
+- `assets/vendor/prism-sql-theme.css`
+
+Both decoration layers are presentation only. If Prism or sql-formatter is
+missing or throws, the previous layer's text stays: the SQL never disappears
+or corrupts. Regressions: `tests/web_ui/test_web_ui_sql_highlight.py`.
+
+Selecting text in the browser and pressing Ctrl+C copies whatever is on
+screen (possibly prettified). The «کپی» button is the path that copies the
+exact string the contract names for re-running or auditing.
 
 ## Adding a scenario
 

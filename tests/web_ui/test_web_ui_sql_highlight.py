@@ -2,37 +2,32 @@
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Regression test for SQL display formatting and syntax highlighting.
 
-``web/js/render/turn.js`` prettifies then highlights the generated-SQL
-block:
+``web/js/sql-display.js`` owns the generated-SQL look; ``turn.js`` calls it:
 
-* client-side prettify (vendored ``sql-formatter``) runs ONLY when the
-  Turn has raw ``sql`` and no ``sql_display`` — live mode normally ships
-  ``sql_display`` from ``security/sql_guard.pretty_sql`` and that string
-  is shown as-is;
-* highlighting uses the vendored Prism (``web/assets/vendor/prism*.js``).
+* display = formatSqlForDisplay(Turn.sql_display || Turn.sql). Multi-line
+  strings (backend ``pretty_sql``, scenario SQL) are left alone; one-liners
+  go through the vendored ``sql-formatter`` (T-SQL, upper keywords, tab 2);
+* highlighting = Prism + a T-SQL patch (bracketed identifiers, ``N'…'``);
+* copy = Turn.sql_display || Turn.sql verbatim — never the DOM, never the
+  client-prettified variant.
 
-Both layers must be presentation ONLY. The risk this test exists to catch:
-a future change that makes the copy button read the SQL back out of the
-(now-decorated, now-prettified) DOM -- e.g. `codeEl.innerText` -- instead
-of the Turn object's own `sql`/`sql_display` string, which would silently
-start copying Prism markup or a client-reformatted variant instead of the
-display SQL the contract names. A second, equally real risk: a highlighting
-or formatting failure that blanks or corrupts the visibly rendered SQL
-instead of just skipping the decoration.
+Both decoration layers must be presentation ONLY. The risk this test exists
+to catch: a future change that makes the copy button read the SQL back out
+of the (now-decorated, now-prettified) DOM, or a highlighting/formatting
+failure that blanks or corrupts the visibly rendered SQL.
 
 This drives the REAL ``web/js/render/turn.js`` (and its full real render
-dependency chain) under Node (see ``run_sql_highlight.mjs``) with mocked
-``window.Prism`` / ``window.sqlFormatter`` / ``navigator.clipboard``, and
-asserts:
+dependency chain including ``sql-display.js``) under Node (see
+``run_sql_highlight.mjs``) with mocked ``window.Prism`` /
+``window.sqlFormatter`` / ``navigator.clipboard``, and asserts:
 
 * Prism highlighting actually runs (real ``.token`` elements) AND reading
   the highlighted element's ``textContent`` back still equals the exact
   string that was highlighted;
 * the copy button copies the exact Turn object string for plain ``sql``,
-  distinct ``sql_display``, prettified-only-raw, and both failure modes;
-* client prettify reformats display when only raw sql is present, never
-  re-prettifies an existing ``sql_display``, and a throwing formatter
-  falls back to the raw text;
+  distinct ``sql_display``, prettified one-liners, and both failure modes;
+* client prettify reformats one-liners, never re-prettifies multi-line
+  input, and a throwing formatter falls back to the raw text;
 * with no ``window.Prism`` at all, and separately with a throwing
   ``Prism.highlight``, the SQL still renders as plain, uncorrupted text
   and copy still works.
@@ -52,6 +47,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _WEB_JS = _REPO_ROOT / "web" / "js"
 _NUM_JS = _WEB_JS / "num.js"
+_SQL_DISPLAY_JS = _WEB_JS / "sql-display.js"
 _TURN_JS = _WEB_JS / "render" / "turn.js"
 _PIPELINE_JS = _WEB_JS / "render" / "pipeline.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
@@ -70,6 +66,10 @@ _NODE = shutil.which("node")
 # to parse `export`/`import` syntax, and web/ deliberately ships neither --
 # see web/README.md's "no build step, no package.json"). Anything else
 # reaching this test is byte-identical to the real source.
+_SQL_DISPLAY_IMPORT_IN_TURN = re.compile(
+    r'^import \{ copySourceOfTruth, displaySqlForTurn, highlightSql \} from "\.\./sql-display\.js";$',
+    re.MULTILINE,
+)
 _PIPELINE_IMPORT = re.compile(r'^import \{ renderPipeline \} from "\./pipeline\.js";$', re.MULTILINE)
 _ASSUMPTIONS_IMPORT_IN_TURN = re.compile(
     r'^import \{ renderBasis, renderAssumptions, renderClarifications \} from "\./assumptions\.js";$', re.MULTILINE,
@@ -128,7 +128,13 @@ def _prepare_copies(tmp_path: Path) -> Path:
     export_src = _EXPORT_JS.read_text(encoding="utf-8")
     llm_status_src = _LLM_STATUS_JS.read_text(encoding="utf-8")
     feedback_src = _FEEDBACK_JS.read_text(encoding="utf-8")
+    sql_display_src = _SQL_DISPLAY_JS.read_text(encoding="utf-8")
 
+    turn_src = _subn_or_fail(
+        _SQL_DISPLAY_IMPORT_IN_TURN,
+        'import { copySourceOfTruth, displaySqlForTurn, highlightSql } from "./sql-display.mjs";',
+        turn_src, "turn.js -> sql-display.js",
+    )
     turn_src = _subn_or_fail(_PIPELINE_IMPORT, 'import { renderPipeline } from "./pipeline.mjs";', turn_src, "turn.js -> pipeline.js")
     turn_src = _subn_or_fail(
         _ASSUMPTIONS_IMPORT_IN_TURN,
@@ -165,6 +171,8 @@ def _prepare_copies(tmp_path: Path) -> Path:
 
     feedback_src = _rewrite_num_import(feedback_src)
 
+    sql_display_src = _rewrite_num_import(sql_display_src)
+
     (tmp_path / "turn.mjs").write_text(turn_src, encoding="utf-8")
     (tmp_path / "pipeline.mjs").write_text(pipeline_src, encoding="utf-8")
     (tmp_path / "assumptions.mjs").write_text(assumptions_src, encoding="utf-8")
@@ -173,6 +181,7 @@ def _prepare_copies(tmp_path: Path) -> Path:
     (tmp_path / "export.mjs").write_text(export_src, encoding="utf-8")
     (tmp_path / "llm-status.mjs").write_text(llm_status_src, encoding="utf-8")
     (tmp_path / "feedback.mjs").write_text(feedback_src, encoding="utf-8")
+    (tmp_path / "sql-display.mjs").write_text(sql_display_src, encoding="utf-8")
     # num.js is shared by every renderer (see web/js/num.js): one place
     # that decides how a number looks, after seven modules each decided
     # separately. Staging it is what lets those imports resolve.
@@ -183,7 +192,7 @@ def _prepare_copies(tmp_path: Path) -> Path:
 @pytest.mark.skipif(_NODE is None, reason="node is not on PATH -- cannot execute web/js/*.js under test")
 def test_sql_highlighting_is_presentation_only_and_copy_stays_exact() -> None:
     for p in (
-        _TURN_JS, _PIPELINE_JS, _ASSUMPTIONS_JS, _TABLE_JS, _CHART_JS, _EXPORT_JS,
+        _TURN_JS, _SQL_DISPLAY_JS, _PIPELINE_JS, _ASSUMPTIONS_JS, _TABLE_JS, _CHART_JS, _EXPORT_JS,
         _LLM_STATUS_JS, _FEEDBACK_JS,
     ):
         assert p.exists(), f"expected {p} to exist"
