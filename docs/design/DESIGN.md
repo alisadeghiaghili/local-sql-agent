@@ -165,16 +165,15 @@ for reading a SELECT list against near-black.
 | `--sql-operator` | `#8b949e` | `=`, `<`, punctuation |
 | `--sql-comment` | `#8b949e` | Comments (italic) |
 
-**Prettify + highlight pipeline (display only):**
+**Prettify + highlight pipeline (display only) — `web/js/sql-display.js`:**
 
-1. Live turns usually carry `Turn.sql_display` from
-   `security/sql_guard.pretty_sql` (sqlglot) — shown as-is.
-2. If only raw `Turn.sql` exists, the client prettifies with the vendored
-   `sql-formatter` (T-SQL) before Prism highlighting.
-3. Copy always uses `Turn.sql_display || Turn.sql` from the Turn object —
-   never the prettified or highlighted DOM text.
-4. Any formatter/highlighter failure falls back to plain text; the SQL
-   never disappears.
+1. Copy always uses `Turn.sql_display || Turn.sql` from the Turn object.
+2. Display: multi-line strings (backend `pretty_sql`, scenario SQL) stay
+   as-is; one-liners are prettified with vendored sql-formatter
+   (`tsql`, upper keywords, tabWidth 2).
+3. Prism + T-SQL patch colours the block (`[Bracketed]` ids, `N'…'`).
+4. Any formatter/highlighter failure falls back to the previous layer's
+   text; the SQL never disappears.
 
 Covered by `tests/web_ui/test_web_ui_sql_highlight.py` /
 `run_sql_highlight.mjs`.
