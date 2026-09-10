@@ -191,16 +191,56 @@ class TestThePagesCarryTheirOwnContentSecurityPolicy:
             "even if every other layer fails"
         )
 
-    @pytest.mark.parametrize("page", ["index.html", "admin/index.html"])
-    def test_the_policy_forbids_inline_script(self, page):
+    @staticmethod
+    def _policy(page: str) -> str:
         html = (_REPO_ROOT / "web" / page).read_text(encoding="utf-8")
         meta = re.search(
             r'<meta[^>]+http-equiv=["\']Content-Security-Policy["\'][^>]*content=["\']([^"\']+)',
             html, re.I,
         )
         assert meta, f"web/{page} has no CSP meta tag"
-        policy = meta.group(1)
+        return meta.group(1)
+
+    @pytest.mark.parametrize("page", ["index.html", "admin/index.html"])
+    def test_the_policy_forbids_inline_script(self, page):
+        policy = self._policy(page)
         assert "unsafe-inline" not in policy.split("style-src")[0], (
             "script-src permits 'unsafe-inline', which is exactly the "
             "capability an injected onmouseover handler needs"
         )
+
+    @pytest.mark.parametrize("page", ["index.html", "admin/index.html"])
+    def test_the_policy_contains_no_directive_meta_cannot_deliver(self, page):
+        """Found by loading the page, not by reading it.
+
+        A ``<meta>`` policy cannot carry every directive. ``frame-ancestors``
+        is ignored when delivered that way, and Chrome says so in the
+        console on every single page load. An inert directive is worse than
+        an absent one twice over: it reads like clickjacking protection
+        nobody has, and it trains whoever opens devtools to scroll past
+        console errors.
+
+        The protection itself is not dropped -- it moves to the only layer
+        that can enforce it. These pages are served by a static server, not
+        by FastAPI, so ``SecurityHeadersMiddleware`` never sees them either;
+        ``web/README.md`` carries the nginx block an operator has to install.
+        """
+        policy = self._policy(page)
+        for directive in ("frame-ancestors", "report-uri", "sandbox"):
+            assert directive not in policy, (
+                f"web/{page}'s meta CSP declares {directive!r}, which a "
+                "<meta> element cannot deliver. The browser ignores it and "
+                "logs an error; set it as an HTTP header on the static "
+                "server instead (see web/README.md)"
+            )
+
+    def test_the_operator_is_told_which_headers_to_set(self):
+        """The directives that had to leave the meta policy have to land
+        somewhere, or removing them is a silent downgrade."""
+        readme = (_REPO_ROOT / "web" / "README.md").read_text(encoding="utf-8")
+        for header in ("X-Frame-Options", "frame-ancestors"):
+            assert header in readme, (
+                f"web/README.md does not tell the operator to set {header}. "
+                "Neither the page nor the API middleware can supply it for "
+                "a statically-served file"
+            )
