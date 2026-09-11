@@ -16,6 +16,20 @@ function named ``determineShape`` exists, which would not catch a wrong
 shape decision (e.g. a 1x1 numeric result rendered as a one-row table, or
 a guard-rejected 0-row result wrongly blamed on an assumption).
 
+This also covers the line chart's time axis direction: `chart.js` once
+plotted array index 0 at the chart's right edge and the last index at its
+left edge (measured, for a 5-point series at this module's own W=640,
+padL=40, padR=12: index 0 -> x=628, index 4 -> x=40), while the headline
+describing the same series (`chooseFramings`' `lineHeadline`, and
+separately the LLM interpretation in `llm/interpret.py::interpret_rows`)
+both read array order as time order -- so a reader scanning the chart
+left-to-right, the direction `web/styles/style.css` commits the chart's
+own geometry to, saw the opposite slope from what the text claimed. See
+the dedicated scenario in ``run_result_shapes.mjs`` for the regression
+test, which renders the real line chart and cross-checks its plotted x
+coordinates against the real headline text for both a strictly ascending
+and a strictly descending series.
+
 See ``run_result_shapes.mjs`` in this directory for the full scenario
 list and the minimal in-Node DOM shim it uses (web/ ships no
 package.json / node_modules by design, so this brings no dependency on
