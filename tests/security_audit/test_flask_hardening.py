@@ -113,14 +113,32 @@ class TestLoginIsThrottled:
     with Retry-After after roughly thirty failures."""
 
     def test_repeated_failures_are_eventually_refused(self, configured_admin_user):
+        import re
+
         import webapp.app as webapp_app
 
         app = webapp_app.create_app()
         app.config.update(TESTING=True)
         client = app.test_client()
 
+        # Round 2 remediation (Task 2): /login now enforces its own CSRF
+        # token like the other two forms, so a bare POST with no prior GET
+        # is refused before the throttle counter is even reached -- see
+        # webapp/app.py's updated _CSRF_EXEMPT_ENDPOINTS comment. One GET,
+        # reused across every attempt via the same client (one session, one
+        # token), is exactly what a real browser -- or any scripted
+        # attacker competent enough to be worth defending against at all --
+        # actually does.
+        token = re.search(
+            r'name="csrf_token" value="([^"]+)"',
+            client.get("/login").get_data(as_text=True),
+        ).group(1)
+
         codes = [
-            client.post("/login", data={"username": "victim", "password": f"guess{i}"}).status_code
+            client.post(
+                "/login",
+                data={"username": "victim", "password": f"guess{i}", "csrf_token": token},
+            ).status_code
             for i in range(40)
         ]
         assert 429 in codes, (
@@ -174,4 +192,71 @@ class TestPostFormsCarryACsrfToken:
             f"a token-less POST to /register returned {resp.status_code}. "
             "Enforcement, not just a hidden field in the template, is what "
             "makes the token mean anything"
+        )
+
+
+class TestLoginCsrfIsCoherentNotJustDecorative:
+    """Round 2 remediation, Task 2. ``login.html`` always carried a hidden
+    ``csrf_token`` field that ``_check_csrf`` never actually checked
+    (``login`` sat in ``_CSRF_EXEMPT_ENDPOINTS``) -- a control that is
+    present but inert, which is worse than no control at all, because it
+    reads like protection nobody actually has. The chosen fix is the
+    plan's "preferred" option: enforce it for real, using the same
+    pre-session-cookie mechanism the field was already (uselessly)
+    minting a token into. See ``webapp/app.py``'s updated
+    ``_CSRF_EXEMPT_ENDPOINTS`` comment for why this is possible without an
+    authenticated session, and for why it does not defeat
+    ``TestLoginIsThrottled`` above."""
+
+    def test_a_post_without_a_token_is_rejected(self, configured_admin_user):
+        import webapp.app as webapp_app
+
+        app = webapp_app.create_app()
+        app.config.update(TESTING=True)
+        resp = app.test_client().post(
+            "/login", data={"username": "attacker", "password": "x"}
+        )
+        assert resp.status_code in (400, 403), (
+            f"a token-less POST to /login returned {resp.status_code}. The "
+            "hidden field in login.html means nothing if nothing checks it"
+        )
+
+    def test_a_post_with_the_real_token_still_signs_in(
+        self, configured_admin_user, tmp_path, monkeypatch,
+    ):
+        """Enforcement must not break the feature it protects -- the bar
+        the plan itself sets for /register's own token. A real browser
+        always GETs the login page before it can POST to it, so it always
+        carries the token that GET minted."""
+        import re
+
+        import db as webapp_db
+        import webapp.app as webapp_app
+
+        monkeypatch.setattr(webapp_db, "DB_PATH", tmp_path / "webapp_app.db")
+        webapp_db.init_db()
+        webapp_db.create_user("alice", "correct horse battery staple")
+
+        app = webapp_app.create_app()
+        app.config.update(TESTING=True)
+        client = app.test_client()
+
+        get_resp = client.get("/login")
+        match = re.search(
+            r'name="csrf_token" value="([^"]+)"', get_resp.get_data(as_text=True)
+        )
+        assert match, "login.html no longer renders a csrf_token field to extract"
+
+        post_resp = client.post(
+            "/login",
+            data={
+                "username": "alice",
+                "password": "correct horse battery staple",
+                "csrf_token": match.group(1),
+            },
+        )
+        assert post_resp.status_code == 302, (
+            f"a login POST carrying the real token from the prior GET on the "
+            f"same session was refused ({post_resp.status_code}) -- enforcing "
+            "the token must not make signing in impossible"
         )
