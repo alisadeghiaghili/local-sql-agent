@@ -103,6 +103,23 @@ _ALLOWED_MODULE_CONSTANTS = {
         "precision; env-tunable would silently desync a deployment from "
         "its own golden set's pinned hashes"
     ),
+    "core/fileperms.py::_FILE_MODE": (
+        "security invariant -- 0o600 is the whole content of finding 18 "
+        "(the Flask session-signing key, the audit trail, the session "
+        "store and the password table were all world-readable). A knob "
+        "here would let a deployment reopen the finding by setting one "
+        "environment variable, and the value it would be set to in a "
+        "hurry is exactly the 0o644 the finding was about. There is also "
+        "no legitimate second value: a file holding a signing key or "
+        "conversation transcripts is owner-only or it is wrong"
+    ),
+    "core/fileperms.py::_DIR_MODE": (
+        "security invariant, same reasoning as _FILE_MODE -- 0o700 on a "
+        "directory is what stops another local account listing the "
+        "filenames inside it, which for the export directory leaks "
+        "timestamps and query cadence even when each file within is "
+        "already owner-only"
+    ),
 
     # ── Implementation details: nobody outside the module cares, or the
     # only meaningful comparison is against a value already tunable

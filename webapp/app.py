@@ -21,11 +21,13 @@ import secrets
 import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 
 from flask import (
     Flask,
     abort,
+    current_app,
     flash,
     redirect,
     render_template,
@@ -109,8 +111,8 @@ def _secret_key() -> str:
 # ---------------------------------------------------------------------------
 # Finding 17a: per-IP login throttling
 # ---------------------------------------------------------------------------
-# In-process, module-level (not per-app-instance) so it survives whatever
-# create_app() does and matches the FastAPI side's own bucketing shape
+# In-process and per-app (see _login_failures' own note for why not
+# module-level), matching the FastAPI side's own bucketing shape
 # (api/middleware.py's RateLimitMiddleware) -- a fixed threshold of
 # consecutive failures per source IP, the account name on the other end
 # never being part of the key. The published ADMIN_USER account (finding
@@ -120,9 +122,58 @@ def _secret_key() -> str:
 # source. Cleared on a successful login from that IP -- this defends
 # against a *stranger* guessing, not against an operator who mistyped
 # their own password several times in a row.
+#
+# Round 2 remediation: the counter used to have no expiry at all --
+# `_login_failure_counts[ip]` only ever went up, or was reset to zero by a
+# *successful* login from that IP. An IP that never succeeds (because it
+# belongs to a shared NAT/proxy/office network the real account holder is
+# behind, or because the attacker keeps guessing past the real user's
+# actual password too) stays throttled forever. That turns a control meant
+# to slow down a guesser into a permanent denial of service against
+# whoever else is behind that address -- worse than the attack it defends
+# against, since the attacker only had to spend thirty wrong guesses to
+# inflict it, and needs no further access to keep it in effect. Each
+# entry now carries the time its failure window started as well as its
+# count: a window older than ``_LOGIN_FAILURE_WINDOW_SECONDS`` is treated
+# as stale and discarded (by the very next check or failure from that
+# IP) rather than compounding forever, and throttling lifts on its own
+# once the window rolls past, even with no successful login at all. This
+# does not weaken the defence against sustained guessing: an attacker who
+# keeps trying stays throttled for the same reason a stale window is
+# discarded -- it is exactly the fresh failure that starts the next one.
 _LOGIN_FAILURE_THRESHOLD = 30
-_login_failure_counts: dict[str, int] = {}
-_login_failure_lock = threading.Lock()
+#: How long a throttled IP stays throttled with no further failures, and
+#: the span of consecutive failures the threshold above is measured over.
+#: Fifteen minutes is long enough that a scripted guesser gains nothing by
+#: waiting it out repeatedly, short enough that a real user sharing an
+#: address with whoever tripped it is not locked out for the rest of the
+#: day.
+_LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
+#: ``{ip: (failure_count, window_started_at)}`` -- ``window_started_at`` is
+#: a ``time.monotonic()`` reading, never wall-clock time, so this is
+#: immune to the system clock being adjusted backwards mid-window.
+#:
+#: Deliberately owned by the Flask app object rather than by this module.
+#: A process serves exactly one app, so in production the two are the same
+#: thing -- but a module-level dict is shared by every ``create_app()`` a
+#: process ever builds, which means one caller's failures follow the next
+#: app into existence. That surfaced first as a test that passed alone and
+#: failed in a full run (the throttle test's forty failures left the next
+#: test's address already locked out), and a test that depends on
+#: collection order is the visible half of a real defect: anything that
+#: builds a second app in one process -- a test suite, a WSGI server
+#: reloading, an embedding harness -- inherits state it never created.
+#: :func:`_failure_state` reads it off ``current_app`` instead.
+_LOGIN_FAILURE_STATE_KEY = "_login_failures"
+
+
+def _failure_state() -> tuple[dict[str, tuple[int, float]], threading.Lock]:
+    """The current app's own failure map and the lock guarding it."""
+    extensions = current_app.extensions.setdefault(_LOGIN_FAILURE_STATE_KEY, {})
+    if "map" not in extensions:
+        extensions["map"] = {}
+        extensions["lock"] = threading.Lock()
+    return extensions["map"], extensions["lock"]
 
 
 def _client_ip() -> str:
@@ -130,18 +181,45 @@ def _client_ip() -> str:
 
 
 def _login_throttled(ip: str) -> bool:
-    with _login_failure_lock:
-        return _login_failure_counts.get(ip, 0) >= _LOGIN_FAILURE_THRESHOLD
+    """Whether *ip* has hit the failure threshold within its current window.
+
+    A window whose start is more than :data:`_LOGIN_FAILURE_WINDOW_SECONDS`
+    in the past is stale -- the failures it counted no longer describe an
+    ongoing attempt -- and is discarded here rather than only by a future
+    :func:`_record_login_failure` call, so a throttled IP that simply stops
+    trying is not left reporting itself as throttled indefinitely.
+    """
+    now = time.monotonic()
+    failures, lock = _failure_state()
+    with lock:
+        entry = failures.get(ip)
+        if entry is None:
+            return False
+        count, window_started_at = entry
+        if now - window_started_at >= _LOGIN_FAILURE_WINDOW_SECONDS:
+            del failures[ip]
+            return False
+        return count >= _LOGIN_FAILURE_THRESHOLD
 
 
 def _record_login_failure(ip: str) -> None:
-    with _login_failure_lock:
-        _login_failure_counts[ip] = _login_failure_counts.get(ip, 0) + 1
+    """Count one failure for *ip*, starting a fresh window if the last one
+    has expired (see :func:`_login_throttled`) or none exists yet."""
+    now = time.monotonic()
+    failures, lock = _failure_state()
+    with lock:
+        entry = failures.get(ip)
+        if entry is None or now - entry[1] >= _LOGIN_FAILURE_WINDOW_SECONDS:
+            failures[ip] = (1, now)
+        else:
+            count, window_started_at = entry
+            failures[ip] = (count + 1, window_started_at)
 
 
 def _clear_login_failures(ip: str) -> None:
-    with _login_failure_lock:
-        _login_failure_counts.pop(ip, None)
+    failures, lock = _failure_state()
+    with lock:
+        failures.pop(ip, None)
 
 
 # ---------------------------------------------------------------------------
@@ -151,17 +229,39 @@ def _clear_login_failures(ip: str) -> None:
 # tests/security_audit/test_flask_hardening.py's module docstring): a
 # random token is minted into the session the first time a form that
 # needs one is rendered, embedded as a hidden field, and compared with
-# constant-time equality against the form submission. /login is
-# deliberately exempt: it is the one form submitted before any session
-# exists to bind a token to, and enforcing it here would make the login
-# throttling above unreachable for a client that has never done a GET
-# first (exactly how a credential-stuffing script behaves) -- the
-# module docstring's own reasoning already treats login CSRF as the
-# lesser risk (a browser's default SameSite=Lax already blocks most
-# cross-site posts) next to /register, which creates accounts, and the
-# index page's query form, which is why both of those two are enforced.
+# constant-time equality against the form submission.
+#
+# Round 2 remediation note: /login used to be listed here as "deliberately
+# exempt", on the reasoning that no session exists yet to bind a token to.
+# That reasoning does not hold up -- writing into `session[...]` inside
+# `_csrf_token()` (called by every template that renders the hidden field,
+# login.html included) makes Flask send a Set-Cookie for that session on
+# the GET response, before any credential is ever submitted. The token is
+# therefore already bound to a real, if pre-authentication, session by the
+# time a form using it can be filled in -- exactly the "issue a pre-session
+# token" shape this class of fix takes. Leaving the field in login.html
+# rendered but unchecked (the state this comment used to describe) was
+# strictly worse than either enforcing it or removing it: a control that
+# looks present protects nobody and invites the next reader to assume it
+# does. login is no longer listed in _CSRF_EXEMPT_ENDPOINTS.
+#
+# This does not weaken _LOGIN_FAILURE_THRESHOLD above. A scripted
+# credential-stuffing client that skips the GET and posts credentials
+# directly is refused with 400 before the throttle counter is ever
+# touched, which is a strictly earlier and cheaper refusal, not a bypass
+# of it -- and a client that does fetch a token first (one GET, reused
+# across every guess, exactly how a real browser and any minimally
+# competent script both behave) still hits the same per-IP counter on
+# every attempt after. What actually changes is that submitting this
+# specific form now requires a token minted by this server for this
+# session -- which is precisely what stops a third-party page from
+# silently auto-submitting a victim's browser into a login it never
+# intended (the attack this project's own audit calls "login CSRF": an
+# attacker's page logs the victim into the *attacker's* account, then the
+# victim's own subsequent input -- files uploaded, data entered -- lands
+# somewhere the attacker can read it back from).
 _CSRF_SESSION_KEY = "_csrf_token"
-_CSRF_EXEMPT_ENDPOINTS = {"login", "static"}
+_CSRF_EXEMPT_ENDPOINTS = {"static"}
 
 
 def _csrf_token() -> str:

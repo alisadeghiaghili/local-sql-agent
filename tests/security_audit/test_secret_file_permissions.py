@@ -27,6 +27,30 @@ Note on scope: this test asserts the *code* restricts what it creates. It
 says nothing about the permissions of files already sitting on the
 production server, which only an operator can inspect -- the audit's
 "what was not tested" list says so explicitly.
+
+Round 2: six creation points, not one
+--------------------------------------
+Round 1 fixed the Flask session key (``webapp/app.py``) and the audit
+trail (``logs/logger.py``) by hand, and this file's own
+``TestTheRepositoryTakesFilePermissionsSeriouslyAtAll`` was written to
+catch a *regression of the whole class* -- "does anything at all restrict
+a file mode". It is a trap: two hits made it pass while four more
+creation points (the application database, the session store,
+``webapp/app.db``, and exported ``.xlsx`` workbooks) were still written at
+the ambient umask, because the blunt test cannot tell "restricted
+somewhere" apart from "restricted everywhere it needs to be". That gap is
+exactly how the finding stayed half-open through a round of remediation
+that believed it was done.
+
+``TestEveryKnownCreationPointRestrictsItsOwnFile`` below is the fix for
+the test, not just the code: it names all six creation points explicitly,
+creates each one for real in a ``tmp_path``, and asserts its mode
+directly -- so a seventh creation point added later without calling
+``core.fileperms.restrict_file`` fails a test that names it, rather than
+silently passing the blunt one above. The blunt test is kept as a
+cheap regression backstop for the *concept* (do not remove
+``core/fileperms.py`` and every inline ``chmod`` and call it done), not as
+evidence that coverage is complete -- see its own docstring below.
 """
 
 from __future__ import annotations
@@ -107,9 +131,156 @@ class TestOtherSecretsAndSensitiveDataAreRestricted:
         )
 
 
+class TestEveryKnownCreationPointRestrictsItsOwnFile:
+    """The strict version of this finding: each of the six places this
+    project writes something sensitive to disk, exercised for real.
+
+    Every method below builds the real artefact through the real
+    production code path (never a hand-rolled substitute), in a
+    ``tmp_path`` the test owns, and asserts ``mode & 0o077 == 0`` --
+    nothing beyond owner read/write. This is what
+    ``TestTheRepositoryTakesFilePermissionsSeriouslyAtAll`` below cannot
+    tell you: not "does anything restrict a mode" but "does *this*
+    specific thing".
+    """
+
+    @_posix_only
+    def test_the_application_database_is_owner_only(self, tmp_path):
+        """``appdb/engine.py:get_app_engine`` -- API key digests, role
+        grants, config-bundle history."""
+        from config import override_settings
+        from appdb.engine import dispose_app_engine, get_app_engine
+
+        db_path = tmp_path / "app.db"
+        dispose_app_engine()
+        try:
+            with override_settings(app_db_url=f"sqlite:///{db_path}"):
+                get_app_engine()
+                assert db_path.exists(), "get_app_engine() did not create the SQLite file"
+                assert _mode(db_path) & 0o077 == 0, (
+                    f"the application database was created mode {oct(_mode(db_path))} -- "
+                    "API key digests and role grants are world-readable"
+                )
+        finally:
+            dispose_app_engine()
+
+    @_posix_only
+    def test_the_session_store_and_its_wal_sidecar_are_owner_only(self, tmp_path):
+        """``session/persistence.py:SessionPersistence`` -- full turn
+        transcripts. WAL mode is turned on explicitly in this module, so
+        the "-wal" sidecar is exercised too, not just the main file --
+        see ``core.fileperms.restrict_sqlite_family``'s docstring for why
+        that sidecar matters as much as the database file itself."""
+        from session.persistence import SessionPersistence
+
+        db_path = tmp_path / "sessions.db"
+        store = SessionPersistence(str(db_path))
+        try:
+            # A write is what actually puts pages in the "-wal" file --
+            # right after construction it may not exist yet.
+            store.upsert_session(
+                "s1", owner_id=None, title=None,
+                created_at="2026-01-01T00:00:00", last_active_at="2026-01-01T00:00:00",
+            )
+            assert db_path.exists(), "SessionPersistence did not create the SQLite file"
+            assert _mode(db_path) & 0o077 == 0, (
+                f"the session store was created mode {oct(_mode(db_path))} -- "
+                "full conversation transcripts are world-readable"
+            )
+            wal_path = db_path.with_name(db_path.name + "-wal")
+            if wal_path.exists():
+                assert _mode(wal_path) & 0o077 == 0, (
+                    f"{wal_path.name} was left mode {oct(_mode(wal_path))} -- the "
+                    "write-ahead log holds pages not yet checkpointed into the main "
+                    "file, i.e. the freshest transcript rows"
+                )
+        finally:
+            store.close()
+
+    @_posix_only
+    def test_webapp_app_db_is_owner_only(self, tmp_path, monkeypatch):
+        """``webapp/db.py:init_db`` -- Flask password hashes and the
+        question/answer log for the web UI."""
+        import webapp.db as webapp_db
+
+        db_path = tmp_path / "app.db"
+        monkeypatch.setattr(webapp_db, "DB_PATH", db_path)
+
+        webapp_db.init_db()
+
+        assert db_path.exists(), "init_db() did not create app.db"
+        assert _mode(db_path) & 0o077 == 0, (
+            f"webapp/app.db was created mode {oct(_mode(db_path))} -- Flask "
+            "password hashes are world-readable"
+        )
+
+    @_posix_only
+    def test_an_exported_workbook_is_owner_only(self, tmp_path):
+        """``exporters/excel_exporter.py:export_excel`` -- warehouse query
+        results handed to the analyst as a file on disk."""
+        import pandas as pd
+
+        import exporters.excel_exporter as ex
+
+        monkeypatch_settings = type("S", (), {"export_dir": str(tmp_path)})()
+        original_settings = ex.settings
+        ex.settings = monkeypatch_settings
+        try:
+            path = ex.export_excel(pd.DataFrame({"a": [1, 2], "b": ["x", "y"]}))
+        finally:
+            ex.settings = original_settings
+
+        assert Path(path).exists(), "export_excel() did not create the workbook"
+        assert _mode(Path(path)) & 0o077 == 0, (
+            f"the exported workbook was created mode {oct(_mode(Path(path)))} -- "
+            "query results are world-readable"
+        )
+
+
+class TestTheWiringSurvivesOnAnyPlatform:
+    """The four sites above call ``core.fileperms``, asserted on the source
+    text so this guarantee is checked (and can fail CI) even on a
+    development machine where the POSIX-only live tests above can only
+    skip -- the same "assert the pattern in the source, not only the live
+    mode" belt-and-suspenders ``TestTheFlaskSessionKeyIsNotWorldReadable
+    .test_the_writer_sets_a_mode_explicitly`` already uses for round 1's
+    two sites.
+    """
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "appdb/engine.py",
+            "session/persistence.py",
+            "webapp/db.py",
+            "exporters/excel_exporter.py",
+        ],
+    )
+    def test_the_creation_point_calls_the_shared_helper(self, relative_path):
+        src = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "core.fileperms" in src and (
+            "restrict_file" in src or "restrict_sqlite_family" in src
+        ), (
+            f"{relative_path} does not call core.fileperms.restrict_file/"
+            "restrict_sqlite_family -- whatever it writes lands at the "
+            "ambient umask"
+        )
+
+
 class TestTheRepositoryTakesFilePermissionsSeriouslyAtAll:
-    """A blunt guard against the whole class regressing. The audit's finding
-    was not one bad line -- it was that the concept was absent everywhere."""
+    """A blunt guard against the whole class regressing -- NOT proof that
+    every creation point is covered.
+
+    This only asks "does anything in the codebase restrict a file mode at
+    all". It is cheap and catches the worst regression (deleting
+    ``core/fileperms.py`` and every inline ``chmod``), but it is exactly
+    the test that let this finding stay half-open through round 1: two
+    call sites restricting their files were enough to make this pass while
+    four more still wrote at the ambient umask. The guarantee this finding
+    actually needs -- every one of the six known creation points, by name
+    -- lives in ``TestEveryKnownCreationPointRestrictsItsOwnFile`` above;
+    treat that class as the specification and this one as a smoke test.
+    """
 
     def test_something_in_the_codebase_restricts_a_file_mode(self):
         hits = []
