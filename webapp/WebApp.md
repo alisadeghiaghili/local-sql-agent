@@ -77,11 +77,14 @@ Then open http://127.0.0.1:5000 and log in.
   permissions on POSIX — see `_secret_key()`'s docstring).
 - Sessions last 8 hours.
 - Repeated failed `/login` attempts from the same IP are throttled: after
-  roughly 30 consecutive failures, further attempts get `429` until one
-  succeeds.
-- Every POST form (`/login` excepted — see `app.py`'s
-  `_CSRF_EXEMPT_ENDPOINTS` comment) carries a CSRF token and is rejected
-  with `400` if it is missing or wrong.
+  roughly 30 consecutive failures within a 15-minute window, further
+  attempts get `429` until a login from that IP succeeds, or the window
+  rolls past with no further failures — this throttle expires on its own
+  and does not lock an IP out indefinitely.
+- Every POST form, `/login` included, carries a CSRF token and is
+  rejected with `400` if it is missing or wrong — see `app.py`'s
+  `_CSRF_EXEMPT_ENDPOINTS` comment for how a token is bound to a session
+  before that session has ever authenticated.
 - **The session cookie requires HTTPS** (`SESSION_COOKIE_SECURE=True`).
   Running the dev server above over plain `http://` still lets you load
   every page, but the browser will not send the cookie back, so
