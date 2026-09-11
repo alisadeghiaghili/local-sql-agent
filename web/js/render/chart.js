@@ -201,12 +201,26 @@ function svgEl(tag, attrs) {
   return e;
 }
 
-/** Line chart. RTL time flow: row 0 (earliest) plots at the RIGHT edge,
- * the last row at the LEFT edge, matching the page's reading direction —
- * the same convention the design prototype used. Two reference lines at
- * most (baseline and the max value); everything before the focus segment
- * is context grey, the focus segment onward is the brand hue, with a
- * direct label only on the focus point. */
+/** Line chart. LTR time flow: row 0 (earliest) plots at the LEFT edge,
+ * the last row at the RIGHT edge — the axis convention nearly every
+ * time-series chart uses regardless of script, because it tracks the
+ * mathematical x-axis rather than the page's reading direction (this is
+ * also what `lineHeadline` above and the LLM interpretation in
+ * `llm/interpret.py::interpret_rows` both already assume: they read
+ * array order as time order, and describe the *last* row as the end of
+ * the trend). This file's own geometry agrees: `.chart-block svg` is
+ * pinned `direction: ltr` in `web/styles/style.css` specifically so
+ * `edgeSafeLabel`'s start/end anchoring resolves correctly, and `padL`
+ * is commented as the "leading edge" below. An earlier version of this
+ * function plotted right-to-left instead (row 0 at the right, matching
+ * the design prototype's page-direction convention), which put the
+ * series' visual slope exactly backwards from what both text sources
+ * claimed — see `tests/web_ui/run_result_shapes.mjs` for the regression
+ * test that renders the real chart and cross-checks it against the real
+ * headline text. Two reference lines at most (baseline and the max
+ * value); everything before the focus segment is context grey, the
+ * focus segment onward is the brand hue, with a direct label only on the
+ * focus point. */
 
 /* ── Keeping text inside the drawing ─────────────────────────────────────
  * SVG does not clip or reflow text: a label positioned near an edge simply
@@ -277,7 +291,7 @@ function renderLineChart(rows, labelKey, values, focus) {
   // reserved space lands on one side while the plot starts on the other.
   // It previously began at padR and spanned (W - padL - padR), which left
   // the leading edge with 12px of room where 40 was intended.
-  const xAt = (i) => padL + ((n - 1 - i) / Math.max(1, n - 1)) * (W - padL - padR);
+  const xAt = (i) => padL + (i / Math.max(1, n - 1)) * (W - padL - padR);
   const yAt = (v) => padT + (1 - (v - min) / span) * (H - padT - padB);
 
   const svg = svgEl("svg", {

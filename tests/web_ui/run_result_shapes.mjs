@@ -32,7 +32,14 @@
 //   count makes it genuinely illegible, and always marks it rejected
 //   (never silently omitted);
 // * chooseFocus() names a real rule (never "none") for every offered
-//   framing kind on a non-empty series.
+//   framing kind on a non-empty series;
+// * the line chart's plotted x-axis runs left-to-right (array index 0 on
+//   the left, the last index on the right) and stays consistent with
+//   chooseFramings()'s rising/declining headline text for that same
+//   series -- see the scenario below for the regression this guards
+//   against (chart.js used to draw the series right-to-left while the
+//   headline read it left-to-right, so a reader saw the opposite slope
+//   from what the text claimed).
 //
 // web/ ships no package.json / node_modules (no build step, by design --
 // see web/README.md), so this harness brings its own MINIMAL DOM shim
@@ -154,7 +161,7 @@ globalThis.document = {
 
 const { determineShape, SHAPE, pickLikelyWrongAssumption, renderResult } =
   await import(pathToFileURL(tableMjsPath).href);
-const { chooseFramings, chooseFocus } = await import(pathToFileURL(chartMjsPath).href);
+const { chooseFramings, chooseFocus, renderChartAndTable } = await import(pathToFileURL(chartMjsPath).href);
 
 /* ── Scenario 1: shape selection is driven by columns[].type + row counts,
  * per session/models.py::TurnResult / session/engine.py::_infer_type's
@@ -518,6 +525,146 @@ console.log("[ok] chooseFramings rejects (never omits) pie once illegible; choos
   const checked = persian.length + ascii.length;
   assert.ok(checked >= 3, `expected several numeric strings to check, saw ${checked}`);
   console.log(`[ok] one digit system across the whole view (${checked} numeric strings)`);
+}
+
+/* ── Scenario: the line chart's time axis must run left-to-right, and its
+ * on-screen direction must AGREE with the headline sentence describing
+ * the trend's slope.
+ *
+ * Bug this guards: `renderLineChart`'s `xAt` used to be
+ * `padL + ((n - 1 - i) / Math.max(1, n - 1)) * (W - padL - padR)`, which
+ * plots array index 0 at the RIGHT edge and the last index at the LEFT
+ * edge -- i.e. the series is drawn right-to-left in array order. Measured
+ * for a 5-point series with this module's own W=640, padL=40, padR=12:
+ * index 0 -> x=628 (right edge), index 1 -> x=481, index 2 -> x=334,
+ * index 3 -> x=187, index 4 -> x=40 (left edge). Meanwhile `lineHeadline`
+ * (same file) and the LLM interpretation (`llm/interpret.py::interpret_rows`,
+ * which receives rows in SQL/array order and reads top-to-bottom) both
+ * describe the trend using array order AS time order: "rising" when the
+ * max sits at the last array index, "declining" when it sits at the
+ * first. A reader scanning the chart left-to-right -- the direction the
+ * CSS commits to (`web/styles/style.css`'s `.chart-block svg { direction:
+ * ltr }`, and `edgeSafeLabel`'s start/end anchoring resolves against
+ * that) -- therefore saw the OPPOSITE slope from what both texts claimed.
+ * Time-series axes running left-to-right is not a Western-script
+ * convention to override for an RTL page; it is tied to the mathematical
+ * axis and holds in Arabic/Hebrew/Persian publications too.
+ *
+ * This is deliberately more than a unit check on `xAt`'s arithmetic: the
+ * real failure mode is that nothing tied the chart's drawn direction to
+ * the sentence describing it, so a future padding/layout change could
+ * silently reintroduce the reversal (or introduce a new one) without any
+ * existing test noticing. So this renders the REAL line chart, reads the
+ * x coordinates the real polylines and axis labels were drawn at, and
+ * cross-checks them against `chooseFramings`' real headline text for both
+ * a strictly ascending and a strictly descending series. ─────────────── */
+{
+  /** Every "x,y" vertex the line chart's polyline(s) were drawn with, in
+   * emission order. `renderLineChart` always draws a "focus" polyline
+   * (indices `segStart..n-1`) and, only when `segStart >= 1`, a separate
+   * "context" polyline (indices `0..segStart`) before it -- so the FIRST
+   * vertex across every polyline in the svg is always index 0's point and
+   * the LAST is always index n-1's, whether or not the context polyline
+   * exists. Both branches are exercised below: the ascending fixture's
+   * max sits at the last index (segStart > 0, both polylines drawn); the
+   * descending fixture's max sits at index 0 (segStart === 0, only the
+   * focus polyline is drawn). */
+  function linePoints(svg) {
+    const pts = [];
+    for (const pl of svg.querySelectorAll("polyline")) {
+      for (const pair of (pl.getAttribute("points") || "").trim().split(/\s+/)) {
+        if (!pair) continue;
+        const [x, y] = pair.split(",").map(Number);
+        pts.push([x, y]);
+      }
+    }
+    return pts;
+  }
+
+  /** x of the axis-label `<text>` whose content is exactly `text`. */
+  function axisLabelX(svg, text) {
+    for (const t of svg.querySelectorAll("text.chart-axis-label")) {
+      const content = [...t.childNodes]
+        .filter((n) => n.nodeType === 3)
+        .map((n) => n.textContent)
+        .join("");
+      if (content === text) return Number(t.getAttribute("x"));
+    }
+    return undefined;
+  }
+
+  function checkTrendAxisMatchesHeadline(rows, { risingWord, decliningWord, expectRising }) {
+    const chartResult = {
+      columns: [{ name: "day", type: "string" }, { name: "v", type: "number" }],
+      rows,
+      row_count: rows.length,
+    };
+    const framings = chooseFramings(rows, "day", "v");
+    const line = framings.find((f) => f.kind === "line");
+    assert.ok(line, "a line framing must be offered for a 5-point series");
+    if (expectRising) {
+      assert.ok(risingWord.test(line.headline) && !decliningWord.test(line.headline),
+        `strictly ascending values must get a rising headline, got: ${JSON.stringify(line.headline)}`);
+    } else {
+      assert.ok(decliningWord.test(line.headline) && !risingWord.test(line.headline),
+        `strictly descending values must get a declining headline, got: ${JSON.stringify(line.headline)}`);
+    }
+
+    // The story strip defaults to its first framing, which chooseFramings
+    // always puts "line" first -- so the chart rendered without clicking
+    // anything is the one the headline above describes.
+    const wrap = renderChartAndTable(chartResult);
+    const svg = wrap.querySelector(".chart-block svg");
+    assert.ok(svg, "the default (line) framing must render an svg");
+
+    const pts = linePoints(svg);
+    assert.ok(pts.length >= 2, "expected at least 2 plotted vertices");
+    const firstX = pts[0][0];
+    const lastX = pts[pts.length - 1][0];
+
+    // Assertion 1: time flows left to right -- the LAST array index must
+    // be drawn to the right of the FIRST, never the reverse.
+    assert.ok(lastX > firstX,
+      `time must flow left-to-right: the last point (x=${lastX}) must be drawn right of the first (x=${firstX})`);
+
+    // Assertion 3: the point drawn furthest right must BE the last index
+    // -- the same index `lineHeadline` names as the end of the trend --
+    // not merely somewhere to the right of the first.
+    const allX = pts.map((p) => p[0]);
+    assert.equal(lastX, Math.max(...allX), "the last-index point must be the one drawn furthest right");
+    assert.equal(firstX, Math.min(...allX), "the first-index point must be the one drawn furthest left");
+
+    // Assertion 5: the x-axis category labels are drawn at xAt(i) too
+    // (see renderLineChart), so a reversal would take the dates with it.
+    // They must land in the same left-to-right order as the points above.
+    const firstLabelX = axisLabelX(svg, String(rows[0].day));
+    const lastLabelX = axisLabelX(svg, String(rows[rows.length - 1].day));
+    assert.ok(firstLabelX !== undefined && lastLabelX !== undefined, "both end category labels must be drawn");
+    assert.ok(lastLabelX > firstLabelX,
+      "x-axis category labels must follow the same left-to-right order as the plotted points");
+
+    return { firstX, lastX, firstY: pts[0][1], lastY: pts[pts.length - 1][1] };
+  }
+
+  const RISING = /صعودی/;
+  const DECLINING = /کاهش/;
+
+  const ascRows = [10, 20, 30, 40, 50].map((v, i) => ({ day: `d${i}`, v }));
+  checkTrendAxisMatchesHeadline(ascRows, { risingWord: RISING, decliningWord: DECLINING, expectRising: true });
+
+  // Assertion 4, mirrored: a strictly DESCENDING series must get a
+  // declining headline, and its visually-lowest end (the smallest value,
+  // which sits at the last array index here) must be on the right --
+  // i.e. the same left-to-right point order as the ascending case, plus
+  // the low end (larger svg y = lower on screen) landing on the right.
+  const descRows = [50, 40, 30, 20, 10].map((v, i) => ({ day: `d${i}`, v }));
+  const desc = checkTrendAxisMatchesHeadline(
+    descRows, { risingWord: RISING, decliningWord: DECLINING, expectRising: false },
+  );
+  assert.ok(desc.lastY > desc.firstY,
+    "the descending series' low (last-index) end must sit lower on screen (larger svg y) than its high (first-index) end, and that low end must be on the right");
+
+  console.log("[ok] line chart's plotted x-axis runs left-to-right and agrees with the rising/declining headline (ascending and descending)");
 }
 
 console.log("ALL_SCENARIOS_PASSED");
