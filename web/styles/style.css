@@ -120,8 +120,18 @@ button { font-family: inherit; }
 .live-key-input {
   min-width: 0; flex: 1 1 160px; width: 180px; max-width: 100%; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); color: #fff;
+  /* Forced ltr for the *value* only — an API key is ASCII and must not
+   * reorder. The placeholder is Persian prose with a Latin "API" run
+   * inside it, and inheriting ltr from the field reorders that prose
+   * (see ::placeholder rule below). DESIGN-INVARIANTS.md §2.1. */
 }
-.live-key-input::placeholder { color: #cbd5e1; }
+.live-key-input::placeholder {
+  color: #cbd5e1;
+  /* The value stays ltr (declared on .live-key-input / the dir="ltr"
+   * attribute); only the placeholder prose reads back in document order. */
+  direction: rtl;
+  text-align: right;
+}
 .live-key-save, .live-key-clear, .live-key-change {
   border: 1px solid rgba(255, 255, 255, .3); border-radius: 8px;
   background: transparent; color: #e2e8f0; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
@@ -368,6 +378,12 @@ button { font-family: inherit; }
 .ask-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12.5px; font-weight: 600; color: var(--ink); cursor: pointer;
+  /* The native checkbox is 13x13; this label is the actual hit target, so
+   * it — not the input — carries the padding. Measured 81x20 before this
+   * rule (DESIGN-INVARIANTS.md §3): min-height 24px is the WCAG 2.5.8
+   * conformance floor, bumped to 44px under the touch breakpoint below. */
+  min-height: 24px;
+  padding-block: 4px;
 }
 .ask-toggle input { cursor: pointer; }
 .ask-toggle-hint { font-size: 11.5px; color: var(--muted); min-width: 0; }
@@ -773,6 +789,21 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .memory-toggle:hover { background: rgba(255, 255, 255, .16); }
 
 /* ── Responsive ──────────────────────────────────────────────────── */
+
+/* Tablet (641-1024px): the only breakpoint used to be 640px, so
+ * 768-1024 viewports inherited the full desktop chrome — a 260px fixed
+ * sidebar plus a 900px-max transcript column, sized for a wide screen and
+ * cramped on a tablet — the desktop topbar's own overflow comment above
+ * already names ~1400px as where its controls get tight. Scoped with a
+ * min-width so it does not fight the off-canvas sidebar rules below, which
+ * own 640px and under. DESIGN-INVARIANTS.md §5. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .topbar { padding: 12px 18px; }
+  .brand-text p { display: none; } /* tagline; brand mark + name carry identity here */
+  .sidebar { flex-basis: 200px; width: 200px; }
+  .layout { max-width: 100%; padding: 18px 16px 32px; }
+}
+
 @media (max-width: 640px) {
   .topbar { padding: 12px 14px; }
   .layout { padding: 16px 12px 32px; }
@@ -780,16 +811,25 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   .llm-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
 
   /* Sidebar collapses to an off-canvas panel behind a toggle, rather
-   * than squeezing the transcript into a sliver next to a fixed rail. */
+   * than squeezing the transcript into a sliver next to a fixed rail.
+   *
+   * `translateX()` is a physical transform — it shifts along the screen's
+   * x-axis and does not flip with `direction`, unlike `inset-inline-start`
+   * above. The panel is anchored to the inline-start edge, which is the
+   * *left* under LTR and the *right* under RTL, so hiding it means moving
+   * further past whichever physical edge it is flush against:
+   * translateX(-100%) under LTR, translateX(100%) under RTL. Using the same
+   * sign for both (as this rule once did) leaves 75px of a 300px panel
+   * on screen at a 375px viewport — see DESIGN-INVARIANTS.md §2.2. */
   .sidebar-toggle { display: flex; }
   .sidebar {
     position: fixed; inset-inline-start: 0; top: 0; bottom: 0;
     width: 82vw; max-width: 300px; z-index: 40;
     box-shadow: var(--shadow);
-    transform: translateX(100%);
+    transform: translateX(-100%);
     transition: transform .18s ease-out;
   }
-  [dir="rtl"] .sidebar { transform: translateX(-100%); }
+  [dir="rtl"] .sidebar { transform: translateX(100%); }
   .app-body.sidebar-open .sidebar { transform: translateX(0); }
   .app-body { position: relative; flex-direction: column; }
 }
