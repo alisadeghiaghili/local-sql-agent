@@ -32,6 +32,7 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import StaticPool
 
 import config as cfg
+from core.fileperms import restrict_sqlite_family
 
 #: Host spellings that all name "this machine" for the purpose of deciding
 #: whether two connection URLs point at the same server. Not an exhaustive
@@ -215,12 +216,26 @@ def get_app_engine() -> Engine:
     organisation that instead wants schema changes to go through Alembic
     can still do so (``appdb/migrations/``); running both is harmless
     since table creation here is idempotent.
+
+    Finding 18 (2026 audit): this database holds API key digests, role
+    grants, and config-bundle history -- exactly the kind of thing that
+    must not be world-readable on a shared host. ``create_all`` above is
+    what actually causes SQLite to create the file on disk (the URL
+    string alone creates nothing), so :func:`~core.fileperms.
+    restrict_sqlite_family` is called immediately after, and only for a
+    SQLite backend -- a managed PostgreSQL/SQL Server target is not a
+    local file this process could ``chmod`` in the first place, and its
+    own access control is the DBA's responsibility, not this codebase's.
     """
-    engine = build_engine(resolve_app_db_url())
+    url = resolve_app_db_url()
+    engine = build_engine(url)
 
     from appdb.models import create_all
 
     create_all(engine)
+    made = make_url(url)
+    if made.get_backend_name() == "sqlite" and made.database not in (None, "", ":memory:"):
+        restrict_sqlite_family(made.database)
     return engine
 
 

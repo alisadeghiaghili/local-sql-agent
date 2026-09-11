@@ -10,12 +10,16 @@ hashes (werkzeug), never in plain text.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from werkzeug.security import check_password_hash, generate_password_hash
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.fileperms import restrict_file  # noqa: E402
 
 DB_PATH = Path(__file__).resolve().parent / "app.db"
 
@@ -50,9 +54,22 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create tables if they do not exist yet.  Safe to call repeatedly."""
+    """Create tables if they do not exist yet.  Safe to call repeatedly.
+
+    Finding 18 (2026 audit): this file holds every Flask user's password
+    hash and the full log of questions asked through the web UI, and was
+    previously created at the ambient process umask (world-readable on a
+    typical Linux host). ``restrict_file`` runs after every call rather
+    than only the one that first creates ``app.db`` -- this function is
+    called from ``create_user``/``verify_user``/``log_query`` on every
+    request, not just at start-up, so gating the call on "did this call
+    just create the file" would need a second existence check of its own
+    for no real benefit: the helper is idempotent and a plain ``chmod``
+    on an already-correct file is cheap.
+    """
     with closing(_connect()) as conn, conn:
         conn.executescript(_SCHEMA)
+    restrict_file(DB_PATH)
 
 
 # ---------------------------------------------------------------------------
