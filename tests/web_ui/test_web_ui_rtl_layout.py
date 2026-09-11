@@ -87,6 +87,57 @@ class TestTheConversationDrawerFullyLeavesTheScreen:
             "edge hides with translateX(100%) under RTL"
         )
 
+    def test_the_ltr_drawer_hides_toward_its_own_edge_too(self):
+        """The mirror of the bug above, and originally untested.
+
+        This module first asserted only the ``[dir="rtl"]`` selector, because
+        that is the direction the measurement was taken in. The base rule had
+        the identical defect mirrored: a left-anchored panel hidden with
+        ``translateX(100%)`` travels *across* the viewport instead of off it,
+        leaving the same 75px at 375px.
+
+        It matters because the chrome is bilingual — ``web/js/i18n.js`` flips
+        the root ``dir`` when the analyst picks English — so the LTR path is a
+        real path a real user reaches, not a hypothetical. Asserting one
+        direction and calling the rule covered is how the second half of a
+        symmetric bug survives the fix for the first.
+
+        ``translateX`` is a physical transform: positive is always screen-right
+        regardless of ``direction``. So a panel on the left hides with
+        ``-100%`` and a panel on the right hides with ``+100%``.
+        """
+        # Line-oriented rather than a single regex: a media query nests
+        # braces, and a non-greedy `\{(.*?)\}` stops at the first inner rule's
+        # closing brace instead of the block's. A first draft did exactly that
+        # and the guard below turned this test into a permanent skip -- which
+        # reads as green and asserts nothing, the worst of both.
+        lines = _stylesheet().splitlines()
+        start = next(
+            (i for i, ln in enumerate(lines)
+             if "@media" in ln and re.search(r"max-width:\s*640px", ln)),
+            None,
+        )
+        assert start is not None, "the phone breakpoint is gone; re-point this assertion"
+
+        base_body = None
+        for i in range(start, len(lines)):
+            if re.match(r"\s*\.sidebar\s*\{", lines[i]):          # not [dir=…] .sidebar
+                base_body = "\n".join(lines[i:i + 12])
+                break
+        assert base_body is not None, (
+            "no direction-agnostic .sidebar rule inside the phone breakpoint"
+        )
+        assert "translateX" in base_body, (
+            "the base .sidebar rule no longer hides by transform; if the "
+            "mechanism changed, rewrite this test rather than letting it pass"
+        )
+        assert re.search(r"translateX\(\s*-\s*100%\s*\)", base_body), (
+            "the LTR drawer hides with a positive translateX, pushing a "
+            "left-anchored panel across the viewport rather than off it — the "
+            "same defect as the RTL rule, mirrored. English chrome reaches "
+            "this path via i18n.js flipping the root dir"
+        )
+
     def test_some_rule_hides_the_drawer_in_rtl(self):
         """Guarding the premise: if the drawer stops being transform-hidden
         entirely (a display/visibility approach, or a direction-agnostic
