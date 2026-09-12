@@ -242,6 +242,25 @@ from security.dialects import get_dialect_profile
 # would have returned immediately.
 
 
+#: The closed set of machine-readable refusal categories a rejection can
+#: carry as :attr:`SqlGuardRejection.reason`. Mirrors
+#: ``session.models.GuardVerdict.reason``'s ``Literal`` exactly (that
+#: module cannot import this one -- ``security`` sits below ``session`` in
+#: the dependency graph -- so the two are kept in lockstep by convention
+#: and by ``tests/test_guard_error_contract.py`` asserting every value
+#: raised here is one this set names). ``"other"`` is not "uncategorised
+#: by omission" -- it is set explicitly at raise sites whose rejection
+#: reason is not one of the four specific, UI-actionable categories (a
+#: syntax error, a disallowed comment, a literal ``LIMIT``, ...), so a
+#: caller can always tell "this rejection was considered and has no more
+#: specific category" from "the raise site never set a reason at all"
+#: (``reason is None``, which no raise site below actually produces).
+_REASONS = frozenset({
+    "denied_column", "forbidden_statement", "unknown_table",
+    "system_catalogue", "other",
+})
+
+
 class SqlGuardRejection(ValueError):
     """Base class for every rejection this module raises.
 
@@ -250,6 +269,37 @@ class SqlGuardRejection(ValueError):
     ``app.py``, and the test suite) keeps working unchanged -- this is a
     backward-compatible refinement of the exception type, not a new one
     replacing it.
+
+    Carries two more attributes, ``reason`` and ``subject``, alongside the
+    free-text message every caller already reads via ``str(exc)``. These
+    exist because a caller two layers up (``session/engine.py``, building
+    the ``Turn.guard`` the web UI renders per
+    ``docs/design/DESIGN-INVARIANTS.md`` §8) needs to offer a *targeted*
+    next action for a denied-column refusal ("Ask without that column") --
+    and the only way to name that column without ``reason``/``subject``
+    would be regexing the free-text message the line below builds
+    (``f"...denied column '{name}'"``), which is exactly the
+    substring-matching mistake this module's own rewrite (see the module
+    docstring) exists to get away from, just relocated to a downstream
+    caller instead of fixed at the source. This module already knows,
+    at the moment it decides to raise, which branch it took and which
+    column/table/keyword triggered it -- so that structure is captured
+    here, once, rather than reconstructed by parsing prose later:
+
+    * ``reason`` -- one of :data:`_REASONS`, or ``None`` for the
+      pre-Phase-11 raise sites this attribute was retrofitted onto only
+      where a caller-actionable category applies (there are none left --
+      every raise site in this module now sets one -- but the type stays
+      optional because a bare ``ValueError`` from a lower-level dependency,
+      e.g. ``sqlglot`` failing in a way this module doesn't wrap, is still
+      possible in principle and must not crash whatever reads this
+      attribute back).
+    * ``subject`` -- the specific column, table, or keyword the refusal is
+      about, when the raise site can name exactly one (``None`` when the
+      rejection is about the query's *shape* rather than one identifier --
+      a syntax error, a stacked-statement query with no single dangerous
+      statement, or a ``denied_columns`` policy that a bare ``*`` could
+      expose to more than one column at once).
 
     Two INDEPENDENT axes are modelled on this hierarchy, and a caller must
     not conflate them:
@@ -288,6 +338,37 @@ class SqlGuardRejection(ValueError):
     #: for how :class:`PolicyRejection` and the unknown-table raise site
     #: override it.
     is_refusal: bool = False
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str | None = None,
+        subject: str | None = None,
+    ) -> None:
+        """Store *message* exactly as every existing caller already reads it.
+
+        *reason* and *subject* are keyword-only and both default to
+        ``None`` so every raise site written before this attribute existed
+        (there are none left in this module, but a subclass outside it is
+        not impossible) keeps constructing a valid instance without
+        modification -- adding structure to an exception's attributes,
+        never changing what ``str(exc)`` returns, is the same
+        backward-compatible-refinement discipline the class docstring
+        describes for the ``ValueError`` subclassing itself.
+
+        Asserts *reason* is one of :data:`_REASONS` (or ``None``) rather
+        than accepting an arbitrary string: a typo'd reason
+        (``"denied_col"`` for ``"denied_column"``) would silently produce a
+        ``GuardVerdict.reason`` no UI branch matches, which is a worse
+        failure mode (a silently generic fallback in production) than an
+        assertion error at raise time, in the same test run that exercises
+        the raise site.
+        """
+        super().__init__(message)
+        assert reason is None or reason in _REASONS, f"unknown guard rejection reason: {reason!r}"
+        self.reason = reason
+        self.subject = subject
 
 
 class CorrectableRejection(SqlGuardRejection):
@@ -749,14 +830,16 @@ def clean_sql(raw: str) -> str:
     security.sql_guard.CorrectableRejection: No SELECT / CTE found in model response: 'No SQL here at all.'
     """
     if not raw or not raw.strip():
-        raise CorrectableRejection("Received empty SQL from model")
+        raise CorrectableRejection("Received empty SQL from model", reason="other")
 
     fence_match = _FENCE_RE.search(raw)
     sql = fence_match.group(1) if fence_match else raw
 
     start = _SELECT_START_RE.search(sql)
     if not start:
-        raise CorrectableRejection(f"No SELECT / CTE found in model response: {sql[:200]!r}")
+        raise CorrectableRejection(
+            f"No SELECT / CTE found in model response: {sql[:200]!r}", reason="other",
+        )
     sql = sql[start.start():].strip()
 
     if _LIMIT_RE.search(sql):
@@ -990,21 +1073,21 @@ def validate_sql(
     security.sql_guard.PolicyRejection: Forbidden keyword detected: '*' would expose denied column(s): ['name']
     """
     if not sql or not sql.strip():
-        raise CorrectableRejection("Empty SQL")
+        raise CorrectableRejection("Empty SQL", reason="other")
 
     if dialect == "tsql" and _LIMIT_RE.search(sql):
-        raise CorrectableRejection("LIMIT is not valid T-SQL — use TOP instead")
+        raise CorrectableRejection("LIMIT is not valid T-SQL — use TOP instead", reason="other")
 
     profile = get_dialect_profile(dialect)
 
     try:
         raw_statements = sqlglot.parse(sql, read=dialect)
     except SqlglotError as exc:
-        raise CorrectableRejection(f"SQL syntax error: {exc}") from exc
+        raise CorrectableRejection(f"SQL syntax error: {exc}", reason="other") from exc
 
     statements = [stmt for stmt in raw_statements if stmt is not None]
     if not statements:
-        raise CorrectableRejection("Empty SQL")
+        raise CorrectableRejection("Empty SQL", reason="other")
 
     if len(statements) > 1:
         # Stacking is refused as a class regardless of content -- a known
@@ -1018,21 +1101,29 @@ def validate_sql(
         for stmt in statements:
             label = _forbidden_label(stmt)
             if label is not None:
-                raise PolicyRejection(f"Forbidden keyword detected: {label}")
+                raise PolicyRejection(
+                    f"Forbidden keyword detected: {label}",
+                    reason="forbidden_statement", subject=label,
+                )
         raise PolicyRejection(
             "Forbidden keyword detected: multiple SQL statements are not "
-            f"allowed ({len(statements)} statements found)"
+            f"allowed ({len(statements)} statements found)",
+            reason="forbidden_statement",
         )
 
     tree = statements[0]
 
     root_label = _forbidden_label(tree)
     if root_label is not None:
-        raise PolicyRejection(f"Forbidden keyword detected: {root_label}")
+        raise PolicyRejection(
+            f"Forbidden keyword detected: {root_label}",
+            reason="forbidden_statement", subject=root_label,
+        )
     if not isinstance(tree, _ALLOWED_ROOT_TYPES):
         raise PolicyRejection(
             "Forbidden keyword detected: only SELECT / WITH / set-operation "
-            f"queries are allowed, got {type(tree).__name__}"
+            f"queries are allowed, got {type(tree).__name__}",
+            reason="forbidden_statement", subject=type(tree).__name__,
         )
 
     cte_names = _cte_names(tree)
@@ -1040,7 +1131,10 @@ def validate_sql(
     for node in tree.walk():
         label = _forbidden_label(node)
         if label is not None:
-            raise PolicyRejection(f"Forbidden keyword detected: {label}")
+            raise PolicyRejection(
+                f"Forbidden keyword detected: {label}",
+                reason="forbidden_statement", subject=label,
+            )
 
         # A comment is refused because it is present, not for what it
         # says — scanning its text for keywords would just relocate the
@@ -1056,7 +1150,8 @@ def validate_sql(
             raise CorrectableRejection(
                 "SQL comments are not allowed: a comment is not "
                 "executable SQL syntax, so its content is never inspected "
-                "for keywords -- the comment itself is refused outright."
+                "for keywords -- the comment itself is refused outright.",
+                reason="other",
             )
 
         # T-SQL national-character literal (N'...') on a dialect that
@@ -1081,7 +1176,8 @@ def validate_sql(
                 f"{dialect} syntax -- sqlglot leaves N'...' unchanged "
                 "under transpilation and its parser accepts it regardless "
                 "of dialect, so this is refused explicitly rather than "
-                "left to fail at the database"
+                "left to fail at the database",
+                reason="other",
             )
 
         # T-SQL string-concatenation-via-`+`, transpiled unchanged into a
@@ -1120,16 +1216,25 @@ def validate_sql(
                 f"concatenation, which does not transpile to {dialect} -- "
                 "this dialect's '+' is exclusively numeric addition and "
                 "would silently coerce a string operand instead of "
-                "concatenating it"
+                "concatenating it",
+                reason="other",
             )
 
         if isinstance(node, exp.Anonymous) and _is_dangerous_identifier(node.name or "", dialect):
-            raise PolicyRejection(f"Forbidden keyword detected: {(node.name or '').upper()}")
+            label = (node.name or "").upper()
+            raise PolicyRejection(
+                f"Forbidden keyword detected: {label}",
+                reason="forbidden_statement", subject=label,
+            )
 
         if isinstance(node, exp.Table):
             raw_name = node.name
             if _is_dangerous_identifier(raw_name or "", dialect):
-                raise PolicyRejection(f"Forbidden keyword detected: {raw_name.upper()}")
+                label = raw_name.upper()
+                raise PolicyRejection(
+                    f"Forbidden keyword detected: {label}",
+                    reason="forbidden_statement", subject=label,
+                )
             db = (node.db or "").upper()
             name_upper = (raw_name or "").upper()
             # System-catalogue check for *this* dialect: an exact-match
@@ -1139,13 +1244,25 @@ def validate_sql(
             # security.dialects.DialectProfile's docstring for why these
             # are two separate fields rather than one.
             if db in profile.system_schemas:
-                raise PolicyRejection(f"System catalogue forbidden: {db}")
+                raise PolicyRejection(
+                    f"System catalogue forbidden: {db}",
+                    reason="system_catalogue", subject=db,
+                )
             if not db and name_upper in profile.system_schemas:
-                raise PolicyRejection(f"System catalogue forbidden: {name_upper}")
+                raise PolicyRejection(
+                    f"System catalogue forbidden: {name_upper}",
+                    reason="system_catalogue", subject=name_upper,
+                )
             if any(db.startswith(prefix) for prefix in profile.system_name_prefixes):
-                raise PolicyRejection(f"System catalogue forbidden: {db}")
+                raise PolicyRejection(
+                    f"System catalogue forbidden: {db}",
+                    reason="system_catalogue", subject=db,
+                )
             if any(name_upper.startswith(prefix) for prefix in profile.system_name_prefixes):
-                raise PolicyRejection(f"System catalogue forbidden: {name_upper}")
+                raise PolicyRejection(
+                    f"System catalogue forbidden: {name_upper}",
+                    reason="system_catalogue", subject=name_upper,
+                )
 
             # Table allowlist: unlike the column check below, this is not
             # lenient. A raw_name of "" (an exp.Anonymous table-valued
@@ -1166,7 +1283,8 @@ def validate_sql(
                     # class default -- see SqlGuardRejection's docstring.
                     exc = CorrectableRejection(
                         f"Forbidden keyword detected: unknown table "
-                        f"'{raw_name}' is not in the schema allowlist"
+                        f"'{raw_name}' is not in the schema allowlist",
+                        reason="unknown_table", subject=raw_name,
                     )
                     exc.is_refusal = True
                     raise exc
@@ -1179,7 +1297,10 @@ def validate_sql(
         if not name or name == "*":
             continue
         if name.upper() in denied:
-            raise PolicyRejection(f"Forbidden keyword detected: denied column '{name}'")
+            raise PolicyRejection(
+                f"Forbidden keyword detected: denied column '{name}'",
+                reason="denied_column", subject=name,
+            )
 
         qualifier = (col.table or "").lower()
         if not qualifier:
@@ -1198,7 +1319,10 @@ def validate_sql(
             # CorrectableRejection: same reasoning as the unknown-table
             # case above -- a hallucinated column name, plausibly fixed
             # by a retry that names a real one.
-            raise CorrectableRejection(f"Unknown column '{name}' on table '{canonical}'")
+            raise CorrectableRejection(
+                f"Unknown column '{name}' on table '{canonical}'",
+                reason="other", subject=name,
+            )
 
     if denied:
         # "*" must not be usable to silently read around an active
@@ -1220,10 +1344,17 @@ def validate_sql(
                 ref_label = "*"
 
             if table_names is None:
+                # `subject` stays `None`: no single column can be named
+                # here at all -- that is exactly *why* this branch fires
+                # (an unresolvable `*`/`alias.*`), so there is nothing for
+                # a caller to build a targeted "ask without that column"
+                # action around; the generic rephrase action is the only
+                # honest one for this specific rejection.
                 raise PolicyRejection(
                     f"Forbidden keyword detected: cannot verify whether "
                     f"'{ref_label}' exposes a denied column -- name the "
-                    "columns explicitly instead of using '*'"
+                    "columns explicitly instead of using '*'",
+                    reason="denied_column",
                 )
 
             exposed_denied = sorted(
@@ -1233,9 +1364,16 @@ def validate_sql(
                 if col.upper() in denied
             )
             if exposed_denied:
+                # `subject` names the one column a caller can offer to drop
+                # only when exactly one is exposed -- when `*` unmasks
+                # several at once there is no single column whose removal
+                # would fix the question, so `subject` is left `None`
+                # rather than picking one of several arbitrarily.
                 raise PolicyRejection(
                     f"Forbidden keyword detected: '{ref_label}' would "
-                    f"expose denied column(s): {exposed_denied}"
+                    f"expose denied column(s): {exposed_denied}",
+                    reason="denied_column",
+                    subject=exposed_denied[0] if len(exposed_denied) == 1 else None,
                 )
 
 
@@ -1366,7 +1504,8 @@ def _ensure_top_ast(sql: str, n: int, dialect: str) -> str:
         # valid) retry can plausibly get past it.
         raise CorrectableRejection(
             f"ensure_top: {sql[:200]!r} does not parse as {dialect} SQL "
-            f"({exc}) — refusing to guess where to inject a row cap"
+            f"({exc}) — refusing to guess where to inject a row cap",
+            reason="other",
         ) from exc
 
     if isinstance(tree, exp.Select):
@@ -1403,7 +1542,8 @@ def _ensure_top_ast(sql: str, n: int, dialect: str) -> str:
                 "ensure_top: cannot safely cap a UNION/INTERSECT/EXCEPT "
                 "query that also has a top-level ORDER BY (wrapping it in "
                 "a derived table would make that ORDER BY invalid) — "
-                "refusing to emit unsafe SQL"
+                "refusing to emit unsafe SQL",
+                reason="other",
             )
 
         # Detach any CTEs before wrapping (they belong on the new OUTER
@@ -1427,7 +1567,8 @@ def _ensure_top_ast(sql: str, n: int, dialect: str) -> str:
     raise CorrectableRejection(
         f"ensure_top: {sql[:200]!r} is not a SELECT/WITH/set-operation "
         f"query in {dialect} (parsed as {type(tree).__name__ if tree else 'nothing'}) "
-        "— refusing to guess where to inject a row cap"
+        "— refusing to guess where to inject a row cap",
+        reason="other",
     )
 
 
@@ -1572,7 +1713,8 @@ def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
         # plausibly get past it.
         raise CorrectableRejection(
             f"ensure_top: no top-level SELECT found in {sql[:200]!r} — "
-            "refusing to guess where to inject TOP"
+            "refusing to guess where to inject TOP",
+            reason="other",
         )
 
     if len(matches) > 1:
@@ -1591,7 +1733,8 @@ def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
                 "ensure_top: cannot safely cap a UNION/INTERSECT/EXCEPT "
                 "query that also has a top-level ORDER BY without a full "
                 "SQL parser (wrapping it in a derived table would make "
-                "that ORDER BY invalid T-SQL) — refusing to emit unsafe SQL"
+                "that ORDER BY invalid T-SQL) — refusing to emit unsafe SQL",
+                reason="other",
             )
         return f"{prefix}SELECT TOP {n} * FROM ({body}) AS _ensure_top_capped"
 
@@ -1723,13 +1866,15 @@ def transpile_sql(sql: str, *, target_dialect: str, source_dialect: str = _DIALE
     except SqlglotError as exc:
         raise CorrectableRejection(
             f"transpile_sql: failed to parse {sql[:200]!r} as "
-            f"{source_dialect}: {exc}"
+            f"{source_dialect}: {exc}",
+            reason="other",
         ) from exc
 
     if tree is None:
         raise CorrectableRejection(
             f"transpile_sql: parsing {sql[:200]!r} as {source_dialect} "
-            "produced no statement"
+            "produced no statement",
+            reason="other",
         )
 
     rewritten = tree.transform(_strip_unsupported_national_literals, target_dialect)
@@ -1739,7 +1884,8 @@ def transpile_sql(sql: str, *, target_dialect: str, source_dialect: str = _DIALE
     except SqlglotError as exc:
         raise CorrectableRejection(
             f"transpile_sql: failed to render {sql[:200]!r} as "
-            f"{target_dialect}: {exc}"
+            f"{target_dialect}: {exc}",
+            reason="other",
         ) from exc
 
 
@@ -1863,7 +2009,8 @@ def transpile_and_revalidate(
             f"to {target_dialect} changed the set of tables this query "
             f"touches ({sorted(source_tables)} -> {sorted(transpiled_tables)}) "
             "— refusing to execute SQL whose meaning may have changed under "
-            "transpilation"
+            "transpilation",
+            reason="other",
         )
 
     return transpiled

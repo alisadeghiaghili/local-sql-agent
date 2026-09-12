@@ -48,6 +48,7 @@ function el(tag, className, text) {
  *   onPin?: (turnId: string, field: string, value: string) => void,
  *   onRerun?: (turnId: string) => void,
  *   onRephrase?: (turnId: string) => void,
+ *   onAskWithoutColumn?: (turnId: string, column: string) => void,
  *   onFlag?: (turnId: string, category: string, note: string) => Promise<void>,
  *   progressive?: boolean,
  * }} ctx
@@ -325,25 +326,67 @@ function isGuardRejected(turn) {
  * consumes today.
  *
  * @param {import("../api.js").Turn} turn
- * @param {{onRerun?: (turnId: string) => void, onRephrase?: (turnId: string) => void}} ctx
+ * @param {{
+ *   onRerun?: (turnId: string) => void,
+ *   onRephrase?: (turnId: string) => void,
+ *   onAskWithoutColumn?: (turnId: string, column: string) => void,
+ * }} ctx
  * @returns {HTMLElement|null}
  */
 function renderFailureState(turn, ctx) {
   if (isGuardRejected(turn)) {
+    // `reason`/`subject` (session/models.py::GuardVerdict, populated from
+    // security.sql_guard's own typed rejection -- see that module's
+    // docstring) exist so THIS branch never has to regex `turn.guard.rule`
+    // (free text kept verbatim for the audit trail and its own tests) to
+    // find the column name a denied-column refusal is about. Without
+    // them the only honest option was one generic action for every guard
+    // rejection, which is what shipped before this field existed.
+    const { reason, subject } = turn.guard;
+    const lead = reason === "denied_column"
+      ? "این پرسش اجرا نشد — یکی از ستون‌های لازم برای پاسخ به آن برای حساب شما محدود شده است. این به معنای «نتیجه‌ای یافت نشد» نیست."
+      : "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.";
+
+    const actions = [];
+    // The targeted action DESIGN-INVARIANTS.md §8's table names for this
+    // row ("Ask without that column") -- offered only when there is one
+    // specific column to name (`subject`); a `*` that could expose more
+    // than one denied column at once carries no single `subject` (see
+    // security.sql_guard.validate_sql's star-expansion raise sites), so
+    // there is nothing honest to put in this button's label there.
+    if (reason === "denied_column" && subject && ctx.onAskWithoutColumn) {
+      actions.push([
+        `پرسش بدون «${subject}»`,
+        () => ctx.onAskWithoutColumn(turn.turn_id, subject),
+      ]);
+    }
+    // The generic action stays as a fallback for every OTHER guard
+    // rejection (forbidden statement, an unresolvable `*`, ...) and as a
+    // second, less specific option even when the targeted one above is
+    // offered -- an analyst may want to change more than just drop one
+    // column.
+    if (ctx.onRephrase) {
+      actions.push(["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]);
+    }
+
     return buildFailureBanner({
       severity: "crit",
-      lead: "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.",
+      lead,
       why: turn.guard.rule,
       code: "FORBIDDEN_SQL",
-      actions: ctx.onRephrase
-        ? [["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]]
-        : [],
+      // A guard rejection never populates `turn.error` on this (SSE) path
+      // (see `isGuardRejected`'s own docstring) -- `request_id` lives on
+      // `TurnErrorInfo`, not `GuardVerdict`, so there is genuinely none to
+      // show here, not one this file forgot to read.
+      requestId: null,
+      actions,
     });
   }
 
   if (!turn.error) return null;
 
   const retry = ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : null;
+  const requestId = turn.error.request_id || null;
 
   switch (turn.error.code) {
     // Severity follows docs/design/mockups/completions.html's own two
@@ -357,6 +400,7 @@ function renderFailureState(turn, ctx) {
         lead: "پرسش شما نگه داشته شد — سامانهٔ مدل در دسترس نبود. این یک مشکل سیستمی است، نه ایرادی در پرسش شما.",
         why: turn.error.message,
         code: turn.error.code,
+        requestId,
         actions: retry ? [["تلاش دوباره", retry]] : [],
       });
 
@@ -366,6 +410,7 @@ function renderFailureState(turn, ctx) {
         lead: "مدل پیش از تمام‌کردن تولید پرس‌وجو متوقف شد.",
         why: turn.error.message,
         code: turn.error.code,
+        requestId,
         actions: retry ? [["دوباره با پرسش کوتاه‌تر", retry]] : [],
       });
 
@@ -379,6 +424,7 @@ function renderFailureState(turn, ctx) {
         lead: "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.",
         why: turn.error.message,
         code: turn.error.code,
+        requestId,
         actions: ctx.onRephrase
           ? [["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]]
           : [],
@@ -390,6 +436,7 @@ function renderFailureState(turn, ctx) {
         lead: "پرس‌وجو اجرا شد، اما پایگاه داده آن را با خطا رد کرد.",
         why: turn.error.message,
         code: turn.error.code,
+        requestId,
         actions: retry ? [["تلاش دوباره", retry]] : [],
       });
 
@@ -402,6 +449,7 @@ function renderFailureState(turn, ctx) {
         lead: turn.error.message,
         why: null,
         code: turn.error.code,
+        requestId,
         actions: retry ? [["تلاش دوباره", retry]] : [],
       });
   }
@@ -411,22 +459,27 @@ function renderFailureState(turn, ctx) {
  * One failure banner, styled after docs/design/mockups/completions.html's
  * `.fail` pattern: a left (logical-start) accent border in the severity
  * colour, a bold lead sentence, an optional lighter "why", the
- * machine-readable code as a small monospace line — present but visually
- * the least important thing here — and real `<button>` controls, the
- * first one filled in brand teal (the actual next step), any further one
- * a plain outline (an alternative, not the recommended path). `actions`
- * is a list of `[label, onClick]` pairs rather than objects, matching
- * this file's `el(tag, className, text)` helper's own positional style.
+ * machine-readable code (and, when there is one, the `request_id` beside
+ * it) as a small monospace line — present but visually the least
+ * important thing here, per DESIGN-INVARIANTS.md §8's copy discipline
+ * ("Keep the machine-readable code and the request_id visible but
+ * subordinate — an operator needs them; the sentence is not for them") —
+ * and real `<button>` controls, the first one filled in brand teal (the
+ * actual next step), any further one a plain outline (an alternative, not
+ * the recommended path). `actions` is a list of `[label, onClick]` pairs
+ * rather than objects, matching this file's `el(tag, className, text)`
+ * helper's own positional style.
  *
  * @param {{
  *   severity: "crit"|"warn",
  *   lead: string,
  *   why?: string|null,
  *   code?: string|null,
+ *   requestId?: string|null,
  *   actions: [string, () => void][],
  * }} spec
  */
-function buildFailureBanner({ severity, lead, why, code, actions }) {
+function buildFailureBanner({ severity, lead, why, code, requestId, actions }) {
   const banner = el("div", `failure-state failure-${severity}`);
   banner.setAttribute("role", "alert");
 
@@ -436,8 +489,15 @@ function buildFailureBanner({ severity, lead, why, code, actions }) {
     banner.appendChild(el("p", "failure-why", why));
   }
 
-  if (code) {
-    banner.appendChild(el("span", "failure-code", code));
+  if (code || requestId) {
+    const meta = el("p", "failure-meta");
+    if (code) meta.appendChild(el("span", "failure-code", code));
+    // `requestId` is server-supplied text (session/models.py's
+    // TurnErrorInfo.request_id) rendered with `el()`'s `textContent`
+    // assignment, same as every other field on this page — never
+    // interpolated into an HTML string (DESIGN-INVARIANTS.md §1.3).
+    if (requestId) meta.appendChild(el("span", "failure-request-id", `req: ${requestId}`));
+    banner.appendChild(meta);
   }
 
   if (actions && actions.length) {
