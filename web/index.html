@@ -114,6 +114,23 @@
 
   <main class="layout">
 
+    <!-- D3 (docs/design/DESIGN.md §5.1): composer lives BELOW the
+         transcript in DOM order, not just visually — a screen-reader user
+         and a sighted one meet the conversation before the input, in the
+         same order. It is pinned to the viewport bottom in style.css
+         (`.composer { position: sticky; bottom }`) so a long transcript
+         never scrolls it out of reach; that pin is exactly why it must be
+         the LAST child of .layout, not the first. -->
+    <section id="transcript" aria-live="polite" aria-relevant="additions" data-i18n-attr="aria-label:transcript" aria-label="گفتگوی تحلیلی">
+      <!-- #transcript-empty (sample-story chips included) is injected by
+           main.js's renderTranscriptEmptyState() only while this session's
+           transcript has zero turns, and only in simulated mode (DESIGN.md
+           decision B5 — samples are demo scaffolding, never a live
+           production session's UI). Keeping it out of the composer card
+           instead of overlapping the textarea's placeholder, which is
+           where it used to live. -->
+    </section>
+
     <div class="card composer">
       <label class="card-title" for="question" data-i18n="askLabel">پرسش خود را به زبان طبیعی بنویسید</label>
       <div class="ask-row">
@@ -133,14 +150,8 @@
         </label>
         <span class="ask-toggle-hint" data-i18n="interpretHint">خلاصهٔ ساده‌شده، با فرستادن حداکثر ۲۰ ردیف نتیجه به مدل زبانی</span>
       </div>
-      <div class="samples" id="samples">
-        <span class="samples-label" data-i18n="samples">داستان نمونه:</span>
-        <!-- sample buttons injected by main.js from data.js SCENARIO -->
-      </div>
       <div id="notice-area"></div>
     </div>
-
-    <section id="transcript" aria-live="polite" aria-relevant="additions" data-i18n-attr="aria-label:transcript" aria-label="گفتگوی تحلیلی"></section>
 
   </main>
 

@@ -32,6 +32,20 @@ import { t, loadLang, setLang, applyLang } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 
+/** Every "bring this into view" call in this module routes through here.
+ * style.css already forces `scroll-behavior: auto` under
+ * `prefers-reduced-motion: reduce` for CSS-driven scrolling (e.g. anchor
+ * jumps), but `Element.scrollIntoView({behavior: "smooth"})` is a
+ * script-requested behaviour and, per spec, an explicit "smooth" wins over
+ * that CSS property rather than deferring to it — so a hardcoded "smooth"
+ * here would silently defeat the reduced-motion rule for the one motion
+ * an analyst cannot opt out of by ignoring the page: their own submitted
+ * question relocating the viewport out from under them. */
+function scrollIntoViewMaybeSmooth(el, opts) {
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView({ ...opts, behavior: reduced ? "auto" : "smooth" });
+}
+
 /* ── Boot ──────────────────────────────────────────────────────────── */
 // T-SQL Prism patch must run before the first Prism.tokenize — Prism
 // expands greedy grammar rules in place on first use. Patching after a
@@ -63,7 +77,6 @@ let api = new Api(state.baseUrl);
 // switchToSession). Session-local to this tab; never persisted.
 const turnsCache = new Map();
 
-renderSamples();
 wireComposer();
 wireTopbar();
 wireSidebar();
@@ -307,7 +320,18 @@ function renderSessionSidebar() {
  * and live modes each have their own, entirely separate, session index. */
 async function refreshSessionsForMode() {
   if (state.mode === "live") {
-    if (!hasApiKey()) { state.sessions = []; renderSessionSidebar(); return; }
+    if (!hasApiKey()) {
+      state.sessions = [];
+      // Without this, switching from simulated to live-without-a-key left
+      // whatever simulated transcript (and its sample-story chips — B5)
+      // was already on screen just sitting there under the "live" mode
+      // switch, which is exactly the demo-scaffolding-in-production leak
+      // this decision exists to close.
+      resetTranscript();
+      renderTranscriptFromTurns([]);
+      renderSessionSidebar();
+      return;
+    }
     try {
       const res = await api.listSessions();
       state.sessions = res.sessions || [];
@@ -395,7 +419,52 @@ function renderTranscriptFromTurns(turns) {
     const card = createTurnCard(turn, turnCtx());
     host.appendChild(card.el);
   }
+  if (turns.length === 0) renderTranscriptEmptyState();
   refreshSampleButtonsDisabledState();
+}
+
+/** The empty-conversation placeholder — DESIGN.md §5.1's resolution for
+ * the sample-story chips that used to sit inside the composer card
+ * permanently (overlapping #question's placeholder text) and, per
+ * decision B5, have no business appearing in a live production session
+ * at all. Rebuilt from scratch on every call rather than toggled with
+ * `hidden`, since it must reflect whichever mode is CURRENT, not
+ * whichever mode last rendered it. Only called while the active
+ * session's transcript is empty — see renderTranscriptFromTurns and
+ * appendTurnWithAnimation/askLive's removal of it once a turn lands. */
+function renderTranscriptEmptyState() {
+  const empty = document.createElement("div");
+  empty.className = "transcript-empty";
+  empty.id = "transcript-empty";
+
+  const hint = document.createElement("p");
+  hint.className = "transcript-empty-hint";
+  hint.textContent = t("transcriptEmptyHint");
+  empty.appendChild(hint);
+
+  if (state.mode === "simulated") {
+    const wrap = document.createElement("div");
+    wrap.className = "samples";
+    wrap.id = "samples";
+    const label = document.createElement("span");
+    label.className = "samples-label";
+    label.textContent = t("samples");
+    wrap.appendChild(label);
+    empty.appendChild(wrap);
+    renderSamples(wrap);
+  }
+
+  $("transcript").appendChild(empty);
+}
+
+/** Removes the empty-state placeholder (and, with it, any sample-story
+ * chips) the instant a turn is about to land in the transcript — called
+ * right before appendTurnWithAnimation/askLive append the new turn/
+ * placeholder card, since state.turns itself is not always updated yet
+ * at that point (askLive's placeholder predates the "done" event's
+ * addTurn call). */
+function clearTranscriptEmptyState() {
+  document.getElementById("transcript-empty")?.remove();
 }
 
 /** A sample button is disabled once its scripted turn has been asked in
@@ -638,8 +707,9 @@ function upsertSimulatedMemory(key, value) {
 }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
-function renderSamples() {
-  const wrap = $("samples");
+/** Populates *wrap* (the empty-transcript state's .samples container —
+ * see renderTranscriptEmptyState) with one button per scripted turn. */
+function renderSamples(wrap) {
   for (const turn of SCENARIO.turns) {
     const btn = document.createElement("button");
     btn.className = "sample";
@@ -735,9 +805,10 @@ async function askSimulated(q) {
 
 async function appendTurnWithAnimation(turn) {
   addTurn(turn);
+  clearTranscriptEmptyState();
   const card = createTurnCard(turn, turnCtx());
   $("transcript").appendChild(card.el);
-  card.el.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollIntoViewMaybeSmooth(card.el, { block: "start" });
 
   const failAt = turn.error ? "generate" : (turn.guard && turn.guard.verdict === "rejected" ? "validate" : null);
   await runSimulatedStages(card.pipeline.setStage, {
@@ -755,7 +826,7 @@ function scrollToTurn(turnId) {
   const el = document.getElementById(`turn-${turnId}`);
   if (el) {
     el.classList.remove("collapsed");
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollIntoViewMaybeSmooth(el, { block: "start" });
     el.animate(
       [{ boxShadow: "0 0 0 3px rgba(13,148,136,.5)" }, { boxShadow: "0 0 0 0 rgba(13,148,136,0)" }],
       { duration: 900 },
@@ -811,7 +882,7 @@ function turnCtx() {
       if (!t) return;
       $("question").value = t.question;
       $("question").focus();
-      $("question").scrollIntoView({ behavior: "smooth", block: "center" });
+      scrollIntoViewMaybeSmooth($("question"), { block: "center" });
     },
     // "پرسش بدون «ستون»" — the targeted action DESIGN-INVARIANTS.md §8's
     // table specifies for a denied-column refusal ("Ask without that
@@ -826,7 +897,7 @@ function turnCtx() {
       if (!t) return;
       $("question").value = `${t.question} (بدون ستون «${column}»)`;
       $("question").focus();
-      $("question").scrollIntoView({ behavior: "smooth", block: "center" });
+      scrollIntoViewMaybeSmooth($("question"), { block: "center" });
     },
     // "این عدد درست نیست" (admin panel phase 4). LIVE mode really submits
     // it to the backend, against the session this transcript is currently
@@ -847,8 +918,12 @@ function turnCtx() {
 function rerenderTurn(turn) {
   const old = document.getElementById(`turn-${turn.turn_id}`);
   const card = createTurnCard(turn, turnCtx());
-  if (old) old.replaceWith(card.el);
-  else $("transcript").appendChild(card.el);
+  if (old) {
+    old.replaceWith(card.el);
+  } else {
+    clearTranscriptEmptyState();
+    $("transcript").appendChild(card.el);
+  }
 }
 
 function rerunTurn(turnId) {
@@ -950,9 +1025,10 @@ async function askLive(q) {
   // Build a placeholder card immediately so the pipeline shows "running"
   // while we wait on SSE — filled in from `stage`/`resolved`/etc. events.
   let working = emptyTurn(q, sessionId);
+  clearTranscriptEmptyState();
   const card = createTurnCard(working, turnCtx());
   $("transcript").appendChild(card.el);
-  card.el.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollIntoViewMaybeSmooth(card.el, { block: "start" });
   card.revealEarly();
   card.revealLate();
 
