@@ -328,14 +328,19 @@ Computed against `web/styles/tokens.css`:
 | Body text on card | 14.68 ✅ | 13.98 ✅ | 1.4.3 (4.5) |
 | Secondary text on card | 4.76 ✅ | 6.64 ✅ | 1.4.3 |
 | Secondary text on page | **4.40 ❌** | 7.30 ✅ | 1.4.3 |
-| Primary action label | **3.74 ❌** | 6.84 ✅ | 1.4.3 |
+| Primary action label | **3.74 ❌** | **2.49 ❌** | 1.4.3 |
 | Ask-field boundary | **1.23 ❌** | 1.34 ❌ | 1.4.11 (3.0) |
 | Focus indicator present | ✅ | ✅ | 2.4.7 |
 
-**The primary action fails, and it is the most-pressed control in the product.**
-White on `--teal #0d9488` is 3.74 in both directions, and a 15px bold label is
-not "large text" (that starts at 18.66px bold). `--teal-d #0b7a70` — already in
-the palette — measures 5.21.
+**The primary action fails in both themes, and it is the most-pressed control
+in the product.** White on `--teal #0d9488` is 3.74 light and 2.49 dark, and a
+15px bold label is not "large text" (that starts at 18.66px bold).
+
+This row was wrong in the first draft: it carried 6.84 for dark and called it a
+pass. 6.84 is teal as *text on a card* — a different pairing. A button is a
+white label on a teal *fill*, and measuring the wrong pair is exactly how a
+control ships failing while a table says it passed. Corrected here after the
+spec test caught it.
 
 The ask field's boundary fails 1.4.11 twice over: its border against the card
 is 1.23 and its fill difference is 1.05, so neither identifies the control at
@@ -345,8 +350,8 @@ boundary needs its own token.
 Secondary text is the marginal one: it passes inside a card (4.76) and fails on
 the page ground (4.40). `#5b6b81` measures 5.02.
 
-Note which column fails. The light theme carries every failure and the dark
-theme carries one. With §12's decision below, both ship.
+Both themes carry failures; the light theme carries more. With §12's decision
+below, both ship.
 
 **Rule.** Contrast is computed, never judged. Any new or changed token pair in
 `tokens.css` is checked against 4.5 (text), 3.0 (interactive boundary and
