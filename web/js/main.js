@@ -800,6 +800,19 @@ function turnCtx() {
     // contract has no such endpoint); it re-asks the same question,
     // which is the closest honest equivalent to "run it again".
     onRerun: (turnId) => rerunTurn(turnId),
+    // "ویرایش پرسش" — a guard-rejected turn's failure state (turn.js's
+    // renderFailureState). Deliberately NOT onRerun: that re-submits the
+    // exact same question, which would just be rejected again by the
+    // same PolicyRejection. This puts the original question back in the
+    // box and stops — an analyst edits it before sending, they don't get
+    // it resent for them.
+    onRephrase: (turnId) => {
+      const t = findTurn(turnId);
+      if (!t) return;
+      $("question").value = t.question;
+      $("question").focus();
+      $("question").scrollIntoView({ behavior: "smooth", block: "center" });
+    },
     // "این عدد درست نیست" (admin panel phase 4). LIVE mode really submits
     // it to the backend, against the session this transcript is currently
     // showing; SIMULATED mode has no server to send it to, so it is

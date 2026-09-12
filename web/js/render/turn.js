@@ -1,16 +1,21 @@
 /* web/js/render/turn.js — one turn card.
  *
- * Anatomy (DESIGN.md §5.2, api-contract §5/§7 — trust surface stays visible):
+ * Anatomy (DESIGN.md §5.2, api-contract §5/§7 — trust surface stays
+ * visible; DESIGN-INVARIANTS.md §8 — failure gets the same three-part
+ * treatment as success; §9 — what the analyst opted into stays in this
+ * list, never inside the collapsed section at the end):
  *
  *   question
  *   resolved_question          (when present)
  *   basis                      (when refines)
  *   assumption chips + clarifications
- *   stage strip                (slim; full list in the drawer)
+ *   stage strip                (slim; the rest is one item down)
  *   outcome line               (rows · guard · top)
+ *   failure state              (what happened · why · a control to press)
  *   SQL                        (collapsible; expanded on first/failure)
  *   result
- *   details drawer             (pipeline, LLM, warnings, interpretation, feedback)
+ *   interpretation             (when requested — opted into, so main flow)
+ *   pipeline / LLM / warnings / feedback   (collapsed; opt in to expand)
  *
  * Partial/null Turn data is tolerated throughout (contract §6).
  * SQL display: web/js/sql-display.js. Copy: copySourceOfTruth(turn).
@@ -42,6 +47,7 @@ function el(tag, className, text) {
  *   onClarify: (turnId: string, field: string, option: string) => void,
  *   onPin?: (turnId: string, field: string, value: string) => void,
  *   onRerun?: (turnId: string) => void,
+ *   onRephrase?: (turnId: string) => void,
  *   onFlag?: (turnId: string, category: string, note: string) => Promise<void>,
  *   progressive?: boolean,
  * }} ctx
@@ -77,7 +83,7 @@ export function createTurnCard(turn, ctx) {
   const body = el("div", "turn-body");
   root.appendChild(body);
 
-  // 2. Resolved question — trust surface, never in the drawer.
+  // 2. Resolved question — trust surface, always in the main flow.
   if (turn.resolved_question) {
     const card = el("div", "resolved-card");
     const label = el("div", "resolved-label");
@@ -111,22 +117,19 @@ export function createTurnCard(turn, ctx) {
   body.appendChild(strip.el);
   if (progressive) earlyEls.push(strip.el);
 
-  // Full pipeline list lives in the drawer; setStage drives both.
+  // Full pipeline list lives in the collapsed section below; setStage drives both.
   const pipelineList = renderPipeline();
   function setStage(key, state) {
     strip.setStage(key, state);
     pipelineList.setStage(key, state);
   }
 
-  // Error banner.
-  if (turn.error) {
-    const banner = el("div", "error-banner");
-    banner.setAttribute("role", "alert");
-    const code = el("span", "error-code", turn.error.code);
-    banner.appendChild(code);
-    banner.appendChild(document.createTextNode(" " + turn.error.message));
-    body.appendChild(tagLate(banner));
-  }
+  // Failure state (DESIGN-INVARIANTS.md §8) — checked before the result
+  // card below so a guard rejection, which sets neither `turn.error` nor
+  // a populated `turn.result`, still gets its own rendering instead of
+  // silently producing nothing here and a "0 rows" card there.
+  const failure = renderFailureState(turn, ctx);
+  if (failure) body.appendChild(tagLate(failure));
 
   // 6. Outcome line — always after a settled turn.
   const outcome = buildOutcomeLine(turn);
@@ -202,25 +205,51 @@ export function createTurnCard(turn, ctx) {
 
     body.appendChild(tagLate(sqlSection));
   } else if (!turn.error) {
-    sqlSection.appendChild(el("div", "empty-result", "SQL تولید نشد."));
+    // A guard rejection also has no `turn.sql` (session/engine.py never
+    // attaches the rejected statement to the outcome), but "SQL تولید
+    // نشد" ("no SQL was generated") would be false — a statement WAS
+    // generated, it just isn't retained for display. Say that instead.
+    const noSqlMessage = isGuardRejected(turn)
+      ? "SQL تولیدشده توسط گارد رد شد و برای نمایش نگه‌داری نمی‌شود."
+      : "SQL تولید نشد.";
+    sqlSection.appendChild(el("div", "empty-result", noSqlMessage));
     body.appendChild(tagLate(sqlSection));
   }
 
-  // 8. Result.
-  if (!turn.error) {
+  // 8. Result — skipped for a guard rejection. The failure state above
+  // already says this query never ran; a card titled "نتیجه" ("result")
+  // directly under it, even with rejection-specific wording, is the exact
+  // "did not run" vs. "returned nothing" confusion §8 rules out.
+  if (!turn.error && !isGuardRejected(turn)) {
     const resultCard = el("div", "card");
     resultCard.appendChild(el("div", "card-title", "نتیجه"));
     resultCard.appendChild(renderResult(turn.result, {
       assumptions: turn.ambiguity && turn.ambiguity.assumptions,
-      guardRejected: !!(turn.guard && turn.guard.verdict === "rejected"),
+      guardRejected: false,
       onRerun: ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : undefined,
     }));
     body.appendChild(tagLate(resultCard));
   }
 
-  // 9. Details drawer — timings, LLM, warnings, interpretation, feedback.
+  // 8.5 Interpretation — rendered here, in the main flow, never inside
+  // the collapsed section below. The analyst opted into this explicitly
+  // (the toggle's own label states its cost: up to twenty rows sent to
+  // the model), so hiding it behind a click would contradict the very
+  // request it answers. Progressive disclosure is for what the product
+  // chose to show, never for what the analyst chose to ask for.
+  if (turn.interpretation) {
+    const interpCard = el("div", "card");
+    if (answerWasTruncated(turn.llm)) interpCard.appendChild(renderTruncationQualifier());
+    interpCard.appendChild(el("div", "card-title", "تفسیر"));
+    interpCard.appendChild(el("p", "interpretation-text", turn.interpretation));
+    body.appendChild(tagLate(interpCard));
+  }
+
+  // 9. Everything else settles behind one click: pipeline timings and the
+  // LLM status strip are shown BY THE PRODUCT, never asked for, which is
+  // what makes collapsing them fine — unlike the interpretation above.
   const drawer = el("details", "turn-details");
-  const drawerSummary = el("summary", "turn-details-summary", "جزئیات — pipeline، مدل، تفسیر، بازخورد");
+  const drawerSummary = el("summary", "turn-details-summary", "جزئیات — pipeline، مدل، بازخورد");
   drawer.appendChild(drawerSummary);
   const drawerBody = el("div", "turn-details-body");
 
@@ -235,14 +264,6 @@ export function createTurnCard(turn, ctx) {
   const llmCard = el("div", "card");
   llmCard.appendChild(renderLlmStatus(turn.llm));
   drawerBody.appendChild(llmCard);
-
-  if (turn.interpretation) {
-    const interpCard = el("div", "card");
-    if (answerWasTruncated(turn.llm)) interpCard.appendChild(renderTruncationQualifier());
-    interpCard.appendChild(el("div", "card-title", "تفسیر"));
-    interpCard.appendChild(el("p", "interpretation-text", turn.interpretation));
-    drawerBody.appendChild(interpCard);
-  }
 
   if (turn.result && ctx.onFlag) {
     const flagWrap = el("div", "card");
@@ -269,6 +290,168 @@ export function createTurnCard(turn, ctx) {
     revealEarly,
     revealLate,
   };
+}
+
+/** True when the guard refused this turn's SQL before it ever ran.
+ *
+ * Checked ahead of `turn.error` everywhere in this file that renders a
+ * failure, because a rejection does not set `turn.error` at all on this
+ * (SSE) path — `session/engine.py`'s `_GenOutcome` sites attach it as
+ * `guard=GuardVerdict(verdict="rejected", ...)` together with
+ * `result=TurnResult()`, an EMPTY result. Read by shape alone that is
+ * indistinguishable from a query that ran and matched nothing, which is
+ * the exact confusion DESIGN-INVARIANTS.md §8 calls out: "did not run"
+ * and "returned nothing" must never look the same. */
+function isGuardRejected(turn) {
+  return !!(turn.guard && turn.guard.verdict === "rejected");
+}
+
+/**
+ * Renders the §8 failure anatomy: what happened (in the analyst's terms,
+ * not the system's), why when the reason is known, and a next action as
+ * a control — never a sentence telling them to go do something. The
+ * machine-readable code rides along, small, after the sentence, for the
+ * operator correlating it against a log; it is never the whole message.
+ *
+ * Guard rejection is resolved first, via `isGuardRejected`, before this
+ * function ever looks at `turn.error` — see that helper's docstring for
+ * why the ordering matters. The same underlying
+ * `security.sql_guard.PolicyRejection` that produces a rejected
+ * `GuardVerdict` here reaches an HTTP client as the `FORBIDDEN_SQL` error
+ * code on the non-streaming route (`api/errors.py`'s `ForbiddenSQLError`
+ * — see e.g. `tests/test_correction_loop_policy_rejection.py`), so the
+ * `FORBIDDEN_SQL` case below is kept for that shape too, even though
+ * `session/engine.py` does not produce it on the turn stream this UI
+ * consumes today.
+ *
+ * @param {import("../api.js").Turn} turn
+ * @param {{onRerun?: (turnId: string) => void, onRephrase?: (turnId: string) => void}} ctx
+ * @returns {HTMLElement|null}
+ */
+function renderFailureState(turn, ctx) {
+  if (isGuardRejected(turn)) {
+    return buildFailureBanner({
+      severity: "crit",
+      lead: "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.",
+      why: turn.guard.rule,
+      code: "FORBIDDEN_SQL",
+      actions: ctx.onRephrase
+        ? [["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]]
+        : [],
+    });
+  }
+
+  if (!turn.error) return null;
+
+  const retry = ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : null;
+
+  switch (turn.error.code) {
+    // Severity follows docs/design/mockups/completions.html's own two
+    // examples for these exact codes: a system hiccup an automatic retry
+    // can plausibly fix reads as "warn" (amber); a statement that never
+    // ran or a database that actively refused one reads as "crit" (red)
+    // — both are a harder stop than "try again in a moment".
+    case "MODEL_UNAVAILABLE":
+      return buildFailureBanner({
+        severity: "warn",
+        lead: "پرسش شما نگه داشته شد — سامانهٔ مدل در دسترس نبود. این یک مشکل سیستمی است، نه ایرادی در پرسش شما.",
+        why: turn.error.message,
+        code: turn.error.code,
+        actions: retry ? [["تلاش دوباره", retry]] : [],
+      });
+
+    case "LLM_OUTPUT_TRUNCATED":
+      return buildFailureBanner({
+        severity: "warn",
+        lead: "مدل پیش از تمام‌کردن تولید پرس‌وجو متوقف شد.",
+        why: turn.error.message,
+        code: turn.error.code,
+        actions: retry ? [["دوباره با پرسش کوتاه‌تر", retry]] : [],
+      });
+
+    // Kept for the HTTP shape this same rejection can take elsewhere —
+    // see this function's docstring. `session/engine.py` never sets this
+    // as `turn.error.code` today; `isGuardRejected` above is what fires
+    // in practice for the turn stream this file renders.
+    case "FORBIDDEN_SQL":
+      return buildFailureBanner({
+        severity: "crit",
+        lead: "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.",
+        why: turn.error.message,
+        code: turn.error.code,
+        actions: ctx.onRephrase
+          ? [["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]]
+          : [],
+      });
+
+    case "QUERY_EXECUTION_ERROR":
+      return buildFailureBanner({
+        severity: "crit",
+        lead: "پرس‌وجو اجرا شد، اما پایگاه داده آن را با خطا رد کرد.",
+        why: turn.error.message,
+        code: turn.error.code,
+        actions: retry ? [["تلاش دوباره", retry]] : [],
+      });
+
+    default:
+      // Every other code (MODEL_TIMEOUT, DATABASE_UNAVAILABLE, ...) still
+      // gets the anatomy — message as "what happened", code subordinate,
+      // and a real retry control — just not a code-specific sentence.
+      return buildFailureBanner({
+        severity: "crit",
+        lead: turn.error.message,
+        why: null,
+        code: turn.error.code,
+        actions: retry ? [["تلاش دوباره", retry]] : [],
+      });
+  }
+}
+
+/**
+ * One failure banner, styled after docs/design/mockups/completions.html's
+ * `.fail` pattern: a left (logical-start) accent border in the severity
+ * colour, a bold lead sentence, an optional lighter "why", the
+ * machine-readable code as a small monospace line — present but visually
+ * the least important thing here — and real `<button>` controls, the
+ * first one filled in brand teal (the actual next step), any further one
+ * a plain outline (an alternative, not the recommended path). `actions`
+ * is a list of `[label, onClick]` pairs rather than objects, matching
+ * this file's `el(tag, className, text)` helper's own positional style.
+ *
+ * @param {{
+ *   severity: "crit"|"warn",
+ *   lead: string,
+ *   why?: string|null,
+ *   code?: string|null,
+ *   actions: [string, () => void][],
+ * }} spec
+ */
+function buildFailureBanner({ severity, lead, why, code, actions }) {
+  const banner = el("div", `failure-state failure-${severity}`);
+  banner.setAttribute("role", "alert");
+
+  banner.appendChild(el("p", "failure-lead", lead));
+
+  if (why && why !== lead) {
+    banner.appendChild(el("p", "failure-why", why));
+  }
+
+  if (code) {
+    banner.appendChild(el("span", "failure-code", code));
+  }
+
+  if (actions && actions.length) {
+    const actionsRow = el("div", "failure-actions");
+    actions.forEach(([label, onClick], i) => {
+      const btn = el("button", i === 0 ? "failure-action-btn primary" : "failure-action-btn", label);
+      btn.type = "button";
+      btn.addEventListener("click", onClick);
+      actionsRow.appendChild(btn);
+    });
+    banner.appendChild(actionsRow);
+  }
+
+  return banner;
 }
 
 /** One-line outcome: rows · guard · TOP. Always after a settled turn. */

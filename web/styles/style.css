@@ -197,7 +197,9 @@ button { font-family: inherit; }
 .user-menu-panel .live-key-status.set { color: var(--status-good); }
 .user-menu-panel .live-key-status.unset { color: var(--status-warn); }
 .user-menu-panel .live-key-input {
-  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  /* --border-interactive — see #question's comment; every text input on
+   * a --card surface identifies its own edge the same way. */
+  border: 1px solid var(--border-interactive); background: var(--card-2); color: var(--ink);
   border-radius: 8px; padding: 6px 10px; font-size: 12.5px; min-width: 0; flex: 1 1 140px;
 }
 .user-menu-panel .live-key-input::placeholder { color: var(--muted); }
@@ -309,7 +311,8 @@ button { font-family: inherit; }
   display: flex; gap: 6px; align-items: center; padding: 6px 10px 8px;
 }
 .session-row-editor input {
-  flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+  /* --border-interactive — see #question's comment. */
+  flex: 1; min-width: 0; border: 1px solid var(--border-interactive); border-radius: 6px;
   padding: 5px 8px; font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit;
 }
 .session-row-editor button {
@@ -351,7 +354,12 @@ button { font-family: inherit; }
 .ask-row { display: flex; gap: 10px; align-items: stretch; }
 #question {
   flex: 1; resize: vertical; min-height: 58px;
-  border: 1.5px solid var(--border); border-radius: 10px;
+  /* --border-interactive, not --border: this edge is what tells an
+   * analyst the box is typeable at all (WCAG 1.4.11's 3:1 floor for a
+   * control boundary). The old --border/--card-2 pairing measured 1.23:1
+   * with a 1.05 fill difference — neither signal reached the control —
+   * see DESIGN-INVARIANTS.md §11 and tokens.css's --border-interactive. */
+  border: 1.5px solid var(--border-interactive); border-radius: 10px;
   padding: 12px 14px; font-size: 15px; font-family: inherit;
   background: var(--card-2); color: var(--ink);
   transition: border-color .15s, box-shadow .15s;
@@ -531,7 +539,8 @@ button { font-family: inherit; }
   border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 4px;
 }
 .chip-editor input {
-  flex: 1; min-width: 160px; border: 1px solid var(--border); border-radius: 6px;
+  /* --border-interactive — see #question's comment. */
+  flex: 1; min-width: 160px; border: 1px solid var(--border-interactive); border-radius: 6px;
   padding: 6px 9px; font-size: 12.5px; background: var(--card); color: var(--ink);
   font-family: inherit;
 }
@@ -677,17 +686,53 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 }
 .warning-item .warn-icon { flex: 0 0 auto; font-size: 15px; }
 
-.error-banner {
-  display: flex; gap: 10px; align-items: flex-start;
-  background: var(--status-critical-bg); color: var(--status-critical);
-  border: 1px solid color-mix(in srgb, var(--status-critical) 40%, transparent);
-  border-radius: var(--radius-sm); padding: 12px 14px; font-size: 13.5px; font-weight: 600;
+/* ── Failure state (turn.js's renderFailureState) ────────────────────
+ * Matches docs/design/mockups/completions.html's `.fail` pattern (that
+ * file is the drawn target for this anatomy): a left/logical-start
+ * accent border in the severity colour plus a tinted background, rather
+ * than text painted entirely in that colour — --ink reads at 13+:1
+ * against either tint in both themes (checked below), so legibility
+ * doesn't depend on how loud the tint is. DESIGN-INVARIANTS.md §8's
+ * anatomy is the bold lead (what happened), the lighter "why", the
+ * machine-readable code as the visually least important line, then real
+ * button controls — a first, primary one in brand teal (the recommended
+ * next step) and any further one a plain outline (an alternative). */
+.failure-state {
+  display: flex; flex-direction: column; gap: 6px;
+  border-inline-start: 4px solid var(--status-critical);
+  background: var(--status-critical-bg); color: var(--ink);
+  border-radius: var(--radius-sm); padding: 12px 15px; font-size: 13px;
   line-height: 1.6;
 }
-.error-code {
-  font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
-  background: rgba(0,0,0,.08); border-radius: 4px; padding: 1px 6px; font-weight: 700;
+/* --status-warn for a system hiccup a retry can plausibly fix
+ * (MODEL_UNAVAILABLE, LLM_OUTPUT_TRUNCATED); --status-critical (the
+ * default above) for a statement that never ran or a database that
+ * actively refused one. Checked: ink-on-warn-bg is 13.67 (light) / 12.77
+ * (dark), muted-on-warn-bg (the code line) is 5.06 (light) / 6.07 (dark)
+ * — both clear 4.5, same margin as the critical tint below. */
+.failure-warn {
+  border-inline-start-color: var(--status-warn); background: var(--status-warn-bg);
 }
+.failure-lead { font-weight: 800; font-size: 13.5px; margin: 0; }
+.failure-why { margin: 0; opacity: .92; }
+/* ink-on-critical-bg: 13.03 (light) / 14.22 (dark); muted-on-critical-bg
+ * (the code line below): 4.82 (light) / 6.75 (dark) — both new pairings,
+ * both checked, both well clear of 4.5. */
+.failure-code {
+  font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
+  color: var(--muted); direction: ltr; unicode-bidi: isolate; display: block;
+}
+.failure-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.failure-action-btn {
+  border: 1px solid var(--border); background: var(--card); color: var(--ink);
+  border-radius: var(--radius-pill); padding: 6px 14px; font-size: 12px;
+  font-weight: 700; cursor: pointer; font-family: inherit; min-height: 32px;
+}
+.failure-action-btn:hover { border-color: var(--teal); color: var(--teal-d); }
+/* --teal on white text is the pairing tests/web_ui/test_web_ui_contrast_
+ * and_failure.py checks (5.21 light / 4.76 dark) — safe to reuse as-is. */
+.failure-action-btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+.failure-action-btn.primary:hover { background: var(--teal-d); border-color: var(--teal-d); }
 
 /* ── LLM status strip ────────────────────────────────────────────── */
 .llm-strip {
@@ -908,17 +953,13 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .sql-collapse { font-size: 11.5px; }
 
 /* ── Result shapes (table.js / chart.js) ─────────────────────────────
- * Chart tokens — a fourth, narrow colour axis: FOCUS vs CONTEXT within
- * one chart only. Everything that is not the point is grey
- * (--chart-context); the point takes the brand hue (--chart-focus).
- * Aliased to existing tokens, defined once here on bare :root, so both
- * stay theme-correct automatically with no second set of dark-mode
- * overrides — never define a colour only inside a media/[data-theme]
- * block (see this file's header). */
-:root {
-  --chart-focus: var(--teal);
-  --chart-context: var(--muted);
-}
+ * Chart tokens (--chart-focus / --chart-context) moved to
+ * web/styles/tokens.css — this file's header says colours are only ever
+ * defined there, and once --chart-context stopped being an alias for
+ * --muted (DESIGN-INVARIANTS.md §10: aliasing put focus and context at
+ * the same perceived brightness, 1.03:1 in dark mode) it needed the
+ * same per-theme literal treatment every other colour in tokens.css
+ * gets, not a one-off `:root` block living here instead. */
 
 /* Numeric islands in RTL flow — the logical-property equivalent of the
  * result table's existing `dir="ltr"` wrapper, for a number that sits
@@ -1200,7 +1241,8 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 }
 .memory-rememberable-field { font-size: 12.5px; font-weight: 600; color: var(--ink); flex: 1 1 140px; }
 .memory-rememberable-input {
-  flex: 1 1 140px; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+  /* --border-interactive — see #question's comment. */
+  flex: 1 1 140px; min-width: 0; border: 1px solid var(--border-interactive); border-radius: 6px;
   padding: 6px 9px; font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit;
 }
 .memory-rememberable-error { flex-basis: 100%; font-size: 11.5px; color: var(--status-critical); }

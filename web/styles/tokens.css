@@ -12,12 +12,30 @@
  */
 
 :root {
-  /* Brand / chrome */
+  /* Brand / chrome
+   *
+   * --teal is the fill behind WHITE button labels (.btn-ask and every
+   * other `background: var(--teal); color: #fff` control) — that pairing
+   * is checked by tests/web_ui/test_web_ui_contrast_and_failure.py and
+   * must clear 4.5:1 (a 15px bold label is not "large text"; that
+   * exemption starts at 18.66px bold, so the ordinary text ratio
+   * applies). The original brand hue (#0d9488) is only 3.74:1 — same hue
+   * and saturation, darkened from lightness .32 to .26 to reach 5.21,
+   * which is exactly where the palette's own --teal-d already sat, so
+   * light mode's fix is that value promoted rather than a new one.
+   * --teal-d steps one lightness stop further down (.22) for :hover.
+   * --chart-focus below keeps the ORIGINAL, brighter hue on purpose: a
+   * chart line is read next to a grey context line, not printed with
+   * white text on top of it, so it never had a contrast problem and
+   * DESIGN-INVARIANTS.md §10 fixes it by lightening --chart-context
+   * instead of touching this. Flattening every teal in the app to one
+   * accessible-for-white-text shade would have been simpler and is
+   * exactly what "do not flatten the brand" (§11) rules out. */
   --navy: #0e2a47;
   --navy-2: #14375c;
   --navy-3: #1b436e;
-  --teal: #0d9488;
-  --teal-d: #0b7a70;
+  --teal: #0b7a70;
+  --teal-d: #09675f;
   --teal-l: #e7f6f2;
 
   /* Surface */
@@ -25,8 +43,25 @@
   --card: #ffffff;
   --card-2: #f8fafc;
   --border: #e2e8f0;
+  /* --border is for decorative hairlines (card edges, dividers) and
+   * deliberately stays low-contrast — 1.4.11's 3:1 floor is for what
+   * IDENTIFIES an interactive control, not for chrome that just
+   * separates regions. --border-interactive is that control boundary:
+   * the ask textarea (and every other input/textarea) previously relied
+   * on --border for its edge (1.23:1 against --card) with a fill that
+   * only differed from the page by 1.05 — neither signal reached 3:1, so
+   * nothing marked the field as a field. Same hue family as --muted
+   * (secondary text), one step more saturated so it reads as a boundary
+   * rather than as text that wandered onto an edge. */
+  --border-interactive: #7c8ba3;
   --ink: #1f2937;
-  --muted: #64748b;
+  /* #64748b on --card was 4.76 (fine) but only 4.40 on --bg — the page
+   * ground is very slightly lighter than the card, and that was enough
+   * to drop secondary text below 4.5 wherever it sits directly on the
+   * page rather than inside a card. #5b6b81 is the same hue, one step
+   * darker, and clears both surfaces (5.02 on --bg, 5.43 on --card).
+   * Dark mode's --muted already passes (7.30) and is unchanged. */
+  --muted: #5b6b81;
 
   /* Legacy aliases still used by a few components */
   --green: #10b981;
@@ -52,6 +87,22 @@
   --status-critical-bg: #fdeeee;
   --status-neutral: #64748b;
   --status-neutral-bg: #eef1f5;
+
+  /* Chart — a fourth, narrow colour axis: FOCUS vs CONTEXT within one
+   * chart only (web/js/render/chart.js). Declared here as its own
+   * literal pair, not aliased to --teal/--muted the way it used to be:
+   * DESIGN-INVARIANTS.md §10 measured that alias-based scheme at a
+   * focus/context contrast of 1.03 in dark mode — the same perceived
+   * brightness, so hue was the only remaining signal, which is exactly
+   * what colour-blind vision cannot use (ΔE 2.2 deutan, against a target
+   * floor of 15). Emphasis is a lightness-and-weight job, not a hue job,
+   * so --chart-focus keeps the full-brightness brand teal (identical to
+   * the pre-fix --teal, kept independent of it so the two can move for
+   * different reasons) and --chart-context is a new, deliberately paler
+   * blue-grey rather than a darkened --muted. Stroke width carries the
+   * rest of the distinction — see chart.js's "stroke-width" literals. */
+  --chart-focus: #0d9488;
+  --chart-context: #b8c4d4;
 
   /* Source of assumption (third colour axis) */
   --source-question: #0d9488;
@@ -87,13 +138,23 @@
     --navy: #16324f;
     --navy-2: #1c3f61;
     --navy-3: #234c74;
-    --teal: #14b8a6;
-    --teal-d: #0d9488;
+    /* Same hue/saturation as the original #14b8a6, darkened from
+     * lightness .40 to .28 — white-on-teal was 2.49:1 (worse than light
+     * mode's, since dark mode's brand teal was the brighter of the two
+     * to begin with) and this reaches 4.76. --teal-d steps to .22 for
+     * :hover. See the light :root's --teal comment for why --chart-focus
+     * is exempt and keeps the original #14b8a6. */
+    --teal: #0e8174;
+    --teal-d: #0b655b;
     --teal-l: #113330;
     --bg: #0b1220;
     --card: #131c2e;
     --card-2: #182238;
     --border: #263349;
+    /* Same reasoning as the light :root's --border-interactive: a hue
+     * near --muted, one step more saturated, so an input's edge reaches
+     * 3:1 against --card (4.40) without touching decorative --border. */
+    --border-interactive: #71839b;
     --ink: #e5e9f0;
     --muted: #94a3b8;
     --green: #34d399;
@@ -109,6 +170,13 @@
     --status-critical-bg: #2b1414;
     --status-neutral: #94a3b8;
     --status-neutral-bg: #1c2536;
+
+    /* See the light :root's --chart-focus/--chart-context comment.
+     * Focus keeps the original, pre-fix dark --teal (#14b8a6); context
+     * is a new dark blue-grey, not a darkened --muted, chosen so the
+     * pair clears 1.8:1 (measures 3.50) instead of the old 1.03:1. */
+    --chart-focus: #14b8a6;
+    --chart-context: #3d4c63;
 
     --source-question: #2dd4bf;
     --source-question-bg: #102a27;
@@ -131,13 +199,15 @@
   --navy: #16324f;
   --navy-2: #1c3f61;
   --navy-3: #234c74;
-  --teal: #14b8a6;
-  --teal-d: #0d9488;
+  /* Mirrors the @media dark block above — see its comments. */
+  --teal: #0e8174;
+  --teal-d: #0b655b;
   --teal-l: #113330;
   --bg: #0b1220;
   --card: #131c2e;
   --card-2: #182238;
   --border: #263349;
+  --border-interactive: #71839b;
   --ink: #e5e9f0;
   --muted: #94a3b8;
   --green: #34d399;
@@ -153,6 +223,9 @@
   --status-critical-bg: #2b1414;
   --status-neutral: #94a3b8;
   --status-neutral-bg: #1c2536;
+
+  --chart-focus: #14b8a6;
+  --chart-context: #3d4c63;
 
   --source-question: #2dd4bf;
   --source-question-bg: #102a27;
