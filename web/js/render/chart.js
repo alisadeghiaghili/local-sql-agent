@@ -310,8 +310,14 @@ function renderLineChart(rows, labelKey, values, focus) {
   for (let i = segStart; i < n; i++) focusPts.push(`${xAt(i)},${yAt(values[i])}`);
 
   if (contextPts.length > 1) {
+    // 1.5 against the focus segment's 3 below: weight is a redundant
+    // encoding of the same distinction --chart-context's lighter colour
+    // carries (DESIGN-INVARIANTS.md §10), not a stylistic choice — a
+    // colour-blind reader gets the emphasis from thickness even when the
+    // lightness gap is harder to judge, and the two together clear the
+    // >=1.8x margin a single signal near threshold would not.
     svg.appendChild(svgEl("polyline", {
-      fill: "none", stroke: "var(--chart-context)", "stroke-width": "2.5", "stroke-linejoin": "round",
+      fill: "none", stroke: "var(--chart-context)", "stroke-width": "1.5", "stroke-linejoin": "round",
       points: contextPts.join(" "),
     }));
   }
