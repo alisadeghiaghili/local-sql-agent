@@ -722,6 +722,16 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
   color: var(--muted); direction: ltr; unicode-bidi: isolate; display: block;
 }
+/* Wraps .failure-code with .failure-request-id (added when TurnErrorInfo
+ * carries one — guard rejections have none, see turn.js's isGuardRejected)
+ * on one row: both are "present but subordinate" per §8's copy discipline,
+ * so they share the code line's own muted/monospace treatment rather than
+ * competing for attention with each other. */
+.failure-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin: 0; }
+.failure-request-id {
+  font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
+  color: var(--muted); direction: ltr; unicode-bidi: isolate;
+}
 .failure-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .failure-action-btn {
   border: 1px solid var(--border); background: var(--card); color: var(--ink);

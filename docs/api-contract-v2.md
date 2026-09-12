@@ -169,7 +169,21 @@ as before this phase.
 
   "guard": {
     "verdict": "allowed",           // "allowed" | "rejected"
-    "rule": null,                   // populated on rejection
+    "rule": null,                   // free-text, populated on rejection --
+                                     // exact wording kept stable: the audit
+                                     // trail and security/sql_guard.py's own
+                                     // tests key off it verbatim
+    "reason": null,                 // populated on rejection: "denied_column"
+                                     // | "forbidden_statement" | "unknown_table"
+                                     // | "system_catalogue" | "other" -- lets
+                                     // the client pick a targeted next action
+                                     // (DESIGN-INVARIANTS.md §8) without
+                                     // parsing `rule`'s free text
+    "subject": null,                // the one column/table/keyword `reason`
+                                     // is about, when there is exactly one
+                                     // (e.g. "NationalID" for a denied column;
+                                     // null when the rejection is about the
+                                     // query's shape rather than one identifier)
     "injected_top": 10,
     "tables_touched": ["Contract", "Customer", "Ring"]
   },
@@ -203,7 +217,14 @@ as before this phase.
     "guard_ms": 6, "execute_ms": 480, "interpret_ms": 0
   },
 
-  "error": null                     // { "code": ..., "message": ... } on failure
+  "error": null                     // { "code": ..., "message": ..., "request_id": ... }
+                                     // on failure -- `request_id` is the SAME
+                                     // id the server logs this turn's audit
+                                     // record against (session.engine.
+                                     // TurnEngine._write_audit), so a user can
+                                     // quote it back to an operator; null on
+                                     // an older, rehydrated turn predating
+                                     // this field
 }
 ```
 
@@ -391,7 +412,7 @@ difference.
 | `interpretation_delta` | `{text}` | summary types out — only when the request set `interpret: true` |
 | `llm` | `llm` object | status strip populates |
 | `done` | `{turn}` | full Turn for the transcript |
-| `error` | `{code, message}` | error banner |
+| `error` | `{code, message, request_id}` | error banner |
 
 `POST .../turns` takes an optional `interpret` (default `false`). It is
 opt-in because producing a summary sends up to twenty rows of real result

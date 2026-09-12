@@ -813,6 +813,21 @@ function turnCtx() {
       $("question").focus();
       $("question").scrollIntoView({ behavior: "smooth", block: "center" });
     },
+    // "پرسش بدون «ستون»" — the targeted action DESIGN-INVARIANTS.md §8's
+    // table specifies for a denied-column refusal ("Ask without that
+    // column"), offered only when the guard named exactly one column
+    // (turn.js reads `turn.guard.subject`). Mirrors onRephrase's own
+    // model — puts an edited question back in the box and stops, rather
+    // than resubmitting for the analyst — but seeds an explicit exclusion
+    // instruction instead of the bare original question: resending the
+    // identical question would just be denied again by the same policy.
+    onAskWithoutColumn: (turnId, column) => {
+      const t = findTurn(turnId);
+      if (!t) return;
+      $("question").value = `${t.question} (بدون ستون «${column}»)`;
+      $("question").focus();
+      $("question").scrollIntoView({ behavior: "smooth", block: "center" });
+    },
     // "این عدد درست نیست" (admin panel phase 4). LIVE mode really submits
     // it to the backend, against the session this transcript is currently
     // showing; SIMULATED mode has no server to send it to, so it is
