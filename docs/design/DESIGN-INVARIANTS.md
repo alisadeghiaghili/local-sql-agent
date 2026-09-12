@@ -210,3 +210,157 @@ should make.
 | §5 breakpoints | `tests/web_ui/test_web_ui_rtl_layout.py` |
 
 A policy with no test is a preference. These have tests.
+
+---
+
+## 8. Failure has an anatomy, or it has no design
+
+`DESIGN.md` §2 lists "Failure — honest empty/error, with a next action" among
+the moments that matter. §5.2 then specifies only **"a successful turn"**, and
+none of the three mockups draws a failed one. The moment a user most needs
+design is the only one that has none.
+
+Failure is not an edge case here. Guard rejection, a denied column, model
+timeout, truncated model output and zero rows are all implemented paths with
+their own error codes.
+
+**Rule — every failure state renders three things, in this order:**
+
+1. **What happened**, in the analyst's terms, not the system's.
+2. **Why**, when the reason is knowable and useful.
+3. **The next action**, as a control they can press.
+
+An error code alone is not a failure state. It may appear, small, beside the
+prose — never instead of it.
+
+| Path | What happened (leading sentence) | Next action |
+|---|---|---|
+| Guard: denied column | The query did not run — a column it needed is restricted for your account. **Not** "no results" | Ask without that column · Request access |
+| Guard: forbidden statement | Refused before running: the generated query tried to change data | Rephrase · See the SQL |
+| `MODEL_UNAVAILABLE` | Your question was kept. The engine could not be reached — a system problem, not your question | Try again · Notify admin |
+| `LLM_OUTPUT_TRUNCATED` | The model stopped before finishing the query | Retry shorter · (operator: raise the cap) |
+| Zero rows | The query ran correctly and nothing matched. The likeliest cause is one of the assumptions | Offer each assumption as an editable chip |
+| Execution error | The database refused the query | Show the SQL · Report |
+
+The distinction that carries the most weight is the first row's: **"did not
+run" and "returned nothing" must never look the same.** An analyst who reads a
+guard rejection as an empty result concludes the data does not exist, and acts
+on it.
+
+Copy discipline (applies to every string above):
+
+* Name the subject. "The query did not run", not "Error occurred".
+* Never blame the user for a system fault; never absolve the system for a
+  user-correctable one.
+* The button says the action, not `OK`. "Ask without that column", not "Retry".
+* Keep the machine-readable code and the `request_id` visible but subordinate —
+  an operator needs them; the sentence is not for them.
+
+---
+
+## 9. What a user switches on is never hidden
+
+`DESIGN.md` §5.2 item 9 places the interpretation inside the collapsed details
+drawer. §14b already records burying assumptions there as a product error and
+corrects it. The same error was then made one item later, and not caught.
+
+This case is worse, because interpretation is not merely important — it is
+**opted into**. The analyst ticks a box whose label states its cost ("up to
+twenty rows to the model"). Hiding the thing they deliberately asked for is a
+contradiction, not a hierarchy.
+
+> **Rule.** Anything the user explicitly enabled renders in the main flow.
+> Progressive disclosure applies to what the product decided to show, never to
+> what the user decided to request.
+
+Corollary for the drawer's remaining contents: pipeline timings and the LLM
+status strip are shown *by the product*, so they may collapse. If a future
+setting lets an analyst turn the LLM strip on deliberately, it leaves the
+drawer by this rule.
+
+---
+
+## 10. Chart emphasis is a lightness job, not a hue job
+
+The line chart splits its series into a "context" segment and a "focus"
+segment and distinguishes them by hue. Measured with the `dataviz` skill's
+validator against the real tokens:
+
+| | normal vision ΔE | deuteranopia ΔE | focus↔context contrast |
+|---|---|---|---|
+| Light | 11.0 | 5.3 | 1.27 |
+| Dark | 11.9 | **2.2** | **1.03** |
+
+The target is ΔE ≥ 8 and a hard floor of 15 for normal vision. A contrast ratio
+of 1.03 means the two lines are the *same perceived brightness*: in dark mode
+the distinction the chart is built on does not exist for a colour-blind
+analyst, and is marginal for everyone else. The only secondary encoding present
+was a stroke-width difference of 2.5 against 3.
+
+The deeper error is the encoding choice. **Focus versus context is emphasis,
+not category.** Emphasis is carried by lightness and weight; hue carries
+identity. Two hues at the same lightness is the wrong tool, which is why a
+categorical validator flags it.
+
+**Rule.** Where the chart means "this part matters more", separate by
+lightness and stroke weight and keep the hue. Reserve hue changes for marks
+that mean *different things*, and run the validator on any categorical set.
+
+Corrected pair, keeping brand teal as the focus:
+
+| | focus | context | contrast | weights |
+|---|---|---|---|---|
+| Light | `#0d9488` | `#b8c4d4` | 2.12 | 1.5 → 3 |
+| Dark | `#14b8a6` | `#3d4c63` | 3.50 | 1.5 → 3 |
+
+Four redundant encodings then carry the distinction — lightness, weight, the
+focus point, the direct label — so hue is no longer the sole signal.
+
+---
+
+## 11. Accessibility, measured
+
+`DESIGN.md` §8 sets a bar. Nobody had checked the shipping tokens against it.
+Computed against `web/styles/tokens.css`:
+
+| Check | Light | Dark | WCAG |
+|---|---|---|---|
+| Body text on card | 14.68 ✅ | 13.98 ✅ | 1.4.3 (4.5) |
+| Secondary text on card | 4.76 ✅ | 6.64 ✅ | 1.4.3 |
+| Secondary text on page | **4.40 ❌** | 7.30 ✅ | 1.4.3 |
+| Primary action label | **3.74 ❌** | 6.84 ✅ | 1.4.3 |
+| Ask-field boundary | **1.23 ❌** | 1.34 ❌ | 1.4.11 (3.0) |
+| Focus indicator present | ✅ | ✅ | 2.4.7 |
+
+**The primary action fails, and it is the most-pressed control in the product.**
+White on `--teal #0d9488` is 3.74 in both directions, and a 15px bold label is
+not "large text" (that starts at 18.66px bold). `--teal-d #0b7a70` — already in
+the palette — measures 5.21.
+
+The ask field's boundary fails 1.4.11 twice over: its border against the card
+is 1.23 and its fill difference is 1.05, so neither identifies the control at
+the required 3:1. Decorative hairlines may stay light; an **interactive**
+boundary needs its own token.
+
+Secondary text is the marginal one: it passes inside a card (4.76) and fails on
+the page ground (4.40). `#5b6b81` measures 5.02.
+
+Note which column fails. The light theme carries every failure and the dark
+theme carries one. With §12's decision below, both ship.
+
+**Rule.** Contrast is computed, never judged. Any new or changed token pair in
+`tokens.css` is checked against 4.5 (text), 3.0 (interactive boundary and
+non-text) before it lands.
+
+---
+
+## 12. Theme — decided
+
+The question §4 raised is answered: **follow the system.**
+`prefers-color-scheme` decides, as it does today. No analyst's habits change,
+and the mockups are understood as the light half of a two-theme product rather
+than as a proposal to make light the default.
+
+This makes §11's light-mode failures live for roughly half the users rather
+than none, which is why they are listed as defects and not as theme-selection
+notes.

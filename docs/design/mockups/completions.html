@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تکمیل‌های طراحی — آنچه در ۵٫۰ کشیده نشده بود</title>
+<style>
+  :root {
+    --navy:#0e2a47; --teal:#0d9488; --teal-d:#0b7a70; --teal-l:#e7f6f2;
+    --bg:#f4f6fa; --card:#fff; --card-2:#f8fafc; --border:#e2e8f0;
+    --ink:#1f2937; --muted:#64748b;
+    --good:#10b981; --warn:#f59e0b; --crit:#e5484d;
+    --good-bg:#e9f9f1; --warn-bg:#fef6e7; --crit-bg:#fdeeee;
+    --radius:12px; --radius-sm:8px; --pill:999px;
+    --shadow:0 1px 2px rgba(15,23,42,.06),0 4px 14px rgba(15,23,42,.05);
+    /* chart, corrected: emphasis by lightness + weight, not by hue */
+    --chart-focus:#0d9488; --chart-context:#b8c4d4;
+    --sql-bg:#0d1117; --sql-text:#e6edf3; --sql-kw:#79c0ff; --sql-num:#e3b341;
+  }
+  .dark {
+    --navy:#0b1220; --teal:#14b8a6; --teal-l:#113330;
+    --bg:#0b1220; --card:#131c2e; --card-2:#0f1728; --border:#24324a;
+    --ink:#e7eaf0; --muted:#94a3b8;
+    --good-bg:#0e2a22; --warn-bg:#2c2312; --crit-bg:#2c1618;
+    --chart-focus:#14b8a6; --chart-context:#3d4c63;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Vazirmatn,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--ink);
+       font-size:14px;line-height:1.7;padding:28px 20px 70px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:21px;font-weight:800;color:var(--teal-d);margin-bottom:4px}
+  .dark h1{color:var(--teal)}
+  .lede{color:var(--muted);font-size:13px;margin-bottom:26px;max-width:70ch}
+  h2{font-size:15px;font-weight:800;margin:34px 0 6px;padding-bottom:7px;border-bottom:2px solid var(--teal)}
+  .why{color:var(--muted);font-size:12.5px;margin-bottom:14px;max-width:78ch}
+  .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+         padding:16px 18px;box-shadow:var(--shadow);margin-bottom:12px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:780px){.two{grid-template-columns:1fr}}
+  .tag{display:inline-block;font-size:10.5px;font-weight:800;border-radius:var(--pill);
+       padding:2px 9px;letter-spacing:.03em;margin-bottom:9px}
+  .tag.bad{background:var(--crit-bg);color:var(--crit)}
+  .tag.good{background:var(--good-bg);color:var(--good)}
+  .num{direction:ltr;unicode-bidi:isolate;font-family:Consolas,monospace;font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:start;padding:6px 9px;border-bottom:1px solid var(--border)}
+  th{color:var(--muted);font-size:10.5px;font-weight:700;text-transform:uppercase}
+  tr:last-child td{border-bottom:0}
+
+  /* failure anatomy */
+  .fail{border-inline-start:4px solid var(--crit);background:var(--crit-bg);
+        border-radius:var(--radius-sm);padding:12px 15px;margin-bottom:9px}
+  .fail.warn{border-inline-start-color:var(--warn);background:var(--warn-bg)}
+  .fail.neutral{border-inline-start-color:var(--muted);background:var(--card-2)}
+  .fail .hd{font-weight:800;font-size:13px;margin-bottom:3px;display:flex;gap:8px;align-items:center}
+  .fail .body{font-size:12.5px;color:var(--ink);opacity:.92}
+  .fail .act{margin-top:9px;display:flex;gap:8px;flex-wrap:wrap}
+  .fail button{border:1px solid var(--border);background:var(--card);color:var(--ink);
+    border-radius:var(--pill);padding:6px 14px;font:inherit;font-size:12px;font-weight:700;
+    cursor:pointer;min-height:32px}
+  .fail button.primary{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .code{font-family:Consolas,monospace;font-size:11.5px;color:var(--muted);direction:ltr;
+        unicode-bidi:isolate;display:block;margin-top:7px}
+
+  /* tap target demo */
+  .tt{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+  .tt .demo{outline:1px dashed var(--crit);outline-offset:2px}
+  .tt .demo.ok{outline-color:var(--good)}
+  label.toggle{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-weight:600}
+  label.toggle.now{min-height:20px}
+  label.toggle.fix{min-height:24px;padding-block:4px}
+  label.toggle input{width:13px;height:13px}
+  label.toggle.fix input{width:18px;height:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>تکمیل‌های طراحی ۵٫۰</h1>
+<p class="lede">این سند جایگزین ماک‌های موجود نیست. فقط چیزهایی را می‌کشد که سیاست طراحی
+نام برده ولی نکشیده بود، به‌علاوهٔ یک ایراد که با اجرای validator رنگ پیدا شد و با چشم دیدنی نبود.
+هر بخش عددی دارد که تصمیمش را توجیه می‌کند.</p>
+
+<!-- ════════ 1. CHART ════════ -->
+<h2>۱. تمایز تمرکز/زمینهٔ نمودار دیده نمی‌شود</h2>
+<p class="why">کل مکانیزم نمودار خطی این است که خط را به دو بخش تقسیم کند و با رنگ بگوید کدام مهم است.
+اندازه‌گیری‌شده با validator اسکیل dataviz: این تمایز برای تحلیل‌گر کوررنگ وجود ندارد و برای بقیه هم به‌سختی
+دیده می‌شود. خطای عمیق‌تر انتخاب رنگ نیست — تمرکز/زمینه یک تمایز <b>تأکیدی</b> است نه دسته‌ای،
+و ابزار تأکید روشنایی و وزن است نه رنگ‌مایه.</p>
+
+<div class="two">
+  <div class="panel">
+    <span class="tag bad">الان</span>
+    <svg viewBox="0 0 300 96" style="width:100%;height:auto">
+      <polyline fill="none" stroke="#64748b" stroke-width="2.5" points="20,74 76,62 132,66 188,44 244,26"/>
+      <circle cx="244" cy="26" r="4.5" fill="#0d9488"/>
+    </svg>
+    <table style="margin-top:10px">
+      <tr><th>سنجه</th><th class="num">مقدار</th></tr>
+      <tr><td>کنتراست تمرکز↔زمینه (روشن)</td><td class="num">۱٫۲۷</td></tr>
+      <tr><td>کنتراست تمرکز↔زمینه (تیره)</td><td class="num">۱٫۰۳</td></tr>
+      <tr><td>ΔE کوررنگی سبز-قرمز (تیره)</td><td class="num">۲٫۲</td></tr>
+      <tr><td>اختلاف وزن خط</td><td class="num">۲٫۵ ← ۳</td></tr>
+    </table>
+  </div>
+  <div class="panel">
+    <span class="tag good">پیشنهاد</span>
+    <svg viewBox="0 0 300 96" style="width:100%;height:auto">
+      <polyline fill="none" stroke="var(--chart-context)" stroke-width="1.5" points="20,74 76,62 132,66 188,44"/>
+      <polyline fill="none" stroke="var(--chart-focus)" stroke-width="3" points="188,44 244,26"/>
+      <circle cx="244" cy="26" r="4.5" fill="var(--chart-focus)"/>
+      <text x="244" y="16" text-anchor="end" font-size="10" fill="var(--ink)">۱٬۲۴۰</text>
+    </svg>
+    <table style="margin-top:10px">
+      <tr><th>سنجه</th><th class="num">مقدار</th></tr>
+      <tr><td>کنتراست تمرکز↔زمینه (روشن)</td><td class="num">۲٫۱۲</td></tr>
+      <tr><td>کنتراست تمرکز↔زمینه (تیره)</td><td class="num">۳٫۵۰</td></tr>
+      <tr><td>اختلاف وزن خط</td><td class="num">۱٫۵ ← ۳</td></tr>
+      <tr><td>کدگذاری‌های افزونه</td><td class="num">۴</td></tr>
+    </table>
+  </div>
+</div>
+<p class="why">رنگ برند دست‌نخورده می‌ماند؛ فقط رنگ زمینه روشن‌تر و خطش نازک‌تر می‌شود.
+چهار کدگذاری افزونه روی هم: روشنایی، وزن، نقطهٔ تمرکز، برچسب مستقیم — پس رنگ‌مایه دیگر تنها حامل معنا نیست.
+محور افقی هم در همین شاخه از راست‌به‌چپ به چپ‌به‌راست اصلاح شده، که علت «تصویر رشد، متن کاهش» بود.</p>
+
+<!-- ════════ 2. FAILURE ════════ -->
+<h2>۲. آناتومی شکست — لحظه‌ای که طراحی نداشت</h2>
+<p class="why">سیاست در بند ۲ «شکست» را جزو لحظه‌های مهم می‌شمارد، بعد بند ۵٫۲ فقط
+<b>«یک نوبت موفق»</b> را مشخص می‌کند. در این محصول شکست نادر نیست: رد گارد، ستون ممنوع، timeout،
+صفر ردیف و کوتاه‌شدگی خروجی مدل همه مسیرهای پیاده‌سازی‌شده‌اند. قاعده: هر شکست سه چیز دارد —
+<b>چه شد، چرا، و گام بعدی چیست</b>. هرگز فقط یک کد خطا.</p>
+
+<div class="fail">
+  <div class="hd">درخواست اجرا نشد — ستون خارج از دسترسی شما</div>
+  <div class="body">پرسش به ستونی اشاره داشت که برای حساب شما محدود شده. عدد نمایش داده نمی‌شود چون
+  اصلاً اجرا نشد، نه اینکه خالی باشد.</div>
+  <span class="code">GUARD · denied column 'NationalID'</span>
+  <div class="act"><button class="primary">پرسش بدون آن ستون</button><button>درخواست دسترسی</button></div>
+</div>
+
+<div class="fail warn">
+  <div class="hd">مدل زبانی در دسترس نیست</div>
+  <div class="body">پرسش شما ذخیره شد. اتصال به موتور برقرار نشد؛ این مشکل سامانه است نه پرسش شما.</div>
+  <span class="code">MODEL_UNAVAILABLE · شناسهٔ پیگیری r_abc123</span>
+  <div class="act"><button class="primary">تلاش دوباره</button><button>اطلاع به مدیر</button></div>
+</div>
+
+<div class="fail warn">
+  <div class="hd">پاسخ مدل ناتمام ماند</div>
+  <div class="body">مدل پیش از پایان SQL به سقف طول رسید. معمولاً با ساده‌تر کردن پرسش یا
+  بالا بردن سقف در تنظیمات حل می‌شود.</div>
+  <span class="code">LLM_OUTPUT_TRUNCATED · max_tokens ۵۱۲</span>
+  <div class="act"><button class="primary">دوباره با پرسش کوتاه‌تر</button></div>
+</div>
+
+<div class="fail neutral">
+  <div class="hd">صفر ردیف — و این خودش یک جواب است</div>
+  <div class="body">کوئری درست اجرا شد و چیزی مطابقت نداشت. محتمل‌ترین علت یکی از مفروضه‌هاست،
+  نه نبودن داده.</div>
+  <div class="act"><button>سال ۱۴۰۳ ← ۱۴۰۴</button><button>حذف فیلتر تالار</button><button>دیدن SQL</button></div>
+</div>
+
+<!-- ════════ 3. OPT-IN ════════ -->
+<h2>۳. چیزی که کاربر روشنش کرده، پنهان نمی‌شود</h2>
+<p class="why">بند ۵٫۲ تفسیر را داخل drawer جزئیات می‌گذارد. ولی تفسیر چیزی است که تحلیل‌گر با یک
+چک‌باکس <b>عمداً</b> روشنش کرده. این همان خطایی است که سیاست خودش در بند ۱۴b برای فرض‌ها تصحیح کرد و
+اینجا تکرار شد. قاعدهٔ عام: <b>هر چیزی که opt-in صریح کاربر باشد، هرگز پشت یک لایهٔ جمع‌شده نمی‌رود.</b></p>
+<div class="panel" style="border-inline-start:3px solid var(--teal)">
+  <div style="font-size:11px;font-weight:800;color:var(--teal-d);margin-bottom:4px">تفسیر نتیجه</div>
+  <div style="font-size:13.5px">مجموع خرید ده مشتری برتر در ۱۴۰۳ برابر ۶۸٬۹۹۰ میلیارد ریال بود؛
+  سه شرکت نخست ۴۲٪ آن را تشکیل می‌دهند.</div>
+  <div style="font-size:11.5px;color:var(--muted);margin-top:7px">برپایهٔ ۱۰ ردیف از ۱۰ ردیف نتیجه</div>
+</div>
+
+<!-- ════════ 4. TAP ════════ -->
+<h2>۴. هدف لمسی</h2>
+<p class="why">بند ۸ سیاست ۴۴×۴۴ می‌خواهد. چک‌باکس تفسیر روی UI فعلی <span class="num">۸۱×۲۰</span>
+اندازه گرفته شد و ماک همان الگو را بازتولید می‌کند. کف ۲۴ (خط انطباق WCAG 2.5.8) است و ۴۴ خط راحتی
+داخل breakpoint لمسی — چون قاعده‌ای که در چگالی دسکتاپ کسی رعایتش نکند حذف می‌شود.</p>
+<div class="tt">
+  <div><span class="tag bad">الان ۸۱×۲۰</span><br>
+    <label class="toggle now demo"><input type="checkbox"> تفسیر نتیجه</label></div>
+  <div><span class="tag good">پیشنهاد ۸۱×۲۸</span><br>
+    <label class="toggle fix demo ok"><input type="checkbox"> تفسیر نتیجه</label></div>
+</div>
+
+<div style="margin-top:34px;padding:14px 16px;border-radius:var(--radius-sm);
+     background:var(--teal-l);border-inline-start:3px solid var(--teal);font-size:12.5px">
+  این صفحه هر دو تم را در یک فایل دارد — کلاس <span class="num">.dark</span> روی ریشه.
+  ماک‌های موجود فقط روشن بودند در حالی که محصول تیره رندر می‌شود، و آن یک تصمیم اعلام‌نشده دربارهٔ
+  تم پیش‌فرض بود نه یک ماک گمشده.
+</div>
+
+</div>
+</body>
+</html>
