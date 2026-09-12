@@ -79,34 +79,87 @@ function indexOfMax(values) {
   return idx;
 }
 
-/** Builds 2-4 named framings of the same (rows, labelKey, measureKey),
+/* A ranking of ten customers, sorted descending by traded volume, once
+ * rendered as a LINE chart under a headline claiming the amount "was
+ * declining" — the rows carried no time at all, only rank, so the
+ * downward-sloping line was a shape the data never had, and the sentence
+ * then reported that invented shape as fact. The unconditional "line"
+ * framing below is exactly what did that.
+ *
+ * `isSequenceLabel` is the one gate that must hold before a line — or the
+ * split-bar "نیمهٔ دوم/اول" framing, which is equally a property of an
+ * ordered series — is ever offered. Two signals only, both available
+ * client-side per session/engine.py::_infer_type's frozen column-type
+ * vocabulary ("number" | "string" | "boolean" | "datetime"):
+ *
+ *   1. a declared `datetime` type — the strongest signal, because it
+ *      comes from pandas actually parsing the column's values, not from
+ *      guessing at its name;
+ *   2. the column NAME matching one of the calendar words the project's
+ *      own schema uses for its Date dimension (see
+ *      project_config.example/schema.yaml: CalendarDate, Year, Month) —
+ *      plus their Persian equivalents and "day"/"quarter", the other
+ *      granularities the same dimension could reasonably be sliced to.
+ *
+ * `"string"` alone is deliberately never treated as a sequence signal —
+ * that is precisely the assumption that drew a trend line through
+ * customer names. A generic label ("name", "L", a customer/broker/ring
+ * column) falls through both checks and gets no line, no matter how the
+ * rows happen to be sorted. */
+const SEQUENCE_LABEL_WORDS = ["date", "day", "month", "quarter", "year", "تاریخ", "روز", "ماه", "فصل", "سال"];
+
+function isSequenceLabel(labelKey, labelType) {
+  if (labelType === "datetime") return true;
+  const key = String(labelKey || "").toLowerCase();
+  return SEQUENCE_LABEL_WORDS.some((word) => key.includes(word));
+}
+
+/** Builds 1-4 named framings of the same (rows, labelKey, measureKey),
  * plus, once the category count makes it genuinely illegible, one
  * explicitly REJECTED framing (pie) with its reason — never silently
  * omitted, per the brief: an analyst looking for that option deserves an
- * answer. Pure: no DOM access. */
-export function chooseFramings(rows, labelKey, measureKey) {
+ * answer. Pure: no DOM access.
+ *
+ * `options.labelType` carries the label column's declared type
+ * (`session/models.py`'s `ResultColumn.type`) when the caller has it, so
+ * a `datetime` column counts as a sequence even when its name matches no
+ * known calendar word — see `isSequenceLabel`. Optional and defaulted so
+ * existing callers that never had this information keep working. */
+export function chooseFramings(rows, labelKey, measureKey, options = {}) {
   const values = numericValues(rows, measureKey);
   const n = values.length;
   const maxIdx = indexOfMax(values);
+  const isSequence = isSequenceLabel(labelKey, options.labelType);
 
-  const framings = [
-    {
+  const framings = [];
+
+  if (isSequence) {
+    framings.push({
       kind: "line",
       label: "خط",
       headline: lineHeadline(rows, labelKey, values, maxIdx),
       reason: "سنجه در طول یک توالی است؛ خط پیوستگی روند را نشان می‌دهد و با جملهٔ تفسیر می‌خواند.",
       rejected: false,
-    },
-    {
-      kind: "bar",
-      label: "میلهٔ افقی مرتب",
-      headline: `${rows[maxIdx][labelKey]} بیشترین مقدار را داشت`,
-      reason: "اگر رتبه مهم است نه توالی — میلهٔ افقی برای برچسب فارسی خواناتر است.",
-      rejected: false,
-    },
-  ];
+    });
+  }
 
-  if (n >= 4) {
+  // Bar is offered unconditionally — a ranking's headline is about rank,
+  // never a trend word, so it carries no assumption a categorical label
+  // could falsify. It is pushed first when there is no line ahead of it,
+  // which is what makes it the DEFAULT framing (index 0, see
+  // renderChartAndTable's `activeIdx`) for exactly the categorical case
+  // this fix is about.
+  framings.push({
+    kind: "bar",
+    label: "میلهٔ افقی مرتب",
+    headline: `${rows[maxIdx][labelKey]} بیشترین مقدار را داشت`,
+    reason: isSequence
+      ? "اگر رتبه مهم است نه توالی — میلهٔ افقی برای برچسب فارسی خواناتر است."
+      : "برچسب‌ها یک توالی نیستند، رتبه‌بندی‌اند — میلهٔ افقی مستقیم رتبه را نشان می‌دهد.",
+    rejected: false,
+  });
+
+  if (isSequence && n >= 4) {
     const half = Math.floor(n / 2);
     const firstHalf = values.slice(0, half).reduce((a, b) => a + b, 0);
     const secondHalf = values.slice(half).reduce((a, b) => a + b, 0);
@@ -137,11 +190,44 @@ export function chooseFramings(rows, labelKey, measureKey) {
 }
 
 /** Derives which data point carries the message for a chosen framing, and
- * names the rule used — see this module's docstring. Pure: no DOM access. */
-export function chooseFocus(values, framingKind) {
+ * names the rule used — see this module's docstring. Pure: no DOM access.
+ *
+ * Two calling conventions, dispatched on the shape of the first argument
+ * rather than on argument count, because both are load-bearing:
+ *
+ *   - `chooseFocus(rows, labelKey, measureKey, framingKind)` — the form
+ *     this fix needs, since deriving `uniformLine` below only makes sense
+ *     once the caller can be told which row is which without redoing
+ *     `numericValues` itself.
+ *   - `chooseFocus(values, framingKind)` — the pre-existing form, kept
+ *     working because `tests/web_ui/run_result_shapes.mjs` already calls
+ *     it this way and this fix has no reason to break a caller that only
+ *     ever needed the numbers. */
+export function chooseFocus(arg1, arg2, arg3, arg4) {
+  const usesRows = Array.isArray(arg1) && arg1.length > 0 && typeof arg1[0] === "object" && arg1[0] !== null;
+  const values = usesRows ? numericValues(arg1, arg3) : arg1;
+  const framingKind = usesRows ? arg4 : arg2;
+
   if (!values.length) return { index: -1, rule: "none" };
   if (framingKind === "line" || framingKind === "bar") {
-    return { index: indexOfMax(values), rule: "max" };
+    const index = indexOfMax(values);
+    const focus = { index, rule: "max" };
+    if (framingKind === "line") {
+      // renderLineChart splits the line into a grey "context" segment
+      // (indices 0..segStart) and a brand-hue "focus" segment
+      // (segStart..end); the context polyline is only drawn once it has
+      // more than one point. A ranking's focus is its maximum, which for
+      // a DESCENDING series — the exact shape of the reported defect —
+      // sits at index 0, so segStart is always 0 and the context segment
+      // is a single point: the whole line renders in the focus colour by
+      // construction, not by accident. Naming that here as `uniformLine`
+      // turns it into a decision the render layer (and this module's own
+      // tests) can see and state, instead of leaving it to be discovered
+      // as an empty array inside renderLineChart.
+      const segStart = Math.max(0, index - 1);
+      focus.uniformLine = segStart < 1;
+    }
+    return focus;
   }
   if (framingKind === "split-bar") {
     return { index: values.length - 1, rule: "latest" };
@@ -171,7 +257,7 @@ function figureTile(label, value) {
   return tile;
 }
 
-function renderFiguresStrip(rows, labelKey, values) {
+function renderFiguresStrip(rows, labelKey, values, isSequence) {
   const wrap = document.createElement("div");
   wrap.className = "figures-strip";
 
@@ -179,7 +265,14 @@ function renderFiguresStrip(rows, labelKey, values) {
   wrap.appendChild(figureTile("مجموع", nf.format(total)));
   wrap.appendChild(figureTile("تعداد نقاط", faNum(values.length)));
 
-  if (values.length >= 4) {
+  // Same gate as chooseFramings' "split-bar" framing, and for the same
+  // reason: a first-half/second-half split is only a meaningful figure
+  // over an ORDERED series. This tile lives outside chooseFramings (it is
+  // always shown, not one of the clickable story options), which is
+  // exactly how it slipped past the fix there in review — a ranking of
+  // ten customers has no first half, and this tile printed one anyway
+  // until it was gated here too.
+  if (isSequence && values.length >= 4) {
     const half = Math.floor(values.length / 2);
     const firstHalf = values.slice(0, half).reduce((a, b) => a + b, 0);
     const secondHalf = values.slice(half).reduce((a, b) => a + b, 0);
@@ -309,7 +402,13 @@ function renderLineChart(rows, labelKey, values, focus) {
   const focusPts = [];
   for (let i = segStart; i < n; i++) focusPts.push(`${xAt(i)},${yAt(values[i])}`);
 
-  if (contextPts.length > 1) {
+  // `focus.uniformLine` (see chooseFocus) names the same condition this
+  // length check tests, deliberately: a ranking's focus sits at index 0,
+  // so `contextPts` never has more than one point and the check below is
+  // never a coincidence. Keeping both means a future caller that builds
+  // a focus object by hand still gets the safe (context-skipped)
+  // behaviour rather than a two-point polyline degenerating into a dot.
+  if (!focus.uniformLine && contextPts.length > 1) {
     // 1.5 against the focus segment's 3 below: weight is a redundant
     // encoding of the same distinction --chart-context's lighter colour
     // carries (DESIGN-INVARIANTS.md §10), not a stylistic choice — a
@@ -514,7 +613,12 @@ export function renderChartAndTable(result) {
   const labelKey = labelCol.name;
   const values = numericValues(rows, measureKey);
 
-  const framings = chooseFramings(rows, labelKey, measureKey);
+  // labelCol.type is the same declared type table.js's own determineShape
+  // reads off session/models.py's ResultColumn -- passing it through is
+  // what lets a genuine datetime column count as a sequence even when its
+  // name matches none of chooseFramings' recognised calendar words.
+  const isSequence = isSequenceLabel(labelKey, labelCol.type);
+  const framings = chooseFramings(rows, labelKey, measureKey, { labelType: labelCol.type });
   let activeIdx = 0;
 
   const wrap = document.createElement("div");
@@ -589,7 +693,7 @@ export function renderChartAndTable(result) {
   }
   renderChart();
 
-  wrap.appendChild(renderFiguresStrip(rows, labelKey, values));
+  wrap.appendChild(renderFiguresStrip(rows, labelKey, values, isSequence));
 
   const viewSwitch = document.createElement("div");
   viewSwitch.className = "view-switch";
