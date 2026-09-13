@@ -51,10 +51,15 @@
       <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 8a3 3 0 016 0v1h1a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2v-6a2 2 0 012-2h1V8zm3 4v4m-2-2h4"/></svg>
       <span data-i18n="memory">حافظهٔ تحلیلی</span>
     </button>
+    <!-- Static pre-JS fallback: mirrors setHealth's own DOM shape (main.js)
+         so the first real render never has to change structure, only
+         state. Starts "unknown", not "ok" -- main.js calls refreshHealth()
+         on boot, but until that resolves, claiming every service is up is
+         the same false-all-clear this rail was rewritten to stop making. -->
     <div class="health" id="health" role="status" aria-live="polite">
-      <span class="pill"><span class="dot dot-ok"></span>API</span>
-      <span class="pill"><span class="dot dot-ok"></span>LLM</span>
-      <span class="pill"><span class="dot dot-ok"></span>DB</span>
+      <span class="pill" aria-label="API: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">API</span><span class="pill-state">نامشخص</span></span>
+      <span class="pill" aria-label="LLM: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">LLM</span><span class="pill-state">نامشخص</span></span>
+      <span class="pill" aria-label="DB: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">DB</span><span class="pill-state">نامشخص</span></span>
     </div>
     <!-- User menu: theme, language, API key. One place for identity and
          preference chrome so the topbar stays readable on a 13" screen. -->
