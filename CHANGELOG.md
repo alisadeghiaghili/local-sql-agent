@@ -81,14 +81,6 @@ against a running server after the fix, not only in unit tests.
   and the equivalent reverse-proxy configuration documented instead, so the
   page no longer logs a console error on every load.
 
-### Not in this release
-
-- **Finding 1 — real domain configuration in the public git history.** Schema
-  and business-logic YAML committed in an early commit remains reachable in the
-  repository's history. Untracking it does not remove it, and rewriting history
-  or changing repository visibility is an irreversible decision left to the
-  owner; it is deliberately not part of this code release.
-
 ## [4.12.0] — 2026-09-08
 
 ### Added
