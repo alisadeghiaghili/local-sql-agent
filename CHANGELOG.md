@@ -45,9 +45,12 @@ against a running server after the fix, not only in unit tests.
   first pass missed**, caught by a post-remediation live re-test — logs the raw
   error server-side and returns a generic summary, since `TurnErrorInfo` has no
   client-safe field to carry detail.
-- **HTTP security headers are sent, and the framework banner is dropped**
-  (Medium). Responses now carry `X-Content-Type-Options`, `X-Frame-Options` and
-  `Referrer-Policy`.
+- **HTTP security headers are sent** (Medium). Responses now carry
+  `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. The
+  middleware also strips an app-set `Server` header, but uvicorn appends its own
+  at the protocol layer where no middleware can reach it, so the documented
+  start command now passes `--no-server-header` — the only place the banner is
+  actually suppressed on the wire (`README.md`, `docs/deployment-runbook.md`).
 - **`/health` is cached, so an unauthenticated flood cannot drain the query
   pool** (Medium). The probe result is cached briefly; a load balancer and an
   attacker both get the cached answer instead of one live pool probe per call.
