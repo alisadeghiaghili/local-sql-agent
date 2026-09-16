@@ -274,12 +274,50 @@ function setMode(mode) {
   refreshSessionsForMode();
 }
 
+// The dot alone carried the state for nobody but a reader who both sees
+// colour and can tell #10b981 apart from #e5484d at a glance. WCAG 1.4.1:
+// colour may never be the *only* carrier. Two populations got nothing from
+// the old markup — a colour-blind analyst staring at the topbar, and a
+// screen-reader user for whom #health's role="status" aria-live="polite"
+// read "API LLM DB" on every poll, identically, whatever the state. The
+// fix is the state word itself, in two places: as real, visible text next
+// to the name (so a colour-blind reader sees the difference, not just a
+// hue) and as the pill's aria-label (so the live region announces "API:
+// down" instead of re-reading three names that never change). Values from
+// /health (h.llmDetail, h.dbDetail, forwarded to setHealth as `label`) are
+// never interpolated into markup here — see DESIGN-INVARIANTS.md §1.3.
+const HEALTH_STATE_LABEL_KEY = { ok: "healthStateUp", down: "healthStateDown", unknown: "healthStateUnknown" };
+
 function setHealth(api_, llm, db, label) {
   const dot = (ok) => (ok === null ? "unknown" : ok ? "ok" : "down");
-  $("health").innerHTML = [
-    ["API", api_], ["LLM", llm], ["DB", db],
-  ].map(([name, ok]) => `<span class="pill"><span class="dot dot-${dot(ok)}"></span>${name}</span>`).join("");
-  $("health").title = label;
+  const host = $("health");
+  host.replaceChildren(
+    ...[["API", api_], ["LLM", llm], ["DB", db]].map(([name, ok]) => {
+      const state = dot(ok);
+      const stateLabel = t(HEALTH_STATE_LABEL_KEY[state]);
+
+      const dotEl = document.createElement("span");
+      dotEl.className = `dot dot-${state}`;
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "pill-name";
+      nameEl.textContent = name;
+
+      const stateEl = document.createElement("span");
+      stateEl.className = "pill-state";
+      stateEl.textContent = stateLabel;
+
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.append(dotEl, nameEl, stateEl);
+      // aria-label wins over the pill's own text nodes as its accessible
+      // name, which is what keeps the live-region announcement a clean
+      // "API: down" rather than a run-on of three separately-read spans.
+      pill.setAttribute("aria-label", `${name}: ${stateLabel}`);
+      return pill;
+    }),
+  );
+  host.title = label;
 }
 
 async function refreshHealth() {
