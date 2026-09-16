@@ -35,7 +35,18 @@
       greedy: true,
     }].concat(Array.isArray(sql.string) ? sql.string : [sql.string]);
 
-    sql.__tsqlPatched = true;
+    // Non-enumerable on purpose: Prism tokenises by iterating the grammar's
+    // enumerable keys and using each value as a token. A plain
+    // `sql.__tsqlPatched = true` puts a boolean in that iteration, Prism calls
+    // `.exec` on it, throws, and highlightSql falls back to plain text -- so
+    // this "already patched" marker silently killed all SQL highlighting. It
+    // stays readable (the guard above reads it) but hidden from enumeration.
+    Object.defineProperty(sql, "__tsqlPatched", {
+      value: true,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
     lib.languages.sql = sql;
   }
 
