@@ -13,6 +13,7 @@
 "use strict";
 
 import { fmt, technical } from "../num.js";
+import { icon as svgIcon } from "../icons.js";
 
 /** True when the model's answer was cut off by the token budget (contract
  * §6 `finish_reason: "length"`). This qualifies the WHOLE interpretation,
@@ -29,14 +30,16 @@ export function renderTruncationQualifier() {
   const div = document.createElement("div");
   div.className = "answer-qualifier";
   div.setAttribute("role", "alert");
-  const icon = document.createElement("span");
-  icon.className = "warn-icon";
-  icon.textContent = "⚠";
-  icon.setAttribute("aria-hidden", "true");
+  const warnIcon = document.createElement("span");
+  warnIcon.className = "warn-icon";
+  // Stays aria-hidden: the adjacent text node carries the actual message,
+  // and this whole block already sits inside role="alert".
+  warnIcon.setAttribute("aria-hidden", "true");
+  warnIcon.appendChild(svgIcon("alert"));
   const text = document.createElement("span");
   text.textContent =
     "پاسخ مدل به سقف طول رسید (finish_reason: length) و ممکن است ناقص باشد — این نکته پیش از تفسیر زیر در نظر گرفته شود.";
-  div.appendChild(icon);
+  div.appendChild(warnIcon);
   div.appendChild(text);
   return div;
 }
@@ -145,7 +148,7 @@ export function renderLlmStatus(llm) {
   if (llm.prompt_tokens > 0) {
     const cacheBadge = document.createElement("span");
     cacheBadge.className = `cache-badge ${llm.prefix_cache_hit ? "hit" : "miss"}`;
-    cacheBadge.textContent = llm.prefix_cache_hit ? "⚡ prefix cache HIT" : "prefix cache MISS";
+    cacheBadge.textContent = llm.prefix_cache_hit ? "prefix cache HIT" : "prefix cache MISS";
     head.appendChild(cacheBadge);
   }
 

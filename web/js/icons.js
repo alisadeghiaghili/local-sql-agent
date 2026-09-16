@@ -31,6 +31,10 @@ const PATHS = {
   shield: "M12 3l8 3v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3z",
   pin: "M12 3v4m0 0l-2 6h4l-2-6zm0 10v8",
   edit: "M4 20h4l10-10-4-4L4 16v4zm10-12l4 4",
+  // Lid + body + two score lines on the same 24×24 stroke grid as the rest
+  // of the set — kept purely geometric (no emoji glyph variance across
+  // platforms) so the delete action reads identically everywhere.
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 002 2h6a2 2 0 002-2l1-13M10 11v6m4-6v6",
 };
 
 /**

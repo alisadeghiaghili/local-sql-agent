@@ -97,8 +97,8 @@ const params = new URLSearchParams(location.search);
 // resolveBootBaseUrl's `?base=` param is the final, highest-precedence
 // override, for a one-off load. Same layering for mode: state.js's own
 // default ("live" — see its comment) unless `?live=0`/`?live=1` says
-// otherwise; the topbar mode-switch buttons can still change it after
-// boot either way.
+// otherwise. Run mode is URL-only now, decided once at boot; there is no
+// topbar control left that can change it afterward.
 state.baseUrl = DEFAULT_BASE_URL;
 loadPersisted();
 state.mode = resolveBootMode(params, state.mode);
@@ -126,9 +126,6 @@ setInterval(tickClock, 1000);
 /* ── Theme / user menu ─────────────────────────────────────────────── */
 function wireTopbar() {
   wireUserMenu();
-
-  $("mode-simulated").addEventListener("click", () => setMode("simulated"));
-  $("mode-live").addEventListener("click", () => setMode("live"));
 
   $("live-key-save").addEventListener("click", () => {
     const val = $("live-key-input").value;
@@ -290,8 +287,6 @@ function promptForApiKey(message, { rejected = false } = {}) {
 /* ── Mode switch ───────────────────────────────────────────────────── */
 function setMode(mode) {
   state.mode = mode;
-  $("mode-simulated").classList.toggle("active", mode === "simulated");
-  $("mode-live").classList.toggle("active", mode === "live");
   updateKeyStatus();
 
   const foot = $("foot-mode");

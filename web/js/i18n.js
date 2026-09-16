@@ -22,9 +22,6 @@ const STRINGS = {
   fa: {
     productTitle: "عامل هوشمند SQL",
     productTagline: "پرسش به زبان فارسی ← SQL ← پاسخ، روی زیرساخت خودتان",
-    modeGroup: "حالت اجرا",
-    modeSimulated: "نمایشی",
-    modeLive: "زندهٔ API",
     memory: "حافظهٔ تحلیلی",
     health: "سلامت",
     healthStateUp: "سالم",
@@ -68,9 +65,6 @@ const STRINGS = {
   en: {
     productTitle: "SQL Agent",
     productTagline: "Ask in natural language → SQL → answer, on your infrastructure",
-    modeGroup: "Run mode",
-    modeSimulated: "Demo",
-    modeLive: "Live API",
     memory: "Memory",
     health: "Health",
     healthStateUp: "up",
