@@ -85,8 +85,8 @@ the production path **or** FastAPI ships session login with tests.
 - [x] Site: no Google Fonts, unminified, valid hero SQL
 - [x] Dark + 375px verified
 - [x] CHANGELOG 5.0.0 == `core/version.py`
-- [ ] Tag `v5.0.0`
-- [ ] PR merged; feature branches deleted
+- [x] Tag `v5.0.0`
+- [x] PR merged; feature branches deleted
 
 ## PR policy
 
