@@ -74,6 +74,14 @@ _SQL_DISPLAY_IMPORT_IN_TURN = re.compile(
 _ICONS_IMPORT_IN_ASSUMPTIONS = re.compile(
     r'^import \{ icon \} from "\.\./icons\.js";$', re.MULTILINE,
 )
+# table.js and llm-status.js import the same icon set under an alias, because
+# both already bind a local `icon` for the span they build. Kept as its own
+# asserted rewrite rather than a silent str.replace: if either import is
+# reshaped, this must fail loudly here instead of staging a module Node cannot
+# resolve, which surfaces as ERR_MODULE_NOT_FOUND with no hint of the cause.
+_ICONS_IMPORT_ALIASED = re.compile(
+    r'^import \{ icon as svgIcon \} from "\.\./icons\.js";$', re.MULTILINE,
+)
 _PIPELINE_IMPORT = re.compile(
     r'^import \{ renderPipeline, renderStageStrip \} from "\./pipeline\.js";$', re.MULTILINE
 )
@@ -146,6 +154,16 @@ def _prepare_copies(tmp_path: Path) -> Path:
         _ICONS_IMPORT_IN_ASSUMPTIONS,
         'import { icon } from "./icons.mjs";',
         assumptions_src, "assumptions.js -> icons.js",
+    )
+    table_src = _subn_or_fail(
+        _ICONS_IMPORT_ALIASED,
+        'import { icon as svgIcon } from "./icons.mjs";',
+        table_src, "table.js -> icons.js",
+    )
+    llm_status_src = _subn_or_fail(
+        _ICONS_IMPORT_ALIASED,
+        'import { icon as svgIcon } from "./icons.mjs";',
+        llm_status_src, "llm-status.js -> icons.js",
     )
     turn_src = _subn_or_fail(
         _PIPELINE_IMPORT,

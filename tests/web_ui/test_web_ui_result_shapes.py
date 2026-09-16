@@ -109,9 +109,20 @@ def _prepare_copy(tmp_path: Path) -> Path:
     assumptions_src = _ASSUMPTIONS_JS.read_text(encoding="utf-8")
     export_src = _EXPORT_JS.read_text(encoding="utf-8")
 
-    assumptions_src = assumptions_src.replace(
-        'from "../icons.js"', 'from "./icons.mjs"'
-    ).replace('from "./icons.js"', 'from "./icons.mjs"')
+    # Applied to every staged module, not just assumptions.js. table.js began
+    # importing the icon set when chrome emoji were replaced with SVG, and the
+    # staged copies sit flat in one temp directory -- so an unrewritten
+    # "../icons.js" resolves ABOVE that directory and Node raises
+    # ERR_MODULE_NOT_FOUND before a single assertion in this file runs. The
+    # previous version rewrote one hard-coded source, which encoded a snapshot
+    # of the dependency graph rather than the graph itself.
+    def _rewrite_icons_import(src: str) -> str:
+        return src.replace('from "../icons.js"', 'from "./icons.mjs"').replace(
+            'from "./icons.js"', 'from "./icons.mjs"'
+        )
+
+    assumptions_src = _rewrite_icons_import(assumptions_src)
+    table_src = _rewrite_icons_import(table_src)
     table_src = _subn_or_fail(_CHART_IMPORT, 'import { renderChartAndTable } from "./chart.mjs";', table_src, "table.js -> chart.js")
     table_src = _subn_or_fail(_EXPORT_IMPORT, 'import { downloadResultAsCsv } from "./export.mjs";', table_src, "table.js -> export.js")
     table_src = _subn_or_fail(_ASSUMPTIONS_IMPORT, 'import { SOURCE_LABELS } from "./assumptions.mjs";', table_src, "table.js -> assumptions.js")
