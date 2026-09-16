@@ -46,6 +46,13 @@ function scrollIntoViewMaybeSmooth(el, opts) {
   el.scrollIntoView({ ...opts, behavior: reduced ? "auto" : "smooth" });
 }
 
+// Declared before the boot section: setMode(state.mode) runs at module load
+// and, in simulated mode, calls setHealth() synchronously — so the label map
+// setHealth reads must already be initialized here, not in the module's lower
+// half. Declaring it below the boot call put it in the temporal dead zone at
+// boot, which threw a ReferenceError and killed the entire simulated UI.
+const HEALTH_STATE_LABEL_KEY = { ok: "healthStateUp", down: "healthStateDown", unknown: "healthStateUnknown" };
+
 /* ── Boot ──────────────────────────────────────────────────────────── */
 // T-SQL Prism patch must run before the first Prism.tokenize — Prism
 // expands greedy grammar rules in place on first use. Patching after a
@@ -286,8 +293,6 @@ function setMode(mode) {
 // down" instead of re-reading three names that never change). Values from
 // /health (h.llmDetail, h.dbDetail, forwarded to setHealth as `label`) are
 // never interpolated into markup here — see DESIGN-INVARIANTS.md §1.3.
-const HEALTH_STATE_LABEL_KEY = { ok: "healthStateUp", down: "healthStateDown", unknown: "healthStateUnknown" };
-
 function setHealth(api_, llm, db, label) {
   const dot = (ok) => (ok === null ? "unknown" : ok ? "ok" : "down");
   const host = $("health");
