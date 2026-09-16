@@ -340,7 +340,13 @@ async def ask_turn(
 ):
     if request.query_params.get("stream") in ("1", "true"):
         return StreamingResponse(
-            _turn_event_stream(session_id, req.question, principal, req.interpret),
+            _turn_event_stream(
+                session_id,
+                req.question,
+                principal,
+                req.interpret,
+                request_id=getattr(request.state, "request_id", ""),
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -448,7 +454,12 @@ def _sse_event(name: str, data: dict) -> str:
 
 
 async def _turn_event_stream(
-    session_id: str, question: str, principal: Principal, interpret: bool = False,
+    session_id: str,
+    question: str,
+    principal: Principal,
+    interpret: bool = False,
+    *,
+    request_id: str = "",
 ):
     """Yield SSE events per contract §7.
 
@@ -459,6 +470,18 @@ async def _turn_event_stream(
     ``sql``, ``rows``, ...) still arrives together, because the engine
     computes them together -- this is not per-token streaming, and the
     content events are emitted once there is content to emit.
+
+    ``request_id`` (Finding 11, 2026 audit): this generator builds its own
+    ``error`` SSE event instead of going through ``api/errors.py``'s HTTP
+    handlers, which is exactly why it regressed independently of the fix
+    there -- a separate path with the same bug needs its own fix. The
+    unexpected-exception branch below used to yield ``str(exc)`` verbatim,
+    which is how a live transport failure (the LLM endpoint's host, port
+    and retry trace) reached an analyst over this stream. It now yields a
+    generic message plus this request id, and logs the real exception
+    server-side via ``logger.exception`` above -- so an operator can still
+    find the failure, and the client still has something to quote back
+    when reporting it, without the client itself seeing the internal detail.
     """
     turn: Turn | None = None
     try:
@@ -474,7 +497,17 @@ async def _turn_event_stream(
         return
     except Exception as exc:  # noqa: BLE001 - surfaced as an SSE error event
         logger.exception("Unexpected error while streaming turn for session=%s", session_id)
-        yield _sse_event("error", {"code": "INTERNAL_ERROR", "message": str(exc)})
+        yield _sse_event(
+            "error",
+            {
+                "code": "INTERNAL_ERROR",
+                "message": (
+                    "An internal error occurred while processing this turn. "
+                    "Please try again."
+                ),
+                "request_id": request_id,
+            },
+        )
         return
 
     if turn is None:  # pragma: no cover - the generator always yields it last

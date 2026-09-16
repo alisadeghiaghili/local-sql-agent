@@ -14,6 +14,8 @@ from datetime import datetime
 import pandas as pd
 
 import config as cfg
+from core.fileperms import restrict_file
+from exporters.sanitize import defuse_formula
 
 # Expose settings at module level so tests can patch "exporters.excel_exporter.settings"
 settings = cfg.settings
@@ -35,6 +37,17 @@ def export_excel(df: pd.DataFrame) -> str:
         f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
     )
 
+    # Finding 15: this workbook is opened by the one program that treats a
+    # cell starting with =/+/-/@ as a formula to execute, not text to
+    # display. Only object-dtype columns can hold a string in the first
+    # place -- mapping every column through defuse_formula would be a
+    # silent no-op for numeric/datetime dtypes anyway, but restricting the
+    # `.map` to `object` columns keeps that a documented decision instead
+    # of an accident of defuse_formula's own non-string passthrough.
+    df = df.copy()
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].map(defuse_formula)
+
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Result")
         ws = writer.sheets["Result"]
@@ -45,4 +58,10 @@ def export_excel(df: pd.DataFrame) -> str:
             )
             ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
 
+    # Finding 18 (2026 audit): an exported workbook is warehouse query
+    # results written to a file outside this application's own access
+    # control -- restricted the moment ExcelWriter's context manager has
+    # finished flushing it to disk (before that point the file may not
+    # exist yet, or may be an incomplete write in progress).
+    restrict_file(filename)
     return os.path.abspath(filename)

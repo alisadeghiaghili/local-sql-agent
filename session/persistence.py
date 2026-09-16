@@ -63,8 +63,10 @@ from pathlib import Path
 
 from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import make_url
 from sqlalchemy.pool import StaticPool
 
+from core.fileperms import restrict_sqlite_family
 from session.models import Turn
 from session.store import TurnMemory
 
@@ -134,6 +136,18 @@ def _build_engine(db_path: str):
     with engine.begin() as conn:
         conn.exec_driver_sql("PRAGMA journal_mode=WAL")
     _metadata.create_all(engine)
+
+    # Finding 18 (2026 audit): this database holds whole conversation
+    # transcripts (session/persistence.py's own module docstring --
+    # questions and generated SQL, never row data). WAL mode is turned on
+    # unconditionally above, so a live session store's freshest rows sit
+    # in the "-wal" sidecar at least as often as in the main file --
+    # restrict_sqlite_family covers both, plus "-shm", rather than only
+    # the main path. Skipped for ":memory:" and any other SQLAlchemy URL
+    # with no real filesystem path (nothing on disk to chmod).
+    made = make_url(url)
+    if made.get_backend_name() == "sqlite" and made.database not in (None, "", ":memory:"):
+        restrict_sqlite_family(made.database)
     return engine
 
 

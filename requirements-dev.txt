@@ -7,3 +7,11 @@
 
 pytest>=8.0.0
 pytest-cov>=5.0.0
+
+# Findings 5 + 9 (2026 audit): pinning (requirements.lock) stops a
+# dependency changing without this repo's consent; pip-audit is the other
+# half -- it tells you when something already pinned turns out to be
+# vulnerable. Run with `pip-audit -r requirements.lock` (see
+# .github/workflows/ci.yml, which runs this on every push, and
+# docs/deployment-runbook.md).
+pip-audit>=2.7.0

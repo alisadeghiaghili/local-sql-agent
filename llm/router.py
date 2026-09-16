@@ -219,15 +219,24 @@ def build_prompt_segments(
     from prompt_engine.builder import PromptBuilder
     from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
 
+    # Finding 19 (2026 audit): getattr, not `context.resolved_values`,
+    # because `context: Any` above is deliberately loose -- some callers
+    # (this module's own doctest included) pass a RetrievalContext built
+    # before this field existed conceptually, or a minimal stand-in, and
+    # neither should raise AttributeError over an optional signal.
+    resolved_values = getattr(context, "resolved_values", None) or None
+
     if not should_use_static_prefix(system_prompt):
         full = PromptBuilder.build(
-            question, system_prompt, context, session_context=session_context
+            question, system_prompt, context,
+            session_context=session_context, resolved_values=resolved_values,
         )
         return PromptSegments(question=full)
 
     prefix = build_static_prefix(system_prompt)
     full = PromptBuilder.build_static(
-        question, system_prompt, context, session_context=session_context
+        question, system_prompt, context,
+        session_context=session_context, resolved_values=resolved_values,
     )
     if not full.startswith(prefix):
         # Defensive fallback only — should_use_static_prefix() already

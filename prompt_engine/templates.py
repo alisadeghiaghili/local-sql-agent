@@ -39,10 +39,23 @@ EXAMPLES
 """
 
 #: Variable suffix appended after :data:`STATIC_PREFIX_TEMPLATE`. Only this
-#: part changes between requests: detected value filters, prior-turn session
-#: context (empty until sessions land), and the question itself. Never put
-#: per-request content anywhere in the prefix above — see the module-level
-#: warning in ``prompt_engine.static_prefix``.
+#: part changes between requests: detected value filters, resolved
+#: warehouse values, prior-turn session context (empty until sessions
+#: land), and the question itself. Never put per-request content anywhere
+#: in the prefix above — see the module-level warning in
+#: ``prompt_engine.static_prefix``.
+#:
+#: ``{resolved_values}`` (Finding 19, 2026 audit) is deliberately its own
+#: section, separate from ``{filters}`` just above it: ``filters`` mixes
+#: values pulled straight from the question's own text with values
+#: matched against the live warehouse (``retrieval/context_retriever.py``
+#: merges both into one dict with no way to tell them apart afterwards),
+#: while ``resolved_values`` -- rendered by
+#: ``prompt_engine.builder.PromptBuilder`` via
+#: ``prompt_engine.untrusted.fence_untrusted`` -- carries ONLY the
+#: warehouse-sourced ones, fenced and explicitly labelled as data rather
+#: than instructions. See ``prompt_engine/untrusted.py``'s module
+#: docstring for the full reasoning.
 SUFFIX_TEMPLATE = """
 ==================================================
 DETECTED FILTERS
@@ -67,6 +80,12 @@ r.Name = N'تالار پتروشیمی'
 NOT:
 
 r.Name = N'پتروشیمی'
+
+==================================================
+RESOLVED WAREHOUSE VALUES
+==================================================
+
+{resolved_values}
 
 ==================================================
 SESSION CONTEXT
@@ -131,6 +150,12 @@ r.Name = N'تالار پتروشیمی'
 NOT:
 
 r.Name = N'پتروشیمی'
+
+==================================================
+RESOLVED WAREHOUSE VALUES
+==================================================
+
+{resolved_values}
 
 ==================================================
 EXAMPLES

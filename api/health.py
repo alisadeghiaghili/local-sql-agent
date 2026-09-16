@@ -12,11 +12,41 @@ Typical usage::
 
     resp = check_health()
     # HealthResponse(status='ok', openai=True, database=True, model='gpt-oss-20b')
+
+Result caching (Finding 3, 2026 audit)
+---------------------------------------
+Every call used to run both probes for real: two ~5 s network round trips,
+the database one checking a connection out of the same pool ``/query``
+serves from. ``/health`` needs no credentials and ``api/middleware.py``
+deliberately keeps it exempt from rate limiting (liveness checks must
+never be throttled away, or an orchestrator kills a healthy container) --
+which meant an unauthenticated caller could hold the pool open for
+seconds at a time with no limit on how often. Measured live during the
+audit: fifteen concurrent unauthenticated ``/health`` calls finished in
+3.65 s rather than 30 s, i.e. all fifteen ran their probes in parallel,
+each holding a pool connection for the duration.
+
+Rate-limiting was the wrong lever (see the comment above ``_EXEMPT_PATHS``
+in ``api/middleware.py``); caching is the right one. ``check_health()`` now
+probes at most once per :data:`HEALTH_CACHE_TTL_SECONDS` and every caller
+inside that window — sequential or concurrent — gets the same cached
+:class:`~api.models.HealthResponse`. ``_cache_lock`` is held for the full
+probe, not just the cache read/write, so a burst that arrives while the
+cache is cold collapses onto a single in-flight probe instead of each
+caller racing to start its own; that is deliberate, not an oversight —
+the whole point is that the pool sees at most one probe per TTL no matter
+how many callers show up at once.
+
+``reset_health_cache()`` exists purely for tests: without a way to force a
+cold cache, one test's warm result would leak into the next and hide a
+real regression.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 import requests
 
@@ -24,6 +54,56 @@ import config as cfg
 from api.models import HealthResponse
 
 logger = logging.getLogger(__name__)
+
+#: HEALTH_CACHE_TTL_SECONDS lives on config.Settings
+#: (:attr:`config.Settings.health_cache_ttl_seconds`), env-overridable via
+#: ``HEALTH_CACHE_TTL_SECONDS``, per this project's "tuning knobs live in
+#: Settings, not as bare module constants" rule (config.py's "Three
+#: layers, not two") -- the same rule ``RATE_LIMIT_REQUESTS`` and
+#: ``LOG_MAX_BYTES`` already follow. It is re-exposed as a plain module
+#: attribute below via ``__getattr__`` (PEP 562, the same lazy-loader
+#: pattern ``knowledge/aliases.py`` and friends already use in this
+#: codebase) purely so existing call sites and tests reading
+#: ``health.HEALTH_CACHE_TTL_SECONDS`` as a constant keep working -- every
+#: access re-reads ``cfg.settings`` at call time, it is never captured
+#: once at import time.
+def __getattr__(name: str):
+    if name == "HEALTH_CACHE_TTL_SECONDS":
+        return cfg.settings.health_cache_ttl_seconds
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+#: Guards both the cached fields below AND the probe calls themselves --
+#: see "Result caching" above for why holding it across the probe (rather
+#: than just the read/write of the cache) is the point, not a bug.
+_cache_lock = threading.Lock()
+_cached_response: HealthResponse | None = None
+#: A `time.monotonic()` timestamp, never wall-clock time -- monotonic is
+#: immune to NTP adjustments and DST jumps stepping the clock backwards,
+#: either of which could otherwise freeze this cache indefinitely. ``None``
+#: (rather than ``0.0``) means "no cached value yet" -- the sentinel
+#: :func:`check_health` actually branches on is ``_cached_response is not
+#: None``, so this field's own starting value is never read before both
+#: are set together; ``None`` is used anyway, matching
+#: ``_cached_response``'s own sentinel, so this stays a plain state flag
+#: rather than a numeric literal a reader (or this repo's own
+#: tuning-layer guard, ``tests/test_tuning_layer.py``) might mistake for
+#: a configuration default.
+_cache_expires_at: float | None = None
+
+
+def reset_health_cache() -> None:
+    """Force the next :func:`check_health` call to probe for real.
+
+    Test-only seam. Without it, whichever test runs first would warm the
+    module-level cache and every later test would silently observe its
+    stale result instead of exercising its own monkeypatched probes --
+    a passing suite that proves nothing.
+    """
+    global _cached_response, _cache_expires_at
+    with _cache_lock:
+        _cached_response = None
+        _cache_expires_at = None
 
 
 def check_health() -> HealthResponse:
@@ -67,24 +147,46 @@ def check_health() -> HealthResponse:
     >>> isinstance(resp.database, bool)                # doctest: +SKIP
     True
     """
-    openai_ok, openai_detail = _ping_openai()
-    db_ok, db_detail = _ping_db()
+    global _cached_response, _cache_expires_at
+    with _cache_lock:
+        now = time.monotonic()
+        if (
+            _cached_response is not None
+            and _cache_expires_at is not None
+            and now < _cache_expires_at
+        ):
+            return _cached_response
 
-    if openai_ok and db_ok:
-        overall = "ok"
-    elif openai_ok or db_ok:
-        overall = "degraded"
-    else:
-        overall = "down"
+        # Still holding the lock: a concurrent caller that arrives while
+        # this probe is in flight blocks here and receives the SAME
+        # fresh result below, rather than starting a probe of its own.
+        # See "Result caching" in the module docstring.
+        openai_ok, openai_detail = _ping_openai()
+        db_ok, db_detail = _ping_db()
 
-    return HealthResponse(
-        status=overall,
-        openai=openai_ok,
-        database=db_ok,
-        model=cfg.settings.openai_model,
-        openai_detail=openai_detail,
-        database_detail=db_detail,
-    )
+        if openai_ok and db_ok:
+            overall = "ok"
+        elif openai_ok or db_ok:
+            overall = "degraded"
+        else:
+            overall = "down"
+
+        result = HealthResponse(
+            status=overall,
+            openai=openai_ok,
+            database=db_ok,
+            model=cfg.settings.openai_model,
+            openai_detail=openai_detail,
+            database_detail=db_detail,
+        )
+        _cached_response = result
+        # cfg.settings read directly here, not via the module-level
+        # HEALTH_CACHE_TTL_SECONDS name -- that name only exists via this
+        # module's own __getattr__ (PEP 562), which is invoked for
+        # `health.HEALTH_CACHE_TTL_SECONDS`-style external access, never
+        # for a bare name reference inside this module's own code.
+        _cache_expires_at = time.monotonic() + cfg.settings.health_cache_ttl_seconds
+        return result
 
 
 def _ping_openai() -> tuple[bool, str]:

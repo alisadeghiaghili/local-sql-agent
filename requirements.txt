@@ -1,5 +1,11 @@
 # Auction NLQ Engine — dependencies
 # Install: pip install -r requirements.txt
+#
+# These are floors, not pins -- two installs a month apart can resolve
+# different trees. For anything beyond quick local hacking (a real
+# deployment, CI, or reproducing a reported bug), install from
+# requirements.lock instead: pip install -r requirements.lock. See that
+# file's own header and docs/deployment-runbook.md.
 
 sqlalchemy>=2.0.0
 alembic>=1.13.0
