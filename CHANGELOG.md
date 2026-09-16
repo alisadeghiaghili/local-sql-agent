@@ -5,6 +5,92 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [5.0.0] — 2026-09-16
+
+The analyst UI redesign. Major, because it changes muscle memory: the topbar,
+the anatomy of a turn, the composer's position, and the admin navigation all
+move. Nothing about the query path or the SQL guard changes; this release is
+about what the screen tells you and how much of it you have to take on trust.
+
+The organising idea is that a conversational analytics UI is a claims
+interface. Every answer asserts something about the warehouse, and the screen
+either shows what that claim rests on or asks the analyst to assume it. So
+what a turn had buried — the resolved question, the assumptions applied, the
+stage the pipeline reached, why a refusal happened — is now visible before
+the result rather than folded into a drawer.
+
+### Changed — analyst-visible
+
+- **The run-mode switch is gone from the topbar.** Run mode decided whether
+  the numbers came from the warehouse or from built-in fixtures, and nothing
+  else on screen distinguished the two, so one mis-click sat between an
+  analyst and a screen of synthetic figures that look exactly like real ones.
+  Simulated mode stays fully available at `?live=0`, where choosing it takes
+  intent, and remains the automatic fallback when a backend cannot serve the
+  v2 conversational path.
+- **Turn anatomy is outcome-first.** The resolved question, assumption chips
+  and clarifications render *before* the result node, never only inside the
+  details drawer. Each failure mode — guard rejection, model unavailable,
+  truncated output, forbidden SQL, execution error — renders its own anatomy:
+  what happened, why, and a real next action. A guard refusal is resolved
+  before a result card is considered, so a refusal can no longer appear as a
+  zero-row result.
+- **The composer sits below the transcript**, pinned to the viewport bottom.
+- **Admin gains a health summary rail**, a sticky section jump nav, and a
+  global refresh with a last-updated stamp; per-section refresh is demoted.
+
+### Added
+
+- **Design tokens in one file** (`web/styles/tokens.css`). Surfaces import
+  them and never redefine a hex — light and dark redefine the *same* custom
+  properties, which is what stops the two themes drifting apart.
+- **An inline SVG icon set** (`web/js/icons.js`), built with DOM APIs so CSP
+  `script-src 'self'` stays clean.
+- **A user menu** carrying theme, language and the API key — identity moved
+  out of the topbar's open surface.
+- **Generated SQL is prettified and highlighted** like a code editor, with
+  T-SQL rules for bracket identifiers and `N'…'` strings that stock Prism gets
+  wrong. Highlighting is presentation-only: the copied text stays byte-exact.
+- **A catalog-driven chart engine.** Chart form is selected from a closed
+  vocabulary of analytical jobs rather than by an agent, and the boundary is
+  specified and pinned by tests — a wrong chart form manufactures a false
+  narrative, and that error class must stay deterministic and testable.
+
+### Fixed
+
+- Demo mode died at boot: a `const` the boot path read was declared below its
+  use, so module evaluation threw and the whole UI never painted.
+- All SQL highlighting was silently dead — the "already patched" marker was an
+  enumerable key on the grammar, so Prism iterated it as a token and threw.
+- A settled result could sit behind the sticky composer.
+- Line and split-bar charts were offered for non-sequential data because a
+  calendar word was matched as a substring rather than a whole token.
+- The line chart drew its time axis right-to-left in an RTL document.
+- The site's flagship hero query filtered on an alias that was never joined,
+  so the landing page advertised SQL that cannot run.
+- The marketing site fetched four font families from Google's CDN on every
+  visit, leaking visitor IPs from the page that sells local-only analytics.
+
+### Accessibility
+
+- Light-palette contrast now clears WCAG 1.4.3: the brand teal measured
+  3.74:1 and secondary text 4.40:1 against a 4.5:1 floor. Hue and saturation
+  are unchanged; only lightness moved.
+- Service health no longer rides on colour alone (WCAG 1.4.1) — state is
+  carried in text and shape, so it survives both colour-vision deficiency and
+  a monochrome screen.
+- Interactive control edges reach 3:1 via a dedicated token; RTL layout and
+  24×24 touch targets corrected across the chrome.
+- Chrome ships no emoji: font-dependent colour glyphs render differently per
+  OS, ignore `currentColor`, and carry no reliable accessible name.
+
+### Internal
+
+- `Turn` errors carry a `request_id` and a structured guard reason.
+- The design policy, its invariants, and the chart-engine boundary are
+  written down under `docs/design/` and pinned by tests rather than convention.
+- Includes everything in 4.12.1.
+
 ## [4.12.1] — 2026-09-14
 
 A security release. An independent audit (code review across MLSecOps, data,

@@ -71,16 +71,20 @@ the production path **or** FastAPI ships session login with tests.
 
 ## Definition of done (5.0.0)
 
-- [ ] DESIGN.md tokens match CSS
-- [ ] No emoji in product chrome
-- [ ] No mode switch in analyst topbar
-- [ ] Assumptions + resolved question visible before result (contract §5/§7)
-- [ ] Slim stage strip during stream; summary after done
-- [ ] Turn anatomy tests green
-- [ ] Admin rail + nav tests green
-- [ ] Site: no Google Fonts, unminified, valid hero SQL
-- [ ] Dark + 375px verified
-- [ ] CHANGELOG 5.0.0 == `core/version.py`
+- [x] DESIGN.md tokens match CSS — §4.2 had published the pre-fix palette
+      that fails 1.4.3; corrected, and now pinned by
+      `tests/web_ui/test_web_ui_design_doc_matches_tokens.py`
+- [x] No emoji in product chrome — the guard that claimed this stripped 📌
+      before scanning for it; strip removed, verified by mutation
+- [x] No mode switch in analyst topbar — `?live=0` verified still booting
+      simulated, in the browser and by test
+- [x] Assumptions + resolved question visible before result (contract §5/§7)
+- [x] Slim stage strip during stream; summary after done
+- [x] Turn anatomy tests green
+- [x] Admin rail + nav tests green
+- [x] Site: no Google Fonts, unminified, valid hero SQL
+- [x] Dark + 375px verified
+- [x] CHANGELOG 5.0.0 == `core/version.py`
 - [ ] Tag `v5.0.0`
 - [ ] PR merged; feature branches deleted
 
