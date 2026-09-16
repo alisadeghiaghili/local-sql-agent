@@ -9,12 +9,6 @@
     />
     <meta name="theme-color" content="#07100f" />
     <title>Local SQL Agent — your data stays yours</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+Arabic:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="bilingual.css" />
   </head>
@@ -92,7 +86,7 @@
             </div>
             <pre
               id="sqlText"
-            ><code><span class="kw">SELECT TOP</span> <span class="num">10</span><br>  c.Name,<br>  <span class="fn">SUM</span>(o.TotalAmount) <span class="kw">AS</span> PurchaseValue<br><span class="kw">FROM</span> Sales_Fact.<span class="table">Order</span> o<br><span class="kw">JOIN</span> Sales_Dim.<span class="table">Customer</span> c <span class="kw">ON</span> o.CustomerID = c.ID<br><span class="kw">WHERE</span> d.JalaliYear = <span class="num">1403</span><br><span class="kw">GROUP BY</span> c.Name <span class="kw">ORDER BY</span> PurchaseValue <span class="kw">DESC</span></code></pre>
+            ><code><span class="kw">SELECT TOP</span> <span class="num">10</span><br>  c.Name,<br>  <span class="fn">SUM</span>(o.TotalAmount) <span class="kw">AS</span> PurchaseValue<br><span class="kw">FROM</span> Sales_Fact.<span class="table">Order</span> o<br><span class="kw">JOIN</span> Sales_Dim.<span class="table">Customer</span> c <span class="kw">ON</span> o.CustomerID = c.ID<br><span class="kw">JOIN</span> Sales_Dim.<span class="table">Date</span> d <span class="kw">ON</span> o.DateID = d.ID<br><span class="kw">WHERE</span> d.JalaliYear = <span class="num">1403</span><br><span class="kw">GROUP BY</span> c.Name <span class="kw">ORDER BY</span> PurchaseValue <span class="kw">DESC</span></code></pre>
             <div class="terminal-result">
               <span><i></i> Guard verified</span><span>10 rows</span
               ><span>1.24s</span><span>Excel ready ↓</span>

@@ -102,7 +102,7 @@ body {
   padding:82px 0 70px
 }
 .eyebrow,.section-kicker {
-  font:500 11px 'DM Mono',monospace;
+  font:500 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:var(--acid);
   letter-spacing:.13em
 }
@@ -177,7 +177,7 @@ h1 em,h2 em {
   flex-wrap:wrap;
   gap:18px;
   margin-top:54px;
-  font:11px 'DM Mono',monospace;
+  font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:var(--muted)
 }
 .hero-proof b {
@@ -203,7 +203,7 @@ h1 em,h2 em {
   border:1px solid #2a403a;
   box-shadow:16px 16px 0 #102420;
   padding:0 26px 18px;
-  font-family:'DM Mono',monospace;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:12px;
   line-height:1.7
 }
@@ -265,7 +265,7 @@ h1 em,h2 em {
   background:none;
   border:0;
   color:var(--acid);
-  font:10px 'DM Mono',monospace;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   cursor:pointer
 }
 .terminal pre,.install-card pre {
@@ -310,7 +310,7 @@ h1 em,h2 em {
   align-items:center;
   gap:8px;
   color:#77857f;
-  font:10px 'DM Mono',monospace;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   margin-top:22px
 }
 .terminal-caption span {
@@ -325,7 +325,7 @@ h1 em,h2 em {
   white-space:nowrap;
   padding:14px 0;
   color:#c5d2cb;
-  font:500 11px 'DM Mono',monospace;
+  font:500 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   letter-spacing:.12em
 }
 .ticker div {
@@ -380,7 +380,7 @@ h1 em,h2 em {
   background:#10201c
 }
 .number {
-  font:11px 'DM Mono',monospace;
+  font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:var(--acid)
 }
 .principles h3,.feature h3 {
@@ -443,7 +443,7 @@ h1 em,h2 em {
   gap:7px
 }
 .pipe-start span,.pipe-title,.pipe-end span {
-  font:10px 'DM Mono',monospace;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:#81918a;
   letter-spacing:.1em
 }
@@ -451,7 +451,7 @@ h1 em,h2 em {
   font-size:13px
 }
 .pipe-group small {
-  font:10px 'DM Mono',monospace;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:var(--acid)
 }
 .retrievers {
@@ -460,7 +460,7 @@ h1 em,h2 em {
   gap:6px
 }
 .retrievers span {
-  font:10px 'DM Mono',monospace;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   border:1px solid #3a5049;
   padding:4px 5px;
   color:#c6d2cc
@@ -483,7 +483,7 @@ h1 em,h2 em {
   padding:26px 0 120px
 }
 .feature>span {
-  font:11px 'DM Mono',monospace;
+  font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:var(--acid)
 }
 .feature h3 {
@@ -506,7 +506,7 @@ h1 em,h2 em {
   border:1px solid #2a403a;
   padding:0 24px;
   box-shadow:12px 12px 0 #102420;
-  font:12px/1.75 'DM Mono',monospace
+  font:12px/1.75 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace
 }
 .install-top {
   height:51px;
@@ -541,7 +541,7 @@ footer {
   display:flex;
   justify-content:space-between;
   align-items:center;
-  font:10px 'DM Mono',monospace;
+  font:10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color:#75847d;
   letter-spacing:.08em
 }
