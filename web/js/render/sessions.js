@@ -10,6 +10,7 @@
 "use strict";
 
 import { fmt } from "../num.js";
+import { icon } from "../icons.js";
 
 /** Newest-active-first. Pure, no DOM — returns a new array, never mutates
  * the input, so callers can safely reuse the same SessionSummary[] between
@@ -133,7 +134,9 @@ export function renderSessionList(sessions, handlers = {}) {
     renameBtn.type = "button";
     renameBtn.className = "session-row-btn";
     renameBtn.setAttribute("aria-label", `تغییر نام گفتگوی «${s.title || s.session_id}»`);
-    renameBtn.textContent = "✎";
+    // No `label` here — the button's aria-label above is already the real
+    // accessible name; a <title> on the icon too would double it up.
+    renameBtn.appendChild(icon("edit"));
     renameBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       openRenameEditor(row, s, onRename);
@@ -144,7 +147,9 @@ export function renderSessionList(sessions, handlers = {}) {
     delBtn.type = "button";
     delBtn.className = "session-row-btn session-row-delete";
     delBtn.setAttribute("aria-label", `حذف گفتگوی «${s.title || s.session_id}»`);
-    delBtn.textContent = "🗑";
+    // Same reasoning as renameBtn: stays decorative/aria-hidden since the
+    // button already names itself via aria-label.
+    delBtn.appendChild(icon("trash"));
     delBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (confirmDelete(s) && onDelete) onDelete(s.session_id);
