@@ -27,6 +27,83 @@
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
 
+.admin-jump {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 8px 16px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  max-width: 100%;
+}
+.admin-jump a {
+  flex: 0 0 auto;
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.admin-jump a:hover { background: var(--card-2); color: var(--ink); }
+.admin-jump a.on { background: var(--navy); color: #fff; }
+.admin-jump a:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.admin-last-updated {
+  font-size: 11.5px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.admin-summary-rail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+.admin-summary-rail .rail-item {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 12px);
+  border-inline-start: 4px solid var(--status-neutral, var(--muted));
+  padding: 12px 14px;
+}
+.admin-summary-rail .rail-item.good {
+  border-inline-start-color: var(--status-good);
+}
+.admin-summary-rail .rail-item.warn {
+  border-inline-start-color: var(--status-warn);
+  background: var(--status-warn-bg);
+}
+.admin-summary-rail .rail-item.crit {
+  border-inline-start-color: var(--status-critical);
+  background: var(--status-critical-bg);
+}
+.admin-summary-rail .rail-lab {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.admin-summary-rail .rail-val {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--navy);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.admin-summary-rail .rail-item.crit .rail-val { color: var(--status-critical); }
+.admin-summary-rail .rail-item.warn .rail-val { color: #92400e; }
+.admin-summary-rail .rail-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .admin-layout {
   flex: 1;
   width: 100%;

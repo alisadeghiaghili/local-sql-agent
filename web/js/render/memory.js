@@ -108,7 +108,7 @@ function renderRememberedSection(entries, handlers) {
   if (list.length === 0) {
     section.appendChild(el(
       "p", "memory-empty",
-      "هنوز چیزی به خاطر سپرده نشده — از کنار هر مفروضهٔ قابل‌ویرایش، «📌 به خاطر بسپار» را بزنید، " +
+      "هنوز چیزی به خاطر سپرده نشده — از کنار هر مفروضهٔ قابل‌ویرایش، «به خاطر بسپار» را بزنید، " +
       "یا یکی از فیلدهای زیر را مستقیماً تنظیم کنید.",
     ));
     return section;

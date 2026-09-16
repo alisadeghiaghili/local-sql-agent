@@ -74,10 +74,52 @@ class Basis(BaseModel):
 
 
 class GuardVerdict(BaseModel):
-    """``Turn.guard`` — the security-layer outcome for this turn's SQL."""
+    """``Turn.guard`` — the security-layer outcome for this turn's SQL.
+
+    ``rule`` is the guard's free-text message (e.g. ``"Forbidden keyword
+    detected: denied column 'NationalID'"``) and stays exactly as-is —
+    ``tests/test_sql_guard*.py`` and the audit trail both depend on its
+    literal wording, so it is never reworded or dropped. ``reason`` and
+    ``subject`` are additive structure alongside it, not a replacement:
+    the web UI (``web/js/render/turn.js``, per
+    ``docs/design/DESIGN-INVARIANTS.md`` §8) needs to offer a *targeted*
+    next action for a denied-column refusal ("Ask without that column"),
+    and finding the column name by matching patterns in ``rule`` would
+    make the client re-derive something the guard already knew for
+    certain the moment it decided to reject — exactly the kind of
+    string-parsing ``security.sql_guard``'s own module docstring already
+    rejects as fragile for itself. ``security.sql_guard.SqlGuardRejection``
+    carries the same two fields for the identical reason, one layer down;
+    ``session.engine.TurnEngine`` copies them onto this model unchanged
+    when it catches that exception, rather than re-deriving them here.
+    """
 
     verdict: Literal["allowed", "rejected"] = "allowed"
     rule: str | None = None
+    reason: (
+        Literal["denied_column", "forbidden_statement", "unknown_table", "system_catalogue", "other"]
+        | None
+    ) = None
+    """Machine-readable refusal category, or ``None`` for an allowed verdict
+    (or a rejection this contract predates — e.g. one rehydrated from
+    ``session.persistence`` storage written before this field existed).
+    Mirrors :data:`security.sql_guard._REASONS` exactly; kept as a literal
+    copy here rather than an import because ``session`` sits above
+    ``security`` in this project's dependency graph and must not reach
+    back down into it for a type. The web UI switches on this to pick a
+    §8-specified action instead of falling back to a generic one — see
+    that document's failure-anatomy table for exactly which reason maps to
+    which action."""
+    subject: str | None = None
+    """The one column/table/keyword *reason* is about, when the rejection
+    names exactly one (``None`` when it is about the query's shape rather
+    than a single identifier — e.g. a stacked-statement query with no one
+    dangerous statement, or a ``*`` that could expose more than one denied
+    column at once). Server-supplied text originating from the analyst's
+    own question and the schema — never internal infrastructure detail —
+    but still untrusted input from the UI's perspective: render it with
+    ``textContent``/``dataset``, exactly like any other field on this
+    model, never interpolated into an HTML string."""
     injected_top: int | None = None
     tables_touched: list[str] = Field(default_factory=list)
 
@@ -108,8 +150,28 @@ class TurnResult(BaseModel):
 
 
 class TurnErrorInfo(BaseModel):
+    """``Turn.error`` — populated instead of raising, per §5's "answer, then
+    declare — never block" (see ``session.engine.TurnEngine.ask``'s module
+    docstring).
+
+    ``request_id`` exists so a user reading a failed turn has something to
+    quote back to an operator, per ``docs/design/DESIGN-INVARIANTS.md``
+    §8's copy discipline ("Keep the machine-readable code and the
+    ``request_id`` visible but subordinate"). It is set by
+    ``TurnEngine.ask`` to the *exact* id that call also passes to
+    ``TurnEngine._write_audit`` for this same turn — never a second,
+    independently-minted id — because an id that does not match what the
+    server actually logged against would send an operator chasing a
+    request they cannot find; a mismatching id is worse than an absent
+    one, not merely useless. ``None`` only for a turn rehydrated from
+    ``session.persistence`` storage written before this field existed
+    (contract §9/§10's additive-field discipline — an old stored turn
+    still deserializes, just without an id to show).
+    """
+
     code: str
     message: str
+    request_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

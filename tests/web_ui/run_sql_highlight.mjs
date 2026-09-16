@@ -26,6 +26,11 @@
 //   throws, the SQL still renders as plain, correct, uncorrupted text and
 //   still copies correctly -- a decoration failure must never hide or
 //   corrupt the SQL itself.
+// * client-side prettify (`window.sqlFormatter`) reformats the DISPLAYED
+//   text when only raw `sql` is present, and is skipped entirely when
+//   `sql_display` already exists -- and in every case the copy button
+//   still receives the exact Turn object string, never the prettified
+//   rendering. A throwing formatter is treated like a missing one.
 //
 // web/ ships no package.json / node_modules by design, so this brings its
 // own minimal DOM shim (same spirit as run_result_shapes.mjs's), extended
@@ -50,6 +55,7 @@ const pipelineMjsPath = dir("pipeline.mjs");
 const assumptionsMjsPath = dir("assumptions.mjs");
 const tableMjsPath = dir("table.mjs");
 const llmStatusMjsPath = dir("llm-status.mjs");
+const sqlDisplayMjsPath = dir("sql-display.mjs");
 
 /* ── Minimal DOM shim (same spirit as run_result_shapes.mjs's, extended
  * with a real inline-HTML parser for innerHTML -- see module docstring
@@ -223,6 +229,7 @@ async function flushMicrotasks() {
 /* ── Load the real modules under test ───────────────────────────────── */
 
 const { createTurnCard } = await import(pathToFileURL(turnMjsPath).href);
+const sqlDisplay = await import(pathToFileURL(sqlDisplayMjsPath).href);
 // Loaded only to confirm they import cleanly under this shim (turn.js
 // pulls them in transitively); not driven directly by this suite.
 await import(pathToFileURL(pipelineMjsPath).href);
@@ -353,5 +360,97 @@ card.el.querySelector("button.btn-copy").click();
 await flushMicrotasks();
 assert.equal(clipboardCalls[0], SQL, "copy must still work correctly when Prism.highlight throws");
 console.log("[ok] a throwing Prism.highlight is caught: plain correct text still renders, copy still works");
+
+/* ── Scenario 5: window.sqlFormatter present, turn has ONLY a one-line
+ * raw sql. Display must show the prettified text; copy must still
+ * receive the exact original raw sql from the Turn object. ───────────── */
+
+const ONE_LINE_SQL = "SELECT TOP 10 c.Name, SUM(o.TotalAmount) AS PurchaseValue FROM Sales_Fact.[Order] o WHERE d.JalaliYear = 1403 ORDER BY PurchaseValue DESC";
+
+globalThis.window.Prism = { languages: { sql: {} }, highlight: (text) => fakeHighlight(text) };
+let formatCalls = 0;
+globalThis.window.sqlFormatter = {
+  format(text, opts) {
+    formatCalls += 1;
+    assert.equal(opts.language, "tsql", "client prettify must target the tsql dialect");
+    assert.equal(opts.keywordCase, "upper", "client prettify must upper-case keywords");
+    assert.equal(opts.tabWidth, 2, "client prettify must use two-space indent");
+    // Tiny deterministic stand-in for the vendored library: break before
+    // major clauses. Enough to prove display was reformatted and copy was not.
+    return String(text).replace(/\s+(FROM|WHERE|ORDER BY|GROUP BY)\s+/gi, "\n$1 ");
+  },
+};
+
+clipboardCalls = [];
+formatCalls = 0;
+turn = baseTurn({ sql: ONE_LINE_SQL, sql_display: undefined, turn_id: "t_test5" });
+card = createTurnCard(turn, noopCtx);
+codeEl = card.el.querySelector("code.language-sql");
+assert.ok(codeEl.textContent.includes("\n"), "client prettify must insert line breaks into the displayed SQL when the source is a one-liner");
+assert.ok(codeEl.textContent.includes("\nFROM "), "prettified display must break before FROM");
+assert.notEqual(codeEl.textContent, ONE_LINE_SQL, "display must not be the raw one-liner when sqlFormatter is available");
+assert.equal(formatCalls, 1, "one-liner display must call sqlFormatter exactly once");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], ONE_LINE_SQL, "copy must still receive the exact original Turn.sql, never the client-prettified rendering");
+console.log("[ok] sqlFormatter prettifies a one-liner for display; copy stays on the exact Turn.sql");
+
+/* ── Scenario 6: multi-line sql_display (backend pretty_sql) is NOT
+ * re-prettified. Copy stays sql_display. ──────────────────────────── */
+
+const BACKEND_PRETTY = "SELECT\n  a,\n  b\nFROM t\nWHERE\n  a = 1";
+formatCalls = 0;
+clipboardCalls = [];
+turn = baseTurn({ sql: "SELECT a, b FROM t WHERE a = 1", sql_display: BACKEND_PRETTY, turn_id: "t_test6" });
+card = createTurnCard(turn, noopCtx);
+codeEl = card.el.querySelector("code.language-sql");
+assert.equal(formatCalls, 0, "multi-line sql_display must not be reformatted client-side (backend pretty_sql already ran)");
+assert.equal(codeEl.textContent, BACKEND_PRETTY, "sql_display is shown as-is when already multi-line");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], BACKEND_PRETTY, "copy yields sql_display exactly");
+console.log("[ok] multi-line sql_display is not re-prettified client-side; copy matches");
+
+/* ── Scenario 7: sqlFormatter THROWS -- display falls back to the exact
+ * Turn.sql, copy still works. Cosmetic failure must not hide SQL. ────── */
+
+globalThis.window.sqlFormatter = {
+  format() { throw new Error("boom — simulated sql-formatter failure"); },
+};
+clipboardCalls = [];
+turn = baseTurn({ sql: ONE_LINE_SQL, turn_id: "t_test7" });
+assert.doesNotThrow(() => { card = createTurnCard(turn, noopCtx); }, "a throwing sqlFormatter.format must not propagate out of createTurnCard");
+codeEl = card.el.querySelector("code.language-sql");
+assert.equal(codeEl.textContent, ONE_LINE_SQL, "a throwing formatter must leave the exact original SQL text rendered");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], ONE_LINE_SQL, "copy must still work when sqlFormatter throws");
+console.log("[ok] a throwing sqlFormatter is caught: raw SQL still renders, copy still works");
+
+/* ── Scenario 8: T-SQL Prism patch — classic script
+ * web/js/prism-tsql-patch.js installs bracket identifiers and N'' strings
+ * and is idempotent. Driven against a hand-built language object shaped
+ * like the vendored prism-sql component. ─────────────────────────────── */
+
+{
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const patchSrc = readFileSync(resolve("web/js/prism-tsql-patch.js"), "utf8");
+  const sandboxWindow = { Prism: { languages: { sql: {} } } };
+  const fn = new Function("window", patchSrc + "\n;return window;");
+  fn(sandboxWindow);
+  assert.equal(typeof sandboxWindow.patchPrismForTsql, "function", "classic patch must expose window.patchPrismForTsql");
+  const lang = sandboxWindow.Prism.languages.sql;
+  assert.equal(lang.__tsqlPatched, true, "patch must mark the language object");
+  const ids = Array.isArray(lang.identifier) ? lang.identifier : [lang.identifier].filter(Boolean);
+  assert.ok(ids.length >= 1, "patch must install a bracketed-identifier rule");
+  assert.ok(ids[0].pattern.test("[Order]"), "bracketed identifier rule must match [Order]");
+  const strings = Array.isArray(lang.string) ? lang.string : [lang.string].filter(Boolean);
+  assert.ok(strings.length >= 1, "patch must install a national-string rule");
+  assert.ok(strings[0].pattern.test("N'cement'"), "national string rule must match N'cement'");
+  sandboxWindow.patchPrismForTsql(sandboxWindow.Prism);
+  assert.equal(Array.isArray(lang.identifier) ? lang.identifier.length : 1, ids.length, "second patch call must not stack rules");
+  console.log("[ok] classic T-SQL Prism patch installs bracket identifiers and N'' strings, idempotently");
+}
 
 console.log("ALL_SCENARIOS_PASSED");

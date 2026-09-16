@@ -16,6 +16,20 @@ function named ``determineShape`` exists, which would not catch a wrong
 shape decision (e.g. a 1x1 numeric result rendered as a one-row table, or
 a guard-rejected 0-row result wrongly blamed on an assumption).
 
+This also covers the line chart's time axis direction: `chart.js` once
+plotted array index 0 at the chart's right edge and the last index at its
+left edge (measured, for a 5-point series at this module's own W=640,
+padL=40, padR=12: index 0 -> x=628, index 4 -> x=40), while the headline
+describing the same series (`chooseFramings`' `lineHeadline`, and
+separately the LLM interpretation in `llm/interpret.py::interpret_rows`)
+both read array order as time order -- so a reader scanning the chart
+left-to-right, the direction `web/styles/style.css` commits the chart's
+own geometry to, saw the opposite slope from what the text claimed. See
+the dedicated scenario in ``run_result_shapes.mjs`` for the regression
+test, which renders the real line chart and cross-checks its plotted x
+coordinates against the real headline text for both a strictly ascending
+and a strictly descending series.
+
 See ``run_result_shapes.mjs`` in this directory for the full scenario
 list and the minimal in-Node DOM shim it uses (web/ ships no
 package.json / node_modules by design, so this brings no dependency on
@@ -40,6 +54,7 @@ _NUM_JS = _WEB_JS / "num.js"
 _TABLE_JS = _WEB_JS / "render" / "table.js"
 _CHART_JS = _WEB_JS / "render" / "chart.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
+_ICONS_JS = _WEB_JS / "icons.js"
 _EXPORT_JS = _WEB_JS / "export.js"
 _HARNESS = Path(__file__).resolve().parent / "run_result_shapes.mjs"
 
@@ -94,6 +109,20 @@ def _prepare_copy(tmp_path: Path) -> Path:
     assumptions_src = _ASSUMPTIONS_JS.read_text(encoding="utf-8")
     export_src = _EXPORT_JS.read_text(encoding="utf-8")
 
+    # Applied to every staged module, not just assumptions.js. table.js began
+    # importing the icon set when chrome emoji were replaced with SVG, and the
+    # staged copies sit flat in one temp directory -- so an unrewritten
+    # "../icons.js" resolves ABOVE that directory and Node raises
+    # ERR_MODULE_NOT_FOUND before a single assertion in this file runs. The
+    # previous version rewrote one hard-coded source, which encoded a snapshot
+    # of the dependency graph rather than the graph itself.
+    def _rewrite_icons_import(src: str) -> str:
+        return src.replace('from "../icons.js"', 'from "./icons.mjs"').replace(
+            'from "./icons.js"', 'from "./icons.mjs"'
+        )
+
+    assumptions_src = _rewrite_icons_import(assumptions_src)
+    table_src = _rewrite_icons_import(table_src)
     table_src = _subn_or_fail(_CHART_IMPORT, 'import { renderChartAndTable } from "./chart.mjs";', table_src, "table.js -> chart.js")
     table_src = _subn_or_fail(_EXPORT_IMPORT, 'import { downloadResultAsCsv } from "./export.mjs";', table_src, "table.js -> export.js")
     table_src = _subn_or_fail(_ASSUMPTIONS_IMPORT, 'import { SOURCE_LABELS } from "./assumptions.mjs";', table_src, "table.js -> assumptions.js")
@@ -111,6 +140,7 @@ def _prepare_copy(tmp_path: Path) -> Path:
     chart_mjs.write_text(chart_src, encoding="utf-8")
     assumptions_mjs.write_text(assumptions_src, encoding="utf-8")
     export_mjs.write_text(export_src, encoding="utf-8")
+    (tmp_path / "icons.mjs").write_text(_ICONS_JS.read_text(encoding="utf-8"), encoding="utf-8")
     # num.js is shared by every renderer (see web/js/num.js): one place
     # that decides how a number looks, after seven modules each decided
     # separately. Staging it here is what lets those imports resolve.

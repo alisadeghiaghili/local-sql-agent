@@ -4,165 +4,23 @@
  * append-only transcript. RTL-first: the document sets dir="rtl", and every
  * spacing rule below uses logical properties so the layout mirrors correctly.
  * SQL, tables of numbers, and raw identifiers stay dir="ltr" inline — see the
- * `[dir="ltr"]` rules at the bottom of each relevant section. */
+ * `[dir="ltr"]` rules at the bottom of each relevant section.
+ *
+ * Design tokens live in tokens.css — this file never redefines a hex. */
 
-/* ── Design tokens ───────────────────────────────────────────────────
- * Every colour is defined here, on bare :root, for light mode. Dark mode
- * ONLY redefines these same custom properties — never introduces a colour
- * that exists solely inside a media query or [data-theme] block. */
-:root {
-  --navy: #0e2a47;
-  --navy-2: #14375c;
-  --navy-3: #1b436e;
-  --teal: #0d9488;
-  --teal-d: #0b7a70;
-  --teal-l: #e7f6f2;
-  --bg: #f4f6fa;
-  --card: #ffffff;
-  --card-2: #f8fafc;
-  --border: #e2e8f0;
-  --ink: #1f2937;
-  --muted: #64748b;
-  --green: #10b981;
-  --red: #e5484d;
-  --amber: #f59e0b;
-  --sql-bg: #0f1b2d;
-  --sql-text: #9fd8d3;
-
-  /* Status semantics — deliberately NOT teal/navy. Brand colour means
-   * "this is our product's chrome"; status colour means "this is a fact
-   * about the system's health right now". Keeping them visually distinct
-   * is what lets a reader tell "teal card border" from "healthy pill" at a
-   * glance instead of parsing text. */
-  --status-good: #10b981;
-  --status-good-bg: #e9f9f1;
-  --status-warn: #f59e0b;
-  --status-warn-bg: #fef6e7;
-  --status-critical: #e5484d;
-  --status-critical-bg: #fdeeee;
-  --status-neutral: #64748b;
-  --status-neutral-bg: #eef1f5;
-
-  --source-question: #0d9488;
-  --source-question-bg: #e7f6f2;
-  --source-session: #6366f1;
-  --source-session-bg: #eef0fd;
-  --source-default: #64748b;
-  --source-default-bg: #eef1f5;
-  --source-policy: #b45309;
-  --source-policy-bg: #fbf1e0;
-  /* memory — the fifth source. Deliberately its own hue (magenta/pink):
-   * not brand (teal/navy), not status (green/amber/red/grey), and not any
-   * of the other four source hues above. */
-  --source-memory: #be185d;
-  --source-memory-bg: #fce8f1;
-
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .05);
-  --focus-ring: 0 0 0 3px rgba(13, 148, 136, .35);
-}
-
-/* Dark mode via OS preference, unless the page has an explicit choice. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --navy: #16324f;
-    --navy-2: #1c3f61;
-    --navy-3: #234c74;
-    --teal: #14b8a6;
-    --teal-d: #0d9488;
-    --teal-l: #113330;
-    --bg: #0b1220;
-    --card: #131c2e;
-    --card-2: #182238;
-    --border: #263349;
-    --ink: #e5e9f0;
-    --muted: #94a3b8;
-    --green: #34d399;
-    --red: #f87171;
-    --amber: #fbbf24;
-    --sql-bg: #0a121f;
-    --sql-text: #9fd8d3;
-
-    --status-good: #34d399;
-    --status-good-bg: #10261e;
-    --status-warn: #fbbf24;
-    --status-warn-bg: #2b230f;
-    --status-critical: #f87171;
-    --status-critical-bg: #2b1414;
-    --status-neutral: #94a3b8;
-    --status-neutral-bg: #1c2536;
-
-    --source-question: #2dd4bf;
-    --source-question-bg: #102a27;
-    --source-session: #818cf8;
-    --source-session-bg: #1e2144;
-    --source-default: #94a3b8;
-    --source-default-bg: #1c2536;
-    --source-policy: #f0b95e;
-    --source-policy-bg: #2e2410;
-    --source-memory: #f472b6;
-    --source-memory-bg: #341126;
-
-    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
-    --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
-  }
-}
-
-/* Explicit toggle wins over OS preference in both directions. */
-:root[data-theme="dark"] {
-  --navy: #16324f;
-  --navy-2: #1c3f61;
-  --navy-3: #234c74;
-  --teal: #14b8a6;
-  --teal-d: #0d9488;
-  --teal-l: #113330;
-  --bg: #0b1220;
-  --card: #131c2e;
-  --card-2: #182238;
-  --border: #263349;
-  --ink: #e5e9f0;
-  --muted: #94a3b8;
-  --green: #34d399;
-  --red: #f87171;
-  --amber: #fbbf24;
-  --sql-bg: #0a121f;
-  --sql-text: #9fd8d3;
-
-  --status-good: #34d399;
-  --status-good-bg: #10261e;
-  --status-warn: #fbbf24;
-  --status-warn-bg: #2b230f;
-  --status-critical: #f87171;
-  --status-critical-bg: #2b1414;
-  --status-neutral: #94a3b8;
-  --status-neutral-bg: #1c2536;
-
-  --source-question: #2dd4bf;
-  --source-question-bg: #102a27;
-  --source-session: #818cf8;
-  --source-session-bg: #1e2144;
-  --source-default: #94a3b8;
-  --source-default-bg: #1c2536;
-  --source-policy: #f0b95e;
-  --source-policy-bg: #2e2410;
-  --source-memory: #f472b6;
-  --source-memory-bg: #341126;
-
-  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
-  --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-}
+@import url("tokens.css");
 
 /* ── Reset ───────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { color-scheme: light dark; }
+/* html, not body, is the actual scrolling box for this page (body is a
+ * flex column with no height/overflow constraint of its own) — so this is
+ * where `scroll-padding-bottom` has to live for it to affect anything.
+ * It keeps `scrollIntoView` (main.js's scrollIntoViewMaybeSmooth) and
+ * native anchor/keyboard scrolling from ever landing a target flush with
+ * the true viewport bottom, which is exactly where the sticky composer
+ * sits. See --composer-clearance's comment above .composer in this file
+ * for the measurement this value is built from. */
+html { color-scheme: light dark; scroll-padding-bottom: var(--composer-clearance); }
 
 body {
   font-family: "Vazirmatn", "Segoe UI", Tahoma, "Helvetica Neue", Arial, sans-serif;
@@ -238,18 +96,6 @@ button { font-family: inherit; }
   flex: 1 1 auto; min-width: 0; justify-content: flex-end; row-gap: 10px;
 }
 
-.mode-switch {
-  display: inline-flex; border: 1px solid rgba(255, 255, 255, .22);
-  border-radius: 999px; overflow: hidden;
-  flex: 0 0 auto;  /* a segmented control must never be squeezed apart */
-}
-.mode-btn {
-  background: transparent; color: #cbd5e1; border: 0;
-  padding: 7px 16px; font-size: 12.5px; font-weight: 600;
-  cursor: pointer; transition: background .15s, color .15s;
-}
-.mode-btn.active { background: var(--teal); color: #fff; }
-
 /* The backend base-URL row (.live-base-row/-input/-connect) used to live
  * here — removed along with its markup in index.html (see that file's
  * comment): it was deployment configuration, not an analyst-facing
@@ -270,8 +116,18 @@ button { font-family: inherit; }
 .live-key-input {
   min-width: 0; flex: 1 1 160px; width: 180px; max-width: 100%; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); color: #fff;
+  /* Forced ltr for the *value* only — an API key is ASCII and must not
+   * reorder. The placeholder is Persian prose with a Latin "API" run
+   * inside it, and inheriting ltr from the field reorders that prose
+   * (see ::placeholder rule below). DESIGN-INVARIANTS.md §2.1. */
 }
-.live-key-input::placeholder { color: #cbd5e1; }
+.live-key-input::placeholder {
+  color: #cbd5e1;
+  /* The value stays ltr (declared on .live-key-input / the dir="ltr"
+   * attribute); only the placeholder prose reads back in document order. */
+  direction: rtl;
+  text-align: right;
+}
 .live-key-save, .live-key-clear, .live-key-change {
   border: 1px solid rgba(255, 255, 255, .3); border-radius: 8px;
   background: transparent; color: #e2e8f0; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
@@ -287,6 +143,74 @@ button { font-family: inherit; }
 }
 .theme-toggle:hover { background: rgba(255, 255, 255, .16); }
 
+/* ── User menu (theme · language · API key) ───────────────────────── */
+.user-menu { position: relative; flex: 0 0 auto; }
+.user-menu-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 999px; padding: 6px 12px;
+  color: #e2e8f0; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  font-family: inherit;
+}
+.user-menu-btn:hover { background: rgba(255, 255, 255, .16); }
+.user-menu-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.user-avatar {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--teal); color: #fff;
+  display: grid; place-items: center; font-size: 10px; font-weight: 800;
+}
+.user-menu-panel {
+  position: absolute; inset-inline-end: 0; top: calc(100% + 8px);
+  width: min(320px, 92vw);
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px; z-index: 60;
+  display: flex; flex-direction: column; gap: 14px;
+  text-align: start;
+}
+.user-menu-panel[hidden] { display: none; }
+.um-section { display: flex; flex-direction: column; gap: 8px; }
+.um-label {
+  font-size: 11px; font-weight: 800; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.um-segment {
+  display: flex; border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; background: var(--card-2);
+}
+.um-segment button {
+  flex: 1; border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 12.5px; font-weight: 700; padding: 8px 10px;
+  cursor: pointer;
+}
+.um-segment button:hover { color: var(--ink); background: var(--card); }
+.um-segment button.active { background: var(--teal); color: #fff; }
+.um-segment button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.user-menu-panel .live-key-row { color: var(--ink); }
+.user-menu-panel .live-key-status { color: var(--muted); }
+.user-menu-panel .live-key-status.set { color: var(--status-good); }
+.user-menu-panel .live-key-status.unset { color: var(--status-warn); }
+.user-menu-panel .live-key-input {
+  /* --border-interactive — see #question's comment; every text input on
+   * a --card surface identifies its own edge the same way. */
+  border: 1px solid var(--border-interactive); background: var(--card-2); color: var(--ink);
+  border-radius: 8px; padding: 6px 10px; font-size: 12.5px; min-width: 0; flex: 1 1 140px;
+}
+.user-menu-panel .live-key-input::placeholder { color: var(--muted); }
+.user-menu-panel .live-key-save,
+.user-menu-panel .live-key-change,
+.user-menu-panel .live-key-clear {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+  color: var(--ink); padding: 6px 12px; font-size: 12.5px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+}
+.user-menu-panel .live-key-save:hover,
+.user-menu-panel .live-key-change:hover,
+.user-menu-panel .live-key-clear:hover { background: var(--card-2); }
+.um-hint { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+
 .health { display: flex; gap: 8px; flex-wrap: wrap; }
 .pill {
   display: inline-flex; align-items: center; gap: 6px;
@@ -295,6 +219,12 @@ button { font-family: inherit; }
   padding: 5px 11px; border-radius: 999px;
   font-size: 11.5px; font-weight: 600; color: #e2e8f0;
 }
+/* .pill-state carries the word a colour-blind reader (and, via the pill's
+ * aria-label, a screen reader) actually needs -- see main.js::setHealth.
+ * Lighter weight than .pill-name so the service name still reads first;
+ * the distinction is hierarchy, not visibility, so no opacity/colour trick
+ * that would put a second colour-only signal back in. */
+.pill-state { font-weight: 500; color: rgba(226, 232, 240, .82); }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .dot-ok   { background: var(--status-good); }
 .dot-down { background: var(--status-critical); }
@@ -383,7 +313,8 @@ button { font-family: inherit; }
   display: flex; gap: 6px; align-items: center; padding: 6px 10px 8px;
 }
 .session-row-editor input {
-  flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+  /* --border-interactive — see #question's comment. */
+  flex: 1; min-width: 0; border: 1px solid var(--border-interactive); border-radius: 6px;
   padding: 5px 8px; font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit;
 }
 .session-row-editor button {
@@ -421,11 +352,41 @@ button { font-family: inherit; }
 .card-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 
 /* ── Composer (ask box) ─────────────────────────────────────────── */
-.composer { position: sticky; top: 10px; z-index: 5; }
+/* D3 (DESIGN.md §5.1): bottom, not top. The composer is the LAST child of
+ * .layout now (see index.html) — sticky to `bottom` instead of `top` is
+ * what keeps it reachable without hunting once the transcript grows past
+ * one screen, which was the entire argument for moving it here. The
+ * card's own opaque background (inherited from .card, below) is what
+ * keeps a turn that scrolls past underneath from showing through.
+ *
+ * D3-hidden-chart follow-up: being sticky, the composer has no effect on
+ * document flow — nothing after it pushes it away, so it simply floats
+ * over whatever transcript content is still under it once the page is
+ * scrolled to the bottom. Measured live at a 910px viewport with a
+ * rendered chart result: the composer card occupied y≈720-900 (a 180px
+ * resting height) sitting 10px off the true viewport bottom, while the
+ * chart svg below it sat at y≈873-1315 — 0 of those pixels were visible,
+ * entirely covered by the pinned composer. --composer-clearance is that
+ * 180px card height + its 10px `bottom` offset + a breathing gap. The
+ * card is not 180px at every width: measured again at 375x812 it rests
+ * at 204px (the controls wrap), which a 200px reservation would under-
+ * cover — so the value is sized to the widest measured card (204) plus
+ * its offset and a gap, not to the desktop figure alone: the amount of empty space that must exist below the last
+ * turn (see #transcript's padding-block-end) and the amount scrollIntoView
+ * must leave clear below a turn it scrolls to (see .turn's
+ * scroll-margin-bottom and html's scroll-padding-bottom below) for a tall
+ * result to ever be fully reachable above the composer. */
+:root { --composer-clearance: 220px; }
+.composer { position: sticky; bottom: 10px; z-index: 5; }
 .ask-row { display: flex; gap: 10px; align-items: stretch; }
 #question {
   flex: 1; resize: vertical; min-height: 58px;
-  border: 1.5px solid var(--border); border-radius: 10px;
+  /* --border-interactive, not --border: this edge is what tells an
+   * analyst the box is typeable at all (WCAG 1.4.11's 3:1 floor for a
+   * control boundary). The old --border/--card-2 pairing measured 1.23:1
+   * with a 1.05 fill difference — neither signal reached the control —
+   * see DESIGN-INVARIANTS.md §11 and tokens.css's --border-interactive. */
+  border: 1.5px solid var(--border-interactive); border-radius: 10px;
   padding: 12px 14px; font-size: 15px; font-family: inherit;
   background: var(--card-2); color: var(--ink);
   transition: border-color .15s, box-shadow .15s;
@@ -452,19 +413,15 @@ button { font-family: inherit; }
 .ask-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12.5px; font-weight: 600; color: var(--ink); cursor: pointer;
+  /* The native checkbox is 13x13; this label is the actual hit target, so
+   * it — not the input — carries the padding. Measured 81x20 before this
+   * rule (DESIGN-INVARIANTS.md §3): min-height 24px is the WCAG 2.5.8
+   * conformance floor, bumped to 44px under the touch breakpoint below. */
+  min-height: 24px;
+  padding-block: 4px;
 }
 .ask-toggle input { cursor: pointer; }
 .ask-toggle-hint { font-size: 11.5px; color: var(--muted); min-width: 0; }
-
-.samples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
-.samples-label { font-size: 12px; color: var(--muted); font-weight: 600; }
-.sample {
-  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
-  border-radius: 999px; padding: 6px 13px; font-size: 12.5px; cursor: pointer;
-  transition: border-color .15s, background .15s, color .15s;
-}
-.sample:hover:not(:disabled) { border-color: var(--teal); background: var(--teal-l); color: var(--teal-d); }
-.sample:disabled { opacity: .5; cursor: not-allowed; text-decoration: line-through; }
 
 .notice {
   border-radius: 10px; padding: 12px 16px; font-size: 13.5px; font-weight: 600;
@@ -476,11 +433,53 @@ button { font-family: inherit; }
 .notice.info  { background: var(--status-neutral-bg); color: var(--ink); border: 1px solid var(--border); }
 
 /* ── Transcript ──────────────────────────────────────────────────── */
-#transcript { display: flex; flex-direction: column; gap: 16px; }
+/* padding-block-end (logical — this is an RTL-first product, and "bottom"
+ * here is not a physical side any layout direction changes, but every
+ * other spacing rule in this file uses the logical form on principle) of
+ * --composer-clearance reserves blank space after the last turn equal to
+ * the sticky composer's own footprint. Without it, scrolling all the way
+ * down parks the composer directly on top of the last turn's content
+ * instead of below it — see --composer-clearance's comment above .composer
+ * for the measured overlap this fixes (a 180px composer over a 440px
+ * chart, 0px of it visible). */
+#transcript { display: flex; flex-direction: column; gap: 16px; padding-block-end: var(--composer-clearance); }
+
+/* Empty-transcript state — injected by main.js's renderTranscriptEmptyState()
+ * only while the active session has zero turns. Sample-story chips used to
+ * live inside the composer card, permanently, in every mode; they overlapped
+ * #question's placeholder text there (screenshot in the D3 follow-up) and,
+ * per DESIGN.md decision B5, have no business taking up space in a live
+ * production session at all. This is where a first-time analyst actually
+ * looks — an empty conversation, not a full one — and renderTranscriptEmptyState
+ * only builds the .samples child when state.mode === "simulated". */
+.transcript-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 34px 20px; text-align: center; color: var(--muted);
+}
+.transcript-empty-hint { font-size: 13.5px; line-height: 1.7; }
+.transcript-empty .samples { justify-content: center; }
+
+.samples { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.samples-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+.sample {
+  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  border-radius: 999px; padding: 6px 13px; font-size: 12.5px; cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.sample:hover:not(:disabled) { border-color: var(--teal); background: var(--teal-l); color: var(--teal-d); }
+.sample:disabled { opacity: .5; cursor: not-allowed; text-decoration: line-through; }
 
 .turn {
   display: flex; flex-direction: column; gap: 12px;
   scroll-margin-top: 90px;
+  /* --composer-clearance again: scrollIntoView (main.js) targets this
+   * element, and without scroll-margin-bottom a `block: "nearest"`/`"end"`
+   * call is free to park the turn's bottom edge exactly at the true
+   * viewport bottom — underneath the sticky composer — and call that "in
+   * view". This is what makes the post-settle re-scroll in main.js (once
+   * a turn's result, e.g. a tall chart, has actually rendered) land the
+   * result above the composer instead of behind it. */
+  scroll-margin-bottom: var(--composer-clearance);
 }
 
 .turn-question {
@@ -599,7 +598,8 @@ button { font-family: inherit; }
   border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 4px;
 }
 .chip-editor input {
-  flex: 1; min-width: 160px; border: 1px solid var(--border); border-radius: 6px;
+  /* --border-interactive — see #question's comment. */
+  flex: 1; min-width: 160px; border: 1px solid var(--border-interactive); border-radius: 6px;
   padding: 6px 9px; font-size: 12.5px; background: var(--card); color: var(--ink);
   font-family: inherit;
 }
@@ -745,17 +745,63 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 }
 .warning-item .warn-icon { flex: 0 0 auto; font-size: 15px; }
 
-.error-banner {
-  display: flex; gap: 10px; align-items: flex-start;
-  background: var(--status-critical-bg); color: var(--status-critical);
-  border: 1px solid color-mix(in srgb, var(--status-critical) 40%, transparent);
-  border-radius: var(--radius-sm); padding: 12px 14px; font-size: 13.5px; font-weight: 600;
+/* ── Failure state (turn.js's renderFailureState) ────────────────────
+ * Matches docs/design/mockups/completions.html's `.fail` pattern (that
+ * file is the drawn target for this anatomy): a left/logical-start
+ * accent border in the severity colour plus a tinted background, rather
+ * than text painted entirely in that colour — --ink reads at 13+:1
+ * against either tint in both themes (checked below), so legibility
+ * doesn't depend on how loud the tint is. DESIGN-INVARIANTS.md §8's
+ * anatomy is the bold lead (what happened), the lighter "why", the
+ * machine-readable code as the visually least important line, then real
+ * button controls — a first, primary one in brand teal (the recommended
+ * next step) and any further one a plain outline (an alternative). */
+.failure-state {
+  display: flex; flex-direction: column; gap: 6px;
+  border-inline-start: 4px solid var(--status-critical);
+  background: var(--status-critical-bg); color: var(--ink);
+  border-radius: var(--radius-sm); padding: 12px 15px; font-size: 13px;
   line-height: 1.6;
 }
-.error-code {
-  font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
-  background: rgba(0,0,0,.08); border-radius: 4px; padding: 1px 6px; font-weight: 700;
+/* --status-warn for a system hiccup a retry can plausibly fix
+ * (MODEL_UNAVAILABLE, LLM_OUTPUT_TRUNCATED); --status-critical (the
+ * default above) for a statement that never ran or a database that
+ * actively refused one. Checked: ink-on-warn-bg is 13.67 (light) / 12.77
+ * (dark), muted-on-warn-bg (the code line) is 5.06 (light) / 6.07 (dark)
+ * — both clear 4.5, same margin as the critical tint below. */
+.failure-warn {
+  border-inline-start-color: var(--status-warn); background: var(--status-warn-bg);
 }
+.failure-lead { font-weight: 800; font-size: 13.5px; margin: 0; }
+.failure-why { margin: 0; opacity: .92; }
+/* ink-on-critical-bg: 13.03 (light) / 14.22 (dark); muted-on-critical-bg
+ * (the code line below): 4.82 (light) / 6.75 (dark) — both new pairings,
+ * both checked, both well clear of 4.5. */
+.failure-code {
+  font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
+  color: var(--muted); direction: ltr; unicode-bidi: isolate; display: block;
+}
+/* Wraps .failure-code with .failure-request-id (added when TurnErrorInfo
+ * carries one — guard rejections have none, see turn.js's isGuardRejected)
+ * on one row: both are "present but subordinate" per §8's copy discipline,
+ * so they share the code line's own muted/monospace treatment rather than
+ * competing for attention with each other. */
+.failure-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin: 0; }
+.failure-request-id {
+  font-family: Consolas, "Cascadia Code", monospace; font-size: 11.5px;
+  color: var(--muted); direction: ltr; unicode-bidi: isolate;
+}
+.failure-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.failure-action-btn {
+  border: 1px solid var(--border); background: var(--card); color: var(--ink);
+  border-radius: var(--radius-pill); padding: 6px 14px; font-size: 12px;
+  font-weight: 700; cursor: pointer; font-family: inherit; min-height: 32px;
+}
+.failure-action-btn:hover { border-color: var(--teal); color: var(--teal-d); }
+/* --teal on white text is the pairing tests/web_ui/test_web_ui_contrast_
+ * and_failure.py checks (5.21 light / 4.76 dark) — safe to reuse as-is. */
+.failure-action-btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+.failure-action-btn.primary:hover { background: var(--teal-d); border-color: var(--teal-d); }
 
 /* ── LLM status strip ────────────────────────────────────────────── */
 .llm-strip {
@@ -857,6 +903,21 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .memory-toggle:hover { background: rgba(255, 255, 255, .16); }
 
 /* ── Responsive ──────────────────────────────────────────────────── */
+
+/* Tablet (641-1024px): the only breakpoint used to be 640px, so
+ * 768-1024 viewports inherited the full desktop chrome — a 260px fixed
+ * sidebar plus a 900px-max transcript column, sized for a wide screen and
+ * cramped on a tablet — the desktop topbar's own overflow comment above
+ * already names ~1400px as where its controls get tight. Scoped with a
+ * min-width so it does not fight the off-canvas sidebar rules below, which
+ * own 640px and under. DESIGN-INVARIANTS.md §5. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .topbar { padding: 12px 18px; }
+  .brand-text p { display: none; } /* tagline; brand mark + name carry identity here */
+  .sidebar { flex-basis: 200px; width: 200px; }
+  .layout { max-width: 100%; padding: 18px 16px 32px; }
+}
+
 @media (max-width: 640px) {
   .topbar { padding: 12px 14px; }
   .layout { padding: 16px 12px 32px; }
@@ -864,16 +925,25 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   .llm-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
 
   /* Sidebar collapses to an off-canvas panel behind a toggle, rather
-   * than squeezing the transcript into a sliver next to a fixed rail. */
+   * than squeezing the transcript into a sliver next to a fixed rail.
+   *
+   * `translateX()` is a physical transform — it shifts along the screen's
+   * x-axis and does not flip with `direction`, unlike `inset-inline-start`
+   * above. The panel is anchored to the inline-start edge, which is the
+   * *left* under LTR and the *right* under RTL, so hiding it means moving
+   * further past whichever physical edge it is flush against:
+   * translateX(-100%) under LTR, translateX(100%) under RTL. Using the same
+   * sign for both (as this rule once did) leaves 75px of a 300px panel
+   * on screen at a 375px viewport — see DESIGN-INVARIANTS.md §2.2. */
   .sidebar-toggle { display: flex; }
   .sidebar {
     position: fixed; inset-inline-start: 0; top: 0; bottom: 0;
     width: 82vw; max-width: 300px; z-index: 40;
     box-shadow: var(--shadow);
-    transform: translateX(100%);
+    transform: translateX(-100%);
     transition: transform .18s ease-out;
   }
-  [dir="rtl"] .sidebar { transform: translateX(-100%); }
+  [dir="rtl"] .sidebar { transform: translateX(100%); }
   .app-body.sidebar-open .sidebar { transform: translateX(0); }
   .app-body { position: relative; flex-direction: column; }
 }
@@ -884,18 +954,81 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
   overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
 }
 
-/* ── Result shapes (table.js / chart.js) ─────────────────────────────
- * Chart tokens — a fourth, narrow colour axis: FOCUS vs CONTEXT within
- * one chart only. Everything that is not the point is grey
- * (--chart-context); the point takes the brand hue (--chart-focus).
- * Aliased to existing tokens, defined once here on bare :root, so both
- * stay theme-correct automatically with no second set of dark-mode
- * overrides — never define a colour only inside a media/[data-theme]
- * block (see this file's header). */
-:root {
-  --chart-focus: var(--teal);
-  --chart-context: var(--muted);
+/* ── Stage strip — slim five-step progress (not five cards) ───────── */
+.stage-strip {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: var(--fs-sm, 12.5px); color: var(--muted); font-weight: 600;
+  padding-inline-start: 4px;
 }
+.stage-strip-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: var(--radius-pill, 999px);
+  background: var(--card); border: 1px solid var(--border);
+  font-size: 11.5px;
+}
+.stage-strip-mark {
+  width: 14px; height: 14px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 9px; font-weight: 800;
+  background: var(--status-neutral-bg, var(--card-2)); color: var(--muted);
+}
+.stage-strip-item.running {
+  border-color: var(--teal); color: var(--teal-d); background: var(--teal-l);
+}
+.stage-strip-item.running .stage-strip-mark { background: var(--teal); color: #fff; }
+.stage-strip-item.done {
+  border-color: color-mix(in srgb, var(--status-good) 35%, transparent);
+  color: var(--status-good); background: var(--status-good-bg);
+}
+.stage-strip-item.done .stage-strip-mark { background: var(--status-good); color: #fff; }
+.stage-strip-item.error {
+  border-color: color-mix(in srgb, var(--status-critical) 40%, transparent);
+  color: var(--status-critical); background: var(--status-critical-bg);
+}
+.stage-strip-item.error .stage-strip-mark { background: var(--status-critical); color: #fff; }
+.stage-strip-summary { margin-inline-start: 6px; font-variant-numeric: tabular-nums; font-size: 11.5px; }
+
+/* ── Outcome line ─────────────────────────────────────────────────── */
+.turn-outcome {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: var(--fs-sm, 12.5px); color: var(--muted); font-weight: 600;
+  padding-inline-start: 4px;
+}
+.turn-outcome .outcome-ok { color: var(--status-good); font-weight: 700; }
+.turn-outcome .outcome-bad { color: var(--status-critical); font-weight: 700; }
+.turn-outcome .outcome-warn { color: var(--status-warn); font-weight: 700; }
+.turn-outcome .outcome-sep { opacity: .45; }
+.turn-outcome .num {
+  direction: ltr; unicode-bidi: isolate; font-family: Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Turn details drawer ──────────────────────────────────────────── */
+.turn-details {
+  border: 1px dashed var(--border); border-radius: var(--radius-sm, 8px);
+  background: var(--card);
+}
+.turn-details-summary {
+  padding: 10px 14px; cursor: pointer; font-size: var(--fs-sm, 12.5px);
+  font-weight: 700; color: var(--muted); list-style: none;
+}
+.turn-details-summary::-webkit-details-marker { display: none; }
+.turn-details[open] > .turn-details-summary {
+  border-bottom: 1px solid var(--border); color: var(--navy);
+}
+.turn-details-body {
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 12px;
+}
+.sql-title-acts { display: flex; gap: 8px; align-items: center; }
+.sql-collapse { font-size: 11.5px; }
+
+/* ── Result shapes (table.js / chart.js) ─────────────────────────────
+ * Chart tokens (--chart-focus / --chart-context) moved to
+ * web/styles/tokens.css — this file's header says colours are only ever
+ * defined there, and once --chart-context stopped being an alias for
+ * --muted (DESIGN-INVARIANTS.md §10: aliasing put focus and context at
+ * the same perceived brightness, 1.03:1 in dark mode) it needed the
+ * same per-theme literal treatment every other colour in tokens.css
+ * gets, not a one-off `:root` block living here instead. */
 
 /* Numeric islands in RTL flow — the logical-property equivalent of the
  * result table's existing `dir="ltr"` wrapper, for a number that sits
@@ -1177,7 +1310,8 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 }
 .memory-rememberable-field { font-size: 12.5px; font-weight: 600; color: var(--ink); flex: 1 1 140px; }
 .memory-rememberable-input {
-  flex: 1 1 140px; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+  /* --border-interactive — see #question's comment. */
+  flex: 1 1 140px; min-width: 0; border: 1px solid var(--border-interactive); border-radius: 6px;
   padding: 6px 9px; font-size: 12.5px; background: var(--card); color: var(--ink); font-family: inherit;
 }
 .memory-rememberable-error { flex-basis: 100%; font-size: 11.5px; color: var(--status-critical); }

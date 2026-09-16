@@ -57,6 +57,7 @@ _STATE_JS = _WEB_JS / "state.js"
 _TABLE_JS = _WEB_JS / "render" / "table.js"
 _CHART_JS = _WEB_JS / "render" / "chart.js"
 _ASSUMPTIONS_JS = _WEB_JS / "render" / "assumptions.js"
+_ICONS_JS = _WEB_JS / "icons.js"
 _EXPORT_JS = _WEB_JS / "export.js"
 _SESSIONS_JS = _WEB_JS / "render" / "sessions.js"
 _MEMORY_JS = _WEB_JS / "render" / "memory.js"
@@ -120,14 +121,31 @@ def _prepare_copies(tmp_path: Path) -> dict[str, Path]:
     sessions_src = _SESSIONS_JS.read_text(encoding="utf-8")
     memory_src = _MEMORY_JS.read_text(encoding="utf-8")
 
+    # Applied to every staged module, not just assumptions.js. table.js and
+    # sessions.js began importing the icon set when chrome emoji were replaced
+    # with SVG, and the staged copies sit flat in one temp directory -- so an
+    # unrewritten "../icons.js" resolves ABOVE that directory and Node raises
+    # ERR_MODULE_NOT_FOUND before a single assertion in this file runs. The
+    # previous version rewrote one hard-coded source, which encoded a snapshot
+    # of the dependency graph rather than the graph itself.
+    def _rewrite_icons_import(src: str) -> str:
+        return src.replace('from "../icons.js"', 'from "./icons.mjs"').replace(
+            'from "./icons.js"', 'from "./icons.mjs"'
+        )
+
+    assumptions_src = _rewrite_icons_import(assumptions_src)
+    table_src = _rewrite_icons_import(table_src)
+    sessions_src = _rewrite_icons_import(sessions_src)
     api_src = _subn_or_fail(_APIKEY_IMPORT, 'import { getApiKey } from "./apikey.mjs";', api_src, "api.js -> apikey.js")
     table_src = _subn_or_fail(_CHART_IMPORT, 'import { renderChartAndTable } from "./chart.mjs";', table_src, "table.js -> chart.js")
     table_src = _subn_or_fail(_EXPORT_IMPORT, 'import { downloadResultAsCsv } from "./export.mjs";', table_src, "table.js -> export.js")
     table_src = _subn_or_fail(_ASSUMPTIONS_IMPORT, 'import { SOURCE_LABELS } from "./assumptions.mjs";', table_src, "table.js -> assumptions.js")
     chart_src = _subn_or_fail(_TABLE_IMPORT_IN_CHART, 'import { renderTableOnly, renderExportRow, fmtCell } from "./table.mjs";', chart_src, "chart.js -> table.js")
 
-    # state.js, sessions.js and memory.js have no internal import
-    # specifiers to rewrite -- copied byte-for-byte (extension aside).
+    # state.js and memory.js have no internal import specifiers to rewrite --
+    # copied byte-for-byte (extension aside). sessions.js no longer belongs in
+    # that list: it imports the icon set (rewritten above) since its row
+    # controls stopped being emoji glyphs.
 
     paths = {
         "api": tmp_path / "api.mjs",
@@ -163,6 +181,7 @@ def _prepare_copies(tmp_path: Path) -> dict[str, Path]:
     paths["sessions"].write_text(sessions_src, encoding="utf-8")
     paths["memory"].write_text(memory_src, encoding="utf-8")
     paths["num"].write_text(_NUM_JS.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "icons.mjs").write_text(_ICONS_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return paths
 
 

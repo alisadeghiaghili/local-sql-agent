@@ -183,7 +183,97 @@ async function refreshAll() {
   hideForbiddenBanner();
   clearNotice();
   await Promise.all(CARDS.map(refreshOne));
+  updateSummaryRail();
+  markLastUpdated();
 }
+
+/** Snapshot the four rail numbers from the last successful payloads. */
+const _rail = { maintenance: null, health: null, feedback: null, cache: null };
+
+function updateSummaryRail() {
+  setRailItem("rail-maintenance", _rail.maintenance);
+  setRailItem("rail-checks", _rail.health);
+  setRailItem("rail-feedback", _rail.feedback);
+  setRailItem("rail-cache", _rail.cache);
+}
+
+function setRailItem(id, data) {
+  const el = $(id);
+  if (!el) return;
+  const val = el.querySelector(".rail-val");
+  const sub = el.querySelector(".rail-sub");
+  el.classList.remove("good", "warn", "crit");
+  if (!data) {
+    val.textContent = "—";
+    sub.textContent = "—";
+    return;
+  }
+  if (id === "rail-maintenance") {
+    const on = !!(data.enabled || data.active || data.on);
+    val.textContent = on ? "روشن" : "خاموش";
+    sub.textContent = on ? (data.note || "تحلیل‌گران متوقف") : "تحلیل‌گران فعال";
+    el.classList.add(on ? "crit" : "good");
+  } else if (id === "rail-checks") {
+    const checks = data.checks || [];
+    const failed = checks.filter((c) => c.status === "FAIL").length;
+    val.textContent = failed ? `${failed} / ${checks.length}` : `${checks.length}`;
+    sub.textContent = failed ? `${failed} ناموفق` : "همه موفق";
+    el.classList.add(failed ? "crit" : "good");
+  } else if (id === "rail-feedback") {
+    const open = data.open ?? data.total_open ?? (data.stats && data.stats.open) ?? null;
+    const n = open === null ? (Array.isArray(data.feedback) ? data.feedback.length : "—") : open;
+    val.textContent = String(n);
+    sub.textContent = "باز";
+    el.classList.add(Number(n) > 0 ? "warn" : "good");
+  } else if (id === "rail-cache") {
+    const size = data.size ?? data.entries ?? "—";
+    val.textContent = String(size);
+    sub.textContent = "ورودی";
+    el.classList.add("good");
+  }
+}
+
+function markLastUpdated() {
+  const el = $("admin-last-updated");
+  if (!el) return;
+  const d = new Date();
+  el.textContent = `آخرین: ${d.toLocaleTimeString("fa-IR")}`;
+}
+
+/* Auto-refresh every 30s — one cadence instead of ↻ on every section.
+   Manual buttons remain for a single card after a write action. */
+const AUTO_REFRESH_MS = 30_000;
+setInterval(() => {
+  if (document.hidden) return;
+  refreshAll();
+}, AUTO_REFRESH_MS);
+
+/* Scroll-spy for the sticky jump nav so the active section is obvious
+ * while scrolling ten cards. IntersectionObserver, not a scroll handler. */
+(function wireJumpNavSpy() {
+  const nav = $("admin-jump");
+  if (!nav || typeof IntersectionObserver !== "function") return;
+  const links = [...nav.querySelectorAll("a[href^='#']")];
+  const map = new Map();
+  for (const a of links) {
+    const id = a.getAttribute("href").slice(1);
+    const sec = document.getElementById(id);
+    if (sec) map.set(sec, a);
+  }
+  if (!map.size) return;
+  const obs = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        links.forEach((a) => a.classList.remove("on"));
+        const a = map.get(e.target);
+        if (a) a.classList.add("on");
+      }
+    },
+    { rootMargin: "-20% 0px -60% 0px", threshold: 0 },
+  );
+  map.forEach((_a, sec) => obs.observe(sec));
+})();
 
 async function refreshOne(name) {
   const body = $(`${name}-body`);
@@ -195,17 +285,24 @@ async function refreshOne(name) {
       const includeExamples = $("include-examples-toggle").checked;
       renderSummary(await api.summary(includeExamples));
     } else if (name === "health") {
-      renderHealth(await api.healthChecks());
+      const payload = await api.healthChecks();
+      _rail.health = payload;
+      renderHealth(payload);
     } else if (name === "cache") {
-      renderCache(await api.cache());
+      const payload = await api.cache();
+      _rail.cache = payload;
+      renderCache(payload);
     } else if (name === "config") {
       renderConfig(await api.config());
     } else if (name === "feedback") {
       const status = $("feedback-status-filter").value;
       const [stats, list] = await Promise.all([api.feedbackStats(), api.feedbackList(status)]);
+      _rail.feedback = { ...(stats || {}), ...(list || {}) };
       renderFeedback(stats, list.feedback || []);
     } else if (name === "maintenance") {
-      renderMaintenance(await api.maintenanceState());
+      const payload = await api.maintenanceState();
+      _rail.maintenance = payload;
+      renderMaintenance(payload);
     } else if (name === "keys") {
       renderKeys(await loadKeysCard());
     } else if (name === "schemaDrift") {

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>توکن‌های طراحی — Local SQL Agent 5.0</title>
+<style>
+  :root {
+    --navy: #0e2a47; --navy-2: #14375c; --navy-3: #1b436e;
+    --teal: #0d9488; --teal-d: #0b7a70; --teal-l: #e7f6f2;
+    --bg: #f4f6fa; --card: #fff; --card-2: #f8fafc; --border: #e2e8f0;
+    --ink: #1f2937; --muted: #64748b;
+    --status-good: #10b981; --status-warn: #f59e0b; --status-critical: #e5484d; --status-neutral: #64748b;
+    --status-good-bg: #e9f9f1; --status-warn-bg: #fef6e7; --status-critical-bg: #fdeeee; --status-neutral-bg: #eef1f5;
+    --source-question: #0d9488; --source-session: #6366f1; --source-policy: #b45309; --source-memory: #be185d; --source-default: #64748b;
+    --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
+    --focus: 0 0 0 3px rgba(13,148,136,.35);
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.05);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.6; padding: 32px 24px 80px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 800; color: var(--navy); margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 32px; }
+  h2 { font-size: 14px; font-weight: 800; color: var(--navy); margin: 32px 0 12px; letter-spacing: .02em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .swatch {
+    border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--card);
+  }
+  .swatch .chip { height: 56px; }
+  .swatch .meta { padding: 8px 10px; font-size: 11px; }
+  .swatch .meta b { display: block; font-size: 12px; color: var(--ink); }
+  .swatch .meta span { color: var(--muted); font-family: Consolas, monospace; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+  .btn {
+    border: 0; border-radius: 10px; padding: 10px 22px; font: inherit; font-weight: 700; font-size: 14px;
+    cursor: pointer; background: var(--teal); color: #fff;
+  }
+  .btn:focus-visible { outline: none; box-shadow: var(--focus); }
+  .btn-ghost { background: var(--card); color: var(--ink); border: 1px solid var(--border); }
+  .btn-danger { background: var(--status-critical); color: #fff; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-pill);
+    padding: 5px 12px; font-size: 12px; font-weight: 700;
+    background: var(--status-neutral-bg); color: var(--ink); border: 1px solid var(--border);
+  }
+  .pill.good { background: var(--status-good-bg); color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 30%, transparent); }
+  .pill.warn { background: var(--status-warn-bg); color: var(--status-warn); border-color: color-mix(in srgb, var(--status-warn) 30%, transparent); }
+  .pill.crit { background: var(--status-critical-bg); color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 30%, transparent); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); }
+  .type-row { display: grid; grid-template-columns: 100px 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: baseline; }
+  .type-row label { font-size: 11px; color: var(--muted); font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: start; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+  .num { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; font-family: Consolas, monospace; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 700; border-radius: var(--radius-pill);
+    padding: 2px 8px; border: 1px solid transparent;
+  }
+  .tag-q { background: #e7f6f2; color: var(--source-question); }
+  .tag-s { background: #eef0fd; color: var(--source-session); }
+  .tag-p { background: #fbf1e0; color: var(--source-policy); }
+  .tag-m { background: #fce8f1; color: var(--source-memory); }
+  .note {
+    margin-top: 28px; padding: 14px 16px; border-radius: var(--radius-sm);
+    background: var(--teal-l); border-inline-start: 3px solid var(--teal); font-size: 13px; line-height: 1.7;
+  }
+  .note b { color: var(--teal-d); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>توکن‌های طراحی — پیش‌فرض ۵٫۰</h1>
+  <p class="sub">مرجع واحد رنگ، مقیاس و مؤلفه. اجرا فقط از این فایل می‌خواند. تأیید این صفحه = چراغ سبز پیاده‌سازی.</p>
+
+  <h2>برند (chrome)</h2>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:#0e2a47"></div><div class="meta"><b>navy</b><span>#0e2a47</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#14375c"></div><div class="meta"><b>navy-2</b><span>#14375c</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#1b436e"></div><div class="meta"><b>navy-3</b><span>#1b436e</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#0d9488"></div><div class="meta"><b>teal</b><span>#0d9488</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#0b7a70"></div><div class="meta"><b>teal-d</b><span>#0b7a70</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#e7f6f2"></div><div class="meta"><b>teal-l</b><span>#e7f6f2</span></div></div>
+  </div>
+
+  <h2>سطح و مرکب</h2>
+  <div class="grid">
+    <div class="swatch"><div class="chip" style="background:#f4f6fa"></div><div class="meta"><b>bg</b><span>#f4f6fa</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#ffffff"></div><div class="meta"><b>card</b><span>#ffffff</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#f8fafc"></div><div class="meta"><b>card-2</b><span>#f8fafc</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#e2e8f0"></div><div class="meta"><b>border</b><span>#e2e8f0</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#1f2937"></div><div class="meta"><b>ink</b><span>#1f2937</span></div></div>
+    <div class="swatch"><div class="chip" style="background:#64748b"></div><div class="meta"><b>muted</b><span>#64748b</span></div></div>
+  </div>
+
+  <h2>وضعیت (هرگز با برند قاطی نمی‌شود)</h2>
+  <div class="row">
+    <span class="pill good"><span class="dot"></span> سالم</span>
+    <span class="pill warn"><span class="dot"></span> هشدار</span>
+    <span class="pill crit"><span class="dot"></span> بحرانی</span>
+    <span class="pill"><span class="dot"></span> خنثی</span>
+  </div>
+  <p class="sub" style="margin:0">کلمه + رنگ + نوار. رنگ هرگز تنها نشانه نیست.</p>
+
+  <h2>منبع فرض (محور سوم)</h2>
+  <div class="row">
+    <span class="tag tag-q">سؤال</span>
+    <span class="tag tag-s">جلسه</span>
+    <span class="tag tag-p">سیاست</span>
+    <span class="tag tag-m">حافظه</span>
+  </div>
+
+  <h2>دکمه‌ها</h2>
+  <div class="row">
+    <button class="btn">پرسش</button>
+    <button class="btn btn-ghost">لغو</button>
+    <button class="btn btn-danger">ابطال کلید</button>
+  </div>
+
+  <h2>تایپوگرافی</h2>
+  <div class="card">
+    <div class="type-row"><label>۲xl</label><div style="font-size:21px;font-weight:800">عنوان محصول</div></div>
+    <div class="type-row"><label>lg</label><div style="font-size:15px;font-weight:600">متن پرسش تحلیل‌گر</div></div>
+    <div class="type-row"><label>md</label><div style="font-size:14px">متن بدنه — خط اصلی خواندن</div></div>
+    <div class="type-row"><label>sm</label><div style="font-size:12.5px;color:var(--muted)">فرعی، راهنما، متا</div></div>
+    <div class="type-row"><label>mono</label><div class="num" style="font-size:13px">SELECT TOP 10 · 1.24s · 342 rows</div></div>
+  </div>
+
+  <h2>جدول نتیجه (نمونه)</h2>
+  <div class="card" style="padding:0; overflow:hidden">
+    <table>
+      <thead><tr><th>مشتری</th><th>مبلغ خرید</th><th>سهم</th></tr></thead>
+      <tbody>
+        <tr><td>پتروشیمی الف</td><td class="num">12,400,000,000</td><td class="num">18%</td></tr>
+        <tr><td>فولاد ب</td><td class="num">9,150,000,000</td><td class="num">13%</td></tr>
+        <tr><td>سیمان ج</td><td class="num">7,020,000,000</td><td class="num">10%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <b>قانون:</b> هیچ هگز رنگی خارج از این مجموعه در CSS محصول ظاهر نمی‌شود.
+    دارک‌مود فقط همین custom propertyها را بازتعریف می‌کند.
+    ایموجی در chrome ممنوع. فونت CDN ممنوع. حالت نمایشی در تاپ‌بار ممنوع.
+  </div>
+</div>
+</body>
+</html>

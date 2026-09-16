@@ -250,6 +250,27 @@ def _classify_router_failure(exc: Exception) -> tuple[str, str]:
     return "MODEL_UNAVAILABLE", "The language model is currently unreachable. Please try again."
 
 
+def _guard_reason_subject(exc: Exception) -> tuple[str | None, str | None]:
+    """``(reason, subject)`` for a caught guard-rejection exception, or ``(None, None)``.
+
+    A guard-rejection ``except`` clause here catches two different things
+    under one ``ValueError``/``PolicyRejection`` umbrella: a
+    :class:`~security.sql_guard.SqlGuardRejection` (which carries these two
+    attributes -- see that class's docstring for why) raised by
+    ``validate_sql``/``ensure_top``/``transpile_and_revalidate``, and a
+    :class:`~session.composer.CompositionError` raised by the §2 CTE
+    composer, which is a plain :class:`ValueError` with neither attribute.
+    ``getattr`` with a ``None`` default reads the former's structure where
+    it exists and degrades the latter to "no structured reason" rather
+    than raising ``AttributeError`` -- exactly the "generic action" fallback
+    ``docs/design/DESIGN-INVARIANTS.md`` §8 asks for when a reason is not
+    available, without this module needing to import
+    :class:`~security.sql_guard.SqlGuardRejection` just to ``isinstance``
+    check for it.
+    """
+    return getattr(exc, "reason", None), getattr(exc, "subject", None)
+
+
 class TurnEngine:
     """Answers one question in the context of a session — see module docstring.
 
@@ -392,6 +413,17 @@ class TurnEngine:
             )
         if mem_warnings:
             outcome.warnings = list(outcome.warnings) + mem_warnings
+
+        if outcome.error is not None:
+            # Stamped here, once, rather than threaded as a parameter
+            # through every `_GenOutcome`-producing branch above: `req_id`
+            # is exactly the id this method passes to `self._write_audit`
+            # a few lines down, for this SAME turn -- so setting it here
+            # guarantees the two can never drift apart, which is the one
+            # property that makes a `request_id` worth showing an operator
+            # at all (docs/design/DESIGN-INVARIANTS.md §8's copy
+            # discipline: "the request_id visible but subordinate").
+            outcome.error.request_id = req_id
 
         basis = Basis(
             kind=basis_decision.kind,
@@ -557,8 +589,11 @@ class TurnEngine:
                     denied_columns=denied_columns,
                 )
         except (CompositionError, ValueError) as exc:
+            reason, subject = _guard_reason_subject(exc)
             outcome = _GenOutcome(
-                guard=GuardVerdict(verdict="rejected", rule=str(exc)),
+                guard=GuardVerdict(
+                    verdict="rejected", rule=str(exc), reason=reason, subject=subject,
+                ),
                 result=TurnResult(),
                 warnings=[f"پرس‌وجوی بازپالایی‌شده رد شد: {exc}"],
                 llm_status=llm_status,
@@ -803,8 +838,11 @@ class TurnEngine:
                 # occurrence -- see security.sql_guard's module docstring
                 # for the taxonomy this relies on.
                 last_error = str(exc)
+                reason, subject = _guard_reason_subject(exc)
                 return _GenOutcome(
-                    guard=GuardVerdict(verdict="rejected", rule=last_error),
+                    guard=GuardVerdict(
+                        verdict="rejected", rule=last_error, reason=reason, subject=subject,
+                    ),
                     result=TurnResult(),
                     warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
                     llm_status=llm_status,
@@ -813,8 +851,11 @@ class TurnEngine:
                 last_error = str(exc)
                 last_sql = None
                 if correction_round == self._max_corrections:
+                    reason, subject = _guard_reason_subject(exc)
                     return _GenOutcome(
-                        guard=GuardVerdict(verdict="rejected", rule=last_error),
+                        guard=GuardVerdict(
+                            verdict="rejected", rule=last_error, reason=reason, subject=subject,
+                        ),
                         result=TurnResult(),
                         warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
                         llm_status=llm_status,

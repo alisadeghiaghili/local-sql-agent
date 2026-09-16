@@ -1,0 +1,278 @@
+/* web/styles/tokens.css — the only place colours, radii, and focus rings
+ * are defined for the product UI. style.css and admin.css consume these;
+ * they never redefine a hex value.
+ *
+ * Light mode on bare :root. Dark mode ONLY redefines the same custom
+ * properties — never introduces a colour that exists solely inside a
+ * media query or [data-theme] block. --sql-* is the exception that
+ * proves the rule: the SQL code surface is always-dark, so those tokens
+ * are declared once and never flipped.
+ *
+ * See docs/design/DESIGN.md §4.
+ */
+
+:root {
+  /* Brand / chrome
+   *
+   * --teal is the fill behind WHITE button labels (.btn-ask and every
+   * other `background: var(--teal); color: #fff` control) — that pairing
+   * is checked by tests/web_ui/test_web_ui_contrast_and_failure.py and
+   * must clear 4.5:1 (a 15px bold label is not "large text"; that
+   * exemption starts at 18.66px bold, so the ordinary text ratio
+   * applies). The original brand hue (#0d9488) is only 3.74:1 — same hue
+   * and saturation, darkened from lightness .32 to .26 to reach 5.21,
+   * which is exactly where the palette's own --teal-d already sat, so
+   * light mode's fix is that value promoted rather than a new one.
+   * --teal-d steps one lightness stop further down (.22) for :hover.
+   * --chart-focus below keeps the ORIGINAL, brighter hue on purpose: a
+   * chart line is read next to a grey context line, not printed with
+   * white text on top of it, so it never had a contrast problem and
+   * DESIGN-INVARIANTS.md §10 fixes it by lightening --chart-context
+   * instead of touching this. Flattening every teal in the app to one
+   * accessible-for-white-text shade would have been simpler and is
+   * exactly what "do not flatten the brand" (§11) rules out. */
+  --navy: #0e2a47;
+  --navy-2: #14375c;
+  --navy-3: #1b436e;
+  --teal: #0b7a70;
+  --teal-d: #09675f;
+  --teal-l: #e7f6f2;
+
+  /* Surface */
+  --bg: #f4f6fa;
+  --card: #ffffff;
+  --card-2: #f8fafc;
+  --border: #e2e8f0;
+  /* --border is for decorative hairlines (card edges, dividers) and
+   * deliberately stays low-contrast — 1.4.11's 3:1 floor is for what
+   * IDENTIFIES an interactive control, not for chrome that just
+   * separates regions. --border-interactive is that control boundary:
+   * the ask textarea (and every other input/textarea) previously relied
+   * on --border for its edge (1.23:1 against --card) with a fill that
+   * only differed from the page by 1.05 — neither signal reached 3:1, so
+   * nothing marked the field as a field. Same hue family as --muted
+   * (secondary text), one step more saturated so it reads as a boundary
+   * rather than as text that wandered onto an edge. */
+  --border-interactive: #7c8ba3;
+  --ink: #1f2937;
+  /* #64748b on --card was 4.76 (fine) but only 4.40 on --bg — the page
+   * ground is very slightly lighter than the card, and that was enough
+   * to drop secondary text below 4.5 wherever it sits directly on the
+   * page rather than inside a card. #5b6b81 is the same hue, one step
+   * darker, and clears both surfaces (5.02 on --bg, 5.43 on --card).
+   * Dark mode's --muted already passes (7.30) and is unchanged. */
+  --muted: #5b6b81;
+
+  /* Legacy aliases still used by a few components */
+  --green: #10b981;
+  --red: #e5484d;
+  --amber: #f59e0b;
+
+  /* SQL code surface — always-dark editor palette. Not chrome brand. */
+  --sql-bg: #0d1117;
+  --sql-text: #e6edf3;
+  --sql-keyword: #79c0ff;
+  --sql-number: #e3b341;
+  --sql-function: #d2a8ff;
+  --sql-string: #a5d6ff;
+  --sql-operator: #8b949e;
+  --sql-comment: #8b949e;
+
+  /* Status — a fact about the system right now, never brand.
+   *
+   * --status-critical was #e5484d: 1.54:1 against --status-good and
+   * dE-deutan 8.6 (tests/web_ui/test_web_ui_state_not_colour_alone.py,
+   * DESIGN-INVARIANTS.md §10's floor is dE >= 8 AND a lightness split, not
+   * either alone -- 8.6 cleared the first and failed the second, so the
+   * two "up"/"down" dots read as one colour at the same brightness to a
+   * dichromat and the *only* other signal was hue). #d32f2f is a deeper,
+   * more saturated red at the same identity: 1.96:1, dE-deutan 13.9.
+   * Considered instead: darkening --status-good so --status-critical could
+   * stay nearer its original shade. Rejected -- --status-good is read by
+   * nearly twice as many rules (guard pill, admin pass/fail, cache badge,
+   * turn outcome, live-key status …) as --status-critical, so moving it
+   * risks a visual regression in places this task was not scoped to touch.
+   * Moving only --status-critical, and keeping it inside the same red
+   * family rather than the brick/rust the search space pushes toward when
+   * --status-good is held fixed (see the dark block below), is the
+   * narrower change. */
+  --status-good: #10b981;
+  --status-good-bg: #e9f9f1;
+  --status-warn: #f59e0b;
+  --status-warn-bg: #fef6e7;
+  --status-critical: #d32f2f;
+  --status-critical-bg: #fdeeee;
+  --status-neutral: #64748b;
+  --status-neutral-bg: #eef1f5;
+
+  /* Chart — a fourth, narrow colour axis: FOCUS vs CONTEXT within one
+   * chart only (web/js/render/chart.js). Declared here as its own
+   * literal pair, not aliased to --teal/--muted the way it used to be:
+   * DESIGN-INVARIANTS.md §10 measured that alias-based scheme at a
+   * focus/context contrast of 1.03 in dark mode — the same perceived
+   * brightness, so hue was the only remaining signal, which is exactly
+   * what colour-blind vision cannot use (ΔE 2.2 deutan, against a target
+   * floor of 15). Emphasis is a lightness-and-weight job, not a hue job,
+   * so --chart-focus keeps the full-brightness brand teal (identical to
+   * the pre-fix --teal, kept independent of it so the two can move for
+   * different reasons) and --chart-context is a new, deliberately paler
+   * blue-grey rather than a darkened --muted. Stroke width carries the
+   * rest of the distinction — see chart.js's "stroke-width" literals. */
+  --chart-focus: #0d9488;
+  --chart-context: #b8c4d4;
+
+  /* Source of assumption (third colour axis) */
+  --source-question: #0d9488;
+  --source-question-bg: #e7f6f2;
+  --source-session: #6366f1;
+  --source-session-bg: #eef0fd;
+  --source-default: #64748b;
+  --source-default-bg: #eef1f5;
+  --source-policy: #b45309;
+  --source-policy-bg: #fbf1e0;
+  --source-memory: #be185d;
+  --source-memory-bg: #fce8f1;
+
+  /* Geometry */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .05);
+  --focus-ring: 0 0 0 3px rgba(13, 148, 136, .35);
+
+  /* Type scale (see DESIGN.md §4.4) */
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 21px;
+}
+
+/* Dark mode via OS preference, unless the page has an explicit choice. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --navy: #16324f;
+    --navy-2: #1c3f61;
+    --navy-3: #234c74;
+    /* Same hue/saturation as the original #14b8a6, darkened from
+     * lightness .40 to .28 — white-on-teal was 2.49:1 (worse than light
+     * mode's, since dark mode's brand teal was the brighter of the two
+     * to begin with) and this reaches 4.76. --teal-d steps to .22 for
+     * :hover. See the light :root's --teal comment for why --chart-focus
+     * is exempt and keeps the original #14b8a6. */
+    --teal: #0e8174;
+    --teal-d: #0b655b;
+    --teal-l: #113330;
+    --bg: #0b1220;
+    --card: #131c2e;
+    --card-2: #182238;
+    --border: #263349;
+    /* Same reasoning as the light :root's --border-interactive: a hue
+     * near --muted, one step more saturated, so an input's edge reaches
+     * 3:1 against --card (4.40) without touching decorative --border. */
+    --border-interactive: #71839b;
+    --ink: #e5e9f0;
+    --muted: #94a3b8;
+    --green: #34d399;
+    --red: #f87171;
+    --amber: #fbbf24;
+    /* --sql-* intentionally unchanged: always-dark code surface. */
+
+    /* --status-critical was #f87171: 1.44:1 against --status-good and
+     * dE-deutan 7.1 -- BELOW DESIGN-INVARIANTS.md §10's floor of 8, not
+     * merely short of the lightness split (see the light :root's
+     * --status-critical comment for the full search and the rejected
+     * alternative of moving --status-good instead). Dark is the tighter
+     * case: holding --status-good at its light mint (#34d399) pushes the
+     * feasible --status-critical values toward brick/rust hues once ΔE and
+     * contrast both have to clear their floors, which reads oddly as a
+     * "down" colour and was rejected for that reason. #e53e3e stays inside
+     * the same red family as the original and clears both: 2.15:1, dE
+     * -deutan 16.6. */
+    --status-good: #34d399;
+    --status-good-bg: #10261e;
+    --status-warn: #fbbf24;
+    --status-warn-bg: #2b230f;
+    --status-critical: #e53e3e;
+    --status-critical-bg: #2b1414;
+    --status-neutral: #94a3b8;
+    --status-neutral-bg: #1c2536;
+
+    /* See the light :root's --chart-focus/--chart-context comment.
+     * Focus keeps the original, pre-fix dark --teal (#14b8a6); context
+     * is a new dark blue-grey, not a darkened --muted, chosen so the
+     * pair clears 1.8:1 (measures 3.50) instead of the old 1.03:1. */
+    --chart-focus: #14b8a6;
+    --chart-context: #3d4c63;
+
+    --source-question: #2dd4bf;
+    --source-question-bg: #102a27;
+    --source-session: #818cf8;
+    --source-session-bg: #1e2144;
+    --source-default: #94a3b8;
+    --source-default-bg: #1c2536;
+    --source-policy: #f0b95e;
+    --source-policy-bg: #2e2410;
+    --source-memory: #f472b6;
+    --source-memory-bg: #341126;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
+    --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
+  }
+}
+
+/* Explicit toggle wins over OS preference in both directions. */
+:root[data-theme="dark"] {
+  --navy: #16324f;
+  --navy-2: #1c3f61;
+  --navy-3: #234c74;
+  /* Mirrors the @media dark block above — see its comments. */
+  --teal: #0e8174;
+  --teal-d: #0b655b;
+  --teal-l: #113330;
+  --bg: #0b1220;
+  --card: #131c2e;
+  --card-2: #182238;
+  --border: #263349;
+  --border-interactive: #71839b;
+  --ink: #e5e9f0;
+  --muted: #94a3b8;
+  --green: #34d399;
+  --red: #f87171;
+  --amber: #fbbf24;
+  /* --sql-* intentionally unchanged: always-dark code surface. */
+
+  --status-good: #34d399;
+  --status-good-bg: #10261e;
+  --status-warn: #fbbf24;
+  --status-warn-bg: #2b230f;
+  --status-critical: #e53e3e;
+  --status-critical-bg: #2b1414;
+  --status-neutral: #94a3b8;
+  --status-neutral-bg: #1c2536;
+
+  --chart-focus: #14b8a6;
+  --chart-context: #3d4c63;
+
+  --source-question: #2dd4bf;
+  --source-question-bg: #102a27;
+  --source-session: #818cf8;
+  --source-session-bg: #1e2144;
+  --source-default: #94a3b8;
+  --source-default-bg: #1c2536;
+  --source-policy: #f0b95e;
+  --source-policy-bg: #2e2410;
+  --source-memory: #f472b6;
+  --source-memory-bg: #341126;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
+  --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}

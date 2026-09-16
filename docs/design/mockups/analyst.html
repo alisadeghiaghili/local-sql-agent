@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ماک تحلیل‌گر — Local SQL Agent 5.0</title>
+<style>
+  :root {
+    --navy: #0e2a47; --navy-2: #14375c; --navy-3: #1b436e;
+    --teal: #0d9488; --teal-d: #0b7a70; --teal-l: #e7f6f2;
+    --bg: #f4f6fa; --card: #ffffff; --card-2: #f8fafc; --border: #e2e8f0;
+    --ink: #1f2937; --muted: #64748b;
+    --status-good: #10b981; --status-warn: #f59e0b; --status-critical: #e5484d;
+    --status-good-bg: #e9f9f1; --status-warn-bg: #fef6e7; --status-critical-bg: #fdeeee;
+    --sql-bg: #0d1117; --sql-text: #e6edf3;
+    --sql-keyword: #79c0ff; --sql-number: #e3b341; --sql-function: #d2a8ff;
+    --sql-string: #a5d6ff; --sql-operator: #8b949e; --sql-comment: #8b949e;
+    --source-question: #0d9488; --source-session: #6366f1; --source-policy: #b45309;
+    --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 14px rgba(15,23,42,.05);
+    --focus: 0 0 0 3px rgba(13,148,136,.35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+    background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.6;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── Topbar: brand + one health + user menu ── */
+  .topbar {
+    height: 56px; flex: 0 0 56px; background: var(--navy); color: #fff;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand-mark {
+    width: 34px; height: 34px; border-radius: 9px; background: var(--teal);
+    display: grid; place-items: center; font-weight: 800; font-size: 11px; letter-spacing: .4px;
+  }
+  .brand h1 { font-size: 15px; font-weight: 700; white-space: nowrap; }
+  .brand p { font-size: 11px; color: #94a3b8; margin-top: 1px; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+  .health-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16);
+    border-radius: var(--radius-pill); padding: 6px 14px; color: #e2e8f0;
+    font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  }
+  .health-btn:focus-visible { outline: none; box-shadow: var(--focus); }
+  .health-btn .dots { display: flex; gap: 4px; }
+  .health-btn .d { width: 7px; height: 7px; border-radius: 50%; background: var(--status-good); }
+  .health-btn .d.warn { background: var(--status-warn); }
+
+  .user-menu {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16);
+    border-radius: var(--radius-pill); padding: 6px 12px; color: #e2e8f0;
+    font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  }
+  .user-menu:focus-visible { outline: none; box-shadow: var(--focus); }
+  .avatar {
+    width: 22px; height: 22px; border-radius: 50%; background: var(--teal);
+    display: grid; place-items: center; font-size: 10px; font-weight: 800;
+  }
+
+  /* ── Shell ── */
+  .shell { flex: 1; display: flex; min-height: 0; }
+
+  .sidebar {
+    width: 260px; flex: 0 0 260px; background: var(--card);
+    border-inline-end: 1px solid var(--border); display: flex; flex-direction: column;
+  }
+  .sidebar-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 14px 10px; border-bottom: 1px solid var(--border);
+  }
+  .sidebar-head h2 { font-size: 13px; font-weight: 800; color: var(--navy); }
+  .btn-new {
+    border: 1px solid var(--teal); background: transparent; color: var(--teal-d);
+    border-radius: var(--radius-pill); padding: 5px 12px; font: inherit;
+    font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+  .session-list { padding: 8px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+  .session {
+    display: flex; flex-direction: column; gap: 2px; padding: 10px 12px;
+    border-radius: var(--radius-sm); cursor: pointer; border: 0; background: transparent;
+    font: inherit; text-align: start; color: var(--ink); width: 100%;
+  }
+  .session:hover { background: var(--card-2); }
+  .session.active { background: var(--teal-l); }
+  .session .t { font-size: 13px; font-weight: 700; }
+  .session.active .t { color: var(--teal-d); }
+  .session .m { font-size: 11px; color: var(--muted); }
+
+  .main {
+    flex: 1; min-width: 0; display: flex; flex-direction: column;
+  }
+
+  /* Transcript grows; composer sits at bottom */
+  .transcript {
+    flex: 1; overflow: auto; padding: 24px 20px 12px;
+    max-width: 880px; width: 100%; margin: 0 auto;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+
+  /* ── Turn: outcome-first ── */
+  .turn { display: flex; flex-direction: column; gap: 10px; }
+  .q-bubble {
+    align-self: flex-start; max-width: 88%;
+    background: var(--navy); color: #fff; border-radius: var(--radius);
+    border-end-end-radius: 4px; padding: 12px 16px; font-size: 14.5px;
+    box-shadow: var(--shadow);
+  }
+  .q-bubble .idx {
+    display: block; font-size: 11px; font-weight: 700; color: #9fd8d3;
+    margin-bottom: 4px; letter-spacing: .3px;
+  }
+
+  .outcome {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    font-size: 12.5px; color: var(--muted); padding-inline-start: 4px;
+  }
+  .outcome .ok {
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--status-good); font-weight: 700;
+  }
+  .outcome .sep { opacity: .4; }
+
+  .sql-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; box-shadow: var(--shadow);
+  }
+  .sql-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; background: var(--card-2); border-bottom: 1px solid var(--border);
+    cursor: pointer; font: inherit; width: 100%; border: 0; text-align: start; color: var(--ink);
+  }
+  .sql-head .label { font-size: 12px; font-weight: 800; color: var(--navy); letter-spacing: .02em; }
+  .sql-head .acts { display: flex; gap: 8px; align-items: center; }
+  .chip-act {
+    border: 1px solid var(--border); background: var(--card); border-radius: 6px;
+    padding: 3px 10px; font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; color: var(--muted);
+  }
+  .sql-body {
+    background: var(--sql-bg); color: var(--sql-text); padding: 14px 16px;
+    font-family: Consolas, "Cascadia Code", monospace; font-size: 12.5px; line-height: 1.55;
+    direction: ltr; text-align: left; overflow-x: auto;
+  }
+  .sql-body .kw { color: var(--sql-keyword); font-weight: 600; }
+  .sql-body .fn { color: var(--sql-function); }
+  .sql-body .num { color: var(--sql-number); }
+  .sql-body .op { color: var(--sql-operator); }
+  .sql-body[hidden] { display: none; }
+
+  .result-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .result-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+  }
+  .result-head h3 { font-size: 12px; font-weight: 800; color: var(--navy); letter-spacing: .02em; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 14px; text-align: start; border-bottom: 1px solid var(--border); }
+  th { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--card-2); }
+  td.num, th.num { direction: ltr; unicode-bidi: isolate; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; text-align: end; }
+  tr:last-child td { border-bottom: 0; }
+
+  details.drawer {
+    background: var(--card); border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  }
+  details.drawer summary {
+    padding: 10px 14px; cursor: pointer; font-size: 12.5px; font-weight: 700; color: var(--muted);
+    list-style: none;
+  }
+  details.drawer summary::-webkit-details-marker { display: none; }
+  details.drawer[open] summary { border-bottom: 1px solid var(--border); color: var(--navy); }
+  .drawer-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .kv:last-child { border-bottom: 0; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-weight: 700; }
+
+  /* ── Composer at bottom ── */
+  .composer-wrap {
+    flex: 0 0 auto; padding: 12px 20px 16px;
+    background: linear-gradient(to top, var(--bg) 70%, transparent);
+  }
+  .composer {
+    max-width: 880px; margin: 0 auto;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 12px 14px;
+  }
+  .composer-row { display: flex; gap: 10px; align-items: stretch; }
+  .composer textarea {
+    flex: 1; resize: none; min-height: 52px; max-height: 140px;
+    border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    font: inherit; font-size: 15px; background: var(--card-2); color: var(--ink);
+  }
+  .composer textarea:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(13,148,136,.14); background: var(--card); }
+  .btn-ask {
+    border: 0; border-radius: 10px; padding: 0 28px; background: var(--teal); color: #fff;
+    font: inherit; font-size: 15px; font-weight: 700; cursor: pointer;
+  }
+  .btn-ask:hover { background: var(--teal-d); }
+  .btn-ask:focus-visible { outline: none; box-shadow: var(--focus); }
+  .composer-meta {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin-top: 8px; font-size: 12px; color: var(--muted);
+  }
+  .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: var(--ink); }
+
+  /* Trust surface — contract §5/§7: never in the drawer */
+  .resolved {
+    border-inline-start: 3px solid var(--teal); background: var(--teal-l);
+    border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13.5px;
+  }
+  .resolved .lab {
+    font-size: 11px; font-weight: 800; color: var(--teal-d);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .chips .lead { font-size: 12px; color: var(--muted); font-weight: 700; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: var(--radius-pill); padding: 5px 12px; font-size: 12px; font-weight: 700;
+    border: 1px solid color-mix(in srgb, var(--source-question) 35%, transparent);
+    background: #e7f6f2; color: var(--source-question);
+  }
+  .chip.session { background: #eef0fd; color: var(--source-session); border-color: color-mix(in srgb, var(--source-session) 35%, transparent); }
+  .chip.policy { background: #fbf1e0; color: var(--source-policy); border-color: color-mix(in srgb, var(--source-policy) 35%, transparent); cursor: default; }
+  .chip button {
+    border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 11px; padding: 0;
+  }
+  .clarify { display: flex; flex-wrap: wrap; gap: 8px; }
+  .clarify button {
+    border: 1px solid var(--border); background: var(--card); border-radius: var(--radius-pill);
+    padding: 5px 12px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--ink);
+  }
+  .clarify button:hover { border-color: var(--teal); color: var(--teal-d); background: var(--teal-l); }
+
+  .stages {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    font-size: 11.5px; color: var(--muted); font-weight: 600;
+  }
+  .stages .st {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 9px; border-radius: var(--radius-pill);
+    background: var(--card); border: 1px solid var(--border);
+  }
+  .stages .st.done { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 30%, transparent); background: var(--status-good-bg); }
+  .stages .st.live { color: var(--teal-d); border-color: var(--teal); background: var(--teal-l); }
+
+  .banner {
+    margin: 0 auto 0; max-width: 880px; width: 100%;
+    padding: 0 20px;
+  }
+  .demo-off {
+    display: none; /* live production: sample stories hidden */
+  }
+
+  .callout {
+    max-width: 880px; width: 100%; margin: 0 auto; padding: 0 20px 8px;
+  }
+  .callout-inner {
+    background: var(--status-warn-bg); border: 1px solid color-mix(in srgb, var(--status-warn) 35%, transparent);
+    color: #92400e; border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12.5px; font-weight: 600;
+  }
+
+  .legend {
+    max-width: 1100px; margin: 0 auto; padding: 16px 20px 24px;
+    font-size: 12px; color: var(--muted); line-height: 1.8;
+  }
+  .legend b { color: var(--navy); }
+  body.show-legend { overflow: auto; }
+  body.show-legend .topbar { position: sticky; top: 0; }
+
+  @media (max-width: 800px) {
+    .sidebar { display: none; }
+    .brand p { display: none; }
+  }
+</style>
+</head>
+<body class="show-legend">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">SQL</span>
+    <div>
+      <h1>عامل هوشمند SQL</h1>
+      <p>پرسش ← SQL ← پاسخ، روی زیرساخت شما</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <button class="health-btn" type="button" title="جزئیات سلامت">
+      <span class="dots" aria-hidden="true"><span class="d"></span><span class="d"></span><span class="d warn"></span></span>
+      سلامت
+    </button>
+    <button class="user-menu" type="button">
+      <span class="avatar">A</span>
+      منو
+    </button>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <h2>گفتگوها</h2>
+      <button class="btn-new" type="button">+ جدید</button>
+    </div>
+    <div class="session-list">
+      <button class="session active" type="button">
+        <span class="t">مشتریان برتر ۱۴۰۳</span>
+        <span class="m">۳ پرسش · امروز</span>
+      </button>
+      <button class="session" type="button">
+        <span class="t">فروش حلقه سیمان</span>
+        <span class="m">۱ پرسش · دیروز</span>
+      </button>
+      <button class="session" type="button">
+        <span class="t">بررسی نرخ کش پیشوند</span>
+        <span class="m">۵ پرسش · هفته پیش</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="transcript">
+
+      <article class="turn">
+        <div class="q-bubble">
+          <span class="idx">پرسش ۱</span>
+          ده مشتری برتر از نظر مبلغ خرید در سال ۱۴۰۳
+        </div>
+
+        <div class="resolved">
+          <div class="lab">برداشت سامانه از پرسش</div>
+          ده مشتری برتر بر اساس مبلغ کل خرید (ریال) در سال شمسی ۱۴۰۳
+        </div>
+
+        <div class="chips">
+          <span class="lead">فرض‌ها</span>
+          <span class="chip">سال شمسی ۱۴۰۳ <button type="button" aria-label="ویرایش">✎</button> <button type="button" aria-label="سنجاق">📌</button></span>
+          <span class="chip session">مرجع: نشست جاری <button type="button" aria-label="ویرایش">✎</button></span>
+          <span class="chip policy">دامنه: فقط معاملات تسویه‌شده</span>
+        </div>
+
+        <div class="clarify">
+          <button type="button">فقط حلقه سیمان؟</button>
+          <button type="button">مبلغ تسویه‌شده یا قرارداد؟</button>
+        </div>
+
+        <div class="stages" aria-label="مراحل پردازش">
+          <span class="st done">✓ طرح</span>
+          <span class="st done">✓ SQL</span>
+          <span class="st done">✓ گارد</span>
+          <span class="st done">✓ اجرا</span>
+          <span class="st">— تفسیر</span>
+          <span style="margin-inline-start:6px">۱٫۲ ثانیه</span>
+        </div>
+
+        <div class="outcome">
+          <span class="ok">✓ گارد مجاز</span>
+          <span class="sep">·</span>
+          <span>۱۰ ردیف</span>
+          <span class="sep">·</span>
+          <span>TOP 10</span>
+        </div>
+
+        <div class="sql-card">
+          <button class="sql-head" type="button" onclick="const b=this.nextElementSibling; b.hidden=!b.hidden; this.querySelector('.chev').textContent=b.hidden?'نمایش SQL':'پنهان'">
+            <span class="label">SQL تولیدشده · گارد ✓</span>
+            <span class="acts">
+              <span class="chip-act">کپی</span>
+              <span class="chip-act chev">پنهان</span>
+            </span>
+          </button>
+          <pre class="sql-body" hidden><span class="kw">SELECT TOP</span> <span class="num">10</span>
+  c.Name,
+  <span class="fn">SUM</span>(o.TotalAmount) <span class="kw">AS</span> PurchaseValue
+<span class="kw">FROM</span> Sales_Fact.[Order] o
+<span class="kw">JOIN</span> Sales_Dim.Customer c <span class="kw">ON</span> o.CustomerID = c.ID
+<span class="kw">JOIN</span> Sales_Dim.Date d <span class="kw">ON</span> o.DateID = d.ID
+<span class="kw">WHERE</span> d.JalaliYear = <span class="num">1403</span>
+<span class="kw">GROUP BY</span> c.Name
+<span class="kw">ORDER BY</span> PurchaseValue <span class="kw">DESC</span></pre>
+        </div>
+
+        <div class="result-card">
+          <div class="result-head">
+            <h3>نتیجه</h3>
+            <span style="font-size:11.5px;color:var(--muted)">Excel ↓</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th>مشتری</th><th class="num">مبلغ خرید</th><th class="num">سهم</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>پتروشیمی آریا</td><td class="num">12,400,000,000</td><td class="num">18.2%</td></tr>
+              <tr><td>فولاد کاوه</td><td class="num">9,150,000,000</td><td class="num">13.4%</td></tr>
+              <tr><td>سیمان سپاهان</td><td class="num">7,020,000,000</td><td class="num">10.3%</td></tr>
+              <tr><td>پالایش نفت بندر</td><td class="num">6,440,000,000</td><td class="num">9.5%</td></tr>
+              <tr><td>مس سرچشمه</td><td class="num">5,980,000,000</td><td class="num">8.8%</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <details class="drawer">
+          <summary>جزئیات — زمان‌بندی pipeline، وضعیت مدل، تفسیر، بازخورد</summary>
+          <div class="drawer-body">
+            <div class="kv"><span class="k">زمان‌ها</span><span class="v num" dir="ltr">plan 4ms · llm 980ms · exec 210ms</span></div>
+            <div class="kv"><span class="k">مدل</span><span class="v">qwen2.5-coder · local</span></div>
+            <div class="kv"><span class="k">تفسیر</span><span class="v" style="font-weight:500;color:var(--muted)">خاموش (ارسال ردیف به مدل)</span></div>
+            <div class="kv"><span class="k">بازخورد</span><span class="v">علامت‌گذاری پاسخ اشتباه</span></div>
+          </div>
+        </details>
+      </article>
+
+      <article class="turn">
+        <div class="q-bubble">
+          <span class="idx">پرسش ۲</span>
+          از بین همان‌ها، فقط حلقه سیمان
+        </div>
+        <div class="stages">
+          <span class="st done">✓</span><span class="st done">✓</span><span class="st done">✓</span><span class="st done">✓</span><span class="st">—</span>
+          <span>ادامهٔ پرسش ۱ · ۰٫۸ ثانیه</span>
+        </div>
+        <div class="outcome">
+          <span class="ok">✓ گارد مجاز</span>
+          <span class="sep">·</span>
+          <span>۲ ردیف</span>
+        </div>
+      </article>
+
+    </div>
+
+    <div class="callout">
+      <div class="callout-inner">
+        حالت نمایشی در تاپ‌بار نیست — فقط با <span dir="ltr" class="num">?live=0</span>.
+        فرض‌ها و برداشت سامانه <b>بالای نتیجه</b> می‌مانند (قرارداد §۵/§۷) — در drawer پنهان نمی‌شوند.
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="composer-row">
+          <textarea rows="2" placeholder="پرسش خود را به فارسی یا انگلیسی بنویسید…"></textarea>
+          <button class="btn-ask" type="button">پرسش</button>
+        </div>
+        <div class="composer-meta">
+          <label class="check"><input type="checkbox"> تفسیر نتیجه <span style="color:var(--muted);font-weight:500">— حداکثر ۲۰ ردیف به مدل</span></label>
+          <span>Enter ارسال · Shift+Enter سطر جدید</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <b>پس از خودانتقادی (§۱۴b DESIGN):</b>
+  (۱) برداشت سامانه + فرض‌ها + شفاف‌سازی‌ها <b>قبل از نتیجه</b> — نه در drawer. این قرارداد محصول است.
+  (۲) نوار مراحل لاغر هنگام stream، بعد از done خلاصه می‌شود — پنج کارت حذف، progress نه.
+  (۳) تاپ‌بار: برند + یک سلامت + منوی کاربر. حذف: پیل سه‌تایی، کلید حالت، فیلد کلید inline.
+  (۴) کامپوزر پایین پیش‌فرض است ولی هنوز قفل نشده (D3) — ابزار پرسش است، نه چت.
+  (۵) SQL: پالت ادیتور تیره (keyword آبی، عدد طلایی، تابع بنفش) + prettify کلاینتی وقتی فقط raw sql هست؛
+      copy همیشه از Turn object، هرگز از DOM. backend با pretty_sql/sqlglot قبلاً فرمت می‌کند.
+  <br><b>هنوز نکشیده‌ایم:</b> دارک‌مود، ۳۷۵px، popover سلامت، منوی کاربر/کلید، flow کامل Excel.
+</div>
+</body>
+</html>

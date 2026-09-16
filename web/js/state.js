@@ -8,6 +8,7 @@ const STORAGE_THEME_KEY = "lsa-web-theme";
 const STORAGE_BASE_KEY = "lsa-web-base";
 const STORAGE_SESSION_KEY = "lsa-web-session-id";
 const STORAGE_INTERPRET_KEY = "lsa-web-interpret";
+const STORAGE_LANG_KEY = "lsa-web-lang";
 
 export const state = {
   // "live" is the default. A deployment is live and the analysts opening
@@ -17,14 +18,17 @@ export const state = {
   // actually serving people. Simulated mode stays fully available (it is
   // genuinely used for demos and training — see web/README.md's
   // "Modes"); only the default changes. See resolveBootMode below for
-  // how `?live=0` / `?live=1` and the topbar's mode-switch buttons
-  // override this. Consequence to hold honestly: on a first load against
+  // how `?live=0` / `?live=1` override this — the only override left;
+  // run mode is a deploy/debug concern now, not a topbar control an
+  // analyst could mis-click into showing synthetic data as real.
+  // Consequence to hold honestly: on a first load against
   // an unreachable backend, an analyst now sees an error (from
   // refreshHealth in main.js) instead of a working simulated demo — see
   // that error's own wording for why that is the right trade.
   mode: "live", // "simulated" | "live"
   baseUrl: "http://localhost:8000",
   theme: "system", // "system" | "light" | "dark"
+  lang: "fa", // "fa" | "en" — chrome only; questions may be either
   sessionId: null,
   sessions: [], // SessionSummary[] — the conversation-list sidebar's index
   turns: [], // Turn[] rendered so far, in order
@@ -54,6 +58,10 @@ export function loadPersisted() {
   try {
     state.interpret = localStorage.getItem(STORAGE_INTERPRET_KEY) === "1";
   } catch { /* ignore — the toggle just won't survive a reload */ }
+  try {
+    const lang = localStorage.getItem(STORAGE_LANG_KEY);
+    if (lang === "fa" || lang === "en") state.lang = lang;
+  } catch { /* ignore — default fa */ }
 }
 
 /** Remembers the analyst's interpretation choice for this browser. */

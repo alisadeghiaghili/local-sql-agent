@@ -538,7 +538,14 @@ async def _turn_event_stream(
     if turn.llm is not None:
         yield _sse_event("llm", turn.llm)
     if turn.error is not None:
-        yield _sse_event("error", {"code": turn.error.code, "message": turn.error.message})
+        yield _sse_event(
+            "error",
+            {
+                "code": turn.error.code,
+                "message": turn.error.message,
+                "request_id": turn.error.request_id,
+            },
+        )
     yield _sse_event("done", {"turn": turn.model_dump()})
 
 

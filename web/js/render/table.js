@@ -20,6 +20,7 @@
 "use strict";
 
 import { fmt } from "../num.js";
+import { icon as svgIcon } from "../icons.js";
 
 import { renderChartAndTable } from "./chart.js";
 import { downloadResultAsCsv } from "../export.js";
@@ -409,13 +410,15 @@ export function renderWarnings(warnings) {
     const item = document.createElement("div");
     item.className = "warning-item";
     item.setAttribute("role", "alert");
-    const icon = document.createElement("span");
-    icon.className = "warn-icon";
-    icon.textContent = "⚠";
-    icon.setAttribute("aria-hidden", "true");
+    const warnIcon = document.createElement("span");
+    warnIcon.className = "warn-icon";
+    // Stays aria-hidden: the adjacent text node carries the actual warning,
+    // and this whole item already sits inside role="alert".
+    warnIcon.setAttribute("aria-hidden", "true");
+    warnIcon.appendChild(svgIcon("alert"));
     const text = document.createElement("span");
     text.textContent = w;
-    item.appendChild(icon);
+    item.appendChild(warnIcon);
     item.appendChild(text);
     wrap.appendChild(item);
   }

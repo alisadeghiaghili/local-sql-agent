@@ -1,8 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=Lalezar&display=swap");
-
 html[lang="fa"] h1 em,
 html[lang="fa"] h2 em {
-  font-family: Peyda, "Noto Sans Arabic", sans-serif;
+  font-family: "Vazirmatn", Tahoma, sans-serif;
   font-style: normal;
   font-weight: 300;
 }
@@ -18,10 +16,7 @@ html[lang="fa"] h2 em {
   border: 1px solid var(--line);
   color: var(--acid);
   background: transparent;
-  font:
-    600 12px "Noto Sans Arabic",
-    Manrope,
-    sans-serif;
+  font: 600 12px "Vazirmatn", Tahoma, sans-serif;
   cursor: pointer;
   transition: 0.2s;
   appearance: none;
@@ -32,14 +27,18 @@ html[lang="fa"] h2 em {
   color: #102010;
 }
 :is(html[lang="fa"], html[lang="ar"]) body {
-  font-family: "Noto Sans Arabic", Tahoma, sans-serif;
+  font-family: "Vazirmatn", Tahoma, sans-serif;
   letter-spacing: 0;
 }
 :is(html[lang="fa"], html[lang="ar"]) h1,
 :is(html[lang="fa"], html[lang="ar"]) h2,
 :is(html[lang="fa"], html[lang="ar"]) h3 {
-  font-family: Lalezar, "Noto Sans Arabic", sans-serif;
-  font-weight: 400;
+  /* The former display face was heavy at its base weight; Vazirmatn at 400
+   * reads visibly lighter, breaking heading-weight parity with the Latin
+   * h1/h2/h3 beside it. 700 is the vendored weight that preserves that
+   * hierarchy. */
+  font-family: "Vazirmatn", Tahoma, sans-serif;
+  font-weight: 700;
   letter-spacing: 0;
   line-height: 1.3;
 }

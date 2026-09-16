@@ -22,6 +22,8 @@
 
 "use strict";
 
+import { icon } from "../icons.js";
+
 export const SOURCE_LABELS = {
   question: "از پرسش",
   session: "از نشست",
@@ -102,7 +104,7 @@ export function renderAssumptions(assumptions, onEditAssumption, onPin) {
       editBtn.type = "button";
       editBtn.className = "chip-edit-btn";
       editBtn.setAttribute("aria-label", `ویرایش مفروضهٔ ${a.field}`);
-      editBtn.textContent = "✎";
+      editBtn.appendChild(icon("edit", { size: 14 }));
       editBtn.addEventListener("click", () => openEditor(chip, a, onEditAssumption));
       chip.appendChild(editBtn);
 
@@ -115,7 +117,7 @@ export function renderAssumptions(assumptions, onEditAssumption, onPin) {
         pinBtn.className = "chip-pin-btn";
         pinBtn.setAttribute("aria-label", `به‌خاطر سپردن «${a.field}: ${a.value}» به‌عنوان اولویت ثابت`);
         pinBtn.title = "این مقدار را برای گفتگوهای بعدی هم به‌خاطر بسپار";
-        pinBtn.textContent = "📌";
+        pinBtn.appendChild(icon("pin", { size: 14 }));
         pinBtn.addEventListener("click", () => onPin(a.field, a.value));
         chip.appendChild(pinBtn);
       }
@@ -124,7 +126,7 @@ export function renderAssumptions(assumptions, onEditAssumption, onPin) {
       lock.className = "chip-noneditable-mark";
       lock.setAttribute("aria-hidden", "true");
       lock.title = "این مفروضه توسط قانون سامانه تعیین شده و قابل‌ویرایش نیست";
-      lock.textContent = "🔒";
+      lock.appendChild(icon("shield", { size: 14 }));
       chip.appendChild(lock);
     }
 

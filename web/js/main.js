@@ -27,10 +27,69 @@ import { createTurnCard } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
 import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
+import { ensureTsqlPrismReady } from "./sql-display.js";
+import { t, loadLang, setLang, applyLang } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 
+/** Every "bring this into view" call in this module routes through here.
+ * style.css already forces `scroll-behavior: auto` under
+ * `prefers-reduced-motion: reduce` for CSS-driven scrolling (e.g. anchor
+ * jumps), but `Element.scrollIntoView({behavior: "smooth"})` is a
+ * script-requested behaviour and, per spec, an explicit "smooth" wins over
+ * that CSS property rather than deferring to it — so a hardcoded "smooth"
+ * here would silently defeat the reduced-motion rule for the one motion
+ * an analyst cannot opt out of by ignoring the page: their own submitted
+ * question relocating the viewport out from under them. */
+function scrollIntoViewMaybeSmooth(el, opts) {
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView({ ...opts, behavior: reduced ? "auto" : "smooth" });
+}
+
+/** D3-hidden-chart: the `{ block: "start" }` scroll that fires the moment a
+ * turn card is appended (below) only ever sees the card's *early* content —
+ * the result (a chart, table, etc.) is still `hidden` at that point
+ * (turn.js's tagLate/revealLate) and gets unhidden afterward, once the
+ * pipeline settles. A chart is tall (~440px measured), so that late reveal
+ * routinely grows the card past the bottom of the viewport, and nothing
+ * re-scrolls to account for it — it just sits there, entirely covered by
+ * the sticky composer (measured 0px of a 440px chart visible; see
+ * style.css's --composer-clearance comment for the full numbers).
+ *
+ * Call this once a turn's late content is actually in the DOM (right after
+ * `revealLate()`) to close that gap, passing `card.result` (turn.js) —
+ * NOT `card.el` (the whole turn card). A first version targeted `card.el`
+ * with `block: "end"`: the *card* keeps going well past the result
+ * (interpretation, then the collapsed pipeline/LLM/feedback drawer), so
+ * aligning the card's bottom with the viewport scrolled the chart itself
+ * off the TOP of the screen — visible measurement: the svg ended up at
+ * y=-347, above the fold, not above the composer. `card.result` is just
+ * the "نتیجه" card, which is short enough that `block: "nearest"` — only
+ * scroll if it is not already fully visible — is both correct and the
+ * gentler choice: a turn that already fits does not get an extra jump on
+ * top of the start-scroll above. `.turn`'s `scroll-margin-bottom:
+ * var(--composer-clearance)` (style.css) is what makes "fully visible"
+ * mean "visible above the composer" rather than merely on screen — since
+ * `card.result` sits inside `.turn`, it inherits that clearance. Falls
+ * back to `el` itself (the whole card) for a turn with no result (an
+ * error or a guard rejection), where there is nothing else to target. */
+function scrollSettledResultAboveComposer(el) {
+  if (el) scrollIntoViewMaybeSmooth(el, { block: "nearest" });
+}
+
+// Declared before the boot section: setMode(state.mode) runs at module load
+// and, in simulated mode, calls setHealth() synchronously — so the label map
+// setHealth reads must already be initialized here, not in the module's lower
+// half. Declaring it below the boot call put it in the temporal dead zone at
+// boot, which threw a ReferenceError and killed the entire simulated UI.
+const HEALTH_STATE_LABEL_KEY = { ok: "healthStateUp", down: "healthStateDown", unknown: "healthStateUnknown" };
+
 /* ── Boot ──────────────────────────────────────────────────────────── */
+// T-SQL Prism patch must run before the first Prism.tokenize — Prism
+// expands greedy grammar rules in place on first use. Patching after a
+// highlight has already run makes the next one throw. See sql-display.js.
+ensureTsqlPrismReady();
+
 const params = new URLSearchParams(location.search);
 // Deploy-time default (web/js/config.js) first; loadPersisted() then
 // overrides it with a localStorage value if one was ever saved (e.g. an
@@ -38,13 +97,15 @@ const params = new URLSearchParams(location.search);
 // resolveBootBaseUrl's `?base=` param is the final, highest-precedence
 // override, for a one-off load. Same layering for mode: state.js's own
 // default ("live" — see its comment) unless `?live=0`/`?live=1` says
-// otherwise; the topbar mode-switch buttons can still change it after
-// boot either way.
+// otherwise. Run mode is URL-only now, decided once at boot; there is no
+// topbar control left that can change it afterward.
 state.baseUrl = DEFAULT_BASE_URL;
 loadPersisted();
 state.mode = resolveBootMode(params, state.mode);
 state.baseUrl = resolveBootBaseUrl(params, state.baseUrl);
+state.lang = loadLang();
 applyTheme();
+applyLang(state.lang);
 
 let api = new Api(state.baseUrl);
 
@@ -54,7 +115,6 @@ let api = new Api(state.baseUrl);
 // switchToSession). Session-local to this tab; never persisted.
 const turnsCache = new Map();
 
-renderSamples();
 wireComposer();
 wireTopbar();
 wireSidebar();
@@ -63,19 +123,9 @@ setMode(state.mode);
 tickClock();
 setInterval(tickClock, 1000);
 
-/* ── Theme ─────────────────────────────────────────────────────────── */
+/* ── Theme / user menu ─────────────────────────────────────────────── */
 function wireTopbar() {
-  $("theme-toggle").addEventListener("click", () => {
-    const order = ["system", "light", "dark"];
-    const next = order[(order.indexOf(state.theme) + 1) % order.length];
-    persistTheme(next);
-    applyTheme();
-    updateThemeLabel();
-  });
-  updateThemeLabel();
-
-  $("mode-simulated").addEventListener("click", () => setMode("simulated"));
-  $("mode-live").addEventListener("click", () => setMode("live"));
+  wireUserMenu();
 
   $("live-key-save").addEventListener("click", () => {
     const val = $("live-key-input").value;
@@ -83,7 +133,7 @@ function wireTopbar() {
     setApiKey(val);
     $("live-key-input").value = "";
     updateKeyStatus();  // leaves the "rejected" state: a new key was given
-    showNotice("ok", "کلید API ذخیره شد — این کلید فقط در همین مرورگر نگه‌داری می‌شود.");
+    showNotice("ok", t("apiKeyStoredNotice"));
     refreshHealth();
   });
 
@@ -106,9 +156,78 @@ function wireTopbar() {
     clearApiKey();
     $("live-key-input").value = "";
     updateKeyStatus();
-    showNotice("warn", "کلید API حذف شد. برای پرسیدن سؤال در حالت زندهٔ API باید دوباره یک کلید وارد کنید.");
+    showNotice("warn", t("apiKeyClearedNotice"));
   });
   updateKeyStatus();
+  updateThemeSegment();
+  updateLangSegment();
+}
+
+/** User menu: theme, language, API key — one popover, not topbar clutter. */
+function wireUserMenu() {
+  const btn = $("user-menu-btn");
+  const panel = $("user-menu-panel");
+  if (!btn || !panel) return;
+
+  const close = () => {
+    panel.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+  };
+  const open = () => {
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+  };
+
+  btn.addEventListener("click", () => {
+    if (panel.hidden) open();
+    else close();
+  });
+  document.addEventListener("click", (e) => {
+    if (panel.hidden) return;
+    if (!$("user-menu").contains(/** @type {Node} */ (e.target))) close();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !panel.hidden) {
+      close();
+      btn.focus();
+    }
+  });
+
+  $("theme-segment").querySelectorAll("button[data-theme-val]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const val = b.getAttribute("data-theme-val");
+      if (val === "system" || val === "light" || val === "dark") {
+        persistTheme(val);
+        applyTheme();
+        updateThemeSegment();
+      }
+    });
+  });
+
+  $("lang-segment").querySelectorAll("button[data-lang]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const lang = b.getAttribute("data-lang");
+      if (lang === "fa" || lang === "en") {
+        state.lang = lang;
+        setLang(lang);
+        updateLangSegment();
+        updateKeyStatus();
+        setMode(state.mode); // refresh foot strings in the new language
+      }
+    });
+  });
+}
+
+function updateThemeSegment() {
+  document.querySelectorAll("#theme-segment button[data-theme-val]").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-theme-val") === state.theme);
+  });
+}
+
+function updateLangSegment() {
+  document.querySelectorAll("#lang-segment button[data-lang]").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-lang") === state.lang);
+  });
 }
 
 /* ── API key state (topbar) ────────────────────────────────────────
@@ -135,13 +254,13 @@ function updateKeyStatus(rejected = false) {
   const stored = hasApiKey();
 
   if (rejected) {
-    el.textContent = "کلید: رد شد";
+    el.textContent = t("apiKeyRejected");
     el.className = "live-key-status unset";
   } else if (stored) {
-    el.textContent = "کلید: ذخیره شده ✓";
+    el.textContent = t("apiKeySaved");
     el.className = "live-key-status set";
   } else {
-    el.textContent = "کلید: تنظیم نشده";
+    el.textContent = t("apiKeyUnset");
     el.className = "live-key-status unset";
   }
 
@@ -151,55 +270,85 @@ function updateKeyStatus(rejected = false) {
   clear.hidden = !stored;
 }
 
-/** Reveal the key row, focus its input, and explain why — used both on
- * first live use and after a 401 (see handleLiveError). Never puts the
- * key itself, or any prior value, into the input or this message. */
+/** Open the user menu and focus the API-key input — used on first live
+ * use and after a 401. Never puts the key itself into the input. */
 function promptForApiKey(message, { rejected = false } = {}) {
-  $("live-key-row").hidden = false;
+  const panel = $("user-menu-panel");
+  const btn = $("user-menu-btn");
+  if (panel && btn) {
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+  }
   updateKeyStatus(rejected);
   showNotice("warn", message);
   $("live-key-input").focus();
 }
 
-function updateThemeLabel() {
-  const labels = { system: "پوسته: سیستم", light: "پوسته: روشن", dark: "پوسته: تیره" };
-  $("theme-toggle-label").textContent = labels[state.theme];
-}
-
 /* ── Mode switch ───────────────────────────────────────────────────── */
 function setMode(mode) {
   state.mode = mode;
-  $("mode-simulated").classList.toggle("active", mode === "simulated");
-  $("mode-live").classList.toggle("active", mode === "live");
-  $("live-key-row").hidden = mode !== "live";
   updateKeyStatus();
 
   const foot = $("foot-mode");
   if (mode === "simulated") {
-    foot.textContent = "حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.";
-    setHealth(true, true, true, "شبیه‌سازی‌شده — بدون اتصال واقعی");
+    foot.textContent =
+      state.lang === "en"
+        ? "Demo mode — data is synthetic; no real query has run."
+        : "حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.";
+    setHealth(true, true, true, "simulated");
   } else {
-    foot.textContent = `حالت زندهٔ API — بک‌اند: ${state.baseUrl}`;
-    // Always checked, including at boot (live is the default mode now —
-    // see state.js) — an analyst opening a live deployment against an
-    // unreachable backend must see that honestly and immediately
-    // (refreshHealth's catch branch below says exactly what to do about
-    // it), never a silent "در حال بررسی..." that never resolves.
+    foot.textContent =
+      state.lang === "en"
+        ? `Live API — backend: ${state.baseUrl}`
+        : `حالت زندهٔ API — بک‌اند: ${state.baseUrl}`;
     refreshHealth();
   }
 
-  // Each mode has its own conversation index (simulated demo data vs. the
-  // real backend) — (re)resolve which session is active and load it every
-  // time the mode is entered, including at boot.
   refreshSessionsForMode();
 }
 
+// The dot alone carried the state for nobody but a reader who both sees
+// colour and can tell #10b981 apart from #e5484d at a glance. WCAG 1.4.1:
+// colour may never be the *only* carrier. Two populations got nothing from
+// the old markup — a colour-blind analyst staring at the topbar, and a
+// screen-reader user for whom #health's role="status" aria-live="polite"
+// read "API LLM DB" on every poll, identically, whatever the state. The
+// fix is the state word itself, in two places: as real, visible text next
+// to the name (so a colour-blind reader sees the difference, not just a
+// hue) and as the pill's aria-label (so the live region announces "API:
+// down" instead of re-reading three names that never change). Values from
+// /health (h.llmDetail, h.dbDetail, forwarded to setHealth as `label`) are
+// never interpolated into markup here — see DESIGN-INVARIANTS.md §1.3.
 function setHealth(api_, llm, db, label) {
   const dot = (ok) => (ok === null ? "unknown" : ok ? "ok" : "down");
-  $("health").innerHTML = [
-    ["API", api_], ["LLM", llm], ["DB", db],
-  ].map(([name, ok]) => `<span class="pill"><span class="dot dot-${dot(ok)}"></span>${name}</span>`).join("");
-  $("health").title = label;
+  const host = $("health");
+  host.replaceChildren(
+    ...[["API", api_], ["LLM", llm], ["DB", db]].map(([name, ok]) => {
+      const state = dot(ok);
+      const stateLabel = t(HEALTH_STATE_LABEL_KEY[state]);
+
+      const dotEl = document.createElement("span");
+      dotEl.className = `dot dot-${state}`;
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "pill-name";
+      nameEl.textContent = name;
+
+      const stateEl = document.createElement("span");
+      stateEl.className = "pill-state";
+      stateEl.textContent = stateLabel;
+
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.append(dotEl, nameEl, stateEl);
+      // aria-label wins over the pill's own text nodes as its accessible
+      // name, which is what keeps the live-region announcement a clean
+      // "API: down" rather than a run-on of three separately-read spans.
+      pill.setAttribute("aria-label", `${name}: ${stateLabel}`);
+      return pill;
+    }),
+  );
+  host.title = label;
 }
 
 async function refreshHealth() {
@@ -240,7 +389,18 @@ function renderSessionSidebar() {
  * and live modes each have their own, entirely separate, session index. */
 async function refreshSessionsForMode() {
   if (state.mode === "live") {
-    if (!hasApiKey()) { state.sessions = []; renderSessionSidebar(); return; }
+    if (!hasApiKey()) {
+      state.sessions = [];
+      // Without this, switching from simulated to live-without-a-key left
+      // whatever simulated transcript (and its sample-story chips — B5)
+      // was already on screen just sitting there under the "live" mode
+      // switch, which is exactly the demo-scaffolding-in-production leak
+      // this decision exists to close.
+      resetTranscript();
+      renderTranscriptFromTurns([]);
+      renderSessionSidebar();
+      return;
+    }
     try {
       const res = await api.listSessions();
       state.sessions = res.sessions || [];
@@ -328,7 +488,52 @@ function renderTranscriptFromTurns(turns) {
     const card = createTurnCard(turn, turnCtx());
     host.appendChild(card.el);
   }
+  if (turns.length === 0) renderTranscriptEmptyState();
   refreshSampleButtonsDisabledState();
+}
+
+/** The empty-conversation placeholder — DESIGN.md §5.1's resolution for
+ * the sample-story chips that used to sit inside the composer card
+ * permanently (overlapping #question's placeholder text) and, per
+ * decision B5, have no business appearing in a live production session
+ * at all. Rebuilt from scratch on every call rather than toggled with
+ * `hidden`, since it must reflect whichever mode is CURRENT, not
+ * whichever mode last rendered it. Only called while the active
+ * session's transcript is empty — see renderTranscriptFromTurns and
+ * appendTurnWithAnimation/askLive's removal of it once a turn lands. */
+function renderTranscriptEmptyState() {
+  const empty = document.createElement("div");
+  empty.className = "transcript-empty";
+  empty.id = "transcript-empty";
+
+  const hint = document.createElement("p");
+  hint.className = "transcript-empty-hint";
+  hint.textContent = t("transcriptEmptyHint");
+  empty.appendChild(hint);
+
+  if (state.mode === "simulated") {
+    const wrap = document.createElement("div");
+    wrap.className = "samples";
+    wrap.id = "samples";
+    const label = document.createElement("span");
+    label.className = "samples-label";
+    label.textContent = t("samples");
+    wrap.appendChild(label);
+    empty.appendChild(wrap);
+    renderSamples(wrap);
+  }
+
+  $("transcript").appendChild(empty);
+}
+
+/** Removes the empty-state placeholder (and, with it, any sample-story
+ * chips) the instant a turn is about to land in the transcript — called
+ * right before appendTurnWithAnimation/askLive append the new turn/
+ * placeholder card, since state.turns itself is not always updated yet
+ * at that point (askLive's placeholder predates the "done" event's
+ * addTurn call). */
+function clearTranscriptEmptyState() {
+  document.getElementById("transcript-empty")?.remove();
 }
 
 /** A sample button is disabled once its scripted turn has been asked in
@@ -571,8 +776,9 @@ function upsertSimulatedMemory(key, value) {
 }
 
 /* ── Composer ──────────────────────────────────────────────────────── */
-function renderSamples() {
-  const wrap = $("samples");
+/** Populates *wrap* (the empty-transcript state's .samples container —
+ * see renderTranscriptEmptyState) with one button per scripted turn. */
+function renderSamples(wrap) {
   for (const turn of SCENARIO.turns) {
     const btn = document.createElement("button");
     btn.className = "sample";
@@ -668,9 +874,10 @@ async function askSimulated(q) {
 
 async function appendTurnWithAnimation(turn) {
   addTurn(turn);
+  clearTranscriptEmptyState();
   const card = createTurnCard(turn, turnCtx());
   $("transcript").appendChild(card.el);
-  card.el.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollIntoViewMaybeSmooth(card.el, { block: "start" });
 
   const failAt = turn.error ? "generate" : (turn.guard && turn.guard.verdict === "rejected" ? "validate" : null);
   await runSimulatedStages(card.pipeline.setStage, {
@@ -681,6 +888,7 @@ async function appendTurnWithAnimation(turn) {
   });
   card.revealEarly();
   card.revealLate();
+  scrollSettledResultAboveComposer(card.result || card.el);
   bumpActiveSessionMeta();
 }
 
@@ -688,7 +896,7 @@ function scrollToTurn(turnId) {
   const el = document.getElementById(`turn-${turnId}`);
   if (el) {
     el.classList.remove("collapsed");
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollIntoViewMaybeSmooth(el, { block: "start" });
     el.animate(
       [{ boxShadow: "0 0 0 3px rgba(13,148,136,.5)" }, { boxShadow: "0 0 0 0 rgba(13,148,136,0)" }],
       { duration: 900 },
@@ -733,6 +941,34 @@ function turnCtx() {
     // contract has no such endpoint); it re-asks the same question,
     // which is the closest honest equivalent to "run it again".
     onRerun: (turnId) => rerunTurn(turnId),
+    // "ویرایش پرسش" — a guard-rejected turn's failure state (turn.js's
+    // renderFailureState). Deliberately NOT onRerun: that re-submits the
+    // exact same question, which would just be rejected again by the
+    // same PolicyRejection. This puts the original question back in the
+    // box and stops — an analyst edits it before sending, they don't get
+    // it resent for them.
+    onRephrase: (turnId) => {
+      const t = findTurn(turnId);
+      if (!t) return;
+      $("question").value = t.question;
+      $("question").focus();
+      scrollIntoViewMaybeSmooth($("question"), { block: "center" });
+    },
+    // "پرسش بدون «ستون»" — the targeted action DESIGN-INVARIANTS.md §8's
+    // table specifies for a denied-column refusal ("Ask without that
+    // column"), offered only when the guard named exactly one column
+    // (turn.js reads `turn.guard.subject`). Mirrors onRephrase's own
+    // model — puts an edited question back in the box and stops, rather
+    // than resubmitting for the analyst — but seeds an explicit exclusion
+    // instruction instead of the bare original question: resending the
+    // identical question would just be denied again by the same policy.
+    onAskWithoutColumn: (turnId, column) => {
+      const t = findTurn(turnId);
+      if (!t) return;
+      $("question").value = `${t.question} (بدون ستون «${column}»)`;
+      $("question").focus();
+      scrollIntoViewMaybeSmooth($("question"), { block: "center" });
+    },
     // "این عدد درست نیست" (admin panel phase 4). LIVE mode really submits
     // it to the backend, against the session this transcript is currently
     // showing; SIMULATED mode has no server to send it to, so it is
@@ -752,8 +988,12 @@ function turnCtx() {
 function rerenderTurn(turn) {
   const old = document.getElementById(`turn-${turn.turn_id}`);
   const card = createTurnCard(turn, turnCtx());
-  if (old) old.replaceWith(card.el);
-  else $("transcript").appendChild(card.el);
+  if (old) {
+    old.replaceWith(card.el);
+  } else {
+    clearTranscriptEmptyState();
+    $("transcript").appendChild(card.el);
+  }
 }
 
 function rerunTurn(turnId) {
@@ -855,9 +1095,10 @@ async function askLive(q) {
   // Build a placeholder card immediately so the pipeline shows "running"
   // while we wait on SSE — filled in from `stage`/`resolved`/etc. events.
   let working = emptyTurn(q, sessionId);
+  clearTranscriptEmptyState();
   const card = createTurnCard(working, turnCtx());
   $("transcript").appendChild(card.el);
-  card.el.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollIntoViewMaybeSmooth(card.el, { block: "start" });
   card.revealEarly();
   card.revealLate();
 
@@ -914,6 +1155,10 @@ async function askLive(q) {
           working = data.turn || working;
           addTurn(working);
           rebuild();
+          // rebuild() just Object.assign()'d `fresh` (including its
+          // `result`/`el`) onto `card`, so these reflect the just-rendered
+          // final turn -- no separate DOM lookup needed.
+          scrollSettledResultAboveComposer(card.result || card.el);
           bumpActiveSessionMeta();
           break;
         case "error":
