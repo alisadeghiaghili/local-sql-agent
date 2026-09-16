@@ -142,8 +142,16 @@ Do not proceed to step 4 with any `[FAIL]` outstanding.
 ## 4. Start the server
 
 ```bash
-uvicorn api.server:app --host 0.0.0.0 --port 8000
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header
 ```
+
+`--no-server-header` matters: `SecurityHeadersMiddleware` deletes an
+app-set `Server` header, but uvicorn appends its own `Server: uvicorn` at
+the protocol layer *after* the ASGI app returns, where no middleware can
+reach it. The flag is the only place that banner is actually suppressed on
+the wire; a reverse proxy that overrides `Server` also works. (The
+in-process test can only see the app layer, so it passes either way — the
+flag is a deployment guarantee, not a code one.)
 
 (Add `--workers N` for more than one process if your expected load needs
 it — the audit log, rate limiter, and query cache are all per-process

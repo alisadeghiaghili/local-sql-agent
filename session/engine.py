@@ -241,7 +241,13 @@ def _classify_router_failure(exc: Exception) -> tuple[str, str]:
         return "OUT_OF_SCOPE", "This question is outside the Auction domain."
     if isinstance(cause, TimeoutError) or "timeout" in msg.lower():
         return "MODEL_TIMEOUT", "The LLM took too long to respond. Please try again."
-    return "MODEL_UNAVAILABLE", f"Cannot reach the LLM backend: {msg}"
+    # `TurnErrorInfo` has no `detail` field (finding 11) — unlike the v1
+    # `ModelUnavailableError`, there is no client-model place to hide the raw
+    # transport text, so it goes to the log instead of the field the client
+    # reads, and the return value stays a summary an operator, not an
+    # attacker probing the network, can act on.
+    logger.warning("LLM router unreachable (MODEL_UNAVAILABLE): %s", msg)
+    return "MODEL_UNAVAILABLE", "The language model is currently unreachable. Please try again."
 
 
 def _guard_reason_subject(exc: Exception) -> tuple[str | None, str | None]:
