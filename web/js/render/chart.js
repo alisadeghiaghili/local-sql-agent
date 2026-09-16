@@ -108,10 +108,51 @@ function indexOfMax(values) {
  * rows happen to be sorted. */
 const SEQUENCE_LABEL_WORDS = ["date", "day", "month", "quarter", "year", "تاریخ", "روز", "ماه", "فصل", "سال"];
 
+/* THE NAME-COLLISION INCIDENT `isSequenceLabel` used to check
+ * `key.includes(word)` -- a SUBSTRING match against the lowercased column
+ * name. That is a different, narrower bug than the sorted-ranking incident
+ * described above, but the same failure mode: a purely categorical column
+ * whose name merely CONTAINS a calendar word borrowed the sequence
+ * treatment it never earned. "MonthlyCustomer" contains the substring
+ * "month", so a ranking of customers was offered a LINE chart and a
+ * "trend" headline over data that was never a series -- exactly the
+ * mistake this module's docstring calls the worst kind ("it does not
+ * mislabel the answer, it invents a different one"), reached this time
+ * through a name collision instead of a sorted-by-value result. The same
+ * substring check also caught "SundayTrader" (via "day") and the Persian
+ * "تاریخچه_مشتری" ("transaction history", via "تاریخ").
+ *
+ * The fix matches WHOLE TOKENS, never substrings: split the column name at
+ * camelCase boundaries and at any run of non-letter separators (so
+ * "OrderDate" tokenizes to ["order", "date"], and "تاریخچه_مشتری" to
+ * ["تاریخچه", "مشتری"] -- the underscore is a separator but the Persian
+ * letter range is kept out of the separator class so "تاریخچه" survives as
+ * one token instead of being torn apart the way an ASCII-only split would
+ * tear it), lowercase each token, and require an EXACT match against
+ * SEQUENCE_LABEL_WORDS. "Monthly" no longer matches "month" -- its only
+ * token is "monthly" -- and "تاریخچه" no longer matches "تاریخ" for the
+ * same reason: a token has to equal the calendar word, not merely start
+ * with it.
+ *
+ * KNOWN LIMITATION, stated rather than hidden: a compound name that
+ * genuinely contains a calendar word as one of its OWN camelCase
+ * components still matches, because that word really is, letter for
+ * letter, one of SEQUENCE_LABEL_WORDS once split out. "YearEndBroker"
+ * tokenizes to ["year", "end", "broker"], and "year" is on the list, so it
+ * still reads as a sequence even though the column is a broker category.
+ * Whole-token matching closes the class of bug above -- a calendar word
+ * buried INSIDE a longer, unrelated word -- it does not (and structurally
+ * cannot, without a real type signal) resolve every case where a calendar
+ * word is genuinely present as its own word in a non-calendar column's
+ * name. The `labelType === "datetime"` check below is the actual signal
+ * for those; the name check is, and remains, a heuristic. */
 function isSequenceLabel(labelKey, labelType) {
   if (labelType === "datetime") return true;
-  const key = String(labelKey || "").toLowerCase();
-  return SEQUENCE_LABEL_WORDS.some((word) => key.includes(word));
+  const tokens = String(labelKey || "")
+    .split(/(?=[A-Z])|[^A-Za-z؀-ۿ]+/)
+    .map((t) => t.toLowerCase())
+    .filter(Boolean);
+  return tokens.some((t) => SEQUENCE_LABEL_WORDS.includes(t));
 }
 
 /** Builds 1-4 named framings of the same (rows, labelKey, measureKey),

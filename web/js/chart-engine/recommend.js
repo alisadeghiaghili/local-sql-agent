@@ -100,7 +100,27 @@ const JOBS = Object.freeze({
  * precisely the assumption that drew a trend line through customer names
  * in the incident this engine is a response to (spec §0). A generic label
  * ("name", a customer/broker/ring column) falls through both checks and
- * gets no `trend` job, no matter how the rows happen to be sorted. */
+ * gets no `trend` job, no matter how the rows happen to be sorted.
+ *
+ * A SECOND, NARROWER NAME-COLLISION INCIDENT -- also §0-shaped, caught in
+ * the same review -- lived inside this same function: it used to test
+ * `key.includes(word)`, a SUBSTRING match. "MonthlyCustomer" contains the
+ * substring "month", so a plain ranking of customers was offered `trend`
+ * via a name collision, no sorted-by-value setup required. The fix, ported
+ * here identically from `chart.js` (see that file's comment on
+ * `isSequenceLabel` for the full account), matches WHOLE TOKENS only:
+ * split the column name at camelCase boundaries and at runs of non-letter
+ * separators, lowercase each piece, and require an EXACT match against
+ * SEQUENCE_LABEL_WORDS -- so "Monthly" (token "monthly") no longer matches
+ * "month", and "تاریخچه" (Persian letters kept together as one token, not
+ * torn apart by an ASCII-only split) no longer matches "تاریخ". A known,
+ * stated limitation survives this fix: a compound name whose OWN camelCase
+ * component genuinely equals a calendar word -- "YearEndBroker" tokenizes
+ * to ["year", "end", "broker"], and "year" really is on the list -- still
+ * reads as a sequence. That is a limit of matching on the name at all, not
+ * a regression this change introduces; `labelType === "datetime"` is the
+ * real signal for those cases, and the name check remains a heuristic on
+ * top of it. */
 const SEQUENCE_LABEL_WORDS = [
   "date", "day", "month", "quarter", "year",
   "تاریخ", "روز", "ماه", "فصل", "سال",
@@ -108,8 +128,11 @@ const SEQUENCE_LABEL_WORDS = [
 
 function isSequenceLabel(labelKey, labelType) {
   if (labelType === "datetime") return true;
-  const key = String(labelKey || "").toLowerCase();
-  return SEQUENCE_LABEL_WORDS.some((word) => key.includes(word));
+  const tokens = String(labelKey || "")
+    .split(/(?=[A-Z])|[^A-Za-z؀-ۿ]+/)
+    .map((t) => t.toLowerCase())
+    .filter(Boolean);
+  return tokens.some((t) => SEQUENCE_LABEL_WORDS.includes(t));
 }
 
 /* ── §4.1: `sql` as a signal, added here for the first time ───────────
