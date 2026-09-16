@@ -12,7 +12,15 @@
 
 /* ── Reset ───────────────────────────────────────────────────────── */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { color-scheme: light dark; }
+/* html, not body, is the actual scrolling box for this page (body is a
+ * flex column with no height/overflow constraint of its own) — so this is
+ * where `scroll-padding-bottom` has to live for it to affect anything.
+ * It keeps `scrollIntoView` (main.js's scrollIntoViewMaybeSmooth) and
+ * native anchor/keyboard scrolling from ever landing a target flush with
+ * the true viewport bottom, which is exactly where the sticky composer
+ * sits. See --composer-clearance's comment above .composer in this file
+ * for the measurement this value is built from. */
+html { color-scheme: light dark; scroll-padding-bottom: var(--composer-clearance); }
 
 body {
   font-family: "Vazirmatn", "Segoe UI", Tahoma, "Helvetica Neue", Arial, sans-serif;
@@ -361,7 +369,26 @@ button { font-family: inherit; }
  * what keeps it reachable without hunting once the transcript grows past
  * one screen, which was the entire argument for moving it here. The
  * card's own opaque background (inherited from .card, below) is what
- * keeps a turn that scrolls past underneath from showing through. */
+ * keeps a turn that scrolls past underneath from showing through.
+ *
+ * D3-hidden-chart follow-up: being sticky, the composer has no effect on
+ * document flow — nothing after it pushes it away, so it simply floats
+ * over whatever transcript content is still under it once the page is
+ * scrolled to the bottom. Measured live at a 910px viewport with a
+ * rendered chart result: the composer card occupied y≈720-900 (a 180px
+ * resting height) sitting 10px off the true viewport bottom, while the
+ * chart svg below it sat at y≈873-1315 — 0 of those pixels were visible,
+ * entirely covered by the pinned composer. --composer-clearance is that
+ * 180px card height + its 10px `bottom` offset + a breathing gap. The
+ * card is not 180px at every width: measured again at 375x812 it rests
+ * at 204px (the controls wrap), which a 200px reservation would under-
+ * cover — so the value is sized to the widest measured card (204) plus
+ * its offset and a gap, not to the desktop figure alone: the amount of empty space that must exist below the last
+ * turn (see #transcript's padding-block-end) and the amount scrollIntoView
+ * must leave clear below a turn it scrolls to (see .turn's
+ * scroll-margin-bottom and html's scroll-padding-bottom below) for a tall
+ * result to ever be fully reachable above the composer. */
+:root { --composer-clearance: 220px; }
 .composer { position: sticky; bottom: 10px; z-index: 5; }
 .ask-row { display: flex; gap: 10px; align-items: stretch; }
 #question {
@@ -418,7 +445,16 @@ button { font-family: inherit; }
 .notice.info  { background: var(--status-neutral-bg); color: var(--ink); border: 1px solid var(--border); }
 
 /* ── Transcript ──────────────────────────────────────────────────── */
-#transcript { display: flex; flex-direction: column; gap: 16px; }
+/* padding-block-end (logical — this is an RTL-first product, and "bottom"
+ * here is not a physical side any layout direction changes, but every
+ * other spacing rule in this file uses the logical form on principle) of
+ * --composer-clearance reserves blank space after the last turn equal to
+ * the sticky composer's own footprint. Without it, scrolling all the way
+ * down parks the composer directly on top of the last turn's content
+ * instead of below it — see --composer-clearance's comment above .composer
+ * for the measured overlap this fixes (a 180px composer over a 440px
+ * chart, 0px of it visible). */
+#transcript { display: flex; flex-direction: column; gap: 16px; padding-block-end: var(--composer-clearance); }
 
 /* Empty-transcript state — injected by main.js's renderTranscriptEmptyState()
  * only while the active session has zero turns. Sample-story chips used to
@@ -448,6 +484,14 @@ button { font-family: inherit; }
 .turn {
   display: flex; flex-direction: column; gap: 12px;
   scroll-margin-top: 90px;
+  /* --composer-clearance again: scrollIntoView (main.js) targets this
+   * element, and without scroll-margin-bottom a `block: "nearest"`/`"end"`
+   * call is free to park the turn's bottom edge exactly at the true
+   * viewport bottom — underneath the sticky composer — and call that "in
+   * view". This is what makes the post-settle re-scroll in main.js (once
+   * a turn's result, e.g. a tall chart, has actually rendered) land the
+   * result above the composer instead of behind it. */
+  scroll-margin-bottom: var(--composer-clearance);
 }
 
 .turn-question {
