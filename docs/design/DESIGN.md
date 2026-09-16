@@ -108,18 +108,29 @@ policy / memory / default). Chart focus-vs-context is a **fourth**, narrow axis.
 | `--navy` | `#0e2a47` | Deep chrome, question bubbles, admin mark |
 | `--navy-2` | `#14375c` | Elevated navy |
 | `--navy-3` | `#1b436e` | Navy interactive |
-| `--teal` | `#0d9488` | Primary brand, primary action |
-| `--teal-d` | `#0b7a70` | Brand hover / emphasis |
+| `--teal` | `#0b7a70` | Primary brand, primary action |
+| `--teal-d` | `#09675f` | Brand hover / emphasis |
 | `--teal-l` | `#e7f6f2` | Brand soft fill |
 | `--bg` | `#f4f6fa` | Page ground |
 | `--card` | `#ffffff` | Surface |
 | `--card-2` | `#f8fafc` | Nested surface |
 | `--border` | `#e2e8f0` | Hairline |
 | `--ink` | `#1f2937` | Body text |
-| `--muted` | `#64748b` | Secondary text |
+| `--muted` | `#5b6b81` | Secondary text |
 
-Status and source tokens stay as they are today in `web/styles/style.css`
-(they are already correct). Dark mode values likewise — copy from that file.
+The teal ramp and `--muted` are **contrast-derived, not aesthetic**. The
+original brand teal `#0d9488` measures 3.74:1 on `--card` and 3.46:1 on
+`--bg`; `--muted`'s earlier `#64748b` reached only 4.40:1 on `--bg`. All
+three sit under WCAG 1.4.3's 4.5:1 floor for body text. The shipped values
+move lightness only — hue and saturation are unchanged — and clear the bar
+at 5.21, 6.74 and 5.02 respectively. Restoring the brighter teal because it
+reads as more vivid reintroduces a failure that
+`tests/web_ui/test_web_ui_contrast_and_failure.py` will catch, and this
+table listed the pre-fix values for long enough that anyone implementing
+from it would have rebuilt the defect by hand.
+
+Status and source tokens stay as they are in `web/styles/tokens.css` (they
+are already correct), as do dark-mode values — copy from that file.
 
 ### 4.3 Type
 
