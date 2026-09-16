@@ -65,8 +65,15 @@ def test_product_chrome_html_links_tokens_and_has_no_emoji(path: Path) -> None:
     assert "tokens.css" in text, f"{path.name} must link tokens.css"
     # Allow ✓/✕/↻/▾/▴ used as status marks in rendered content (not chrome
     # pictographs). Strip those ASCII-ish symbols before the emoji scan.
+    #
+    # 📌 is deliberately NOT stripped. It used to be, and that single entry
+    # made this assertion unable to fail for the one true pictograph the
+    # chrome actually shipped: index.html quoted a button as «📌 به‌خاطر
+    # بسپار», the strip deleted it, and the test then reported no emoji. A
+    # scan that removes the thing it searches for is not a check, and it let
+    # "No emoji in product chrome" sit ticked while the emoji was on screen.
     stripped = text.replace("✓", "").replace("✕", "").replace("↻", "")
-    stripped = stripped.replace("▾", "").replace("▴", "").replace("📌", "")
+    stripped = stripped.replace("▾", "").replace("▴", "")
     emoji = _EMOJI.findall(stripped)
     assert not emoji, f"{path.name} chrome must not use emoji as icons: {emoji!r}"
     # Topbar must use inline SVG and a user menu (theme is inside it).
