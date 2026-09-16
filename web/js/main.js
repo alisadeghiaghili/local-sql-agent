@@ -46,6 +46,37 @@ function scrollIntoViewMaybeSmooth(el, opts) {
   el.scrollIntoView({ ...opts, behavior: reduced ? "auto" : "smooth" });
 }
 
+/** D3-hidden-chart: the `{ block: "start" }` scroll that fires the moment a
+ * turn card is appended (below) only ever sees the card's *early* content —
+ * the result (a chart, table, etc.) is still `hidden` at that point
+ * (turn.js's tagLate/revealLate) and gets unhidden afterward, once the
+ * pipeline settles. A chart is tall (~440px measured), so that late reveal
+ * routinely grows the card past the bottom of the viewport, and nothing
+ * re-scrolls to account for it — it just sits there, entirely covered by
+ * the sticky composer (measured 0px of a 440px chart visible; see
+ * style.css's --composer-clearance comment for the full numbers).
+ *
+ * Call this once a turn's late content is actually in the DOM (right after
+ * `revealLate()`) to close that gap, passing `card.result` (turn.js) —
+ * NOT `card.el` (the whole turn card). A first version targeted `card.el`
+ * with `block: "end"`: the *card* keeps going well past the result
+ * (interpretation, then the collapsed pipeline/LLM/feedback drawer), so
+ * aligning the card's bottom with the viewport scrolled the chart itself
+ * off the TOP of the screen — visible measurement: the svg ended up at
+ * y=-347, above the fold, not above the composer. `card.result` is just
+ * the "نتیجه" card, which is short enough that `block: "nearest"` — only
+ * scroll if it is not already fully visible — is both correct and the
+ * gentler choice: a turn that already fits does not get an extra jump on
+ * top of the start-scroll above. `.turn`'s `scroll-margin-bottom:
+ * var(--composer-clearance)` (style.css) is what makes "fully visible"
+ * mean "visible above the composer" rather than merely on screen — since
+ * `card.result` sits inside `.turn`, it inherits that clearance. Falls
+ * back to `el` itself (the whole card) for a turn with no result (an
+ * error or a guard rejection), where there is nothing else to target. */
+function scrollSettledResultAboveComposer(el) {
+  if (el) scrollIntoViewMaybeSmooth(el, { block: "nearest" });
+}
+
 // Declared before the boot section: setMode(state.mode) runs at module load
 // and, in simulated mode, calls setHealth() synchronously — so the label map
 // setHealth reads must already be initialized here, not in the module's lower
@@ -862,6 +893,7 @@ async function appendTurnWithAnimation(turn) {
   });
   card.revealEarly();
   card.revealLate();
+  scrollSettledResultAboveComposer(card.result || card.el);
   bumpActiveSessionMeta();
 }
 
@@ -1128,6 +1160,10 @@ async function askLive(q) {
           working = data.turn || working;
           addTurn(working);
           rebuild();
+          // rebuild() just Object.assign()'d `fresh` (including its
+          // `result`/`el`) onto `card`, so these reflect the just-rendered
+          // final turn -- no separate DOM lookup needed.
+          scrollSettledResultAboveComposer(card.result || card.el);
           bumpActiveSessionMeta();
           break;
         case "error":

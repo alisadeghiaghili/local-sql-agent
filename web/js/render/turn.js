@@ -221,6 +221,14 @@ export function createTurnCard(turn, ctx) {
   // already says this query never ran; a card titled "نتیجه" ("result")
   // directly under it, even with rejection-specific wording, is the exact
   // "did not run" vs. "returned nothing" confusion §8 rules out.
+  //
+  // `resultEl` (returned below as `result`) is D3-hidden-chart's hook for
+  // main.js's settle-time scroll: the card as a whole runs on well past
+  // this point (more opted-into content, then everything collapsed behind
+  // a click further down), so scrolling the *card* into view once it
+  // settles can leave the actual chart/table scrolled past, off the top —
+  // the result card itself is the right, much shorter target.
+  let resultEl = null;
   if (!turn.error && !isGuardRejected(turn)) {
     const resultCard = el("div", "card");
     resultCard.appendChild(el("div", "card-title", "نتیجه"));
@@ -230,6 +238,7 @@ export function createTurnCard(turn, ctx) {
       onRerun: ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : undefined,
     }));
     body.appendChild(tagLate(resultCard));
+    resultEl = resultCard;
   }
 
   // 8.5 Interpretation — rendered here, in the main flow, never inside
@@ -290,6 +299,9 @@ export function createTurnCard(turn, ctx) {
     pipeline: { setStage, el: pipelineList.el, steps: pipelineList.steps },
     revealEarly,
     revealLate,
+    // null for a turn with no result to show (an error, or a guard
+    // rejection) — main.js falls back to `el` (the whole card) then.
+    result: resultEl,
   };
 }
 
