@@ -38,6 +38,11 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          # webapp/ is a second Flask app with its own deps; its security
+          # tests (test_flask_hardening, test_webapp_http_surface, the webapp
+          # file-permission cases) import webapp.app, so CI must install its
+          # requirements or those tests ModuleNotFoundError on a clean runner.
+          pip install -r webapp/requirements.txt
           pip install pytest pytest-cov
 
       # Findings 5 + 9 (2026 audit): requirements.lock (above) stops a
