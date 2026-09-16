@@ -292,3 +292,31 @@ sample turn:
 - No API key is ever embedded in the served files — each analyst enters
   their own, kept only in their own browser's `localStorage`. See
   "Authentication" above.
+
+## هدرهایی که سرور ایستا باید بفرستد
+
+صفحات این پوشه یک `Content-Security-Policy` را در خودشان به صورت
+`<meta http-equiv>` حمل می‌کنند، چون هرچه که این فایل‌ها را سرو می‌کند —
+`python -m http.server` روی لپ‌تاپ، nginx روی سرور — سیاست یکسانی به آنها
+نمی‌دهد. یک policy که با خود سند سفر کند در هر دو حالت هست.
+
+اما **همهٔ دستورهای CSP از راه `<meta>` کار نمی‌کنند.** `frame-ancestors`
+یکی از آنهاست: مرورگر آن را نادیده می‌گیرد و در کنسول هم می‌گوید که نادیده
+گرفته. به همین دلیل از meta برداشته شده — یک دستور بی‌اثر که در هر بار
+بارگذاری صفحه خطای کنسول تولید کند، بدتر از نبودنش است، چون به خواننده یاد
+می‌دهد خطاهای کنسول را جدی نگیرد.
+
+پس محافظت در برابر clickjacking باید از سمت **سروری که این فایل‌ها را
+تحویل می‌دهد** بیاید، نه از خود صفحه و نه از میان‌افزار FastAPI (که این
+مسیرهای ایستا اصلاً از آن رد نمی‌شوند). در nginx:
+
+```nginx
+add_header X-Frame-Options "DENY" always;
+add_header Content-Security-Policy "frame-ancestors 'none'" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "no-referrer" always;
+```
+
+سه هدر آخر همان‌هایی هستند که `api/middleware.py::SecurityHeadersMiddleware`
+به پاسخ‌های API اضافه می‌کند. تکرارشان اینجا لازم است چون آن میان‌افزار فقط
+چیزی را می‌بیند که از خود برنامه رد شود، و این صفحات از آن رد نمی‌شوند.

@@ -260,6 +260,33 @@ class Settings:
     )
     """Maximum number of distinct (question, mode) pairs to keep in memory."""
 
+    # ── /health probe cache (Finding 3, 2026 audit) ─────────────────────────
+    health_cache_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("HEALTH_CACHE_TTL_SECONDS", "10"))
+    )
+    """How long (seconds) ``api/health.py::check_health()`` reuses a probe
+    result before running the (real, ~5s-timeout, connection-pool-using)
+    LLM-endpoint and database checks again.
+
+    ``/health`` needs no credentials and ``api/middleware.py`` deliberately
+    keeps it exempt from rate limiting -- a liveness probe must never be
+    throttled away, or an orchestrator kills a healthy container -- which
+    before this field existed meant an unauthenticated caller could hold
+    open a connection from the same pool ``/query`` uses, with no limit on
+    how often. Caching (not rate-limiting) is the fix: see
+    ``api/health.py``'s own "Result caching" section for the incident that
+    motivated it and the reasoning for why caching is the right lever here.
+
+    Long enough to collapse a burst or a tightly-polling load balancer
+    into a single real probe; short enough that a genuine outage (or
+    recovery) still surfaces well within a liveness-check interval.
+    ``api/health.py`` re-asserts ``0 < value <= 30`` as a documented
+    invariant of the deployment default, not enforced here -- see that
+    module's own test coverage. Exposed as ``api.health.HEALTH_CACHE_TTL_SECONDS``
+    via that module's ``__getattr__`` (a live read of this field on every
+    access, never a value captured once at import time) so existing callers
+    reading it as a module-level constant keep working unchanged."""
+
     # ── JSONL log rotation ──────────────────────────────────────────────────
     log_max_bytes: int = field(
         default_factory=lambda: int(os.getenv("LOG_MAX_BYTES", str(50 * 1024 * 1024)))

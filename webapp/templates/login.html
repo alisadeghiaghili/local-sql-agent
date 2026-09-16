@@ -6,6 +6,12 @@
     <h1>{{ _("Welcome") }}</h1>
     <p class="muted">{{ _("Sign in to ask your database a question in Persian or English.") }}</p>
     <form method="post" action="{{ url_for('login') }}">
+      <!-- Enforced like every other POST form (see webapp/app.py's
+           _CSRF_EXEMPT_ENDPOINTS comment): rendering this field mints a
+           token into a pre-authentication session and sends its cookie on
+           this page's own response, so the token is already bound to this
+           browser's session by the time the form below can be submitted. -->
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label for="username">{{ _("Username") }}</label>
       <input id="username" name="username" type="text" autocomplete="username" required autofocus>
 

@@ -64,6 +64,20 @@ different made-up X-Forwarded-For value on every request.
 Concurrency tuning
 ------------------
 MAX_CONCURRENT_REQUESTS — max parallel /query requests before 503 (default: 10)
+
+Security headers (Finding 7, 2026 audit)
+-----------------------------------------
+``SecurityHeadersMiddleware`` (registered outermost in ``api/server.py``, so
+it sees every response including ones produced by the exception handlers
+below it) adds ``X-Content-Type-Options``, ``X-Frame-Options`` and
+``Referrer-Policy`` to every response and strips the ``Server`` header.
+Deliberately does **not** add ``Strict-Transport-Security`` — this process
+never terminates TLS, so asserting HSTS from here would be a promise the
+wrong layer makes, and a broken one the moment this app runs in its normal
+mode: plain HTTP behind a reverse proxy. See
+``tests/security_audit/test_security_headers.py`` for the reasoning this
+codifies and ``docs/`` / the reverse-proxy config for where HSTS belongs
+instead.
 """
 
 from __future__ import annotations
@@ -565,3 +579,61 @@ class ConcurrencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         finally:
             self._release()
+
+
+# ---------------------------------------------------------------------------
+# 5. Security headers
+# ---------------------------------------------------------------------------
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach a minimal, defensible set of security headers to every response.
+
+    Finding 7 of the 2026 audit: a live authenticated ``200`` from this
+    service carried exactly ``server: uvicorn`` and ``x-request-id`` —
+    none of ``X-Content-Type-Options``, ``X-Frame-Options`` or
+    ``Referrer-Policy``, and a repo-wide grep for those names returned
+    zero hits. This is a JSON API, so the payoff is modest next to the
+    HTML this project also ships (covered separately by a ``<meta>`` CSP
+    under ``web/`` — see that directory and
+    ``tests/security_audit/test_admin_panel_xss.py``), but a response
+    body from this process **is** sometimes rendered — an error page, the
+    hand-registered ``/docs`` — and the headers cost nothing to send
+    unconditionally rather than trying to guess which route needs them.
+
+    Registered as the outermost layer in ``api/server.py`` (the last
+    ``add_middleware()`` call), specifically so it also wraps the
+    exception-handling middleware FastAPI installs beneath every
+    user-added layer: a 401 or 500 body is exactly as renderable as a 200
+    one, and the whole point of a blanket middleware is that nobody has
+    to remember to apply it per status code.
+
+    What is deliberately absent
+    ----------------------------
+    * ``Strict-Transport-Security`` — a claim about the TLS terminator.
+      This process does not terminate TLS; it is meant to run behind a
+      reverse proxy (or with no TLS at all, in local/dev use). Emitting
+      HSTS from here would assert something the app cannot back, and
+      would be actively wrong — browsers *remember* HSTS — the moment
+      someone runs this in the plain-HTTP mode it is normally deployed
+      in. Configure HSTS at the TLS terminator instead.
+    * ``Content-Security-Policy`` — a policy against inline scripts,
+      remote frames, etc. only means something for HTML responses, and
+      this middleware runs in front of a JSON API. The HTML this project
+      ships is covered by its own ``<meta>`` CSP instead, because a
+      header this process sets cannot reach a page a different origin
+      serves.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        # Remove rather than rewrite: a "Server" header naming this
+        # process's stack (and, on some builds, its version) is a free
+        # fingerprint for an attacker and serves no client. If a
+        # front-facing proxy wants to advertise its own value it is free
+        # to set one; this process should not volunteer anything.
+        if "server" in response.headers:
+            del response.headers["server"]
+        return response

@@ -38,7 +38,27 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          # webapp/ is a second Flask app with its own deps; its security
+          # tests (test_flask_hardening, test_webapp_http_surface, the webapp
+          # file-permission cases) import webapp.app, so CI must install its
+          # requirements or those tests ModuleNotFoundError on a clean runner.
+          pip install -r webapp/requirements.txt
           pip install pytest pytest-cov
+
+      # Findings 5 + 9 (2026 audit): requirements.lock (above) stops a
+      # dependency changing without this repo's consent; this step is the
+      # other half -- it tells us when something already pinned turns out
+      # to be vulnerable. Audits requirements.lock rather than
+      # requirements.txt because the lock is the exact, pinned tree this
+      # deployment actually runs -- auditing floor versions would miss
+      # whatever a real install resolved to. A finding here fails the
+      # build deliberately: "known-vulnerable dependency, undetected" is
+      # exactly the gap this step exists to close, so it is not allowed
+      # to pass silently.
+      - name: Dependency vulnerability audit (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.lock
 
       - name: Run tests
         env:

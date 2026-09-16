@@ -93,7 +93,7 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import Table, func, inspect, select, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 
 import config as cfg
 from appdb.engine import _canonical_endpoint, build_engine
@@ -469,11 +469,47 @@ def export_from_json(payload: str) -> MigrationExport:
 # Target-side checks
 # ---------------------------------------------------------------------------
 
+def _redacted(url: str) -> str:
+    """*url* with its password replaced by ``***``, for a message a human
+    will read.
+
+    A refusal has to name the two URLs -- an operator staring at "these
+    resolve to the same database" needs to see *which* two -- but the
+    complete URL of a networked backend carries the credential in it
+    (``postgresql://user:pw@host/db``). The identity and the secret are
+    not the same thing, and only one of them belongs in a message this
+    module hands back to a caller: :func:`run_migration` copies it
+    verbatim into :attr:`MigrationResult.message`, and ``scripts/
+    migrate_app_db.py`` both prints and logs that.
+
+    Uses SQLAlchemy's own :meth:`~sqlalchemy.engine.URL.render_as_string`
+    rather than a regular expression over the text, for the same reason
+    ``appdb/engine.py`` compares URLs after parsing rather than as
+    strings: the parser already knows where the password is in every URL
+    shape this project can be pointed at, and a regex would be a second,
+    worse implementation of that knowledge. ``scripts/
+    verify_deployment.py`` already redacts the warehouse URL this way.
+
+    A URL SQLAlchemy cannot parse falls back to a bare placeholder rather
+    than to the raw string -- an unparseable value is exactly the case
+    where a hand-rolled redaction would be most likely to miss something,
+    and the identity it would have carried is not trustworthy anyway.
+    """
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:  # noqa: BLE001 - see the docstring's last paragraph
+        return "<unparseable connection URL>"
+
+
 def check_not_same_database(source_url: str, target_url: str) -> None:
     """Refuse if *source_url* and *target_url* resolve to the same
     database -- reusing :func:`appdb.engine._canonical_endpoint`'s own
     after-parsing comparison (``localhost``/``127.0.0.1``, a resolved
     SQLite path, ...) rather than a second, string-only implementation.
+
+    The refusal names both URLs with their passwords redacted -- see
+    :func:`_redacted` for why a message built to be displayed must not
+    carry the credential that happens to live in the same string.
 
     Raises
     ------
@@ -482,7 +518,8 @@ def check_not_same_database(source_url: str, target_url: str) -> None:
     if _canonical_endpoint(source_url) == _canonical_endpoint(target_url):
         raise MigrationRefusedError(
             "source and target resolve to the same database -- nothing to "
-            f"migrate. source: {source_url!r}; target: {target_url!r}."
+            f"migrate. source: {_redacted(source_url)!r}; "
+            f"target: {_redacted(target_url)!r}."
         )
 
 

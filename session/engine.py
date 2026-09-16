@@ -241,7 +241,13 @@ def _classify_router_failure(exc: Exception) -> tuple[str, str]:
         return "OUT_OF_SCOPE", "This question is outside the Auction domain."
     if isinstance(cause, TimeoutError) or "timeout" in msg.lower():
         return "MODEL_TIMEOUT", "The LLM took too long to respond. Please try again."
-    return "MODEL_UNAVAILABLE", f"Cannot reach the LLM backend: {msg}"
+    # `TurnErrorInfo` has no `detail` field (finding 11) — unlike the v1
+    # `ModelUnavailableError`, there is no client-model place to hide the raw
+    # transport text, so it goes to the log instead of the field the client
+    # reads, and the return value stays a summary an operator, not an
+    # attacker probing the network, can act on.
+    logger.warning("LLM router unreachable (MODEL_UNAVAILABLE): %s", msg)
+    return "MODEL_UNAVAILABLE", "The language model is currently unreachable. Please try again."
 
 
 class TurnEngine:
@@ -343,6 +349,15 @@ class TurnEngine:
         turn_id = f"t_{uuid.uuid4().hex[:8]}"
         index = len(record.turns) + 1
         static_prefix_tokens = static_prefix_token_estimate(system_prompt)
+        # SECURITY (Finding 8, 2026 audit): when this seam is wired to a
+        # real T0 cache, its key MUST be built via
+        # security.auth.scope_key(principal, memory_used=<this turn's
+        # resolved memory entries>) -- passing memory_used=None here
+        # (or copying a call that does) would let two analysts with
+        # different pinned memory silently share a cached answer that
+        # only one of them's memory actually justifies. scope_key's
+        # memory_used parameter has no default specifically so this
+        # cannot be gotten wrong by omission.
         cache_prefix_version = _prefix_version_of(system_prompt)  # noqa: F841 - reserved for a future T0 cache tier
 
         with timer.stage("plan"):

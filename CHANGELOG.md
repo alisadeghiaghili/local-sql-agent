@@ -5,6 +5,82 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [4.12.1] — 2026-09-14
+
+A security release. An independent audit (code review across MLSecOps, data,
+API/web and infrastructure, plus a live penetration test against a running
+server) found twenty issues, four of them High. Nineteen were code-fixable and
+are addressed here; the twentieth is a repository-history matter left to the
+owner (see **Not in this release**). Every fix carries a regression test under
+`tests/security_audit/`, and the two live-confirmed leaks below were re-tested
+against a running server after the fix, not only in unit tests.
+
+### Security
+
+- **Admin panel: stored XSS that escalated `operations` to `security` is
+  closed** (High). A `principal_id` carrying a `"` was accepted, stored, and
+  re-served into an HTML attribute where `escapeHtml`'s `textContent` idiom
+  never encoded the quote. Broken in four independent places: the escaper now
+  encodes `"`/`'`, rows are built with `createElement`/`dataset` rather than
+  string interpolation, `principal_id` carries `pattern=^[A-Za-z0-9._-]+$`, and
+  both static pages ship a `<meta>` CSP whose `script-src` excludes
+  `'unsafe-inline'`.
+- **`webapp/` no longer bypasses the per-principal column ACL** (High). The
+  Flask app called the query pipeline with no principal, which the runner read
+  as "no column restriction", so every `denied_columns` rule the admin panel
+  could set was void on that path. It now maps the logged-in user to a real
+  `Principal`, and an unmapped user gets a maximally restrictive fallback rather
+  than unrestricted access.
+- **Secrets and data files are created with owner-only permissions** (High).
+  Nothing in the tree restricted file modes, so the Flask session-signing key,
+  the app database, the session store and exports were world-readable on a
+  POSIX host — a local shell could forge an admin session. A single
+  `core/fileperms.py` authority now applies `0o600`/`0o700` at every creation
+  point, SQLite `-wal`/`-shm` sidecars included.
+- **The internal model endpoint no longer leaks in error text** (Medium; found
+  Low, raised after a live test). A model-unreachable failure returned the
+  backend's host, port, scheme and retry policy to any authenticated analyst.
+  Both paths are fixed: the v1 `/query` path moves the raw transport error to a
+  server-only `detail`, and the v2 conversational turn — a **second leak the
+  first pass missed**, caught by a post-remediation live re-test — logs the raw
+  error server-side and returns a generic summary, since `TurnErrorInfo` has no
+  client-safe field to carry detail.
+- **HTTP security headers are sent** (Medium). Responses now carry
+  `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. The
+  middleware also strips an app-set `Server` header, but uvicorn appends its own
+  at the protocol layer where no middleware can reach it, so the documented
+  start command now passes `--no-server-header` — the only place the banner is
+  actually suppressed on the wire (`README.md`, `docs/deployment-runbook.md`).
+- **`/health` is cached, so an unauthenticated flood cannot drain the query
+  pool** (Medium). The probe result is cached briefly; a load balancer and an
+  attacker both get the cached answer instead of one live pool probe per call.
+- **CSV/Excel exports defuse formula injection** (Medium). A cell beginning
+  `= + - @` (or a leading tab/CR) is prefixed so a spreadsheet cannot execute
+  it, on both the API and Flask export paths.
+- **Warehouse values are fenced as untrusted data in the model prompt**
+  (Medium), reducing second-order prompt injection through dimension values
+  pulled from the database.
+- **Flask login hardened** (Medium): per-IP failure throttling with a window
+  that lifts on its own (a throttle that never lifted was a denial of service in
+  its own right), session cookies set `Secure`/`HttpOnly`/`SameSite=Strict`,
+  and a session-bound CSRF token is enforced on every POST including `/login`.
+  The real administrator username is no longer a baked-in default; a missing
+  `ADMIN_USER` is now a startup failure rather than a guess.
+- **Dependencies are pinned** with a `requirements.lock`, and CI runs
+  `pip-audit` against it so a known-vulnerable pinned dependency fails the
+  build.
+- **Lower-severity hardening**: audit-log write failures surface a counter
+  rather than failing silently; a dormant cache-scope parameter is documented
+  as a trap before the future cache tier that would trip it; identifier quoting,
+  the asymmetric default ACL between env and panel keys, and a global session
+  cache with no per-owner quota are all addressed.
+
+### Fixed
+
+- A `frame-ancestors` directive that a `<meta>` tag cannot deliver was removed
+  and the equivalent reverse-proxy configuration documented instead, so the
+  page no longer logs a console error on every load.
+
 ## [4.12.0] — 2026-09-08
 
 ### Added

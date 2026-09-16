@@ -68,11 +68,35 @@ Then open http://127.0.0.1:5000 and log in.
 
 ## Notes
 
-- Only the admin account (env `ADMIN_USER`, default `bahmanabadi.m`) can create
-  new accounts via `/register`.
+- `ADMIN_USER` **must** be set (no default — a security-audit fix removed
+  the literal username that used to ship here). Only that account can
+  create new accounts via `/register`; the app refuses to start at all
+  without it.
 - The session secret comes from the `SECRET_KEY` env var if set; otherwise a
-  random key is generated once and persisted in `.secret_key`.
+  random key is generated once and persisted in `.secret_key` (owner-only
+  permissions on POSIX — see `_secret_key()`'s docstring).
 - Sessions last 8 hours.
+- Repeated failed `/login` attempts from the same IP are throttled: after
+  roughly 30 consecutive failures within a 15-minute window, further
+  attempts get `429` until a login from that IP succeeds, or the window
+  rolls past with no further failures — this throttle expires on its own
+  and does not lock an IP out indefinitely.
+- Every POST form, `/login` included, carries a CSRF token and is
+  rejected with `400` if it is missing or wrong — see `app.py`'s
+  `_CSRF_EXEMPT_ENDPOINTS` comment for how a token is bound to a session
+  before that session has ever authenticated.
+- **The session cookie requires HTTPS** (`SESSION_COOKIE_SECURE=True`).
+  Running the dev server above over plain `http://` still lets you load
+  every page, but the browser will not send the cookie back, so
+  `/login` will look like it silently does nothing — you get bounced
+  back to the login page after what looked like a successful sign-in.
+  Serve the app over HTTPS (a reverse proxy terminating TLS is the usual
+  shape for this) to actually keep a session. This is intentionally not
+  an environment-variable toggle: a flag that is easy to flip off is a
+  flag that stays off past whatever local experiment prompted it — if
+  you need it off for local HTTP-only development, comment out that one
+  line in `create_app()` and remember why before you deploy.
 - `app.db` is created automatically on first run (`db.init_db()`).
 - Query result CSVs are written to `outputs/` (UTF-8 with BOM, so Excel opens
-  Persian text correctly).
+  Persian text correctly) with formula-injection defusing applied to every
+  cell (`exporters/sanitize.py`).
