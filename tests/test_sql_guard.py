@@ -13,7 +13,17 @@ from __future__ import annotations
 
 import pytest
 
+from schema_data.columns import TABLE_COLUMNS
 from security.sql_guard import clean_sql, ensure_top, validate_sql
+
+#: A table (and one of its columns) picked dynamically from whatever
+#: schema is loaded (real or project_config.example/), rather than a
+#: hardcoded real name -- this case is about the GUARD's behaviour (does
+#: it validate a CTE), not about any specific table or column, so it must
+#: not incidentally depend on a real name that a generic example schema
+#: does not define.
+_ANY_TABLE = next(iter(TABLE_COLUMNS))
+_ANY_COLUMN = next(iter(TABLE_COLUMNS[_ANY_TABLE]))
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +109,11 @@ class TestValidateSql:
         validate_sql("SELECT TOP 10 Name FROM [Auction_Dim].[Customer]")  # no raise
 
     def test_valid_cte_query(self):
-        validate_sql("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte")
+        sql = (
+            f"WITH cte AS (SELECT {_ANY_COLUMN} FROM [{_ANY_TABLE}]) "
+            f"SELECT * FROM cte"
+        )
+        validate_sql(sql)
 
     def test_blocks_delete(self):
         with pytest.raises(ValueError):
