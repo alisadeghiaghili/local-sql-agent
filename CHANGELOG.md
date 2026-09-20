@@ -5,6 +5,65 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [5.1.0] — 2026-09-20
+
+A security release for the SQL guard. Tables and columns had long since moved
+to an allowlist, but functions and session variables were still governed by a
+denylist — three names and two identifier prefixes. That asymmetry left a
+reconnaissance channel open, and an adversarial review of the guard found it.
+
+The gap had two spellings. A query that names **no table** never engages the
+table/column allowlist at all: it escapes the allowlist rather than tripping
+it. And a query that *does* name a real, allowlisted table could still carry a
+metadata function in its `SELECT` list — `SERVERPROPERTY`, `OBJECT_NAME`,
+`COL_NAME` and their relatives produce an output column that is neither a
+column reference nor a table reference, so nothing inspected it. The second
+spelling is the reason this release is broader than the table-reference rule
+first proposed: requiring a table closes only the first.
+
+Closing it properly meant finishing the job the module started — moving the
+last construct from a denylist to an allowlist, which also covers metadata
+functions SQL Server ships in future rather than only the ones found.
+
+### Security
+
+- **The guard now restricts every accepted query to warehouse-reading shape**:
+  allowlisted tables and columns, read through ordinary data functions, and
+  nothing else. Three rules run at the end of `validate_sql`, after every
+  existing rule, so a query that already violated an earlier rule still reports
+  that rule's own more specific reason — the only verdicts that change are
+  ones that were previously *accepted*.
+  - Server, session and connection state is refused wherever it appears in the
+    tree — projection, `WHERE`, `ORDER BY`, a CTE body, a scalar subquery — not
+    only in the `SELECT` list. `GETDATE()`/`CURRENT_TIMESTAMP` is deliberately
+    exempt: it reads the wall clock, not the server's identity.
+  - Unrecognised function calls are refused unless named in a new allowlist,
+    seeded with the measured set of legitimate T-SQL data functions that
+    `sqlglot` has no typed class for. Everything an ordinary analytic query
+    uses — aggregates, casts, date parts, window functions, `STRING_AGG`,
+    `IIF` — parses to a typed node and never reaches this check.
+  - A query must reference at least one non-CTE table.
+
+### Added
+
+- A `no_table_reference` value on the guard verdict's `reason`, for the
+  table-less case. It is additive: clients already fall back to the generic
+  refusal action for any reason they do not specially handle. The v2 contract
+  document now lists it, and a test asserts every reason the guard can emit
+  appears there — the registration was two places and silently drifted to a
+  stale document, so it is now three places with a failing build behind it.
+
+### Fixed
+
+- The rejection reported for a state-reading construct named the `sqlglot`
+  class (`PARAMETER`, `CURRENTUSER`) rather than the construct. It now names
+  what the analyst wrote (`@@VERSION`, `CURRENT_USER`, `OBJECT_ID`), with any
+  call arguments cut so a model-generated literal never reaches the structured
+  `subject` field — which the contract documents as analyst-facing and never
+  internal detail.
+- `anyio` is bumped past CVE-2026-63374 and CVE-2026-64847, both published
+  after the pin was last refreshed and caught by the `pip-audit` CI gate.
+
 ## [5.0.0] — 2026-09-16
 
 The analyst UI redesign. Major, because it changes muscle memory: the topbar,
