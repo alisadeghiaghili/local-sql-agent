@@ -31,6 +31,8 @@ so these tests run in CI / a fresh clone exactly like
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 from pydantic import ValidationError
@@ -275,6 +277,38 @@ class TestTurnErrorRequestIdMatchesTheAuditedId:
         assert turn.error.request_id  # non-empty, minted fallback id
         audited = mock_save.call_args[0][0]
         assert audited.request_id == turn.error.request_id
+
+
+class TestReasonEnumIsDocumented:
+    """Every rejection reason the guard can emit must appear in the v2
+    contract document's ``reason`` enum.
+
+    ``docs/api-contract-v2.md`` §4 spells the enum out so a client author
+    knows the closed set to switch on. Nothing enforced that list against
+    the code, so adding a reason to ``security.sql_guard._REASONS`` (and
+    to ``session.models.GuardVerdict``'s mirrored ``Literal``) left the
+    document silently stale -- which is exactly what happened when
+    ``no_table_reference`` was introduced. This closes that drift: the
+    two-place registration the guard already requires becomes a
+    three-place one, and forgetting the third fails the build rather than
+    shipping a contract that under-reports what the API can return.
+    """
+
+    def test_every_guard_reason_appears_in_the_contract_document(self):
+        from security.sql_guard import _REASONS
+
+        doc = (
+            Path(__file__).resolve().parent.parent
+            / "docs" / "api-contract-v2.md"
+        ).read_text(encoding="utf-8")
+
+        missing = sorted(r for r in _REASONS if f'"{r}"' not in doc)
+        assert not missing, (
+            "docs/api-contract-v2.md does not document these guard "
+            f"rejection reasons: {missing}. Add them to the `reason` enum "
+            "in §4 -- a client switching on that enum would not know the "
+            "API can return them."
+        )
 
 
 if __name__ == "__main__":
