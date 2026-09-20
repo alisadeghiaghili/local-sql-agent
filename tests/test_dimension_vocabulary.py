@@ -6,9 +6,10 @@ No live database anywhere in this file: ``refresh_vocabulary``/``warm_all``
 always take an injected ``execute_fn``, and ``match_question_against_vocabulary``
 never issues a query *synchronously* -- that is the property this module
 exists to guarantee. The background-refresh trigger it fires on a
-stale/absent entry is disabled process-wide by ``tests/conftest.py``'s
+stale/absent entry is disabled process-wide by the root ``conftest.py``'s
 autouse ``_no_background_dimension_refresh`` fixture, exactly like every
-other test in this suite; the tests in ``TestBackgroundRefresh`` below are
+other test under ``tests/`` and ``eval/tests``; the tests in
+``TestBackgroundRefresh`` below are
 the only ones that turn it back on, always with an injected ``execute_fn``,
 always inside a ``try/finally`` that turns it back off before the test ends.
 """
@@ -361,10 +362,10 @@ class TestBackgroundRefresh:
         try:
             yield
         finally:
-            # Save/restore, not a hardcoded False -- see
-            # tests/conftest.py's _no_background_dimension_refresh
-            # docstring for why a hardcoded restore here is exactly what
-            # caused a real background DB call once already.
+            # Save/restore, not a hardcoded False -- see the root
+            # conftest.py's _no_background_dimension_refresh docstring for
+            # why a hardcoded restore here is exactly what caused a real
+            # background DB call once already.
             set_background_refresh_enabled(previous)
             dv._in_flight.clear()
             dv._last_failure.clear()

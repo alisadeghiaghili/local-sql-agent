@@ -101,13 +101,13 @@ guarantees:
    / :func:`warm_all` call (an operator's own retry, or the opt-in startup
    warm-up) always attempts immediately, ignoring it.
 
-:func:`set_background_refresh_enabled` is the escape hatch this suite's
-``tests/conftest.py`` uses to turn the trigger off globally -- see "Test
-isolation" below.
+:func:`set_background_refresh_enabled` is the escape hatch the root
+``conftest.py`` uses to turn the trigger off globally, for both ``tests/``
+and ``eval/tests`` -- see "Test isolation" below.
 
 Test isolation -- no test may reach a real database because of this
 ------------------------------------------------------------------------
-``tests/conftest.py``'s existing ``_no_real_database`` autouse fixture
+The root ``conftest.py``'s existing ``_no_real_database`` autouse fixture
 already makes ``database.connection.create_engine`` raise
 ``AssertionError`` for every test (see its docstring: an unmocked engine
 construction against the placeholder ``DB_CONNECTION_URL`` would otherwise
@@ -123,7 +123,7 @@ running during unrelated, later tests -- see
 swallowing the resulting ``AssertionError`` would hide that class of
 problem again, just one module over.
 
-So ``tests/conftest.py`` carries a second autouse fixture,
+So the root ``conftest.py`` carries a second autouse fixture,
 ``_no_background_dimension_refresh``, that calls
 :func:`set_background_refresh_enabled(False) <set_background_refresh_enabled>`
 for the duration of every test and restores it afterwards -- mirroring
@@ -529,7 +529,7 @@ def warm_all(execute_fn: ExecuteParamsFn | None = None) -> dict[str, int]:
 # exit. In this test suite that turned into a real, observed bug: a task
 # left running past its owning test's teardown kept the process alive
 # after pytest had already printed its final summary and every per-test
-# mock (including tests/conftest.py's own database.connection.create_engine
+# mock (including the root conftest.py's own database.connection.create_engine
 # refusal) had unwound -- so the leftover task ran against a completely
 # unpatched environment and reached a real, if unreachable, database. A
 # daemon thread cannot do that: if the interpreter wants to exit, it is
@@ -569,7 +569,8 @@ def _mark_attempt_failed(key: tuple[str, str]) -> None:
 #: Module-wide on/off switch for the automatic background trigger. Default
 #: True (production behaviour) -- see :func:`set_background_refresh_enabled`
 #: and the module docstring's "Test isolation" section for who turns this
-#: off, and why every test in this suite runs with it off.
+#: off, and why every test under ``tests/`` and ``eval/tests`` runs with it
+#: off.
 _background_refresh_enabled = True
 
 
@@ -577,7 +578,7 @@ def is_background_refresh_enabled() -> bool:
     """Current value of the switch :func:`set_background_refresh_enabled` sets.
 
     A getter, not direct access to the module-level flag, so callers that
-    need to save-and-restore it (``tests/conftest.py``'s autouse fixture,
+    need to save-and-restore it (the root ``conftest.py``'s autouse fixture,
     and ``tests/test_dimension_vocabulary.py``'s ``TestBackgroundRefresh``
     class fixture) restore whatever value was actually there beforehand
     rather than a hardcoded assumption -- two nested fixtures that both
@@ -592,10 +593,11 @@ def set_background_refresh_enabled(enabled: bool) -> None:
     """Enable/disable :func:`_trigger_background_refresh` process-wide.
 
     Production default is enabled (see :data:`_background_refresh_enabled`).
-    ``tests/conftest.py``'s autouse ``_no_background_dimension_refresh``
-    fixture disables this for the duration of every test in this suite and
-    restores it afterwards, so a cold/stale cache during an ordinary route
-    test never launches a background thread that (were it not for
+    The root ``conftest.py``'s autouse ``_no_background_dimension_refresh``
+    fixture disables this for the duration of every test under ``tests/``
+    and ``eval/tests`` and restores it afterwards, so a cold/stale cache
+    during an ordinary route test never launches a background thread that
+    (were it not for
     ``_no_real_database`` also being autouse) would try to reach a real
     database. See the module docstring's "Test isolation" section.
     """

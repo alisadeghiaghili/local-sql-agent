@@ -10,15 +10,23 @@ literal host ``server``, which does not exist, and blocks on DNS plus the
 ODBC login timeout for roughly 21 seconds. Twenty of those cost ~420s — the
 whole suite ran in ~433s, so that one test *was* the suite's runtime.
 
-Nothing stopped it, because nothing was watching. The autouse fixture below
-watches: any test that reaches real engine construction now fails
-immediately with a message naming the fix, instead of hanging.
+Nothing stopped it, because nothing was watching. The root ``conftest.py``'s
+``_no_real_database`` autouse fixture watches: any test that reaches real
+engine construction now fails immediately with a message naming the fix,
+instead of hanging. That fixture (and the related
+``_no_background_dimension_refresh`` guard) used to live in this file, but
+were moved to the repository-root ``conftest.py`` -- a plain ``pytest``
+conftest applies only to the directory tree rooted where it lives, and this
+file's tree is ``tests/`` alone, so a combined ``pytest tests/ eval/tests``
+run collected and ran ``eval/tests`` with neither guard active. See the
+root ``conftest.py`` for both fixtures now.
 
 Tests that legitimately exercise the engine already patch
 ``database.connection.create_engine`` themselves (see
 ``tests/test_executor.py`` and ``TestDisposeEngine`` in
-``tests/test_sql_guard.py``). Their patch is applied inside this one, so it
-takes precedence and they are unaffected.
+``tests/test_sql_guard.py``). Their patch is applied inside the root
+conftest's ``_no_real_database``, so it takes precedence and they are
+unaffected.
 """
 
 from __future__ import annotations
@@ -106,8 +114,7 @@ os.environ.setdefault("SESSION_STORE_PATH", "")
 # as RATE_LIMIT_*/SESSION_STORE_PATH above.
 os.environ.setdefault("APP_DB_URL", "sqlite://")
 
-from typing import Any, Iterator
-from unittest.mock import patch
+from typing import Iterator
 
 import pytest
 
@@ -149,45 +156,6 @@ def auth_settings() -> Iterator[dict[str, str]]:
         yield dict(AUTH_HEADERS)
 
 
-def _refuse_real_engine(*args: Any, **kwargs: Any) -> Any:
-    raise AssertionError(
-        "This test tried to build a real SQLAlchemy engine.\n"
-        "\n"
-        "Nothing in the suite should open a real database connection: the "
-        "default DB_CONNECTION_URL points at the literal host 'server', so "
-        "the attempt does not fail fast — it blocks on DNS and the ODBC "
-        "login timeout for ~21s per call.\n"
-        "\n"
-        "Patch the seam your test actually needs:\n"
-        "  - patch('api.health.check_health')            for /health routes\n"
-        "  - patch('database.executor.execute_query')    for query execution\n"
-        "  - patch('database.connection.create_engine')  to exercise the "
-        "engine factory itself\n"
-    )
-
-
-@pytest.fixture(autouse=True)
-def _no_real_database() -> Iterator[None]:
-    """Fail fast, and loudly, if a test reaches real engine construction.
-
-    ``get_engine`` is ``lru_cache``-backed, so a real engine built by an
-    earlier test would be reused by later ones without ever calling
-    ``create_engine`` again. The cache is therefore cleared on both sides of
-    every test, which also removes a source of order-dependent behaviour.
-    """
-    from database.connection import get_engine
-
-    get_engine.cache_clear()
-    try:
-        with patch(
-            "database.connection.create_engine",
-            side_effect=_refuse_real_engine,
-        ):
-            yield
-    finally:
-        get_engine.cache_clear()
-
-
 @pytest.fixture(autouse=True)
 def _fresh_app_db() -> Iterator[None]:
     """Give every test a fresh, empty application database.
@@ -198,8 +166,9 @@ def _fresh_app_db() -> Iterator[None]:
     single shared connection (``StaticPool``) for as long as the cached
     engine lives — so without disposing it between tests, an issued key or
     granted role from one test would still be visible to the next,
-    exactly the order-dependent leakage ``_no_real_database`` above exists
-    to prevent for the warehouse engine. Disposing before AND after each
+    exactly the order-dependent leakage the root ``conftest.py``'s
+    ``_no_real_database`` exists to prevent for the warehouse engine.
+    Disposing before AND after each
     test (not just after) also protects the first test in a run against
     any engine another fixture or import happened to build first.
 
@@ -219,60 +188,3 @@ def _fresh_app_db() -> Iterator[None]:
     finally:
         dispose_app_engine()
         invalidate_cache()
-
-
-@pytest.fixture(autouse=True)
-def _no_background_dimension_refresh() -> Iterator[None]:
-    """Disable ``retrieval.dimension_vocabulary``'s background self-healing
-    refresh for every test, and restore it afterwards.
-
-    Phase 5b's stale-while-revalidate redesign makes a cold or stale
-    dimension-vocabulary lookup trigger a background refresh against the
-    real database by default (see that module's docstring). Left enabled
-    here, an ordinary route test that mentions any of ``Ring``/``Currency``/
-    ``Broker``/``DeliveryPlace``/``Symbol`` -- ordinary questions do -- would
-    spin up a background thread reaching ``database.connection.create_engine``
-    on every single such test, since the vocabulary cache starts cold and
-    nothing in this suite warms it. ``_no_real_database`` above turns that
-    into a caught, logged ``AssertionError`` rather than a ~21s hang, but a
-    background thread quietly doing that on every cold lookup during
-    ordinary tests is still exactly the class of hidden-async-work problem
-    that produced this phase's one real test flake elsewhere (a leaked
-    ``time.sleep`` in a different module's shared thread pool -- see
-    ``tests/test_value_resolver.py``). Disabling the trigger here keeps the
-    whole suite's dimension-vocabulary reads synchronous and silent: a
-    cold/stale lookup still returns immediately (no candidates, or stale
-    candidates) but launches nothing.
-
-    ``tests/test_dimension_vocabulary.py``'s background-refresh tests
-    re-enable this locally, always with an injected ``execute_fn`` and
-    always inside a ``try/finally`` that restores the disabled state
-    before the test ends.
-
-    Restores whatever value was in effect *before* this fixture ran
-    (``is_background_refresh_enabled()``), not a hardcoded ``True``. A
-    hardcoded restore was the actual, observed cause of a real-database
-    connection attempt during a full-suite run: this fixture and the
-    per-class fixture in ``TestBackgroundRefresh`` both run with function
-    scope, so for a test in that class this one's setup runs first
-    (leaving the flag ``False``), the class fixture's setup then flips it
-    to ``True`` for the test body, and teardown unwinds in the opposite
-    order -- the class fixture's teardown restores ``False`` first, and
-    only THEN does this fixture's own teardown run. A hardcoded
-    ``set_background_refresh_enabled(True)`` here would stomp that back to
-    ``True`` regardless, leaving it wrong for every subsequent test until
-    another ``TestBackgroundRefresh`` test happened to reset it -- a
-    window in which an ordinary test's cold vocabulary lookup would
-    launch a real background thread. Save/restore make each fixture
-    responsible only for the value it actually changed.
-    """
-    from retrieval.dimension_vocabulary import (
-        is_background_refresh_enabled, set_background_refresh_enabled,
-    )
-
-    previous = is_background_refresh_enabled()
-    set_background_refresh_enabled(False)
-    try:
-        yield
-    finally:
-        set_background_refresh_enabled(previous)

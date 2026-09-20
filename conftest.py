@@ -4,8 +4,14 @@
 
 Lives at the repo root (an ancestor of both ``tests/`` and ``eval/tests``,
 the two directories ``setup.cfg``'s ``testpaths`` collects) so its hooks
-apply across a single combined run of both, unlike ``tests/conftest.py``
-(scoped to ``tests/`` only).
+and autouse fixtures apply across a single combined run of both, unlike
+``tests/conftest.py`` (scoped to ``tests/`` only). That distinction is why
+``_no_real_database`` and ``_no_background_dimension_refresh`` below live
+here rather than in ``tests/conftest.py``, where they originally were: a
+combined ``pytest tests/ eval/tests`` run collected ``eval/tests`` with
+neither guard active, and a cold dimension-vocabulary lookup during an
+eval test could spin up a background thread that reached the real
+database. See each fixture's own docstring for the detail.
 
 Phase 4 made ``project_config/`` configurable (``PROJECT_CONFIG_DIR``, see
 ``config.Settings.project_config_dir``) so CI and a fresh clone — which
@@ -39,6 +45,8 @@ something, under both configurations.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Iterator
+from unittest.mock import patch
 
 import time
 
@@ -77,6 +85,123 @@ def _running_against_example_config() -> bool:
         return resolved.resolve() == _EXAMPLE_CONFIG_DIR.resolve()
     except OSError:
         return False
+
+
+def _refuse_real_engine(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError(
+        "This test tried to build a real SQLAlchemy engine.\n"
+        "\n"
+        "Nothing under tests/ or eval/tests should open a real database "
+        "connection: the default DB_CONNECTION_URL points at the literal "
+        "host 'server', so the attempt does not fail fast — it blocks on "
+        "DNS and the ODBC login timeout for ~21s per call.\n"
+        "\n"
+        "Patch the seam your test actually needs:\n"
+        "  - patch('api.health.check_health')            for /health routes\n"
+        "  - patch('database.executor.execute_query')    for query execution\n"
+        "  - patch('database.connection.create_engine')  to exercise the "
+        "engine factory itself\n"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_database() -> Iterator[None]:
+    """Fail fast, and loudly, if a test reaches real engine construction.
+
+    Lives here, at the repository root, rather than in ``tests/conftest.py``
+    where it originally did, because a plain ``pytest`` conftest only
+    applies to the directory tree rooted where it lives: ``tests/conftest.py``
+    covers ``tests/`` but has no effect on ``eval/tests``, which collects
+    into the very same session whenever CI runs ``pytest tests/ eval/tests``.
+    With the fixture scoped to ``tests/`` alone, that combined run executed
+    ``eval/tests`` with no engine guard at all — the one place this was
+    caught was a background dimension-vocabulary refresh thread (see
+    ``_no_background_dimension_refresh`` below) spawned from an eval test,
+    which went on to reach the real ``pyodbc`` driver and dial the
+    configured warehouse host. Moving both fixtures to this file, an
+    ancestor of both ``tests/`` and ``eval/tests``, closes that gap for the
+    whole combined run without changing anything about how either fixture
+    behaves for ``tests/`` on its own.
+
+    ``get_engine`` is ``lru_cache``-backed, so a real engine built by an
+    earlier test would be reused by later ones without ever calling
+    ``create_engine`` again. The cache is therefore cleared on both sides of
+    every test, which also removes a source of order-dependent behaviour.
+    """
+    from database.connection import get_engine
+
+    get_engine.cache_clear()
+    try:
+        with patch(
+            "database.connection.create_engine",
+            side_effect=_refuse_real_engine,
+        ):
+            yield
+    finally:
+        get_engine.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_dimension_refresh() -> Iterator[None]:
+    """Disable ``retrieval.dimension_vocabulary``'s background self-healing
+    refresh for every test under ``tests/`` and ``eval/tests``, and restore
+    it afterwards.
+
+    Phase 5b's stale-while-revalidate redesign makes a cold or stale
+    dimension-vocabulary lookup trigger a background refresh against the
+    real database by default (see that module's docstring). Left enabled
+    here, an ordinary route test that mentions any of ``Ring``/``Currency``/
+    ``Broker``/``DeliveryPlace``/``Symbol`` -- ordinary questions do -- would
+    spin up a background thread reaching ``database.connection.create_engine``
+    on every single such test, since the vocabulary cache starts cold and
+    nothing in either suite warms it. ``_no_real_database`` above turns that
+    into a caught, logged ``AssertionError`` rather than a ~21s hang, but a
+    background thread quietly doing that on every cold lookup during
+    ordinary tests is still exactly the class of hidden-async-work problem
+    that produced this phase's one real test flake elsewhere (a leaked
+    ``time.sleep`` in a different module's shared thread pool -- see
+    ``tests/test_value_resolver.py``). Disabling the trigger here keeps
+    every dimension-vocabulary read synchronous and silent, in both
+    ``tests/`` and ``eval/tests``: a cold/stale lookup still returns
+    immediately (no candidates, or stale candidates) but launches nothing.
+
+    This fixture originally lived in ``tests/conftest.py``, scoped to
+    ``tests/`` only -- see ``_no_real_database`` above for why that left
+    ``eval/tests`` completely uncovered and why both fixtures now live here
+    instead, at the repository root.
+
+    ``tests/test_dimension_vocabulary.py``'s background-refresh tests
+    re-enable this locally, always with an injected ``execute_fn`` and
+    always inside a ``try/finally`` that restores the disabled state
+    before the test ends.
+
+    Restores whatever value was in effect *before* this fixture ran
+    (``is_background_refresh_enabled()``), not a hardcoded ``True``. A
+    hardcoded restore was the actual, observed cause of a real-database
+    connection attempt during a full-suite run: this fixture and the
+    per-class fixture in ``TestBackgroundRefresh`` both run with function
+    scope, so for a test in that class this one's setup runs first
+    (leaving the flag ``False``), the class fixture's setup then flips it
+    to ``True`` for the test body, and teardown unwinds in the opposite
+    order -- the class fixture's teardown restores ``False`` first, and
+    only THEN does this fixture's own teardown run. A hardcoded
+    ``set_background_refresh_enabled(True)`` here would stomp that back to
+    ``True`` regardless, leaving it wrong for every subsequent test until
+    another ``TestBackgroundRefresh`` test happened to reset it -- a
+    window in which an ordinary test's cold vocabulary lookup would
+    launch a real background thread. Save/restore make each fixture
+    responsible only for the value it actually changed.
+    """
+    from retrieval.dimension_vocabulary import (
+        is_background_refresh_enabled, set_background_refresh_enabled,
+    )
+
+    previous = is_background_refresh_enabled()
+    set_background_refresh_enabled(False)
+    try:
+        yield
+    finally:
+        set_background_refresh_enabled(previous)
 
 
 @pytest.fixture(autouse=True)
