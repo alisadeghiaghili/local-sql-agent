@@ -81,6 +81,45 @@ class TestR2StateReadingNodesAreRejected:
             validate_sql(sql)
         assert exc_info.value.reason == "forbidden_statement"
 
+    @pytest.mark.parametrize("expr,expected_subject", [
+        ("@@version", "@@VERSION"),
+        ("SYSTEM_USER", "CURRENT_USER"),
+        ("SESSION_USER", "SESSION_USER"),
+        ("SCHEMA_NAME(1)", "SCHEMA_NAME"),
+        ("OBJECT_ID('x')", "OBJECT_ID"),
+    ])
+    def test_state_node_subject_names_the_real_construct(
+        self, expr, expected_subject,
+    ):
+        # subject must carry the analyst-facing construct name, not the
+        # internal sqlglot class name (e.g. "PARAMETER", "CURRENTUSER") --
+        # see GuardVerdict.subject's docstring in session/models.py.
+        sql = f"SELECT {expr} AS c FROM [{_ANY_TABLE}]"
+        with pytest.raises(PolicyRejection) as exc_info:
+            validate_sql(sql)
+        exc = exc_info.value
+        assert exc.reason == "forbidden_statement"
+        assert exc.subject == expected_subject
+
+    @pytest.mark.parametrize("expr", [
+        "@@version",
+        "@@spid",
+        "CURRENT_USER",
+        "SYSTEM_USER",
+        "SESSION_USER",
+        "SUSER_NAME()",
+        "SCHEMA_NAME(1)",
+        "OBJECT_ID('x')",
+    ])
+    def test_state_node_subject_never_embeds_a_call_argument(self, expr):
+        # The argument list is cut at the first "(" precisely to keep any
+        # model-generated literal (e.g. the "1" in SCHEMA_NAME(1), the 'x'
+        # in OBJECT_ID('x')) out of the structured subject field.
+        sql = f"SELECT {expr} AS c FROM [{_ANY_TABLE}]"
+        with pytest.raises(PolicyRejection) as exc_info:
+            validate_sql(sql)
+        assert "(" not in (exc_info.value.subject or "")
+
 
 # ---------------------------------------------------------------------------
 # R3 -- Anonymous metadata-function allowlist, with a real table present

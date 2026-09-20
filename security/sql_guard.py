@@ -1514,7 +1514,17 @@ def validate_sql(
         # rephrasing makes reading server/session state an in-bounds
         # question for this application.
         if isinstance(node, _FORBIDDEN_STATE_NODE_TYPES):
-            label = type(node).__name__.upper()
+            # The label is the node's own rendered SQL, not its Python
+            # class name (``type(node).__name__`` would give ``PARAMETER``
+            # for ``@@version`` or ``CURRENTUSER`` for ``SYSTEM_USER``) --
+            # ``GuardVerdict.subject`` is contractually analyst-facing (see
+            # its docstring in session/models.py) and a sqlglot class name
+            # is internal implementation detail, meaningless to an analyst
+            # and never something they typed. The argument list is cut at
+            # the first ``(`` so a model-generated literal argument (e.g.
+            # ``SCHEMA_NAME(1)``, ``OBJECT_ID('x')``) never ends up
+            # embedded in the structured ``subject`` field.
+            label = node.sql(dialect=dialect).split("(", 1)[0].strip().upper()
             raise PolicyRejection(
                 f"Forbidden keyword detected: {label}",
                 reason="forbidden_statement", subject=label,
