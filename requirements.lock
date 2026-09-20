@@ -39,7 +39,7 @@
 alembic==1.19.2
 annotated-doc==0.0.5
 annotated-types==0.6.0
-anyio==4.10.0
+anyio==4.14.2
 certifi==2025.11.12
 charset-normalizer==3.4.4
 click==8.3.3
