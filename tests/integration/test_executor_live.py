@@ -32,9 +32,9 @@ They skip cleanly (not fail) when:
   from here" is an environment fact, not a test failure.
 
 ``tests/integration/conftest.py`` is the explicit, documented opt-out
-from ``tests/conftest.py``'s autouse ``_no_real_database`` guard — see
+from the root ``conftest.py``'s autouse ``_no_real_database`` guard — see
 its docstring for why overriding it there (rather than weakening the
-guard for the whole suite) is safe.
+guard for the whole combined run) is safe.
 """
 
 from __future__ import annotations

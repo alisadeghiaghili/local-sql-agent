@@ -4,8 +4,14 @@
 
 Lives at the repo root (an ancestor of both ``tests/`` and ``eval/tests``,
 the two directories ``setup.cfg``'s ``testpaths`` collects) so its hooks
-apply across a single combined run of both, unlike ``tests/conftest.py``
-(scoped to ``tests/`` only).
+and autouse fixtures apply across a single combined run of both, unlike
+``tests/conftest.py`` (scoped to ``tests/`` only). That distinction is why
+``_no_real_database`` and ``_no_background_dimension_refresh`` below live
+here rather than in ``tests/conftest.py``, where they originally were: a
+combined ``pytest tests/ eval/tests`` run collected ``eval/tests`` with
+neither guard active, and a cold dimension-vocabulary lookup during an
+eval test could spin up a background thread that reached the real
+database. See each fixture's own docstring for the detail.
 
 Phase 4 made ``project_config/`` configurable (``PROJECT_CONFIG_DIR``, see
 ``config.Settings.project_config_dir``) so CI and a fresh clone — which
@@ -39,6 +45,8 @@ something, under both configurations.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Iterator
+from unittest.mock import patch
 
 import time
 
@@ -46,6 +54,47 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _EXAMPLE_CONFIG_DIR = _REPO_ROOT / "project_config.example"
+
+# ---------------------------------------------------------------------------
+# The two trees _no_real_database / _no_background_dimension_refresh guard
+# ---------------------------------------------------------------------------
+# Resolved once, at import time, rather than re-resolved per test: both are
+# fixed, well-known locations relative to this file.
+_GUARDED_TEST_DIRS = (
+    (_REPO_ROOT / "tests").resolve(),
+    (_REPO_ROOT / "eval" / "tests").resolve(),
+)
+
+
+def _item_needs_database_guard(request: pytest.FixtureRequest) -> bool:
+    """True when the collected item lives under ``tests/`` or ``eval/tests/``.
+
+    ``_no_real_database`` and ``_no_background_dimension_refresh`` are
+    autouse at the repository root so they cover a combined
+    ``pytest tests/ eval/tests`` run (see both fixtures' docstrings for why
+    that combined run is the whole point) -- but the root ``conftest.py``
+    also applies to *every other* collection rooted here, including CI's
+    separate ``pytest --doctest-modules ... database ... config.py`` step,
+    which collects doctests straight out of the source tree. Those doctests
+    are not test-suite code: ``database.connection.dispose_engine``'s own
+    doctest legitimately builds and disposes a real (if immediately-closed)
+    engine to demonstrate the function, and unconditionally patching
+    ``create_engine`` out from under it turned a passing doctest into
+    ``AssertionError: This test tried to build a real SQLAlchemy engine``
+    across every supported Python version in CI.
+
+    So both fixtures below check this first and no-op (patch nothing,
+    change no flag) for anything collected outside the two directories the
+    assertion message itself already claims to be about. ``request.node.path``
+    (a ``pathlib.Path`` on the pytest versions this repo supports) is
+    resolved and compared with :meth:`~pathlib.Path.is_relative_to` against
+    both resolved guarded directories -- never by matching the substring
+    ``"tests"`` in the path, which would also match an unrelated module
+    named e.g. ``schema_data/tests_helper.py``, or the repository itself
+    living under a directory literally called ``tests`` on some checkout.
+    """
+    path = request.node.path.resolve()
+    return any(path.is_relative_to(guarded) for guarded in _GUARDED_TEST_DIRS)
 
 _SKIP_REASON = (
     "requires real project_config/ domain data -- PROJECT_CONFIG_DIR is "
@@ -77,6 +126,156 @@ def _running_against_example_config() -> bool:
         return resolved.resolve() == _EXAMPLE_CONFIG_DIR.resolve()
     except OSError:
         return False
+
+
+def _refuse_real_engine(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError(
+        "This test tried to build a real SQLAlchemy engine.\n"
+        "\n"
+        "Nothing under tests/ or eval/tests should open a real database "
+        "connection: the default DB_CONNECTION_URL points at the literal "
+        "host 'server', so the attempt does not fail fast — it blocks on "
+        "DNS and the ODBC login timeout for ~21s per call.\n"
+        "\n"
+        "Patch the seam your test actually needs:\n"
+        "  - patch('api.health.check_health')            for /health routes\n"
+        "  - patch('database.executor.execute_query')    for query execution\n"
+        "  - patch('database.connection.create_engine')  to exercise the "
+        "engine factory itself\n"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_database(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fail fast, and loudly, if a test reaches real engine construction.
+
+    Lives here, at the repository root, rather than in ``tests/conftest.py``
+    where it originally did, because a plain ``pytest`` conftest only
+    applies to the directory tree rooted where it lives: ``tests/conftest.py``
+    covers ``tests/`` but has no effect on ``eval/tests``, which collects
+    into the very same session whenever CI runs ``pytest tests/ eval/tests``.
+    With the fixture scoped to ``tests/`` alone, that combined run executed
+    ``eval/tests`` with no engine guard at all — the one place this was
+    caught was a background dimension-vocabulary refresh thread (see
+    ``_no_background_dimension_refresh`` below) spawned from an eval test,
+    which went on to reach the real ``pyodbc`` driver and dial the
+    configured warehouse host. Moving both fixtures to this file, an
+    ancestor of both ``tests/`` and ``eval/tests``, closes that gap for the
+    whole combined run without changing anything about how either fixture
+    behaves for ``tests/`` on its own.
+
+    Deliberately scoped to ``tests/`` and ``eval/tests`` only (see
+    :func:`_item_needs_database_guard`), and a plain no-op -- no patch, no
+    cache clear -- everywhere else: being autouse at the repository root
+    also makes this fixture apply to CI's separate
+    ``pytest --doctest-modules ... database ... config.py`` step, which
+    collects doctests directly out of the source tree, not out of either
+    test suite. Patching ``database.connection.create_engine`` out from
+    under that step broke ``database.connection.dispose_engine``'s own
+    doctest, which legitimately builds (and immediately disposes) a real
+    engine to demonstrate the function -- the doctest is not a test-suite
+    test and was never meant to be caught by this guard.
+
+    ``get_engine`` is ``lru_cache``-backed, so a real engine built by an
+    earlier test would be reused by later ones without ever calling
+    ``create_engine`` again. The cache is therefore cleared on both sides of
+    every guarded test, which also removes a source of order-dependent
+    behaviour. Left untouched (not cleared) when this fixture is a no-op,
+    so an ungated doctest run never pays for, or is affected by, a cache
+    it never asked for.
+    """
+    if not _item_needs_database_guard(request):
+        yield
+        return
+
+    from database.connection import get_engine
+
+    get_engine.cache_clear()
+    try:
+        with patch(
+            "database.connection.create_engine",
+            side_effect=_refuse_real_engine,
+        ):
+            yield
+    finally:
+        get_engine.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_dimension_refresh(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Disable ``retrieval.dimension_vocabulary``'s background self-healing
+    refresh for every test under ``tests/`` and ``eval/tests``, and restore
+    it afterwards.
+
+    Scoped the same way, and for the same reason, as ``_no_real_database``
+    above (see :func:`_item_needs_database_guard`): being autouse at the
+    repository root also makes this fixture apply to CI's
+    ``pytest --doctest-modules`` step over the source tree, where flipping
+    a module-global flag off and back on around every doctest is at best
+    pointless and at worst racy against whatever else that process is
+    doing. Outside ``tests/`` and ``eval/tests`` this is a plain ``yield``
+    -- the flag is left exactly as the module default (or whatever a prior
+    caller set it to) leaves it.
+
+    Phase 5b's stale-while-revalidate redesign makes a cold or stale
+    dimension-vocabulary lookup trigger a background refresh against the
+    real database by default (see that module's docstring). Left enabled
+    here, an ordinary route test that mentions any of ``Ring``/``Currency``/
+    ``Broker``/``DeliveryPlace``/``Symbol`` -- ordinary questions do -- would
+    spin up a background thread reaching ``database.connection.create_engine``
+    on every single such test, since the vocabulary cache starts cold and
+    nothing in either suite warms it. ``_no_real_database`` above turns that
+    into a caught, logged ``AssertionError`` rather than a ~21s hang, but a
+    background thread quietly doing that on every cold lookup during
+    ordinary tests is still exactly the class of hidden-async-work problem
+    that produced this phase's one real test flake elsewhere (a leaked
+    ``time.sleep`` in a different module's shared thread pool -- see
+    ``tests/test_value_resolver.py``). Disabling the trigger here keeps
+    every dimension-vocabulary read synchronous and silent, in both
+    ``tests/`` and ``eval/tests``: a cold/stale lookup still returns
+    immediately (no candidates, or stale candidates) but launches nothing.
+
+    This fixture originally lived in ``tests/conftest.py``, scoped to
+    ``tests/`` only -- see ``_no_real_database`` above for why that left
+    ``eval/tests`` completely uncovered and why both fixtures now live here
+    instead, at the repository root.
+
+    ``tests/test_dimension_vocabulary.py``'s background-refresh tests
+    re-enable this locally, always with an injected ``execute_fn`` and
+    always inside a ``try/finally`` that restores the disabled state
+    before the test ends.
+
+    Restores whatever value was in effect *before* this fixture ran
+    (``is_background_refresh_enabled()``), not a hardcoded ``True``. A
+    hardcoded restore was the actual, observed cause of a real-database
+    connection attempt during a full-suite run: this fixture and the
+    per-class fixture in ``TestBackgroundRefresh`` both run with function
+    scope, so for a test in that class this one's setup runs first
+    (leaving the flag ``False``), the class fixture's setup then flips it
+    to ``True`` for the test body, and teardown unwinds in the opposite
+    order -- the class fixture's teardown restores ``False`` first, and
+    only THEN does this fixture's own teardown run. A hardcoded
+    ``set_background_refresh_enabled(True)`` here would stomp that back to
+    ``True`` regardless, leaving it wrong for every subsequent test until
+    another ``TestBackgroundRefresh`` test happened to reset it -- a
+    window in which an ordinary test's cold vocabulary lookup would
+    launch a real background thread. Save/restore make each fixture
+    responsible only for the value it actually changed.
+    """
+    if not _item_needs_database_guard(request):
+        yield
+        return
+
+    from retrieval.dimension_vocabulary import (
+        is_background_refresh_enabled, set_background_refresh_enabled,
+    )
+
+    previous = is_background_refresh_enabled()
+    set_background_refresh_enabled(False)
+    try:
+        yield
+    finally:
+        set_background_refresh_enabled(previous)
 
 
 @pytest.fixture(autouse=True)

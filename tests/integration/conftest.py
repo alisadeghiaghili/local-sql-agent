@@ -2,11 +2,11 @@
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Conftest for the opt-in, live-database integration suite.
 
-``tests/conftest.py``'s ``_no_real_database`` autouse fixture refuses any
-real SQLAlchemy engine construction across the whole suite, on purpose —
-see its docstring: the default ``DB_CONNECTION_URL`` resolves the literal
-host ``server``, and a real attempt blocks on DNS plus the ODBC login
-timeout for ~21 seconds.
+The root ``conftest.py``'s ``_no_real_database`` autouse fixture refuses
+any real SQLAlchemy engine construction across the whole combined run
+(``tests/`` and ``eval/tests``), on purpose — see its docstring: the
+default ``DB_CONNECTION_URL`` resolves the literal host ``server``, and a
+real attempt blocks on DNS plus the ODBC login timeout for ~21 seconds.
 
 Tests under ``tests/integration/`` are the one deliberate, documented
 exception: :mod:`tests.integration.test_executor_live` needs a REAL
@@ -37,7 +37,7 @@ import pytest
 def _no_real_database() -> Iterator[None]:
     """Deliberately a no-op — see the module docstring.
 
-    Named identically to ``tests/conftest.py``'s autouse fixture so it
+    Named identically to the root ``conftest.py``'s autouse fixture so it
     shadows it for every test collected under ``tests/integration/``.
     Safe because every test here is independently opt-in and skips
     cleanly (rather than hanging) when no live database is configured.
