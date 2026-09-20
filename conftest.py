@@ -55,6 +55,47 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent
 _EXAMPLE_CONFIG_DIR = _REPO_ROOT / "project_config.example"
 
+# ---------------------------------------------------------------------------
+# The two trees _no_real_database / _no_background_dimension_refresh guard
+# ---------------------------------------------------------------------------
+# Resolved once, at import time, rather than re-resolved per test: both are
+# fixed, well-known locations relative to this file.
+_GUARDED_TEST_DIRS = (
+    (_REPO_ROOT / "tests").resolve(),
+    (_REPO_ROOT / "eval" / "tests").resolve(),
+)
+
+
+def _item_needs_database_guard(request: pytest.FixtureRequest) -> bool:
+    """True when the collected item lives under ``tests/`` or ``eval/tests/``.
+
+    ``_no_real_database`` and ``_no_background_dimension_refresh`` are
+    autouse at the repository root so they cover a combined
+    ``pytest tests/ eval/tests`` run (see both fixtures' docstrings for why
+    that combined run is the whole point) -- but the root ``conftest.py``
+    also applies to *every other* collection rooted here, including CI's
+    separate ``pytest --doctest-modules ... database ... config.py`` step,
+    which collects doctests straight out of the source tree. Those doctests
+    are not test-suite code: ``database.connection.dispose_engine``'s own
+    doctest legitimately builds and disposes a real (if immediately-closed)
+    engine to demonstrate the function, and unconditionally patching
+    ``create_engine`` out from under it turned a passing doctest into
+    ``AssertionError: This test tried to build a real SQLAlchemy engine``
+    across every supported Python version in CI.
+
+    So both fixtures below check this first and no-op (patch nothing,
+    change no flag) for anything collected outside the two directories the
+    assertion message itself already claims to be about. ``request.node.path``
+    (a ``pathlib.Path`` on the pytest versions this repo supports) is
+    resolved and compared with :meth:`~pathlib.Path.is_relative_to` against
+    both resolved guarded directories -- never by matching the substring
+    ``"tests"`` in the path, which would also match an unrelated module
+    named e.g. ``schema_data/tests_helper.py``, or the repository itself
+    living under a directory literally called ``tests`` on some checkout.
+    """
+    path = request.node.path.resolve()
+    return any(path.is_relative_to(guarded) for guarded in _GUARDED_TEST_DIRS)
+
 _SKIP_REASON = (
     "requires real project_config/ domain data -- PROJECT_CONFIG_DIR is "
     "pointing at project_config.example/, which ships anonymised "
@@ -105,7 +146,7 @@ def _refuse_real_engine(*args: Any, **kwargs: Any) -> Any:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_database() -> Iterator[None]:
+def _no_real_database(request: pytest.FixtureRequest) -> Iterator[None]:
     """Fail fast, and loudly, if a test reaches real engine construction.
 
     Lives here, at the repository root, rather than in ``tests/conftest.py``
@@ -123,11 +164,30 @@ def _no_real_database() -> Iterator[None]:
     whole combined run without changing anything about how either fixture
     behaves for ``tests/`` on its own.
 
+    Deliberately scoped to ``tests/`` and ``eval/tests`` only (see
+    :func:`_item_needs_database_guard`), and a plain no-op -- no patch, no
+    cache clear -- everywhere else: being autouse at the repository root
+    also makes this fixture apply to CI's separate
+    ``pytest --doctest-modules ... database ... config.py`` step, which
+    collects doctests directly out of the source tree, not out of either
+    test suite. Patching ``database.connection.create_engine`` out from
+    under that step broke ``database.connection.dispose_engine``'s own
+    doctest, which legitimately builds (and immediately disposes) a real
+    engine to demonstrate the function -- the doctest is not a test-suite
+    test and was never meant to be caught by this guard.
+
     ``get_engine`` is ``lru_cache``-backed, so a real engine built by an
     earlier test would be reused by later ones without ever calling
     ``create_engine`` again. The cache is therefore cleared on both sides of
-    every test, which also removes a source of order-dependent behaviour.
+    every guarded test, which also removes a source of order-dependent
+    behaviour. Left untouched (not cleared) when this fixture is a no-op,
+    so an ungated doctest run never pays for, or is affected by, a cache
+    it never asked for.
     """
+    if not _item_needs_database_guard(request):
+        yield
+        return
+
     from database.connection import get_engine
 
     get_engine.cache_clear()
@@ -142,10 +202,20 @@ def _no_real_database() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _no_background_dimension_refresh() -> Iterator[None]:
+def _no_background_dimension_refresh(request: pytest.FixtureRequest) -> Iterator[None]:
     """Disable ``retrieval.dimension_vocabulary``'s background self-healing
     refresh for every test under ``tests/`` and ``eval/tests``, and restore
     it afterwards.
+
+    Scoped the same way, and for the same reason, as ``_no_real_database``
+    above (see :func:`_item_needs_database_guard`): being autouse at the
+    repository root also makes this fixture apply to CI's
+    ``pytest --doctest-modules`` step over the source tree, where flipping
+    a module-global flag off and back on around every doctest is at best
+    pointless and at worst racy against whatever else that process is
+    doing. Outside ``tests/`` and ``eval/tests`` this is a plain ``yield``
+    -- the flag is left exactly as the module default (or whatever a prior
+    caller set it to) leaves it.
 
     Phase 5b's stale-while-revalidate redesign makes a cold or stale
     dimension-vocabulary lookup trigger a background refresh against the
@@ -192,6 +262,10 @@ def _no_background_dimension_refresh() -> Iterator[None]:
     launch a real background thread. Save/restore make each fixture
     responsible only for the value it actually changed.
     """
+    if not _item_needs_database_guard(request):
+        yield
+        return
+
     from retrieval.dimension_vocabulary import (
         is_background_refresh_enabled, set_background_refresh_enabled,
     )
