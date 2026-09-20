@@ -97,7 +97,10 @@ class GuardVerdict(BaseModel):
     verdict: Literal["allowed", "rejected"] = "allowed"
     rule: str | None = None
     reason: (
-        Literal["denied_column", "forbidden_statement", "unknown_table", "system_catalogue", "other"]
+        Literal[
+            "denied_column", "forbidden_statement", "unknown_table",
+            "system_catalogue", "no_table_reference", "other",
+        ]
         | None
     ) = None
     """Machine-readable refusal category, or ``None`` for an allowed verdict
