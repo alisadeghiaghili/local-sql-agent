@@ -18,10 +18,10 @@ Unlike ``test_executor_live.py`` (SQL Server, genuinely unavailable in
 this environment), SQLite needs no external server -- it ships in the
 Python standard library -- so these tests are **not** opt-in and are not
 marked ``integration``: they run unconditionally, every time this suite
-runs. They still live under ``tests/integration/`` because
-``tests/conftest.py``'s autouse ``_no_real_database`` fixture refuses any
+runs. They still live under ``tests/integration/`` because the root
+``conftest.py``'s autouse ``_no_real_database`` fixture refuses any
 real ``database.connection.create_engine`` call across the rest of the
-suite by design (see that fixture's docstring) -- this package's own
+combined run by design (see that fixture's docstring) -- this package's own
 ``conftest.py`` is the documented, deliberate exception, and these tests
 need it for the same reason ``test_executor_live.py`` does: proving a real
 engine actually works, not a mock of one.
