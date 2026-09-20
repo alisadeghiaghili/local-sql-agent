@@ -175,7 +175,8 @@ as before this phase.
                                      // tests key off it verbatim
     "reason": null,                 // populated on rejection: "denied_column"
                                      // | "forbidden_statement" | "unknown_table"
-                                     // | "system_catalogue" | "other" -- lets
+                                     // | "system_catalogue" | "no_table_reference"
+                                     // | "other" -- lets
                                      // the client pick a targeted next action
                                      // (DESIGN-INVARIANTS.md §8) without
                                      // parsing `rule`'s free text

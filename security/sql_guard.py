@@ -116,6 +116,32 @@ checks the resulting **AST**, not the source text:
   CTE, or an unrecognised source), since "cannot prove it's safe" and
   "unsafe" get the same answer when a column policy is actually in force.
 
+Functions and session variables were, until ADR-001, the one construct
+still governed by a denylist (the ``xp_*``/``sp_*``/
+``_DANGEROUS_FUNCTION_NAMES`` check above) rather than the allowlist model
+the rest of this module committed to — and a table-less query escaped the
+table/column allowlist entirely rather than tripping it, since that
+allowlist has nothing to check when there is no table reference to walk.
+Worse, even a query that *does* reference a real, allowlisted table can
+still smuggle a metadata function — ``SERVERPROPERTY``, ``OBJECT_NAME``,
+``COL_NAME``, ``DB_NAME``, and similar — into its ``SELECT`` list: that
+produces an output column the allowlist was never designed to inspect
+(it is neither a column reference nor a table reference), turning an
+otherwise-innocuous projection into a schema-enumeration or
+server-reconnaissance channel. Three rules close this gap, run at the very
+end of :func:`validate_sql` so they see the whole tree exactly as rules
+1-10 left it: a forbidden state-reading node (``exp.Parameter``,
+``exp.CurrentUser``, ``exp.SessionUser``, ``exp.CurrentSchema``,
+``exp.ObjectId`` — but never ``exp.CurrentTimestamp``, which is ordinary
+``GETDATE()``/``CURRENT_TIMESTAMP`` syntax) is refused wherever it appears
+in the tree; an ``exp.Anonymous`` function call is refused unless its name
+is in the measured-legitimate :data:`_SAFE_ANONYMOUS_FUNCTIONS` allowlist;
+and the tree must contain at least one non-CTE ``exp.Table`` at all. Taken
+together with rules 1-10, the guard now enforces one coherent shape:
+warehouse-reading queries only — allowlisted tables and columns, read
+through ordinary data functions — not merely "no destructive statement, no
+unknown table".
+
 ``INFORMATION_SCHEMA`` / ``sys.*`` access remains blocked (against the
 *target* dialect's own catalogue names — see "Multi-dialect" below, not
 always literally ``INFORMATION_SCHEMA``/``sys``), and a literal ``LIMIT n``
@@ -257,7 +283,7 @@ from security.dialects import get_dialect_profile
 #: (``reason is None``, which no raise site below actually produces).
 _REASONS = frozenset({
     "denied_column", "forbidden_statement", "unknown_table",
-    "system_catalogue", "other",
+    "system_catalogue", "no_table_reference", "other",
 })
 
 
@@ -557,6 +583,44 @@ _ALLOWED_ROOT_TYPES: tuple[type[exp.Expression], ...] = (
 #: :attr:`security.dialects.DialectProfile.extra_dangerous_functions` (see
 #: :func:`_is_dangerous_identifier`) rather than replacing this set.
 _DANGEROUS_FUNCTION_NAMES = frozenset({"OPENROWSET", "OPENQUERY", "OPENDATASOURCE"})
+
+#: The measured legitimate residue of T-SQL functions sqlglot has no
+#: dedicated ``exp.Func`` subclass for and so parses as ``exp.Anonymous`` —
+#: everything else (``SUM``, ``CAST``, ``DATEADD``, ``ROW_NUMBER``, ...)
+#: parses to a typed node this module never needs to name individually.
+#: This set is a projection allowlist, not a danger check: an
+#: ``exp.Anonymous`` whose upper-cased name is not in here is refused by
+#: rule R3 in :func:`validate_sql` regardless of whether it is "dangerous"
+#: by any other measure, because an unrecognised anonymous function is
+#: exactly the shape a metadata/reconnaissance function
+#: (``SERVERPROPERTY``, ``OBJECT_NAME``, ``COL_NAME``, ``DB_NAME``, ...)
+#: takes -- it produces an output column the table/column allowlist above
+#: was never designed to inspect, turning an otherwise-innocuous SELECT
+#: into a schema-enumeration or server-reconnaissance channel even though
+#: it references a real, allowlisted table. Seeded from a standalone
+#: prototype run against the full attack/negative-control catalogue (see
+#: the accompanying design doc); this is the single place to add another
+#: name if production surfaces a legitimate data function sqlglot also
+#: leaves untyped.
+_SAFE_ANONYMOUS_FUNCTIONS = frozenset({
+    "VAR", "VARP", "STDEVP", "STRING_SPLIT", "CHOOSE", "PARSE",
+    "CHECKSUM", "BINARY_CHECKSUM",
+})
+
+#: AST node types that read server/session/connection *state* rather than
+#: warehouse data -- refused unconditionally, anywhere in the tree, by rule
+#: R2 in :func:`validate_sql`. Each of these has its own typed sqlglot node
+#: (unlike the metadata functions rule R3 catches, which fall through to
+#: ``exp.Anonymous``): ``@@version``/``@@spid`` parse as ``exp.Parameter``,
+#: ``CURRENT_USER``/``SESSION_USER`` as ``exp.CurrentUser``/
+#: ``exp.SessionUser``, ``SCHEMA_NAME()`` as ``exp.CurrentSchema``, and
+#: ``OBJECT_ID()`` as ``exp.ObjectId``. Deliberately does NOT include
+#: ``exp.CurrentTimestamp`` -- ``GETDATE()``/``CURRENT_TIMESTAMP`` is
+#: ordinary, legitimate data-query syntax with no server-reconnaissance
+#: value, unlike every other node type in this set.
+_FORBIDDEN_STATE_NODE_TYPES: tuple[type[exp.Expression], ...] = (
+    exp.Parameter, exp.CurrentUser, exp.SessionUser, exp.CurrentSchema, exp.ObjectId,
+)
 
 
 def _is_dangerous_identifier(name: str, dialect: str = _DIALECT) -> bool:
@@ -940,6 +1004,42 @@ def validate_sql(
         is intentionally *not* pragmatic like rule 9: a denied column
         should never slip through just because this module couldn't prove
         which table a reference came from.
+    11. **Forbidden state-reading nodes (ADR-001, run anywhere in the
+        tree)** — ``exp.Parameter`` (``@@version``, ``@@spid``, ...),
+        ``exp.CurrentUser``, ``exp.SessionUser``, ``exp.CurrentSchema``,
+        and ``exp.ObjectId`` are refused regardless of where they appear
+        (projection, ``WHERE``, ``ORDER BY``, a CTE body, a scalar
+        subquery) — these read server/session/connection *state*, not
+        warehouse data, and no rephrasing makes that an in-bounds
+        question. ``exp.CurrentTimestamp`` (``GETDATE()``/
+        ``CURRENT_TIMESTAMP``) is deliberately exempt — legitimate,
+        ordinary data-query syntax with no reconnaissance value.
+    12. **Anonymous function allowlist (ADR-001)** — every ``exp.Anonymous``
+        node's upper-cased name must be one of
+        :data:`_SAFE_ANONYMOUS_FUNCTIONS` (the measured legitimate
+        residue of T-SQL data functions sqlglot has no dedicated
+        ``exp.Func`` subclass for). Everything else parses to a typed
+        ``exp.Func`` and never reaches this check; what falls through as
+        ``exp.Anonymous`` and is not in the allowlist is exactly the shape
+        a metadata/reconnaissance function (``SERVERPROPERTY``,
+        ``OBJECT_NAME``, ``COL_NAME``, ``DB_NAME``, ...) takes — one that
+        produces an output column the table/column allowlist above was
+        never designed to inspect, even against a query that references a
+        real, allowlisted table. The existing ``xp_*``/``sp_*``/
+        :data:`_DANGEROUS_FUNCTION_NAMES` check (rule 5) still fires first
+        for its own specific names; this is the broader allowlist-based
+        catch-all behind it.
+    13. **Table reference required (ADR-001, R1 — checked last)** — the
+        tree must contain at least one non-CTE ``exp.Table``. Rule 8
+        already allowlist-checks every such table as it walks the tree, so
+        this rule does not re-check membership — it only asserts that "a
+        real table exists" at all. A table-less query (``SELECT 1``,
+        ``SELECT * FROM (SELECT 1 AS a) z``) escapes the table allowlist
+        entirely rather than passing it, which rule 8 alone cannot catch
+        since it has nothing to reject. Deliberately checked *after* rules
+        11/12 so a query that is both table-less and reads forbidden state
+        (``SELECT @@version``) is reported as ``forbidden_statement`` (the
+        more specific violation), not ``no_table_reference``.
 
     Parameters
     ----------
@@ -1375,6 +1475,102 @@ def validate_sql(
                     reason="denied_column",
                     subject=exposed_denied[0] if len(exposed_denied) == 1 else None,
                 )
+
+    # -------------------------------------------------------------------
+    # ADR-001 -- the projection-allowlist rule (R1/R2/R3, run last)
+    # -------------------------------------------------------------------
+    # Every rule above this point gates on the query's *shape* (statement
+    # kind) or on tables/columns it references *by name* -- but the table
+    # and column allowlists (rules 8/9) are keyed off ``exp.Table``/
+    # ``exp.Column`` nodes only. A query with no table reference at all
+    # (``SELECT @@version``, ``SELECT 1``) never touches that allowlist in
+    # either direction, and a query that DOES reference a real, allowlisted
+    # table can still smuggle a server/session-state read or a metadata
+    # function (``SERVERPROPERTY``, ``OBJECT_NAME``, ``COL_NAME``, ...) into
+    # its SELECT list -- an output column the allowlist was never designed
+    # to inspect, since it's neither a column reference nor a table
+    # reference. Functions/session-variables were, until this rule, the one
+    # construct still governed by a denylist (the dangerous-function-name
+    # check above) rather than the allowlist model the rest of this module
+    # committed to -- and a denylist is exactly the "guess every bad
+    # spelling" posture this module's own rewrite (see the module
+    # docstring) replaced everywhere else. These three rules close that
+    # gap: the guard now enforces warehouse-reading queries only --
+    # allowlisted tables/columns read through ordinary data functions -- not
+    # merely "no destructive statement, no unknown table".
+    #
+    # R2/R3 run BEFORE R1 so a forbidden construct is reported as
+    # ``forbidden_statement`` rather than ``no_table_reference`` when a
+    # query is guilty of both (``SELECT @@version`` has no table reference
+    # AND reads session state -- it is reported for the state read, the
+    # more specific violation).
+    for node in tree.walk():
+        # R2 -- server/session/connection *state* nodes, anywhere in the
+        # tree (a WHERE clause, an ORDER BY, a CTE body, a scalar
+        # subquery -- not just the projection). Each of these has its own
+        # typed sqlglot node; deliberately excludes exp.CurrentTimestamp,
+        # which is ordinary, legitimate GETDATE()/CURRENT_TIMESTAMP syntax
+        # with no reconnaissance value. This is a PolicyRejection: no
+        # rephrasing makes reading server/session state an in-bounds
+        # question for this application.
+        if isinstance(node, _FORBIDDEN_STATE_NODE_TYPES):
+            # The label is the node's own rendered SQL, not its Python
+            # class name (``type(node).__name__`` would give ``PARAMETER``
+            # for ``@@version`` or ``CURRENTUSER`` for ``SYSTEM_USER``) --
+            # ``GuardVerdict.subject`` is contractually analyst-facing (see
+            # its docstring in session/models.py) and a sqlglot class name
+            # is internal implementation detail, meaningless to an analyst
+            # and never something they typed. The argument list is cut at
+            # the first ``(`` so a model-generated literal argument (e.g.
+            # ``SCHEMA_NAME(1)``, ``OBJECT_ID('x')``) never ends up
+            # embedded in the structured ``subject`` field.
+            label = node.sql(dialect=dialect).split("(", 1)[0].strip().upper()
+            raise PolicyRejection(
+                f"Forbidden keyword detected: {label}",
+                reason="forbidden_statement", subject=label,
+            )
+
+        # R3 -- Anonymous function allowlist. Every T-SQL function
+        # sqlglot gives a dedicated exp.Func subclass to (SUM, CAST,
+        # DATEADD, ROW_NUMBER, ...) never reaches this branch; what's left
+        # as exp.Anonymous is exactly the measured legitimate data-function
+        # residue in _SAFE_ANONYMOUS_FUNCTIONS, or a metadata/
+        # reconnaissance function this rule exists to catch
+        # (SERVERPROPERTY, OBJECT_NAME, COL_NAME, DB_NAME, ...). The
+        # dangerous-function-name / xp_*/sp_* check above already fires
+        # first for its own specific names; this is the broader catch-all
+        # behind it, keyed on an allowlist rather than another denylist.
+        if isinstance(node, exp.Anonymous):
+            name = (node.name or "").upper()
+            if name not in _SAFE_ANONYMOUS_FUNCTIONS:
+                raise PolicyRejection(
+                    f"Forbidden keyword detected: {name or 'ANONYMOUS'}",
+                    reason="forbidden_statement", subject=name or None,
+                )
+
+    # R1 -- table reference required. By this point every non-CTE
+    # exp.Table in the tree has already been allowlist-checked above (rule
+    # 8), so finding at least one is sufficient proof "a real table exists"
+    # -- this rule does not re-check allowlist membership. A query with no
+    # non-CTE table reference at all (SELECT 1, or SELECT * FROM a derived
+    # table with no real source) has escaped the table allowlist entirely
+    # rather than passed it, which is a distinct failure mode from an
+    # unknown table name. CorrectableRejection + is_refusal=True, matching
+    # the unknown_table raise site's shape: naming a real table is a fix a
+    # retry can plausibly make, but the allowlist violation -- not the
+    # SQL's shape -- is why this was rejected.
+    if not any(
+        isinstance(node, exp.Table) and (node.name or "").lower() not in cte_names
+        for node in tree.walk()
+    ):
+        exc = CorrectableRejection(
+            "Forbidden keyword detected: query has no table reference -- "
+            "a warehouse-reading query must select from at least one "
+            "allowlisted table",
+            reason="no_table_reference",
+        )
+        exc.is_refusal = True
+        raise exc
 
 
 def extract_touched_tables(sql: str, dialect: str = _DIALECT) -> list[str]:

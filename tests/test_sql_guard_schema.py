@@ -33,6 +33,8 @@ Run::
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from schema_data.columns import TABLE_COLUMNS
@@ -51,6 +53,46 @@ _ANY_COLUMN = next(iter(TABLE_COLUMNS[_ANY_TABLE]))
 #: which needs two tables, not one.
 _OTHER_TABLE = next(t for t in TABLE_COLUMNS if t != _ANY_TABLE)
 _OTHER_COLUMN = next(iter(TABLE_COLUMNS[_OTHER_TABLE]))
+
+
+def _first_column_present_only_on(second: str, first: str) -> str | None:
+    """The first column of ``second`` that ``first`` does not also have --
+    or None if every column of ``second`` also appears on ``first``."""
+    first_columns = set(TABLE_COLUMNS[first])
+    return next((c for c in TABLE_COLUMNS[second] if c not in first_columns), None)
+
+
+def _pick_join_pair_with_distinguishing_column() -> tuple[str, str, str]:
+    """A (first, second, column) triple where column is on `second` only --
+    needed so a star-over-join test can deny a column that only one side
+    of the join has, proving the union actually covers both tables rather
+    than just the first. Prefers _ANY_TABLE/_OTHER_TABLE, already used
+    throughout this module; only searches every other pair in
+    TABLE_COLUMNS if that particular pair happens to share all of
+    _OTHER_TABLE's columns with _ANY_TABLE."""
+    column = _first_column_present_only_on(_OTHER_TABLE, _ANY_TABLE)
+    if column is not None:
+        return _ANY_TABLE, _OTHER_TABLE, column
+    for first in TABLE_COLUMNS:
+        for second in TABLE_COLUMNS:
+            if second == first:
+                continue
+            column = _first_column_present_only_on(second, first)
+            if column is not None:
+                return first, second, column
+    raise AssertionError(
+        "no two tables in TABLE_COLUMNS have a distinguishing column -- "
+        "the star-over-join test cannot be constructed"
+    )
+
+
+#: Two known tables, and a column that exists on the second but not the
+#: first -- see test_star_over_join_expanded_across_every_table below.
+_STAR_JOIN_FIRST, _STAR_JOIN_SECOND, _STAR_JOIN_DENIED_COLUMN = (
+    _pick_join_pair_with_distinguishing_column()
+)
+_STAR_JOIN_FIRST_COLUMN = next(iter(TABLE_COLUMNS[_STAR_JOIN_FIRST]))
+_STAR_JOIN_SECOND_COLUMN = next(iter(TABLE_COLUMNS[_STAR_JOIN_SECOND]))
 
 
 # ---------------------------------------------------------------------------
@@ -173,17 +215,25 @@ class TestUnknownTableIsRejected:
         """The allowlist is enforced per-table, not just for the first
         table in the query -- a known table joined to an unknown one is
         still refused."""
-        with pytest.raises(ValueError, match="unknown table"):
+        with pytest.raises(ValueError, match="HR_Payroll"):
             validate_sql(
-                "SELECT c.ID FROM [Contract] c JOIN HR_Payroll h ON c.ID = h.ContractID"
+                f"SELECT c.{_ANY_COLUMN} FROM [{_ANY_TABLE}] c "
+                f"JOIN HR_Payroll h ON c.{_ANY_COLUMN} = h.ContractID"
             )
 
     def test_cte_reference_is_not_treated_as_an_unknown_table(self):
         """A CTE is not a real table and must not be checked against
         TABLE_COLUMNS -- this is the one case where a name unresolvable
         against the schema is still allowed, because it isn't a table
-        reference at all."""
-        sql = "WITH totally_made_up AS (SELECT 1 AS n) SELECT * FROM totally_made_up"
+        reference at all. The CTE body references a real, resolvable
+        table (which IS checked and must pass) precisely so the query
+        exercises that discrimination -- a CTE body with no table
+        reference at all would prove nothing about the CTE name being
+        exempt from the allowlist."""
+        sql = (
+            f"WITH totally_made_up AS (SELECT {_ANY_COLUMN} FROM [{_ANY_TABLE}]) "
+            f"SELECT * FROM totally_made_up"
+        )
         validate_sql(sql)  # must not raise
 
 
@@ -336,12 +386,28 @@ class TestStarCannotBypassDeniedColumns:
     def test_star_over_join_expanded_across_every_table(self):
         """A bare '*' with multiple tables in scope expands to the union
         of all of their columns -- a denied column on *either* table must
-        still be caught."""
-        with pytest.raises(ValueError, match="Forbidden keyword"):
-            validate_sql(
-                "SELECT * FROM [Contract] c JOIN [Symbol] s ON c.Symbol_ID = s.ID",
-                denied_columns={"Commodity_PersianName"},
-            )
+        still be caught, including one that exists on the second table of
+        the join but not the first."""
+        sql = (
+            f"SELECT * FROM [{_STAR_JOIN_FIRST}] c JOIN [{_STAR_JOIN_SECOND}] s "
+            f"ON c.{_STAR_JOIN_FIRST_COLUMN} = s.{_STAR_JOIN_SECOND_COLUMN}"
+        )
+        with pytest.raises(
+            ValueError, match=re.compile(re.escape(_STAR_JOIN_DENIED_COLUMN.lower()), re.IGNORECASE)
+        ):
+            validate_sql(sql, denied_columns={_STAR_JOIN_DENIED_COLUMN})
+
+    def test_star_over_join_allowed_without_denylist(self):
+        """Negative control for the test above: the same join, with no
+        denied_columns policy active, must be allowed -- without this, a
+        future change that rejected the join for an unrelated reason would
+        let the test above pass green again for the wrong reason, which is
+        exactly the bug this module fixes elsewhere."""
+        sql = (
+            f"SELECT * FROM [{_STAR_JOIN_FIRST}] c JOIN [{_STAR_JOIN_SECOND}] s "
+            f"ON c.{_STAR_JOIN_FIRST_COLUMN} = s.{_STAR_JOIN_SECOND_COLUMN}"
+        )
+        validate_sql(sql)  # must not raise
 
     def test_star_over_derived_table_refused_when_denylist_active(self):
         """A '*' whose FROM source is a subquery (not a plain table
