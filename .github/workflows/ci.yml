@@ -8,8 +8,8 @@ on:
 
 jobs:
   test:
-    name: "Python ${{ matrix.python-version }}"
-    runs-on: ubuntu-latest
+    name: "${{ matrix.os }} / Python ${{ matrix.python-version }}"
+    runs-on: ${{ matrix.os }}
 
     # A crash during interpreter finalisation reports as a bare exit code
     # 139 with a green test summary printed directly above it -- no
@@ -19,9 +19,24 @@ jobs:
     env:
       PYTHONFAULTHANDLER: "1"
 
+    # Development happens on Windows; every deployment happens on Linux.
+    # Only Linux was ever in this matrix, so "OS-agnostic" was a claim the
+    # code made about itself that CI did not actually check. Running both
+    # here is what turns that claim into something verified rather than
+    # asserted.
+    #
+    # bash as the run-step shell on every OS (rather than the pwsh default
+    # Windows runners otherwise use) keeps every step below a single
+    # script that behaves the same on both, instead of a second dialect
+    # for one leg of the matrix.
+    defaults:
+      run:
+        shell: bash
+
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
@@ -54,8 +69,12 @@ jobs:
       # whatever a real install resolved to. A finding here fails the
       # build deliberately: "known-vulnerable dependency, undetected" is
       # exactly the gap this step exists to close, so it is not allowed
-      # to pass silently.
+      # to pass silently. The lockfile is one tree shared by every leg of
+      # the matrix, not a per-OS resolution, so auditing it once (Linux,
+      # the deployment target) says exactly as much as auditing it six
+      # times would.
       - name: Dependency vulnerability audit (pip-audit)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         run: |
           pip install pip-audit
           pip-audit -r requirements.lock
@@ -92,7 +111,7 @@ jobs:
           retrieval schema_data logs exporters observability eval config.py
 
       - name: Run tests with coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         env:
           PROJECT_CONFIG_DIR: project_config.example
         run: pytest tests/ eval/tests --cov --cov-report=term-missing --cov-report=xml
@@ -107,7 +126,7 @@ jobs:
         run: python -m eval.cli run --golden eval_data.example/golden.jsonl
 
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
