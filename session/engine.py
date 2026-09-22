@@ -239,7 +239,7 @@ def _classify_router_failure(exc: Exception) -> tuple[str, str]:
     cause = exc.__cause__ or exc
     msg = str(cause)
     if msg == "OUT_OF_SCOPE":
-        return "OUT_OF_SCOPE", "This question is outside the Auction domain."
+        return "OUT_OF_SCOPE", "This question is outside the scope of the data this system covers."
     if isinstance(cause, TimeoutError) or "timeout" in msg.lower():
         return "MODEL_TIMEOUT", "The LLM took too long to respond. Please try again."
     # `TurnErrorInfo` has no `detail` field (finding 11) — unlike the v1

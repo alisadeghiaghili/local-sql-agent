@@ -810,7 +810,9 @@ def _safe_generate_sql_only(
         raw, llm_meta = route_result.text or "", route_result.meta
     except ValueError as exc:
         if str(exc) == "OUT_OF_SCOPE":
-            err: NLQError = OutOfScopeError("This question is outside the Auction domain.")
+            err: NLQError = OutOfScopeError(
+                "This question is outside the scope of the data this system covers."
+            )
         else:
             err = InvalidSQLResponseError(
                 f"LLM response could not be parsed into valid SQL: {exc}"
@@ -990,7 +992,9 @@ def _safe_run(
     except ValueError as exc:
         msg = str(exc)
         if msg == "OUT_OF_SCOPE":
-            err: NLQError = OutOfScopeError("This question is outside the Auction domain.")
+            err: NLQError = OutOfScopeError(
+                "This question is outside the scope of the data this system covers."
+            )
         elif getattr(exc, "is_refusal", False):
             # See the identical branch in _safe_generate_sql_only for why
             # this switches on SqlGuardRejection.is_refusal and not a
