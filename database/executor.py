@@ -34,6 +34,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import config as cfg
 from database.connection import get_engine
+from database.errors import classify_database_error
 from security.dialects import get_dialect_profile
 
 logger = logging.getLogger(__name__)
@@ -170,8 +171,18 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
                 # transaction" behaviour note above.
                 transaction.rollback()
     except SQLAlchemyError as exc:
+        # Full raw error (driver message, SQL, bound parameters, host/
+        # instance if the driver put it in the message) goes to the
+        # server log here -- this is the one place that is guaranteed to
+        # run for every execution failure, v1 or v2. `raise ... from exc`
+        # below keeps `exc` attached as `__cause__`, so a caller further up
+        # (session.engine, api.runner) can still call
+        # database.errors.classify_database_error on the *original* error
+        # rather than re-deriving anything from this RuntimeError's own
+        # (already sanitised) text.
         logger.error("SQL execution failed: %s", exc)
-        raise RuntimeError(f"Database error: {exc}") from exc
+        classification = classify_database_error(exc)
+        raise RuntimeError(f"Database error: {classification.client_message}") from exc
 
     df = pd.DataFrame(rows, columns=columns)
     logger.debug("Query returned %d rows, %d columns", len(df), len(df.columns))

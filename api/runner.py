@@ -95,6 +95,7 @@ from api.errors import (
 )
 from api.models import QueryResponse
 from api.query_cache import query_cache
+from database.errors import classify_database_error
 from llm.base import LLMBackend
 from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
 from llm.sql_agent import SQLAgent
@@ -1045,21 +1046,24 @@ def _safe_run(
                 "The language model is currently unreachable. Please try again.",
                 detail=msg,
             )
-        elif "LOCK_TIMEOUT" in msg or "lock timeout" in msg.lower():
-            err = QueryTimeoutError(
-                "Query timed out waiting for database lock.",
-                detail=msg,
-            )
-        elif "Cannot connect" in msg or "connection" in msg.lower():
-            err = DatabaseConnectionError(
-                "Cannot connect to the database.",
-                detail=msg,
-            )
         else:
-            err = QueryExecutionError(
-                f"Database returned an error: {msg}",
-                detail=msg,
-            )
+            # Follow-up to finding 11: the same leak, one layer down, for
+            # a database failure instead of an LLM one -- see
+            # database.errors.classify_database_error's docstring. `detail`
+            # gets the *original* SQLAlchemy error (via `exc.__cause__`,
+            # which database.executor._execute attaches with `raise ...
+            # from exc`) when available, not this RuntimeError's own
+            # already-sanitised text, so an operator reading the log still
+            # gets the full picture -- host, SQL, bound parameters and all.
+            classification = classify_database_error(exc)
+            cause = exc.__cause__
+            detail = str(cause) if cause is not None else msg
+            if classification.code == "QUERY_TIMEOUT":
+                err = QueryTimeoutError(classification.client_message, detail=detail)
+            elif classification.code == "DATABASE_UNAVAILABLE":
+                err = DatabaseConnectionError(classification.client_message, detail=detail)
+            else:
+                err = QueryExecutionError(classification.client_message, detail=detail)
         _carry_exception_meta(exc, err)
         raise err
 
