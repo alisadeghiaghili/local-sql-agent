@@ -48,6 +48,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
+from sqlglot import exp
+
 logger = logging.getLogger(__name__)
 
 #: Schema-qualification styles a dialect can have. ``"schema"`` -- a real
@@ -360,3 +362,64 @@ def sqlglot_dialect_for_backend(backend_name: str) -> str:
             f"Supported backends: {sorted(SQLALCHEMY_BACKEND_TO_SQLGLOT_DIALECT)}."
         )
     return dialect
+
+
+def quote_tsql_identifier(name: str) -> str:
+    """Render *name* as a correctly-escaped, bracket-quoted T-SQL identifier.
+
+    ``retrieval.dimension_vocabulary._prefetch_query`` and
+    ``retrieval.value_resolver._build_query`` both author their SQL as tsql
+    text first (schema/table/column names hand-wrapped in ``[...]``) and
+    only afterwards hand that text to :func:`~security.sql_guard.transpile_sql`
+    for any non-tsql target -- there is no SQLAlchemy engine at that point
+    (unlike ``database.schema_inspector``, which quotes with
+    ``engine.dialect.identifier_preparer.quote()`` because it always has an
+    engine in hand), so this module cannot reuse that fix directly.
+
+    A hand-written ``f"[{name}]"`` is wrong for the same reason a hand-
+    written escaping rule anywhere else in this codebase is wrong: T-SQL
+    requires a literal ``]`` *inside* a bracketed identifier to be doubled
+    (``]]``), and naive wrapping never does that, so a name containing
+    ``]`` produces a bracket expression that terminates early. For a
+    non-tsql target that malformed text raises ``sqlglot.errors.ParseError``
+    when ``transpile_sql`` tries to parse it; for the tsql target it is
+    returned as-is and the malformed identifier reaches the database
+    unescaped. Either way the fix is the same one ``security/sql_guard.py``
+    already leans on elsewhere: let the parser own the escaping instead of
+    re-deriving the rule by hand. ``exp.to_identifier(name,
+    quoted=True).sql(dialect="tsql")`` renders exactly the bracket-doubled
+    form T-SQL requires (verified directly, not assumed from documentation)
+    and sqlglot parses that rendering back to the identifier ``name``
+    unchanged, so it round-trips and transpiles correctly to every other
+    supported dialect.
+
+    Parameters
+    ----------
+    name:
+        A schema, table, or column name -- in every current call site,
+        drawn only from deployment configuration (``schema.yaml`` via
+        ``schema_data.registry``, i.e. ``PREFETCH_COLUMNS``/
+        ``RESOLVABLE_COLUMNS``/``_TABLE_SCHEMAS``), never from a question
+        or any other request-time input.
+
+    Returns
+    -------
+    str
+        *name* wrapped in brackets, tsql text, ready to be embedded in a
+        hand-built tsql string.
+
+    Examples
+    --------
+    An ordinary name renders exactly as the old hand-written
+    ``f"[{name}]"`` would:
+
+    >>> quote_tsql_identifier("Name")
+    '[Name]'
+
+    A name containing ``]`` is doubled, not left to terminate the bracket
+    expression early:
+
+    >>> quote_tsql_identifier("Na]me")
+    '[Na]]me]'
+    """
+    return exp.to_identifier(name, quoted=True).sql(dialect="tsql")

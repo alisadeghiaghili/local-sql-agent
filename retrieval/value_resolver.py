@@ -144,7 +144,7 @@ import pandas as pd
 import config as cfg
 from schema_data.registry import get_resolvable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal, scope_key
-from security.dialects import get_dialect_profile
+from security.dialects import get_dialect_profile, quote_tsql_identifier
 from security.sql_guard import transpile_sql
 from session.models import Clarification
 
@@ -319,13 +319,14 @@ def _build_query(table: str, column: str, dialect: str = "tsql") -> str:
     """
     profile = get_dialect_profile(dialect)
     if profile.schema_qualification == "none":
-        table_ref = f"[{table}]"
+        table_ref = quote_tsql_identifier(table)
     else:
         schema = _TABLE_SCHEMAS[table]
-        table_ref = f"[{schema}].[{table}]"
+        table_ref = f"{quote_tsql_identifier(schema)}.{quote_tsql_identifier(table)}"
+    column_ref = quote_tsql_identifier(column)
     tsql = (
-        f"SELECT DISTINCT TOP (?) [{column}] FROM {table_ref} "
-        f"WHERE [{column}] LIKE ? ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+        f"SELECT DISTINCT TOP (?) {column_ref} FROM {table_ref} "
+        f"WHERE {column_ref} LIKE ? ESCAPE '{_LIKE_ESCAPE_CHAR}'"
     )
     if dialect == "tsql":
         return tsql
