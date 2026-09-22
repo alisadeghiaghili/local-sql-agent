@@ -424,3 +424,258 @@ class TestOldFragileClassificationIsReplaced:
 
         result = classify_database_error(exc)
         assert result.code == "DATABASE_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# Round 2 -- independent verification found the classifier failed OPEN and
+# was shaped only for T-SQL/pyodbc. config.Settings.sql_dialect also
+# supports postgres, mysql and sqlite (security/dialects.py); every case
+# below is from that verification's table.
+# ---------------------------------------------------------------------------
+
+_HOSTMARK = "HOSTMARK"
+_LOGINMARK = "LOGINMARK"
+_IPMARK = "10.0.0.5"
+_PORTMARK = "5432"
+_PARAMVALUE = "PARAMVALUE"
+
+#: Markers planted in the round-2 cases below -- must never reach a client,
+#: whatever dialect or exception shape produced them.
+_ROUND2_MARKERS = [
+    _HOSTMARK, _LOGINMARK, _IPMARK, _PORTMARK,
+    "ODBC Driver", "Microsoft", "SQLExecDirectW", _PARAMVALUE,
+    "[SQL:", "[parameters:", "sqlalche.me",
+]
+
+
+def _assert_none_leaked(text: str, markers: list, context: str) -> None:
+    leaked = [m for m in markers if m.lower() in (text or "").lower()]
+    assert not leaked, f"{context} exposes {leaked!r} to the caller.\n  text: {text!r}"
+
+
+def _wrap(cls, orig, *, statement: str = _STATEMENT, params=(_PARAMVALUE,)):
+    return cls(statement, params, orig)
+
+
+def _mysql_orig(errno: int, message: str) -> Exception:
+    """A MySQL-driver-shaped exception: ``args = (errno, message)`` --
+    MySQL drivers use a numeric code, never a SQLSTATE tuple."""
+    return Exception(errno, message)
+
+
+def _text_orig(message: str) -> Exception:
+    """A driver exception whose ``args`` collapse to a single string --
+    the shape of a psycopg2 error with no ``.pgcode`` (a client-side
+    connect failure, before the server ever assigns one), a sqlite3
+    error, or any exception shape this module has never specifically
+    seen."""
+    return Exception(message)
+
+
+def _pg_orig_with_sqlstate(sqlstate: str, message: str) -> Exception:
+    """A psycopg2/3-shaped exception exposing a real SQLSTATE via
+    ``.pgcode``/``.pgerror`` -- never in ``.args``, unlike pyodbc."""
+    class _PgOrig(Exception):
+        pass
+
+    orig = _PgOrig(message)
+    orig.pgcode = sqlstate
+    orig.pgerror = message
+    return orig
+
+
+class TestFailsClosedAcrossDialects:
+    """Every row the independent verification measured as leaking or
+    misclassified against the round-1 (T-SQL-only) classifier."""
+
+    def test_mysql_access_denied_does_not_leak_login_or_ip(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _mysql_orig(
+            1045, f"Access denied for user '{_LOGINMARK}'@'{_IPMARK}' (using password: YES)"
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "DATABASE_UNAVAILABLE"
+        _assert_none_leaked(result.client_message, _ROUND2_MARKERS, "mysql access-denied message")
+
+    def test_postgres_auth_failure_does_not_leak_host_login_or_port(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _text_orig(
+            f'connection to server at "{_HOSTMARK}" ({_IPMARK}), port {_PORTMARK} failed: '
+            f'FATAL:  password authentication failed for user "{_LOGINMARK}"'
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "DATABASE_UNAVAILABLE"
+        _assert_none_leaked(result.client_message, _ROUND2_MARKERS, "postgres auth-failure message")
+
+    def test_tsql_single_string_tuple_repr_shape_is_still_scrubbed(self):
+        """``.orig.args`` collapsed to ONE string that is itself the repr
+        of a ``(sqlstate, message)`` tuple, instead of a real two-element
+        tuple -- the shape that leaked the whole raw string, brackets and
+        all, before round 2."""
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.ProgrammingError, _text_orig(
+            "('42S22', \"[42S22] [Microsoft][ODBC Driver 17 for SQL Server]"
+            "[SQL Server]Invalid column name 'X'. (207) (SQLExecDirectW)\")"
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        _assert_none_leaked(result.client_message, _ROUND2_MARKERS, "single-string-tuple-repr message")
+        assert "Invalid column name 'X'. (207)" in result.client_message
+
+    def test_real_pyodbc_shape_strips_trailing_odbc_api_name(self):
+        """The trailing ``(SQLExecDirectW)`` ODBC API-call name is
+        implementation noise, not part of the database's own sentence."""
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.ProgrammingError, Exception(
+            "42S22",
+            "[42S22] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
+            "Invalid column name 'X'. (207) (SQLExecDirectW)",
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        _assert_none_leaked(result.client_message, _ROUND2_MARKERS, "pyodbc-shaped message")
+        assert result.client_message == "Invalid column name 'X'. (207)"
+
+    def test_sqlite_database_is_locked_is_unavailable_not_a_statement_error(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _text_orig("database is locked"))
+        result = classify_database_error(exc)
+        assert result.code == "DATABASE_UNAVAILABLE", (
+            "a locked database is a transient availability condition, not "
+            "a bad statement -- the analyst's question was not the problem"
+        )
+
+    def test_sqlite_database_is_busy_is_also_unavailable(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _text_orig("database is busy"))
+        assert classify_database_error(exc).code == "DATABASE_UNAVAILABLE"
+
+    def test_mysql_connection_refused_is_still_correct(self):
+        """Regression guard: this one was already right before round 2."""
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _mysql_orig(
+            2003, f"Can't connect to MySQL server on '{_HOSTMARK}' ({_IPMARK})"
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "DATABASE_UNAVAILABLE"
+        _assert_none_leaked(result.client_message, _ROUND2_MARKERS, "mysql connection-refused message")
+
+    def test_sqlite_no_such_table_stays_a_recognised_statement_error(self):
+        """Regression guard: this one was already right before round 2."""
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _text_orig("no such table: missing_table"))
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        assert "no such table: missing_table" in result.client_message
+
+    def test_postgres_statement_error_keeps_only_the_first_line(self):
+        """Regression guard: this one was already right before round 2 --
+        proven here against the multi-line LINE/caret shape a real
+        psycopg2 ``ProgrammingError.pgerror`` carries."""
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.ProgrammingError, _text_orig(
+            'ERROR:  column "foo" does not exist\n'
+            "LINE 1: SELECT foo FROM bar\n"
+            "               ^\n"
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        assert result.client_message == 'column "foo" does not exist'
+        assert "LINE 1" not in result.client_message
+
+
+class TestOtherDialectCodesFromThePlan:
+    """The specific structured codes requested: postgres via ``.pgcode``
+    (SQLSTATE classes 08/28, admin shutdown 57P0x, query-cancel timeout
+    57014), and MySQL's remaining numeric codes."""
+
+    @pytest.mark.parametrize("sqlstate", ["08006", "08001", "28P01", "28000"])
+    def test_postgres_connection_and_auth_sqlstates_are_unavailable(self, sqlstate):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _pg_orig_with_sqlstate(
+            sqlstate, f'connection to server at "{_HOSTMARK}" ({_IPMARK}), port {_PORTMARK} failed'
+        ))
+        result = classify_database_error(exc)
+        assert result.code == "DATABASE_UNAVAILABLE"
+        _assert_none_leaked(result.client_message, _ROUND2_MARKERS, f"postgres {sqlstate} message")
+
+    def test_postgres_admin_shutdown_is_unavailable(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _pg_orig_with_sqlstate(
+            "57P01", "terminating connection due to administrator command"
+        ))
+        assert classify_database_error(exc).code == "DATABASE_UNAVAILABLE"
+
+    def test_postgres_query_cancelled_by_statement_timeout_is_query_timeout(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _pg_orig_with_sqlstate(
+            "57014", "canceling statement due to statement timeout"
+        ))
+        assert classify_database_error(exc).code == "QUERY_TIMEOUT"
+
+    @pytest.mark.parametrize("errno", [2002, 2005, 2006, 2013, 1044, 1049])
+    def test_mysql_connection_family_errnos_are_unavailable(self, errno):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _mysql_orig(errno, f"connection problem near {_HOSTMARK}"))
+        assert classify_database_error(exc).code == "DATABASE_UNAVAILABLE"
+
+    @pytest.mark.parametrize("errno", [1205, 3024])
+    def test_mysql_timeout_errnos_are_query_timeout(self, errno):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.OperationalError, _mysql_orig(errno, "Lock wait timeout exceeded"))
+        assert classify_database_error(exc).code == "QUERY_TIMEOUT"
+
+
+class TestTheSafetyNet:
+    """Point 4: after scrubbing, a client message that still looks
+    identifying is replaced by the generic message -- even for a
+    statement-family exception TYPE (positively recognised) whose TEXT
+    happens to still name infrastructure (a shape nobody anticipated)."""
+
+    def test_an_unrecognised_shape_containing_an_ip_gets_the_generic_message(self):
+        from database.errors import classify_database_error
+
+        exc = _wrap(sa_exc.ProgrammingError, _text_orig(f"unexpected failure talking to {_IPMARK}"))
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        assert result.client_message == "The database rejected the query."
+        _assert_none_leaked(result.client_message, [_IPMARK], "safety-net message")
+
+    def test_the_safety_net_catches_ip_port_user_at_host_and_infrastructure_words(self):
+        from database.errors import _apply_safety_net
+
+        cases = [
+            "failure near port 5432",
+            f"'{_LOGINMARK}'@'{_HOSTMARK}'",
+            f"{_LOGINMARK}@{_HOSTMARK}",
+            "connection refused by server at somewhere",
+            "the Microsoft driver reported an issue",
+            "an ODBC problem occurred",
+            "login rejected",
+            f"talking to {_IPMARK}",
+        ]
+        for text in cases:
+            result = _apply_safety_net(text)
+            assert result.client_message == "The database rejected the query.", (
+                f"safety net let {text!r} through unchanged"
+            )
+
+    def test_an_ordinary_statement_message_passes_the_safety_net_unchanged(self):
+        from database.errors import _apply_safety_net
+
+        result = _apply_safety_net("Invalid column name 'X'. (207)")
+        assert result.client_message == "Invalid column name 'X'. (207)"
