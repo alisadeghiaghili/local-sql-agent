@@ -93,6 +93,20 @@
           </div>
           <p class="um-hint" data-i18n="apiKeyHint" hidden></p>
         </div>
+        <!-- ADR-004 part 1: the minimal analyst-facing status read for
+             "Request access" -- the account/menu area already holds the
+             per-analyst chrome (theme, language, API key), so this reuses
+             that surface instead of adding a new panel. Populated by
+             main.js's refreshAccessRequestsList() when the menu opens
+             (live mode only); every row's column/status/reason is
+             server-supplied and untrusted -- rendered via textContent
+             only, never innerHTML. -->
+        <div class="um-section" id="access-requests-section">
+          <div class="um-label" data-i18n="accessRequests">درخواست‌های دسترسی</div>
+          <div id="access-requests-list" class="access-requests-list" aria-live="polite">
+            <p class="access-requests-empty" data-i18n="accessRequestsEmpty">درخواستی ثبت نشده است.</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>

@@ -65,6 +65,7 @@
   <a href="#sec-health">بررسی‌ها</a>
   <a href="#sec-stats">ممیزی</a>
   <a href="#sec-feedback">بازخورد</a>
+  <a href="#sec-access-requests">درخواست دسترسی</a>
   <a href="#sec-cache">کش</a>
   <a href="#sec-config">پیکربندی</a>
   <a href="#sec-keys">کلیدها</a>
@@ -172,6 +173,24 @@
     </div>
     <div id="feedback-stats-body"></div>
     <div id="feedback-body">
+      <p class="admin-loading">در حال بارگذاری…</p>
+    </div>
+  </section>
+
+  <!-- ADR-004 part 1: "Request access" from a denied-column guard
+       rejection. SECURITY only, for both listing and acting (owner
+       decision) -- unlike the feedback queue above, which either admin
+       role may triage. An operations-only key sees the same capability-
+       gap message web/admin/main.js already renders for the keys/roles
+       section below, never the page-level "not an admin key" banner. -->
+  <section class="admin-section" id="sec-access-requests" aria-labelledby="access-requests-heading">
+    <div class="admin-section-head">
+      <h2 id="access-requests-heading">درخواست‌های دسترسی (security)</h2>
+      <button class="admin-btn-refresh" data-refresh="accessRequests" type="button" aria-label="بروزرسانی درخواست‌های دسترسی">
+        <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+      </button>
+    </div>
+    <div id="accessRequests-body">
       <p class="admin-loading">در حال بارگذاری…</p>
     </div>
   </section>

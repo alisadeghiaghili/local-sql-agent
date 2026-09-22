@@ -613,12 +613,19 @@
  * differ from its neighbours -- it has to be distinguishable at a glance
  * from "غیرفعال کردن", which sits directly beside it and means something
  * recoverable. */
-.key-actions button.key-danger {
+.key-actions button.key-danger,
+/* ADR-004 part 1: the "Deny" button in the access-request queue (§sec-
+   access-requests) reuses this same critical styling -- it is not the
+   irreversible key-revoke action above, but it is still the one control
+   in that row that closes a request out with a negative outcome, and
+   should read distinctly from "تأیید" beside it the same way. */
+.admin-feedback-actions button.key-danger {
   border-color: var(--status-critical);
   color: var(--status-critical);
 }
 
-.key-actions button.key-danger:hover:not(:disabled) {
+.key-actions button.key-danger:hover:not(:disabled),
+.admin-feedback-actions button.key-danger:hover:not(:disabled) {
   background: var(--status-critical);
   color: #fff;
 }

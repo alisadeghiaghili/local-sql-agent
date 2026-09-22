@@ -120,6 +120,36 @@ export class AdminApi {
     });
   }
 
+  /* ── ADR-004 part 1: "Request access" from a denied-column guard
+   * rejection -- SECURITY only, both listing and acting (owner decision;
+   * unlike the feedback triage queue above, which either admin role may
+   * read/resolve). Approve goes through the existing ACL path
+   * (appdb.key_store.update_denied_columns) server-side; this module
+   * sends nothing but the decision. */
+
+  /** GET /admin/access-requests?status=... -- the queue, joined to each
+   * request's audit record (the question only -- never the SQL or guard
+   * detail the feedback queue's own join carries, since there is nothing
+   * to triage here beyond "should this column open up"). */
+  async accessRequestsList(status) {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    return this._get(`/admin/access-requests${qs}`);
+  }
+
+  /** POST /admin/access-requests/{id}/approve -- widens denied_columns on
+   * every LIVE key the requester holds, through the server's existing ACL
+   * path. Returns the resolved request row. */
+  async approveAccessRequest(requestId) {
+    return this._post(`/admin/access-requests/${encodeURIComponent(requestId)}/approve`, {});
+  }
+
+  /** POST /admin/access-requests/{id}/deny -- reason is required
+   * non-blank server-side too; this call just forwards whatever the panel
+   * collected. */
+  async denyAccessRequest(requestId, reason) {
+    return this._post(`/admin/access-requests/${encodeURIComponent(requestId)}/deny`, { reason });
+  }
+
   /* ── Admin panel phase 6: the operational tier -- maintenance mode,
    * schema drift, vocabulary freshness, per-analyst usage, cache
    * controls, failed-auth visibility. Every write below (maintenance
