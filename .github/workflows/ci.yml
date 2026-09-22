@@ -23,9 +23,8 @@ jobs:
     # Only Linux was ever in this matrix, so "OS-agnostic" was a claim the
     # code made about itself that CI did not actually check. Running both
     # here is what turns that claim into something verified rather than
-    # asserted. macOS joined for the same reason: some contributors and
-    # evaluators do their work on Macs, and it was the last major OS this
-    # matrix left unverified.
+    # asserted. macOS joined for the same reason: it was the last major OS
+    # this matrix left unverified.
     #
     # bash as the run-step shell on every OS (rather than the pwsh default
     # Windows runners otherwise use) keeps every step below a single
