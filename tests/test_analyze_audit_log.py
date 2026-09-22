@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.analyze_audit_log import (
+    _STATEMENT_NOT_RECORDED,
     _classify_error_code,
     _join_bucket,
     _percentile,
@@ -29,6 +30,7 @@ from scripts.analyze_audit_log import (
     correction_rounds,
     failure_taxonomy,
     finish_reason_distribution,
+    guard_rejection_report,
     iter_records,
     latency_report,
     llm_meta_summary,
@@ -36,6 +38,7 @@ from scripts.analyze_audit_log import (
     per_principal_usage,
     record_rate_limit_hit,
     records_by_model,
+    render_text,
     resolve_log_paths,
     resolve_rate_limit_hit_paths,
     sql_shape_clusters,
@@ -334,6 +337,152 @@ class TestSqlShapeClusters:
         clusters = sql_shape_clusters(records, top_n=2)
         assert len(clusters) == 2
 
+    def test_unaffected_by_guard_rejection_work_when_no_rejections_present(self):
+        """The guard-rejection section is a purely additive sibling --
+        executed-SQL shape clustering must produce byte-identical output
+        for a fixture with no rejections in it at all."""
+        records = [
+            _rec(guard={"verdict": "allowed", "tables_touched": ["Customer"]},
+                  generated_sql="SELECT * FROM Customer"),
+            _rec(guard={"verdict": "allowed", "tables_touched": ["Customer", "Contract"]},
+                  generated_sql="SELECT * FROM Customer JOIN Contract ON 1=1"),
+        ]
+        assert sql_shape_clusters(records) == [
+            {"tables_touched": ["Customer"], "join_count": "0", "count": 1},
+            {"tables_touched": ["Contract", "Customer"], "join_count": "1", "count": 1},
+        ]
+
+
+# ---------------------------------------------------------------------------
+# guard_rejection_report
+# ---------------------------------------------------------------------------
+
+class TestGuardRejectionReport:
+    def test_rejections_grouped_by_reason_with_shape_shown(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table",
+                          "rejected_sql": "SELECT * FROM Ghost"}),
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table",
+                          "rejected_sql": "SELECT * FROM Ghost"}),
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "rejected_sql": "SELECT NationalID FROM Customer"}),
+        ]
+        result = guard_rejection_report(records)
+
+        assert result["total_rejections"] == 3
+        assert result["by_reason"] == {"unknown_table": 2, "denied_column": 1}
+
+        shapes = result["refused_statement_shapes_by_reason"]
+        # "Ghost" is not a known table -- unresolvable, so it shows as no
+        # tables touched, but the shape (and its count) is still visible.
+        assert shapes["unknown_table"] == [
+            {"tables_touched": [], "join_count": "0", "count": 2},
+        ]
+        assert shapes["denied_column"] == [
+            {"tables_touched": ["Customer"], "join_count": "0", "count": 1},
+        ]
+
+    def test_allowed_records_are_not_counted(self):
+        records = [_rec(guard={"verdict": "allowed", "tables_touched": ["Customer"]})]
+        result = guard_rejection_report(records)
+        assert result["total_rejections"] == 0
+        assert result["by_reason"] == {}
+
+    def test_missing_reason_falls_into_its_own_bucket(self):
+        records = [_rec(guard={"verdict": "rejected", "rejected_sql": "SELECT 1"})]
+        result = guard_rejection_report(records)
+        assert result["by_reason"] == {"(reason not recorded)": 1}
+
+    def test_pre_105_record_without_rejected_sql_counted_explicitly(self):
+        """A guard block written before PR #105 has no ``rejected_sql`` key
+        at all -- it must be counted, not skipped."""
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement"}),
+        ]
+        result = guard_rejection_report(records)
+
+        assert result["total_rejections"] == 1
+        assert result["statement_not_recorded_total"] == 1
+        assert result["statement_not_recorded_by_reason"] == {"forbidden_statement": 1}
+        assert result["refused_statement_shapes_by_reason"] == {}
+
+        # The report's text rendering says plainly how many there were,
+        # using the same label this module reports it under.
+        report = build_report(records)
+        text = render_text(report)
+        assert f"{_STATEMENT_NOT_RECORDED}" in text
+        assert "1" in text.split(_STATEMENT_NOT_RECORDED, 1)[1].splitlines()[0]
+
+    def test_explicit_none_rejected_sql_also_counted_as_not_recorded(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "other", "rejected_sql": None}),
+        ]
+        result = guard_rejection_report(records)
+        assert result["statement_not_recorded_by_reason"] == {"other": 1}
+
+    def test_table_less_refusal_is_visible(self):
+        """ADR-001 excludes an empty ``tables_touched`` from
+        ``sql_shape_clusters`` -- that exclusion must NOT apply here, or a
+        ``no_table_reference`` rejection (which never touches a table by
+        definition) would vanish from the report entirely."""
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "no_table_reference",
+                          "rejected_sql": "SELECT 1"}),
+        ]
+        result = guard_rejection_report(records)
+        shapes = result["refused_statement_shapes_by_reason"]["no_table_reference"]
+        assert shapes == [{"tables_touched": [], "join_count": "0", "count": 1}]
+
+    def test_state_reading_construct_is_visible_too(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement",
+                          "rejected_sql": "SELECT @@version"}),
+        ]
+        result = guard_rejection_report(records)
+        shapes = result["refused_statement_shapes_by_reason"]["forbidden_statement"]
+        assert shapes == [{"tables_touched": [], "join_count": "0", "count": 1}]
+
+    def test_malformed_guard_block_is_skipped_not_raised(self):
+        records = [_rec(guard="not-a-dict"), _rec(guard=None)]
+        result = guard_rejection_report(records)
+        assert result["total_rejections"] == 0
+
+    def test_top_n_caps_shapes_per_reason(self):
+        # Five distinct known tables -> five distinct shapes for the same
+        # reason, so top_n has something real to cap.
+        tables = ["Customer", "Date", "OrderStatus", "Broker", "Currency"]
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "rejected_sql": f"SELECT * FROM {t}"})
+            for t in tables
+        ]
+        result = guard_rejection_report(records, top_n=2)
+        assert len(result["refused_statement_shapes_by_reason"]["denied_column"]) == 2
+
+    def test_malicious_refused_statement_does_not_corrupt_output(self):
+        """A refused statement is untrusted model output -- a comma, a
+        quote, an embedded newline, or a leading '=' must never corrupt the
+        report's JSON or text rendering, and the raw text must never leak
+        into either (this section only ever reports shape, never text)."""
+        nasty = '=1+1; DROP TABLE X-- "quoted", value\nSELECT * FROM Customer'
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement",
+                          "rejected_sql": nasty}),
+        ]
+        report = build_report(records)
+
+        serialised = json.dumps(report, ensure_ascii=False)
+        parsed = json.loads(serialised)  # must round-trip without error
+        assert parsed["guard_rejections"]["total_rejections"] == 1
+        assert nasty not in serialised
+
+        text = render_text(report)
+        assert "Guard rejections" in text
+        assert nasty not in text
+        # The nasty text must not have split the rendering across
+        # unexpected lines -- the report still ends with its footer rule.
+        assert text.rstrip().endswith("=" * 60)
+
 
 # ---------------------------------------------------------------------------
 # correction_rounds
@@ -442,6 +591,27 @@ class TestBuildReportModes:
         report = build_report(records, include_examples=False)
         serialised = json.dumps(report, ensure_ascii=False)
         assert secret not in serialised
+
+    def test_report_never_leaks_rejected_sql_text_in_either_mode(self):
+        """Unlike ``question``/``error_message``, refused SQL text is never
+        added even under ``--include-examples`` -- only its shape."""
+        secret_sql = "SELECT SecretCustomerName FROM Customer WHERE Id = 42"
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "rejected_sql": secret_sql}),
+        ]
+        for include_examples in (False, True):
+            report = build_report(records, include_examples=include_examples)
+            serialised = json.dumps(report, ensure_ascii=False)
+            assert secret_sql not in serialised
+
+    def test_guard_rejections_section_present_and_unconditional(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table",
+                          "rejected_sql": "SELECT * FROM Ghost"}),
+        ]
+        report = build_report(records)
+        assert report["guard_rejections"]["total_rejections"] == 1
 
     def test_record_count_present(self):
         report = build_report([_rec(), _rec()])
