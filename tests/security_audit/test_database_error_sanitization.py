@@ -679,3 +679,86 @@ class TestTheSafetyNet:
 
         result = _apply_safety_net("Invalid column name 'X'. (207)")
         assert result.client_message == "Invalid column name 'X'. (207)"
+
+
+# ---------------------------------------------------------------------------
+# Round 3 -- a second independent pass found one gap round 2 left OPEN on
+# purpose: `_classify_by_text`, the fallback for an exception with no
+# `SQLAlchemyError` anywhere on it, was documented as "deliberately
+# narrow ... real production failures always carry the original
+# SQLAlchemyError as __cause__." That premise was wrong:
+# session/engine.py's `except Exception` around each execute() call hands
+# ANY exception to classify_database_error, and database.executor._execute
+# only wraps SQLAlchemyError -- a raw OSError/socket error (e.g. from the
+# driver-level-timeout setattr on the raw DBAPI connection, which operates
+# outside SQLAlchemy's own wrapping) reaches the fallback unwrapped, in
+# production, not just from a hand-built test double.
+# ---------------------------------------------------------------------------
+
+def _run_v2_with_execute_fn(execute_fn) -> tuple[str, str]:
+    """Like ``_run_v2``, but takes a raw ``execute_fn`` directly instead of
+    a SQLAlchemy exception routed through the mocked engine -- this is what
+    lets a case carry NO SQLAlchemyError anywhere, proving
+    ``_classify_by_text`` (not ``_classify_sqlalchemy_error``) is what's
+    under test, reached the same way session.engine.TurnEngine reaches it
+    in production."""
+    from llm.providers import MockBackend
+    from llm.router import LLMRouter
+    from session.engine import TurnEngine
+    from session.store import SessionStore
+
+    store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+    record = store.create()
+    engine = TurnEngine(
+        router=LLMRouter(default_chain=[MockBackend(response=_VALID_SQL)]),
+        execute_fn=execute_fn,
+    )
+    turn = engine.ask(record, "مشتریان را نشان بده", "You are a T-SQL expert.")
+    assert turn.error is not None, "expected the turn to carry an error"
+    return turn.error.code, turn.error.message
+
+
+class TestTheTextFallbackFailsClosedToo:
+    def test_unrecognised_availability_wording_does_not_leak_a_hostname(self):
+        from database.errors import classify_database_error
+
+        exc = RuntimeError(f"Database error: server {_HOSTMARK}.corp unreachable")
+        result = classify_database_error(exc)
+        assert result.code == "DATABASE_UNAVAILABLE"
+        _assert_none_leaked(result.client_message, [_HOSTMARK], "unreachable-server fallback message")
+
+    def test_a_raw_oserror_through_the_real_engine_path_does_not_leak_a_hostname(self):
+        """Proves production reachability: no SQLAlchemyError anywhere on
+        this exception, driven through the real
+        session.engine.TurnEngine.ask() -- exactly the shape a real
+        getaddrinfo failure from the raw pyodbc connection takes."""
+        def _raise_oserror(sql):
+            raise OSError(f"[Errno 11001] getaddrinfo failed for {_HOSTMARK}")
+
+        code, message = _run_v2_with_execute_fn(_raise_oserror)
+        assert code == "DATABASE_UNAVAILABLE"
+        _assert_none_leaked(message, [_HOSTMARK], "OSError-through-engine TurnErrorInfo.message")
+
+    def test_a_raw_dbapi_style_statement_sentence_survives(self):
+        """A real statement-error sentence, from an exception with no
+        SQLAlchemyError anywhere on it, still reaches the client -- the
+        allowlist keeps this path useful, not just safe."""
+        from database.errors import classify_database_error
+
+        exc = RuntimeError("Invalid column name 'X'. (207)")
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        assert result.client_message == "Invalid column name 'X'. (207)"
+
+    def test_a_non_database_exception_gets_the_generic_message_not_its_own_text(self):
+        """A KeyError/ValueError from unrelated code (e.g. pandas building
+        the result frame) is not database text at all and must not be
+        echoed to the client on the strength of "we don't recognise it as
+        anything else.\""""
+        from database.errors import classify_database_error
+
+        exc = KeyError("secret_internal_key")
+        result = classify_database_error(exc)
+        assert result.code == "QUERY_EXECUTION_ERROR"
+        assert result.client_message == "The database rejected the query."
+        _assert_none_leaked(result.client_message, ["secret_internal_key"], "KeyError fallback message")

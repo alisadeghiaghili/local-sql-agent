@@ -41,6 +41,23 @@ whatever text *is* about to be shown for an IP address, a port number, a
 wording, and downgrades to the generic message if any of it is still
 there — so a scrubbing gap degrades to "less specific," never to "leaks."
 
+Round 3 (a second independent pass): round 2 left one path still failing
+open on purpose -- ``_classify_by_text``, the fallback for an exception
+with no ``SQLAlchemyError`` anywhere on it, documented at the time as
+"deliberately narrow" because "real production failures always carry the
+original SQLAlchemyError as ``__cause__``." That premise was wrong.
+``session/engine.py``'s ``except Exception`` around each ``execute()``
+call hands *any* exception to :func:`classify_database_error`, and
+``database.executor._execute`` only wraps :class:`SQLAlchemyError` — a raw
+``OSError``/socket error (e.g. ``getaddrinfo failed``) from the
+driver-level-timeout ``setattr`` on the raw DBAPI connection (outside
+SQLAlchemy's own wrapping) reaches the fallback unwrapped, in production.
+``_classify_by_text`` now fails closed the same way the SQLAlchemy-shaped
+path does: an explicit allowlist of statement-error phrasings this module
+already relies on elsewhere is the only text it may show; availability/
+timeout wording is classified accordingly; anything else — including a
+non-database exception like ``KeyError`` — gets the generic message.
+
 This module is the **one place** that decides, from the exception a query
 execution raised: whether the failure is a connectivity/availability
 problem the analyst cannot fix by changing their question
@@ -345,26 +362,68 @@ def _classify_sqlalchemy_error(exc: SQLAlchemyError) -> DatabaseErrorClassificat
     return DatabaseErrorClassification("DATABASE_UNAVAILABLE", DATABASE_UNAVAILABLE_MESSAGE)
 
 
+#: Round 3: this fallback is NOT limited to hand-built test doubles --
+#: session.engine.TurnEngine's `except Exception` (session/engine.py, the
+#: execute() call sites) hands ANY exception to classify_database_error,
+#: and database.executor._execute only wraps SQLAlchemyError. A raw
+#: OSError/socket error (e.g. "getaddrinfo failed") from the driver-level
+#: timeout setattr on the raw DBAPI connection (database/executor.py,
+#: around the `setattr(raw_conn, profile.driver_level_timeout_attr, ...)`
+#: line -- that call operates outside SQLAlchemy's own wrapping) reaches
+#: here unwrapped, in production, not just in a test. So this function
+#: fails closed exactly like `_classify_sqlalchemy_error` does: text is
+#: shown to the client only when it POSITIVELY matches a known
+#: statement-error sentence, never by default.
+_FALLBACK_TIMEOUT_KEYWORDS = ("timed out", "timeout")
+_FALLBACK_AVAILABILITY_KEYWORDS = (
+    "cannot connect", "connection", "unreachable", "refused", "getaddrinfo",
+    "network", "could not connect", "connection reset", "connection closed",
+    "connection lost", "login", "password",
+)
+#: An explicit allowlist of statement-error phrasings this module already
+#: relies on elsewhere (tsql/mssql, postgres, sqlite) -- the only text this
+#: fallback is allowed to show the client, and even then only after
+#: scrubbing and the safety net.
+_FALLBACK_STATEMENT_ALLOWLIST = (
+    "invalid column name",
+    "invalid object name",
+    "incorrect syntax near",
+    "conversion failed",
+    "divide by zero",
+    "arithmetic overflow",
+    "does not exist",  # postgres: relation/column "x" does not exist
+    *_SQLITE_STATEMENT_KEYWORDS,
+)
+
+
 def _classify_by_text(message: str) -> DatabaseErrorClassification:
     """Fallback for an exception with no :class:`SQLAlchemyError` anywhere
-    on it (bare ``RuntimeError``, hand-built by a caller/test rather than
-    raised by ``database.executor``). Kept deliberately narrow -- real
-    production failures always carry the original ``SQLAlchemyError`` as
-    ``__cause__`` (``database.executor._execute`` sets it via ``raise ...
-    from exc``) and are classified precisely by
-    :func:`_classify_sqlalchemy_error` instead. Still routes through the
-    same scrub + safety net as that function, for defence in depth.
+    on it: a raw ``OSError``/socket error reaching
+    ``session.engine.TurnEngine``'s ``except Exception`` unwrapped (see
+    the module-level note above), or a hand-built ``RuntimeError`` in a
+    test. Real production ``SQLAlchemyError`` failures are classified
+    precisely by :func:`_classify_sqlalchemy_error` instead; this function
+    fails closed the same way that one does -- an unrecognised shape
+    degrades to the generic statement message, never to ``str(exc))``.
     """
     lowered = message.lower()
-    if "lock_timeout" in lowered or "lock timeout" in lowered or "timeout" in lowered:
+
+    if any(kw in lowered for kw in _FALLBACK_TIMEOUT_KEYWORDS):
         return DatabaseErrorClassification("QUERY_TIMEOUT", QUERY_TIMEOUT_MESSAGE)
-    if "cannot connect" in lowered or "connection" in lowered:
+    if any(kw in lowered for kw in _FALLBACK_AVAILABILITY_KEYWORDS):
         return DatabaseErrorClassification("DATABASE_UNAVAILABLE", DATABASE_UNAVAILABLE_MESSAGE)
 
-    stripped = message
-    if stripped.lower().startswith("database error:"):
-        stripped = stripped.split(":", 1)[1].strip()
-    return _statement_result(stripped)
+    if any(kw in lowered for kw in _FALLBACK_STATEMENT_ALLOWLIST):
+        stripped = message
+        if stripped.lower().startswith("database error:"):
+            stripped = stripped.split(":", 1)[1].strip()
+        return _statement_result(stripped)
+
+    # Fail closed: nothing positively recognised this as a statement error,
+    # and no availability/timeout wording matched either -- e.g. a
+    # KeyError/ValueError from unrelated code, or any exception shape this
+    # module has never seen. Never fall back to showing `message` itself.
+    return DatabaseErrorClassification("QUERY_EXECUTION_ERROR", _GENERIC_STATEMENT_MESSAGE)
 
 
 def classify_database_error(exc: BaseException) -> DatabaseErrorClassification:
