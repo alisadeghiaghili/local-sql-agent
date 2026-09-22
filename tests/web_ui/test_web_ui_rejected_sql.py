@@ -1,36 +1,33 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""Regression test for SQL display formatting and syntax highlighting.
+"""Regression test for the "See the SQL" guard-rejection action.
 
-``web/js/sql-display.js`` owns the generated-SQL look; ``turn.js`` calls it:
-
-* display = formatSqlForDisplay(Turn.sql_display || Turn.sql). Multi-line
-  strings (backend ``pretty_sql``, scenario SQL) are left alone; one-liners
-  go through the vendored ``sql-formatter`` (T-SQL, upper keywords, tab 2);
-* highlighting = Prism + a T-SQL patch (bracketed identifiers, ``N'…'``);
-* copy = Turn.sql_display || Turn.sql verbatim — never the DOM, never the
-  client-prettified variant.
-
-Both decoration layers must be presentation ONLY. The risk this test exists
-to catch: a future change that makes the copy button read the SQL back out
-of the (now-decorated, now-prettified) DOM, or a highlighting/formatting
-failure that blanks or corrupts the visibly rendered SQL.
+``docs/design/DESIGN-INVARIANTS.md`` §8's failure-anatomy table names
+"Rephrase · See the SQL" as the next action for a "Guard: forbidden
+statement" rejection. Before this change, ``web/js/render/turn.js`` had
+nothing to show for it: ``session.models.GuardVerdict`` carried no refused
+statement, so the SQL section printed a flat "not retained" sentence
+regardless of how the guard actually failed.
 
 This drives the REAL ``web/js/render/turn.js`` (and its full real render
-dependency chain including ``sql-display.js``) under Node (see
-``run_sql_highlight.mjs``) with mocked ``window.Prism`` /
-``window.sqlFormatter`` / ``navigator.clipboard``, and asserts:
+dependency chain, same staging as ``test_web_ui_sql_highlight.py``) under
+Node (see ``run_rejected_sql.mjs``) and asserts:
 
-* Prism highlighting actually runs (real ``.token`` elements) AND reading
-  the highlighted element's ``textContent`` back still equals the exact
-  string that was highlighted;
-* the copy button copies the exact Turn object string for plain ``sql``,
-  distinct ``sql_display``, prettified one-liners, and both failure modes;
-* client prettify reformats one-liners, never re-prettifies multi-line
-  input, and a throwing formatter falls back to the raw text;
-* with no ``window.Prism`` at all, and separately with a throwing
-  ``Prism.highlight``, the SQL still renders as plain, uncorrupted text
-  and copy still works.
+* a guard-rejected turn carrying ``guard.rejected_sql`` renders a «دیدن
+  SQL» control;
+* the refused statement is nowhere in the DOM until that control is
+  activated (collapsed by default means genuinely absent, not merely
+  visually hidden), and appears afterward labelled unmistakably as never
+  having run;
+* the reveal is rendered through the SAME safe display path
+  (``sql-display.js``'s ``highlightSql``) the normal SQL box uses: a
+  refused statement containing ``<img src=x onerror=alert(1)>`` renders as
+  plain TEXT, both with and without a highlighting library present -- no
+  ``<img>`` element is ever created;
+* a turn with ``guard.rejected_sql: null`` (an older persisted turn) falls
+  back to the pre-existing "not retained" message, with no «دیدن SQL»
+  control at all;
+* an ordinary allowed turn is entirely unaffected.
 """
 
 from __future__ import annotations
@@ -57,16 +54,14 @@ _CHART_JS = _WEB_JS / "render" / "chart.js"
 _EXPORT_JS = _WEB_JS / "export.js"
 _LLM_STATUS_JS = _WEB_JS / "render" / "llm-status.js"
 _FEEDBACK_JS = _WEB_JS / "render" / "feedback.js"
-_HARNESS = Path(__file__).resolve().parent / "run_sql_highlight.mjs"
+_HARNESS = Path(__file__).resolve().parent / "run_rejected_sql.mjs"
 
 _NODE = shutil.which("node")
 
-# The only changes made to the real source before handing it to Node: every
-# internal import specifier gets rewritten to its sibling `.mjs` copy
-# (Node's ESM loader needs an `.mjs` extension or a controlling package.json
-# to parse `export`/`import` syntax, and web/ deliberately ships neither --
-# see web/README.md's "no build step, no package.json"). Anything else
-# reaching this test is byte-identical to the real source.
+# Same rewrite set as test_web_ui_sql_highlight.py's -- see that module for
+# why each one is asserted (`_subn_or_fail`) rather than a silent
+# str.replace: a future reshape of any of these imports must fail loudly
+# here, not stage a module Node cannot resolve.
 _SQL_DISPLAY_IMPORT_IN_TURN = re.compile(
     r'^import \{ copySourceOfTruth, displaySqlForTurn, formatSqlForDisplay, highlightSql \} from "\.\./sql-display\.js";$',
     re.MULTILINE,
@@ -74,11 +69,6 @@ _SQL_DISPLAY_IMPORT_IN_TURN = re.compile(
 _ICONS_IMPORT_IN_ASSUMPTIONS = re.compile(
     r'^import \{ icon \} from "\.\./icons\.js";$', re.MULTILINE,
 )
-# table.js and llm-status.js import the same icon set under an alias, because
-# both already bind a local `icon` for the span they build. Kept as its own
-# asserted rewrite rather than a silent str.replace: if either import is
-# reshaped, this must fail loudly here instead of staging a module Node cannot
-# resolve, which surfaces as ERR_MODULE_NOT_FOUND with no hint of the cause.
 _ICONS_IMPORT_ALIASED = re.compile(
     r'^import \{ icon as svgIcon \} from "\.\./icons\.js";$', re.MULTILINE,
 )
@@ -105,15 +95,6 @@ _TABLE_IMPORT_IN_CHART = re.compile(
 
 
 def _rewrite_num_import(src: str) -> str:
-    """Point a staged module's `num.js` import at the staged `num.mjs`.
-
-    Every renderer imports the shared number formatter (see web/js/num.js),
-    and the staged copies all sit flat in one directory, so both the
-    "../num.js" and "./num.js" forms resolve to the same sibling here.
-    Unlike the other rewrites this one is not asserted to match: not every
-    staged module imports it, and requiring one would break the moment a
-    module legitimately has no numbers in it.
-    """
     return src.replace('from "../num.js"', 'from "./num.mjs"').replace(
         'from "./num.js"', 'from "./num.mjs"'
     )
@@ -123,7 +104,7 @@ def _subn_or_fail(pattern: re.Pattern[str], replacement: str, text: str, what: s
     fixed, n = pattern.subn(replacement, text)
     assert n == 1, (
         f"web/js source no longer matches the import this test expects ({what}) -- "
-        "update the regex in test_web_ui_sql_highlight.py to match the real source "
+        "update the regex in test_web_ui_rejected_sql.py to match the real source "
         "instead of silently testing stale code."
     )
     return fixed
@@ -132,8 +113,10 @@ def _subn_or_fail(pattern: re.Pattern[str], replacement: str, text: str, what: s
 def _prepare_copies(tmp_path: Path) -> Path:
     """Copy turn.js and its full real render dependency chain into
     *tmp_path* as ESM (``.mjs``), import paths fixed up. Returns the path
-    to the copied ``turn.mjs``.
-    """
+    to the copied ``turn.mjs``. Mirrors
+    ``test_web_ui_sql_highlight.py``'s ``_prepare_copies`` -- kept as its
+    own copy (not a shared import) because that is this test directory's
+    existing convention, one staging helper per harness."""
     turn_src = _TURN_JS.read_text(encoding="utf-8")
     pipeline_src = _PIPELINE_JS.read_text(encoding="utf-8")
     assumptions_src = _ASSUMPTIONS_JS.read_text(encoding="utf-8")
@@ -192,19 +175,12 @@ def _prepare_copies(tmp_path: Path) -> Path:
     chart_src = _subn_or_fail(_TABLE_IMPORT_IN_CHART, 'import { renderTableOnly, renderExportRow, fmtCell } from "./table.mjs";', chart_src, "chart.js -> table.js")
 
     turn_src = _rewrite_num_import(turn_src)
-
     assumptions_src = _rewrite_num_import(assumptions_src)
-
     table_src = _rewrite_num_import(table_src)
-
     chart_src = _rewrite_num_import(chart_src)
-
     export_src = _rewrite_num_import(export_src)
-
     llm_status_src = _rewrite_num_import(llm_status_src)
-
     feedback_src = _rewrite_num_import(feedback_src)
-
     sql_display_src = _rewrite_num_import(sql_display_src)
 
     (tmp_path / "turn.mjs").write_text(turn_src, encoding="utf-8")
@@ -217,15 +193,12 @@ def _prepare_copies(tmp_path: Path) -> Path:
     (tmp_path / "feedback.mjs").write_text(feedback_src, encoding="utf-8")
     (tmp_path / "sql-display.mjs").write_text(sql_display_src, encoding="utf-8")
     (tmp_path / "icons.mjs").write_text(icons_src, encoding="utf-8")
-    # num.js is shared by every renderer (see web/js/num.js): one place
-    # that decides how a number looks, after seven modules each decided
-    # separately. Staging it is what lets those imports resolve.
     (tmp_path / "num.mjs").write_text(_NUM_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return tmp_path / "turn.mjs"
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not on PATH -- cannot execute web/js/*.js under test")
-def test_sql_highlighting_is_presentation_only_and_copy_stays_exact() -> None:
+def test_see_the_sql_reveal_is_collapsed_safe_and_falls_back_on_null() -> None:
     for p in (
         _TURN_JS, _SQL_DISPLAY_JS, _PIPELINE_JS, _ASSUMPTIONS_JS, _TABLE_JS, _CHART_JS, _EXPORT_JS,
         _LLM_STATUS_JS, _FEEDBACK_JS,
@@ -244,7 +217,7 @@ def test_sql_highlighting_is_presentation_only_and_copy_stays_exact() -> None:
         )
 
     assert result.returncode == 0, (
-        f"SQL highlighting check failed.\n"
+        f"See-the-SQL reveal check failed.\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
     assert "ALL_SCENARIOS_PASSED" in result.stdout, (

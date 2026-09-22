@@ -310,6 +310,22 @@ class TestReasonEnumIsDocumented:
             "API can return them."
         )
 
+    def test_rejected_sql_field_is_documented(self):
+        """``session.models.GuardVerdict.rejected_sql`` (the "See the SQL"
+        action DESIGN-INVARIANTS.md §8's failure-anatomy table names for a
+        guard rejection) must appear in the §4 `guard` object, same as
+        `reason`/`subject` above -- a client reading only the document
+        must be able to discover the field exists."""
+        doc = (
+            Path(__file__).resolve().parent.parent
+            / "docs" / "api-contract-v2.md"
+        ).read_text(encoding="utf-8")
+
+        assert '"rejected_sql"' in doc, (
+            "docs/api-contract-v2.md's §4 `guard` object does not document "
+            "`rejected_sql` -- a client would not know the field exists."
+        )
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
