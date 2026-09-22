@@ -17,7 +17,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from schema_data.columns import TABLE_COLUMNS
+
 from scripts.analyze_audit_log import (
+    _NO_SINGLE_SUBJECT,
+    _STATEMENT_NOT_RECORDED,
     _classify_error_code,
     _join_bucket,
     _percentile,
@@ -29,6 +33,7 @@ from scripts.analyze_audit_log import (
     correction_rounds,
     failure_taxonomy,
     finish_reason_distribution,
+    guard_rejection_report,
     iter_records,
     latency_report,
     llm_meta_summary,
@@ -36,10 +41,43 @@ from scripts.analyze_audit_log import (
     per_principal_usage,
     record_rate_limit_hit,
     records_by_model,
+    render_text,
     resolve_log_paths,
     resolve_rate_limit_hit_paths,
     sql_shape_clusters,
 )
+
+#: A table (and one of its columns) picked dynamically from whatever schema
+#: is loaded (real or project_config.example/), mirroring
+#: tests/test_sql_guard_schema.py's own _ANY_TABLE/_ANY_COLUMN idiom --
+#: tests that exercise a code path consulting the schema (anything that
+#: reaches security.sql_guard.extract_touched_tables, i.e. any
+#: ``rejected_sql`` fed to guard_rejection_report) must pass unchanged
+#: against any deployment's project_config/, never a hardcoded real name.
+_ANY_TABLE = next(iter(TABLE_COLUMNS))
+_ANY_COLUMN = next(iter(TABLE_COLUMNS[_ANY_TABLE]))
+
+#: A table name guaranteed NOT to resolve against TABLE_COLUMNS, for
+#: "unknown table" cases -- the whole point is that this name is absent
+#: from whatever schema is loaded, so it cannot itself be derived from
+#: TABLE_COLUMNS. Mirrors tests/test_sql_guard_schema.py's own hardcoded
+#: "HR_Payroll" for the identical purpose; the assertion below just proves
+#: it never collided by accident.
+_UNKNOWN_TABLE = "NoSuchTableForAnalyzeAuditLogTests"
+assert _UNKNOWN_TABLE not in TABLE_COLUMNS
+
+
+def _first_n_tables(n: int) -> list[str]:
+    """The first *n* distinct table names in ``TABLE_COLUMNS``, or a
+    ``pytest.skip`` if the loaded schema has fewer than that -- never a
+    literal fallback, per this file's database-agnostic-tests rule."""
+    tables = list(TABLE_COLUMNS)
+    if len(tables) < n:
+        pytest.skip(
+            f"loaded schema has only {len(tables)} table(s); this test "
+            f"needs at least {n} distinct tables"
+        )
+    return tables[:n]
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> Path:
@@ -334,6 +372,258 @@ class TestSqlShapeClusters:
         clusters = sql_shape_clusters(records, top_n=2)
         assert len(clusters) == 2
 
+    def test_unaffected_by_guard_rejection_work_when_no_rejections_present(self):
+        """The guard-rejection section is a purely additive sibling --
+        executed-SQL shape clustering must produce byte-identical output
+        for a fixture with no rejections in it at all.
+
+        ``sql_shape_clusters`` reads ``guard.tables_touched`` directly (an
+        already-resolved list, not re-checked against the schema) and only
+        regexes ``generated_sql`` for the literal word ``JOIN`` -- neither
+        touches ``schema_data.columns.TABLE_COLUMNS`` -- so obviously
+        synthetic names are used here rather than real-looking ones."""
+        records = [
+            _rec(guard={"verdict": "allowed", "tables_touched": ["TableA"]},
+                  generated_sql="SELECT * FROM TableA"),
+            _rec(guard={"verdict": "allowed", "tables_touched": ["TableA", "TableB"]},
+                  generated_sql="SELECT * FROM TableA JOIN TableB ON 1=1"),
+        ]
+        assert sql_shape_clusters(records) == [
+            {"tables_touched": ["TableA"], "join_count": "0", "count": 1},
+            {"tables_touched": ["TableA", "TableB"], "join_count": "1", "count": 1},
+        ]
+
+
+# ---------------------------------------------------------------------------
+# guard_rejection_report
+# ---------------------------------------------------------------------------
+
+class TestGuardRejectionReport:
+    def test_rejections_grouped_by_reason_with_shape_shown(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table",
+                          "subject": _UNKNOWN_TABLE,
+                          "rejected_sql": f"SELECT * FROM {_UNKNOWN_TABLE}"}),
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table",
+                          "subject": _UNKNOWN_TABLE,
+                          "rejected_sql": f"SELECT * FROM {_UNKNOWN_TABLE}"}),
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN,
+                          "rejected_sql": f"SELECT {_ANY_COLUMN} FROM {_ANY_TABLE}"}),
+        ]
+        result = guard_rejection_report(records)
+
+        assert result["total_rejections"] == 3
+        assert result["by_reason"] == {"unknown_table": 2, "denied_column": 1}
+
+        shapes = result["refused_statement_shapes_by_reason"]
+        # _UNKNOWN_TABLE is not a known table -- unresolvable, so it shows
+        # as no tables touched, but the shape (and its count) is still
+        # visible.
+        assert shapes["unknown_table"] == [
+            {"tables_touched": [], "join_count": "0", "count": 2},
+        ]
+        assert shapes["denied_column"] == [
+            {"tables_touched": [_ANY_TABLE], "join_count": "0", "count": 1},
+        ]
+
+    def test_allowed_records_are_not_counted(self):
+        records = [_rec(guard={"verdict": "allowed", "tables_touched": [_ANY_TABLE]})]
+        result = guard_rejection_report(records)
+        assert result["total_rejections"] == 0
+        assert result["by_reason"] == {}
+
+    def test_missing_reason_falls_into_its_own_bucket(self):
+        records = [_rec(guard={"verdict": "rejected", "rejected_sql": "SELECT 1"})]
+        result = guard_rejection_report(records)
+        assert result["by_reason"] == {"(reason not recorded)": 1}
+
+    def test_pre_105_record_without_rejected_sql_counted_explicitly(self):
+        """A guard block written before PR #105 has no ``rejected_sql`` key
+        at all -- it must be counted, not skipped."""
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement"}),
+        ]
+        result = guard_rejection_report(records)
+
+        assert result["total_rejections"] == 1
+        assert result["statement_not_recorded_total"] == 1
+        assert result["statement_not_recorded_by_reason"] == {"forbidden_statement": 1}
+        assert result["refused_statement_shapes_by_reason"] == {}
+
+        # The report's text rendering says plainly how many there were,
+        # using the same label this module reports it under.
+        report = build_report(records)
+        text = render_text(report)
+        assert f"{_STATEMENT_NOT_RECORDED}" in text
+        assert "1" in text.split(_STATEMENT_NOT_RECORDED, 1)[1].splitlines()[0]
+
+    def test_explicit_none_rejected_sql_also_counted_as_not_recorded(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "other", "rejected_sql": None}),
+        ]
+        result = guard_rejection_report(records)
+        assert result["statement_not_recorded_by_reason"] == {"other": 1}
+
+    def test_statement_not_recorded_still_counts_toward_subjects(self):
+        """A rejection with no ``rejected_sql`` is still a real rejection
+        with a real ``subject`` -- it must not vanish from the subject
+        breakdown just because it has no statement shape to show."""
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN}),
+        ]
+        result = guard_rejection_report(records)
+        assert result["subject_counts_by_reason"]["denied_column"] == {_ANY_COLUMN: 1}
+
+    def test_table_less_refusal_is_visible(self):
+        """ADR-001 excludes an empty ``tables_touched`` from
+        ``sql_shape_clusters`` -- that exclusion must NOT apply here, or a
+        ``no_table_reference`` rejection (which never touches a table by
+        definition) would vanish from the report entirely."""
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "no_table_reference",
+                          "rejected_sql": "SELECT 1"}),
+        ]
+        result = guard_rejection_report(records)
+        shapes = result["refused_statement_shapes_by_reason"]["no_table_reference"]
+        assert shapes == [{"tables_touched": [], "join_count": "0", "count": 1}]
+
+    def test_state_reading_construct_is_visible_too(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement",
+                          "subject": "@@VERSION", "rejected_sql": "SELECT @@version"}),
+        ]
+        result = guard_rejection_report(records)
+        shapes = result["refused_statement_shapes_by_reason"]["forbidden_statement"]
+        assert shapes == [{"tables_touched": [], "join_count": "0", "count": 1}]
+        # The shape alone can't say what was attempted -- subject can.
+        assert result["subject_counts_by_reason"]["forbidden_statement"] == {"@@VERSION": 1}
+
+    def test_malformed_guard_block_is_skipped_not_raised(self):
+        records = [_rec(guard="not-a-dict"), _rec(guard=None)]
+        result = guard_rejection_report(records)
+        assert result["total_rejections"] == 0
+
+    def test_missing_subject_falls_into_its_own_bucket(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "no_table_reference",
+                          "rejected_sql": "SELECT 1"}),
+        ]
+        result = guard_rejection_report(records)
+        assert result["subject_counts_by_reason"]["no_table_reference"] == {
+            _NO_SINGLE_SUBJECT: 1,
+        }
+
+    def test_top_n_caps_shapes_per_reason(self):
+        # Several distinct known tables -> several distinct shapes for the
+        # same reason, so top_n has something real to cap.
+        tables = _first_n_tables(5)
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "rejected_sql": f"SELECT * FROM {t}"})
+            for t in tables
+        ]
+        result = guard_rejection_report(records, top_n=2)
+        assert len(result["refused_statement_shapes_by_reason"]["denied_column"]) == 2
+
+    def test_top_n_caps_subjects_per_reason(self):
+        tables = _first_n_tables(5)
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table", "subject": t})
+            for t in tables
+        ]
+        result = guard_rejection_report(records, top_n=2)
+        assert len(result["subject_counts_by_reason"]["unknown_table"]) == 2
+
+    def test_malicious_refused_statement_does_not_corrupt_output(self):
+        """A refused statement is untrusted model output -- a comma, a
+        quote, an embedded newline, or a leading '=' must never corrupt the
+        report's JSON or text rendering, and the raw text must never leak
+        into either (this section only ever reports shape, never text, in
+        the default mode)."""
+        nasty = f'=1+1; DROP TABLE X-- "quoted", value\nSELECT * FROM {_ANY_TABLE}'
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement",
+                          "rejected_sql": nasty}),
+        ]
+        report = build_report(records)
+
+        serialised = json.dumps(report, ensure_ascii=False)
+        parsed = json.loads(serialised)  # must round-trip without error
+        assert parsed["guard_rejections"]["total_rejections"] == 1
+        assert nasty not in serialised
+
+        text = render_text(report)
+        assert "Guard rejections" in text
+        assert nasty not in text
+        # The nasty text must not have split the rendering across
+        # unexpected lines -- the report still ends with its footer rule.
+        assert text.rstrip().endswith("=" * 60)
+
+    def test_malicious_subject_does_not_corrupt_text_rendering(self):
+        """``subject`` is untrusted too (see GuardVerdict.subject's own
+        docstring) -- an embedded newline in it must not let it masquerade
+        as an extra report line, and a comma must not look like a second
+        entry."""
+        nasty_subject = 'A"B,C\n=EVIL'
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "forbidden_statement",
+                          "subject": nasty_subject, "rejected_sql": "SELECT 1"}),
+        ]
+        report = build_report(records)
+
+        # JSON round-trips cleanly regardless of the embedded characters.
+        serialised = json.dumps(report, ensure_ascii=False)
+        json.loads(serialised)
+
+        text = render_text(report)
+        # The raw newline must have been collapsed -- this exact substring
+        # (a literal newline followed by "=EVIL") must never appear.
+        assert "\n=EVIL" not in text
+        assert text.rstrip().endswith("=" * 60)
+
+    def test_default_report_shows_subject_counts_but_no_statement_text(self):
+        secret_sql = f"SELECT {_ANY_COLUMN} FROM {_ANY_TABLE} WHERE {_ANY_COLUMN} = 42"
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN, "rejected_sql": secret_sql}),
+        ]
+        report = build_report(records)
+        gr = report["guard_rejections"]
+
+        assert gr["subject_counts_by_reason"]["denied_column"] == {_ANY_COLUMN: 1}
+        assert "refused_statement_examples_by_reason" not in gr
+
+        serialised = json.dumps(report, ensure_ascii=False)
+        assert secret_sql not in serialised
+
+    def test_include_examples_shows_up_to_three_verbatim_statements_per_reason(self):
+        statements = [
+            f"SELECT {_ANY_COLUMN} FROM {_ANY_TABLE} WHERE {_ANY_COLUMN} = {i}"
+            for i in range(5)
+        ]
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN, "rejected_sql": sql})
+            for sql in statements
+        ]
+        report = build_report(records, include_examples=True)
+        examples = report["guard_rejections"]["refused_statement_examples_by_reason"]["denied_column"]
+
+        assert len(examples) == 3
+        assert all(e["label"] == "REFUSED, NEVER EXECUTED" for e in examples)
+        assert {e["rejected_sql"] for e in examples} <= set(statements)
+
+    def test_examples_absent_by_default(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN,
+                          "rejected_sql": f"SELECT {_ANY_COLUMN} FROM {_ANY_TABLE}"}),
+        ]
+        result = guard_rejection_report(records)
+        assert "refused_statement_examples_by_reason" not in result
+
 
 # ---------------------------------------------------------------------------
 # correction_rounds
@@ -442,6 +732,41 @@ class TestBuildReportModes:
         report = build_report(records, include_examples=False)
         serialised = json.dumps(report, ensure_ascii=False)
         assert secret not in serialised
+
+    def test_report_never_leaks_rejected_sql_text_in_default_mode(self):
+        """The default (safe) report never carries a refused statement's
+        raw text -- only its shape and its ``subject`` (a single, already
+        analyst-visible keyword/column/table, never full statement text)."""
+        secret_sql = f"SELECT {_ANY_COLUMN} FROM {_ANY_TABLE} WHERE {_ANY_COLUMN} = 42"
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN, "rejected_sql": secret_sql}),
+        ]
+        report = build_report(records, include_examples=False)
+        serialised = json.dumps(report, ensure_ascii=False)
+        assert secret_sql not in serialised
+
+    def test_include_examples_mode_does_add_refused_statement_text(self):
+        """Unlike the default mode, ``--include-examples`` DOES attach the
+        verbatim refused statement (labelled), exactly like it already does
+        for ``question``/``error_message`` elsewhere in this report."""
+        secret_sql = f"SELECT {_ANY_COLUMN} FROM {_ANY_TABLE} WHERE {_ANY_COLUMN} = 42"
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "denied_column",
+                          "subject": _ANY_COLUMN, "rejected_sql": secret_sql}),
+        ]
+        report = build_report(records, include_examples=True)
+        serialised = json.dumps(report, ensure_ascii=False)
+        assert secret_sql in serialised
+
+    def test_guard_rejections_section_present_and_unconditional(self):
+        records = [
+            _rec(guard={"verdict": "rejected", "reason": "unknown_table",
+                          "subject": _UNKNOWN_TABLE,
+                          "rejected_sql": f"SELECT * FROM {_UNKNOWN_TABLE}"}),
+        ]
+        report = build_report(records)
+        assert report["guard_rejections"]["total_rejections"] == 1
 
     def test_record_count_present(self):
         report = build_report([_rec(), _rec()])
