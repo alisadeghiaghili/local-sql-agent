@@ -13,6 +13,20 @@ neither guard active, and a cold dimension-vocabulary lookup during an
 eval test could spin up a background thread that reached the real
 database. See each fixture's own docstring for the detail.
 
+The two fixtures are NOT scoped identically, despite looking like a
+matched pair. ``_no_real_database`` is scoped to ``tests/`` and
+``eval/tests/`` only (see :func:`_item_needs_database_guard`), because
+something outside those trees -- ``database.connection.dispose_engine``'s
+own doctest -- legitimately needs to build a real engine.
+``_no_background_dimension_refresh`` is unconditional: no collected item
+anywhere in the repository, doctest or otherwise, needs a live
+background-refresh thread, and ``eval/runner.py``'s doctests (which sit in
+``eval/``, outside both guarded trees) are the concrete case that once
+proved it -- left path-scoped, they triggered a real background refresh
+for every configured dimension and spawned six daemon threads dialling
+the configured warehouse host. See that fixture's own docstring for the
+detail.
+
 Phase 4 made ``project_config/`` configurable (``PROJECT_CONFIG_DIR``, see
 ``config.Settings.project_config_dir``) so CI and a fresh clone — which
 never have the real, git-ignored ``project_config/`` — can run against the
@@ -69,29 +83,35 @@ _GUARDED_TEST_DIRS = (
 def _item_needs_database_guard(request: pytest.FixtureRequest) -> bool:
     """True when the collected item lives under ``tests/`` or ``eval/tests/``.
 
-    ``_no_real_database`` and ``_no_background_dimension_refresh`` are
-    autouse at the repository root so they cover a combined
-    ``pytest tests/ eval/tests`` run (see both fixtures' docstrings for why
-    that combined run is the whole point) -- but the root ``conftest.py``
-    also applies to *every other* collection rooted here, including CI's
-    separate ``pytest --doctest-modules ... database ... config.py`` step,
-    which collects doctests straight out of the source tree. Those doctests
-    are not test-suite code: ``database.connection.dispose_engine``'s own
-    doctest legitimately builds and disposes a real (if immediately-closed)
-    engine to demonstrate the function, and unconditionally patching
-    ``create_engine`` out from under it turned a passing doctest into
-    ``AssertionError: This test tried to build a real SQLAlchemy engine``
-    across every supported Python version in CI.
+    Used by ``_no_real_database`` only -- NOT by
+    ``_no_background_dimension_refresh``, even though both fixtures are
+    autouse at the repository root for the same reason (to cover a
+    combined ``pytest tests/ eval/tests`` run; see each fixture's own
+    docstring). The root ``conftest.py`` also applies to *every other*
+    collection rooted here, including CI's separate
+    ``pytest --doctest-modules ... database ... config.py`` step, which
+    collects doctests straight out of the source tree. Those doctests are
+    not test-suite code: ``database.connection.dispose_engine``'s own
+    doctest legitimately builds and disposes a real (if
+    immediately-closed) engine to demonstrate the function, and
+    unconditionally patching ``create_engine`` out from under it turned a
+    passing doctest into ``AssertionError: This test tried to build a real
+    SQLAlchemy engine`` across every supported Python version in CI.
 
-    So both fixtures below check this first and no-op (patch nothing,
-    change no flag) for anything collected outside the two directories the
-    assertion message itself already claims to be about. ``request.node.path``
-    (a ``pathlib.Path`` on the pytest versions this repo supports) is
+    ``_no_real_database`` checks this first and no-ops (patches nothing)
+    for anything collected outside the two directories the assertion
+    message itself already claims to be about. ``request.node.path`` (a
+    ``pathlib.Path`` on the pytest versions this repo supports) is
     resolved and compared with :meth:`~pathlib.Path.is_relative_to` against
     both resolved guarded directories -- never by matching the substring
     ``"tests"`` in the path, which would also match an unrelated module
     named e.g. ``schema_data/tests_helper.py``, or the repository itself
     living under a directory literally called ``tests`` on some checkout.
+
+    ``_no_background_dimension_refresh`` does not call this: no collected
+    item anywhere needs a live background-refresh thread, so it applies
+    unconditionally. See that fixture's own docstring for why scoping it
+    the same way was the actual bug this module fixes.
     """
     path = request.node.path.resolve()
     return any(path.is_relative_to(guarded) for guarded in _GUARDED_TEST_DIRS)
@@ -183,6 +203,10 @@ def _no_real_database(request: pytest.FixtureRequest) -> Iterator[None]:
     behaviour. Left untouched (not cleared) when this fixture is a no-op,
     so an ungated doctest run never pays for, or is affected by, a cache
     it never asked for.
+
+    ``_no_background_dimension_refresh`` below is NOT scoped this way --
+    see its own docstring for why the two guards, despite being introduced
+    together and looking symmetric, need different scopes.
     """
     if not _item_needs_database_guard(request):
         yield
@@ -202,43 +226,59 @@ def _no_real_database(request: pytest.FixtureRequest) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _no_background_dimension_refresh(request: pytest.FixtureRequest) -> Iterator[None]:
+def _no_background_dimension_refresh() -> Iterator[None]:
     """Disable ``retrieval.dimension_vocabulary``'s background self-healing
-    refresh for every test under ``tests/`` and ``eval/tests``, and restore
-    it afterwards.
+    refresh for *every* collected item -- test-suite and doctest alike --
+    and restore it afterwards.
 
-    Scoped the same way, and for the same reason, as ``_no_real_database``
-    above (see :func:`_item_needs_database_guard`): being autouse at the
-    repository root also makes this fixture apply to CI's
-    ``pytest --doctest-modules`` step over the source tree, where flipping
-    a module-global flag off and back on around every doctest is at best
-    pointless and at worst racy against whatever else that process is
-    doing. Outside ``tests/`` and ``eval/tests`` this is a plain ``yield``
-    -- the flag is left exactly as the module default (or whatever a prior
-    caller set it to) leaves it.
+    Unlike ``_no_real_database`` above, this fixture is deliberately NOT
+    scoped by :func:`_item_needs_database_guard`. The two guards look like
+    a matched pair (both were introduced by the same PR, both patch/flip
+    something dangerous, both originally lived in ``tests/conftest.py``)
+    but they answer different questions, and only one of them is "is this
+    collected item part of a test suite":
 
-    Phase 5b's stale-while-revalidate redesign makes a cold or stale
-    dimension-vocabulary lookup trigger a background refresh against the
-    real database by default (see that module's docstring). Left enabled
-    here, an ordinary route test that mentions any of ``Ring``/``Currency``/
-    ``Broker``/``DeliveryPlace``/``Symbol`` -- ordinary questions do -- would
-    spin up a background thread reaching ``database.connection.create_engine``
-    on every single such test, since the vocabulary cache starts cold and
-    nothing in either suite warms it. ``_no_real_database`` above turns that
-    into a caught, logged ``AssertionError`` rather than a ~21s hang, but a
-    background thread quietly doing that on every cold lookup during
-    ordinary tests is still exactly the class of hidden-async-work problem
-    that produced this phase's one real test flake elsewhere (a leaked
-    ``time.sleep`` in a different module's shared thread pool -- see
-    ``tests/test_value_resolver.py``). Disabling the trigger here keeps
-    every dimension-vocabulary read synchronous and silent, in both
-    ``tests/`` and ``eval/tests``: a cold/stale lookup still returns
-    immediately (no candidates, or stale candidates) but launches nothing.
+    * ``_no_real_database`` must stay scoped, because something outside
+      ``tests/`` and ``eval/tests`` *legitimately needs the behaviour it
+      would otherwise suppress* -- ``database.connection.dispose_engine``'s
+      own doctest genuinely builds and disposes a real engine to
+      demonstrate the function, and refusing that engine construction
+      turns a passing doctest into a failure.
+    * No collected item, anywhere in this repository, legitimately needs a
+      live background-refresh *thread*. There is no doctest whose point is
+      "spawn a real thread that dials the warehouse". The one doctest that
+      touches the vocabulary at all,
+      ``retrieval/dimension_vocabulary.py``'s example near line 716, warms
+      the cache explicitly via ``refresh_vocabulary(..., execute_fn=fake_execute)``
+      and then asserts the *synchronous* result of
+      ``match_question_against_vocabulary`` against that warm entry -- a
+      fresh cache hit is served without triggering anything, so it passes
+      whether the trigger is enabled or disabled.
 
-    This fixture originally lived in ``tests/conftest.py``, scoped to
-    ``tests/`` only -- see ``_no_real_database`` above for why that left
-    ``eval/tests`` completely uncovered and why both fixtures now live here
-    instead, at the repository root.
+    Scoping this fixture the same way as ``_no_real_database`` was
+    actually a bug, not a matching design choice: CI's
+    ``pytest --doctest-modules -q api llm security session database core
+    knowledge prompt_engine retrieval schema_data logs exporters
+    observability eval config.py`` step collects ``eval/runner.py``'s
+    doctests, and ``eval/runner.py`` sits in ``eval/`` -- not
+    ``eval/tests/`` -- so the old scope check treated it as "outside the
+    guarded trees" and left this fixture a no-op for it. Those doctests
+    run ``run_case``/``run_golden_set``, which construct a real
+    ``retrieval.context_retriever.ContextRetriever``; with the module's
+    ``True`` default left in effect, every configured dimension triggered
+    its own background refresh, spawning six real daemon threads (named
+    ``dim-vocab-bg-refresh-Broker.PersianName``,
+    ``…Currency.PersianName``, ``…DeliveryPlace.PersianName``,
+    ``…Ring.Name``, ``…Symbol.Commodity_PersianName`` and
+    ``…Symbol.Commodity_Symbol``), each attempting a real ``pyodbc``
+    connection to the configured warehouse host. The doctest step still
+    exited 0 -- nothing asserts on background thread state -- so this
+    stayed invisible in a green CI run.
+
+    Disabling the trigger unconditionally is harmless everywhere it now
+    reaches that it did not before: it only ever changes whether a cold or
+    stale lookup *launches a thread*, never what it *returns*, so no
+    doctest's asserted output changes.
 
     ``tests/test_dimension_vocabulary.py``'s background-refresh tests
     re-enable this locally, always with an injected ``execute_fn`` and
@@ -262,10 +302,6 @@ def _no_background_dimension_refresh(request: pytest.FixtureRequest) -> Iterator
     launch a real background thread. Save/restore make each fixture
     responsible only for the value it actually changed.
     """
-    if not _item_needs_database_guard(request):
-        yield
-        return
-
     from retrieval.dimension_vocabulary import (
         is_background_refresh_enabled, set_background_refresh_enabled,
     )
