@@ -526,7 +526,13 @@ class LLMRouter:
 
         for index, backend in enumerate(chain):
             self._governance_check(backend, task, segments)
-            start = time.monotonic()
+            # perf_counter, not monotonic: on Windows before Python 3.13,
+            # time.monotonic() is backed by GetTickCount64 and only
+            # resolves to ~15.6ms, so a call well under that (a warm local
+            # backend, a cache hit) measures as 0.0s and a real budget
+            # breach goes undetected. perf_counter() always uses the
+            # highest-resolution timer the platform offers.
+            start = time.perf_counter()
             try:
                 result, meta = call(backend)
             except Exception as exc:  # noqa: BLE001 - any backend failure tries the next
@@ -559,7 +565,7 @@ class LLMRouter:
                 )
                 continue
 
-            elapsed = time.monotonic() - start
+            elapsed = time.perf_counter() - start
             if budget is not None and elapsed > budget:
                 last_exc = TimeoutError(
                     f"backend {backend.name!r} exceeded latency budget "
