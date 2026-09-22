@@ -123,6 +123,32 @@ class GuardVerdict(BaseModel):
     but still untrusted input from the UI's perspective: render it with
     ``textContent``/``dataset``, exactly like any other field on this
     model, never interpolated into an HTML string."""
+    rejected_sql: str | None = None
+    """The exact statement :func:`~security.sql_guard.validate_sql` refused
+    — after :func:`~security.sql_guard.clean_sql`, before
+    :func:`~security.sql_guard.ensure_top` (capping only ever happens to
+    SQL the guard already accepted) — or ``None`` for an allowed verdict, a
+    non-guard failure, or a rejection this contract predates.
+
+    Deliberately lives here, on ``GuardVerdict``, and not on ``Turn.sql``.
+    ``Turn.sql`` means "the statement that ran" to every consumer that
+    reads it — the SQL section's header, ``copySourceOfTruth``, the result
+    card, ``session.persistence``, the audit trail's ``generated_sql`` —
+    and every one of those readings would need to start branching on
+    ``turn.guard.verdict`` to stay true if this field aliased it instead.
+    Worse, it would erase exactly the distinction
+    ``docs/design/DESIGN-INVARIANTS.md`` §8 calls the one that matters
+    most: "did not run" and "returned nothing" must never look the same,
+    and a populated ``Turn.sql`` next to an empty ``Turn.result`` is
+    precisely that confusion. ``session.engine.TurnEngine`` populates this
+    on every guard-rejection outcome it builds (``PolicyRejection``, and a
+    correction loop's last round once corrections are exhausted); the web
+    UI (``web/js/render/turn.js``) renders it, when present, behind a
+    collapsed "دیدن SQL" reveal labelled unmistakably as never having run
+    — through the same safe display path (``sql-display.js``'s
+    ``highlightSql``) as any other generated SQL, since it is exactly as
+    untrusted — falling back to the pre-existing "not retained" message
+    when it is ``None``."""
     injected_top: int | None = None
     tables_touched: list[str] = Field(default_factory=list)
 

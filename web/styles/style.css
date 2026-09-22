@@ -682,6 +682,30 @@ button { font-family: inherit; }
   border-radius: var(--radius-sm); padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--status-critical) 30%, transparent);
 }
 
+/* ── Rejected-SQL reveal (turn.js's "دیدن SQL" action) ───────────────
+ * Shown in place of the flat "not retained" sentence when the guard
+ * captured the refused statement (GuardVerdict.rejected_sql). A critical-
+ * tinted border (matching .guard-rule/.failure-state) keeps it visually
+ * distinct from the normal, teal/neutral .sql-card-inner block used for a
+ * statement that actually ran -- DESIGN-INVARIANTS.md §8's "did not run"
+ * vs. "returned nothing" distinction must never look like the same UI. */
+.rejected-sql-reveal {
+  border: 1px solid color-mix(in srgb, var(--status-critical) 35%, transparent);
+  border-radius: var(--radius-sm); background: var(--card);
+  padding: 4px;
+}
+.rejected-sql-toggle {
+  border: none; background: none; cursor: pointer; width: 100%; text-align: inherit;
+  padding: 6px 9px; font-size: var(--fs-sm, 12.5px);
+  font-weight: 700; color: var(--status-critical); font-family: inherit;
+}
+.rejected-sql-body { padding: 6px 9px 9px; display: flex; flex-direction: column; gap: 8px; }
+.rejected-sql-heading {
+  font-size: 12px; font-weight: 800; color: var(--status-critical);
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.rejected-sql-box { border: 1px solid color-mix(in srgb, var(--status-critical) 25%, transparent); }
+
 /* ── Result table ────────────────────────────────────────────────── */
 .table-wrap {
   overflow-x: auto; max-height: 360px; overflow-y: auto;
