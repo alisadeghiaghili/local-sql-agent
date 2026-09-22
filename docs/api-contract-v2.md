@@ -185,6 +185,13 @@ as before this phase.
                                      // (e.g. "NationalID" for a denied column;
                                      // null when the rejection is about the
                                      // query's shape rather than one identifier)
+    "rejected_sql": null,           // the exact statement that was refused and
+                                     // DID NOT RUN -- populated on a rejected
+                                     // verdict when the guard got far enough to
+                                     // see a candidate statement (null for a
+                                     // composition-level failure, or a rejection
+                                     // this contract predates); null on an
+                                     // allowed verdict
     "injected_top": 10,
     "tables_touched": ["Contract", "Customer", "Ring"]
   },

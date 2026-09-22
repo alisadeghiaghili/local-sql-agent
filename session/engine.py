@@ -569,6 +569,15 @@ class TurnEngine:
             reasoning_detected=bool(route_result.meta.get("reasoning_detected", False)),
         )
 
+        # Reset every round this branch could be entered (it is not a loop,
+        # but keeping the same "no stale value" discipline as the
+        # generative path's `cleaned` below): `composed` stays `None` if
+        # `compose_refinement_sql` itself is what raised (a `CompositionError`
+        # -- there is no validated statement to show in that case, only a
+        # composition failure), and is set the moment composition succeeds,
+        # before `validate_sql`/`ensure_top`/`transpile_and_revalidate` get a
+        # chance to reject it.
+        composed: str | None = None
         try:
             with timer.stage("guard"):
                 composed = compose_refinement_sql(previous_turn.sql, raw_outer, cap)
@@ -593,6 +602,12 @@ class TurnEngine:
             outcome = _GenOutcome(
                 guard=GuardVerdict(
                     verdict="rejected", rule=str(exc), reason=reason, subject=subject,
+                    # `composed` -- after `compose_refinement_sql` (which
+                    # itself runs `clean_sql` on the outer SQL, see its
+                    # docstring), before `ensure_top` -- the exact text
+                    # `validate_sql` refused. `None` when composition never
+                    # produced a statement at all.
+                    rejected_sql=composed,
                 ),
                 result=TurnResult(),
                 warnings=[f"پرس‌وجوی بازپالایی‌شده رد شد: {exc}"],
@@ -807,6 +822,12 @@ class TurnEngine:
                     )
                 continue
 
+            # Reset every round: if `clean_sql` itself is what raises this
+            # round (empty/non-SQL model output -- a `CorrectableRejection`,
+            # never a `PolicyRejection`), there is no cleaned candidate to
+            # show as "the statement that was refused" for THIS round, and a
+            # value left over from an earlier round would misattribute it.
+            cleaned: str | None = None
             try:
                 with timer.stage("guard"):
                     cleaned = clean_sql(raw)
@@ -842,6 +863,12 @@ class TurnEngine:
                 return _GenOutcome(
                     guard=GuardVerdict(
                         verdict="rejected", rule=last_error, reason=reason, subject=subject,
+                        # `cleaned` -- after `clean_sql`, before `ensure_top`
+                        # -- is always set here: `PolicyRejection` can only
+                        # come from `validate_sql`/`transpile_and_revalidate`,
+                        # both of which run after this round's `cleaned`
+                        # assignment above.
+                        rejected_sql=cleaned,
                     ),
                     result=TurnResult(),
                     warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
@@ -855,6 +882,11 @@ class TurnEngine:
                     return _GenOutcome(
                         guard=GuardVerdict(
                             verdict="rejected", rule=last_error, reason=reason, subject=subject,
+                            # The LAST round's refused statement -- `None`
+                            # if this round's `clean_sql` itself is what
+                            # raised (nothing was ever handed to
+                            # `validate_sql` to refuse).
+                            rejected_sql=cleaned,
                         ),
                         result=TurnResult(),
                         warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],

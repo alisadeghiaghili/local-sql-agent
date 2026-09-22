@@ -24,7 +24,7 @@
 "use strict";
 
 import { fmt } from "../num.js";
-import { copySourceOfTruth, displaySqlForTurn, highlightSql } from "../sql-display.js";
+import { copySourceOfTruth, displaySqlForTurn, formatSqlForDisplay, highlightSql } from "../sql-display.js";
 
 import { renderPipeline, renderStageStrip } from "./pipeline.js";
 import { renderBasis, renderAssumptions, renderClarifications } from "./assumptions.js";
@@ -207,13 +207,66 @@ export function createTurnCard(turn, ctx) {
     body.appendChild(tagLate(sqlSection));
   } else if (!turn.error) {
     // A guard rejection also has no `turn.sql` (session/engine.py never
-    // attaches the rejected statement to the outcome), but "SQL تولید
-    // نشد" ("no SQL was generated") would be false — a statement WAS
-    // generated, it just isn't retained for display. Say that instead.
-    const noSqlMessage = isGuardRejected(turn)
-      ? "SQL تولیدشده توسط گارد رد شد و برای نمایش نگه‌داری نمی‌شود."
-      : "SQL تولید نشد.";
-    sqlSection.appendChild(el("div", "empty-result", noSqlMessage));
+    // puts the rejected statement there -- see session/models.py's
+    // GuardVerdict.rejected_sql docstring for why: `Turn.sql` means "the
+    // statement that ran" to every consumer, and this field would blur
+    // that). When the guard DID capture the refused statement
+    // (`turn.guard.rejected_sql`), offer it behind a collapsed "دیدن SQL"
+    // reveal instead of the flat "not retained" sentence, labelled
+    // unmistakably as never having run and rendered through the exact
+    // same safe display path (formatSqlForDisplay + highlightSql) as any
+    // other generated SQL -- it is exactly as untrusted. Falls back to
+    // the pre-existing message when there is nothing to reveal (an older
+    // persisted turn predating this field, or a non-guard SQL-less turn).
+    const rejectedSql = isGuardRejected(turn) ? turn.guard.rejected_sql : null;
+    if (rejectedSql) {
+      const reveal = el("div", "rejected-sql-reveal");
+      const toggleBtn = el("button", "rejected-sql-toggle", "دیدن SQL");
+      toggleBtn.type = "button";
+      toggleBtn.setAttribute("aria-expanded", "false");
+      reveal.appendChild(toggleBtn);
+
+      const revealBody = el("div", "rejected-sql-body");
+      revealBody.hidden = true;
+      reveal.appendChild(revealBody);
+
+      // Built lazily, on first activation, rather than up front and
+      // merely hidden: until the analyst presses the control, the refused
+      // statement is nowhere in the DOM at all -- not just visually
+      // collapsed -- matching "collapsed by default" as literally as
+      // possible for text this section goes out of its way to label as
+      // never having run.
+      let built = false;
+      toggleBtn.addEventListener("click", () => {
+        if (!built) {
+          revealBody.appendChild(el("div", "rejected-sql-heading", "SQL ردشده — اجرا نشد"));
+          const pre = document.createElement("pre");
+          pre.className = "sql-box rejected-sql-box";
+          pre.dir = "ltr";
+          const code = document.createElement("code");
+          code.className = "language-sql";
+          // Same safe display path as the normal SQL box above: `highlightSql`
+          // always assigns `textContent` first and only ever OVERLAYS Prism
+          // markup on top -- the refused statement is untrusted model output,
+          // like any generated SQL, and must never reach `innerHTML` unescaped.
+          highlightSql(code, formatSqlForDisplay(rejectedSql));
+          pre.appendChild(code);
+          revealBody.appendChild(pre);
+          built = true;
+        }
+        const open = revealBody.hidden;
+        revealBody.hidden = !open;
+        toggleBtn.setAttribute("aria-expanded", String(open));
+        toggleBtn.textContent = open ? "پنهان" : "دیدن SQL";
+      });
+
+      sqlSection.appendChild(reveal);
+    } else {
+      const noSqlMessage = isGuardRejected(turn)
+        ? "SQL تولیدشده توسط گارد رد شد و برای نمایش نگه‌داری نمی‌شود."
+        : "SQL تولید نشد.";
+      sqlSection.appendChild(el("div", "empty-result", noSqlMessage));
+    }
     body.appendChild(tagLate(sqlSection));
   }
 
