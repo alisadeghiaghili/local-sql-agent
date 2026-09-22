@@ -98,6 +98,7 @@ from sqlalchemy.engine import Engine, make_url
 import config as cfg
 from appdb.engine import _canonical_endpoint, build_engine
 from appdb.models import (
+    access_requests,
     admin_api_keys,
     admin_principal_roles,
     config_bundle_versions,
@@ -119,6 +120,7 @@ TABLES_IN_MIGRATION_ORDER: tuple[Table, ...] = (
     admin_principal_roles,
     config_bundle_versions,
     turn_feedback,
+    access_requests,
 )
 
 #: ``{table_name: primary_key_column_name}`` for every table whose primary
@@ -130,6 +132,7 @@ TABLES_IN_MIGRATION_ORDER: tuple[Table, ...] = (
 AUTOINCREMENT_PK_COLUMNS: dict[str, str] = {
     "config_bundle_versions": "version_id",
     "turn_feedback": "feedback_id",
+    "access_requests": "request_id",
 }
 
 #: Column-name suffix :func:`_max_activity_timestamp` treats as a

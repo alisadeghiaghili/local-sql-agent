@@ -45,6 +45,7 @@ from appdb.migrate import (
     verify_migration,
 )
 from appdb.models import (
+    access_requests,
     admin_api_keys,
     admin_principal_roles,
     config_bundle_versions,
@@ -123,6 +124,20 @@ def _seed_source(db_path) -> str:
                 resolution_note=None,
                 resolution_config_version_id=None,
                 resolution_golden_case_id=None,
+                resolved_by=None,
+                resolved_at=None,
+            )
+        )
+        conn.execute(
+            access_requests.insert().values(
+                request_id=1,
+                session_id="s1",
+                turn_id="t1",
+                requester_principal_id="analyst-1",
+                column_name="Phone",
+                created_at=_OLD_TIMESTAMP,
+                status="open",
+                resolution_note=None,
                 resolved_by=None,
                 resolved_at=None,
             )

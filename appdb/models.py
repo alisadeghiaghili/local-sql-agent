@@ -249,6 +249,44 @@ turn_feedback = Table(
 )
 
 
+#: ADR-004 part 1: "Request access" from a denied-column guard rejection
+#: (``docs/design/DESIGN-INVARIANTS.md`` §8's failure-anatomy table). One
+#: row per request an analyst raised for one denied column.
+#:
+#: Deliberately does NOT carry the question or the SQL -- the same "an id,
+#: never the content it names" reasoning :data:`turn_feedback` already
+#: documents above: ``session_id``/``turn_id`` let a reviewer join back to
+#: the audit record (``observability/audit.py``) for the question, and
+#: ``column_name`` is resolved from that same audit record's
+#: ``guard.subject`` at submit time (:mod:`appdb.access_requests`) --
+#: never accepted from the client, so this column can never be forged into
+#: naming a column the turn was never actually denied.
+access_requests = Table(
+    "access_requests",
+    metadata,
+    Column("request_id", Integer, primary_key=True, autoincrement=True),
+    Column("session_id", String(64), nullable=False),
+    Column("turn_id", String(64), nullable=False),
+    #: Stamped server-side from the authenticated principal -- never
+    #: accepted from the request body (see :mod:`appdb.access_requests`).
+    Column("requester_principal_id", String(255), nullable=False),
+    #: Resolved server-side from the joined audit record's
+    #: ``guard.subject`` -- see the table comment above.
+    Column("column_name", String(255), nullable=False),
+    Column("created_at", String(64), nullable=False),
+    #: ``"open"`` until a security admin decides it, then ``"approved"``
+    #: or ``"denied"`` -- no third state, and no delete, mirroring
+    #: :data:`turn_feedback.status`'s own "no dismiss without a decision".
+    Column("status", String(16), nullable=False),
+    #: Free-text reason. Required (non-blank) for a ``"denied"``
+    #: resolution -- visible to the requester, never to another analyst.
+    #: NULL for an open or approved request.
+    Column("resolution_note", Text, nullable=True),
+    Column("resolved_by", String(255), nullable=True),
+    Column("resolved_at", String(64), nullable=True),
+)
+
+
 def create_all(engine: Engine) -> None:
     """Create every table in :data:`metadata` that does not already exist.
 
