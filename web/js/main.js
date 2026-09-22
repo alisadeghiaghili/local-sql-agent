@@ -23,7 +23,7 @@ import {
 import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError } from "./api.js";
 import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
 import { DEFAULT_BASE_URL } from "./config.js";
-import { createTurnCard } from "./render/turn.js";
+import { createTurnCard, FAILURE_BY_CODE } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
 import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
@@ -1186,7 +1186,15 @@ async function askLive(q) {
       handleLiveError(err);
       return;
     }
-    working.error = { code: "TRANSPORT_ERROR", message: err.message };
+    // A real error code from the server (`api.js`'s `ApiError.code`, e.g.
+    // "MAINTENANCE_MODE" from `require_not_in_maintenance` on this very
+    // route, or "INJECTION_ATTEMPT") is preserved here instead of being
+    // relabelled — turn.js's `FAILURE_BY_CODE` renders the right Persian
+    // sentence for it. Only a genuine pre-response failure (no `code` at
+    // all, or `err` is not even an ApiError) falls back to
+    // "TRANSPORT_ERROR", which is what it actually was.
+    const code = (err instanceof ApiError && err.code) || "TRANSPORT_ERROR";
+    working.error = { code, message: err.message };
     rebuild();
   }
 }
@@ -1241,7 +1249,15 @@ function handleLiveError(err) {
     return;
   }
   if (err instanceof ApiError) {
-    showNotice("error", `خطای بک‌اند: ${err.message}`);
+    // A recognised backend code (MAINTENANCE_MODE, SERVER_OVERLOAD,
+    // INJECTION_ATTEMPT, ...) gets the same Persian sentence a turn-card
+    // failure banner would show — `render/turn.js`'s `FAILURE_BY_CODE`,
+    // the one table for both. "TRANSPORT_ERROR" is deliberately excluded
+    // here: outside a turn card this message is `describeTransportFailure`'s
+    // own diagnostic (host/CORS guess), not backend text, and it is worth
+    // more to an analyst here than the generic sentence would be.
+    const entry = err.code && err.code !== "TRANSPORT_ERROR" ? FAILURE_BY_CODE[err.code] : null;
+    showNotice("error", entry ? entry.lead : `خطای بک‌اند: ${err.message}`);
     return;
   }
   showNotice("error", `خطای غیرمنتظره: ${err.message}`);

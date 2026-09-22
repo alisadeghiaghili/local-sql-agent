@@ -178,7 +178,7 @@ class InjectionAttemptError(NLQError):
 # ---------------------------------------------------------------------------
 
 class OutOfScopeError(NLQError):
-    """Model signalled the question is outside the Auction domain."""
+    """Model signalled the question is outside the scope of the data this system covers."""
     http_status = status.HTTP_422_UNPROCESSABLE_ENTITY
     error_code = "OUT_OF_SCOPE"
 

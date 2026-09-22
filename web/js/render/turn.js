@@ -373,6 +373,161 @@ function isGuardRejected(turn) {
 }
 
 /**
+ * One Persian, analyst-facing lead sentence per `GuardVerdict.reason`
+ * (session/models.py -- the same closed literal set enumerated there:
+ * "denied_column", "forbidden_statement", "unknown_table",
+ * "system_catalogue", "no_table_reference", "other"). `denied_column` is
+ * built dynamically below (it names the specific `subject` column when one
+ * is known) and so is NOT in this table; every other reason maps straight
+ * to its sentence here, and a reason this table does not recognise --
+ * "other", or a missing/unrecognised value from an older persisted turn --
+ * falls back to `GENERIC_GUARD_LEAD`, the same generic sentence this file
+ * always showed for every non-`denied_column` rejection before this table
+ * existed.
+ */
+const GUARD_REASON_LEADS = Object.freeze({
+  forbidden_statement:
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده کاری می‌خواست که این سامانه اجازه نمی‌دهد: " +
+    "تغییر داده، یا خواندن اطلاعات خودِ سرور به‌جای داده‌های انبار.",
+  system_catalogue:
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده می‌خواست جدول‌های سیستمی پایگاه داده را بخواند، " +
+    "نه داده‌های انبار را.",
+  unknown_table:
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده به جدولی اشاره کرد که در داده‌های این سامانه وجود ندارد.",
+  no_table_reference:
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده از هیچ جدول داده‌ای نمی‌خواند؛ هر پاسخ باید از داده‌های انبار بیاید.",
+});
+const GENERIC_GUARD_LEAD = "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.";
+
+/**
+ * Frozen `TurnErrorInfo.code` → `{lead, actions}` table -- the ONE place
+ * that maps a backend error code to the Persian, analyst-facing sentence
+ * DESIGN-INVARIANTS.md §8 requires ("what happened, in the analyst's
+ * terms, not the system's"). Before this table existed, every code
+ * without its own bespoke `case` below fell through to `default:`, whose
+ * lead sentence WAS `turn.error.message` -- raw English straight from
+ * `session/engine.py`/`api/errors.py` inside an otherwise entirely
+ * Persian UI. Every entry here supplies its own sentence instead, so
+ * `turn.error.message` is never read as a lead (or anywhere else in a
+ * banner) for any code listed here -- it stays in the server log/audit,
+ * per this table's contract.
+ *
+ * `actions` lists the action KINDS this code offers, in the order they
+ * render -- turned into real `[label, onClick]` pairs by `actionsFor`
+ * below, and only when the matching callback (`ctx.onRerun` for "retry",
+ * `ctx.onRephrase` for "rephrase") was actually supplied, same "offer
+ * only what is wired" rule this file already followed before this table
+ * existed.
+ *
+ * `MODEL_UNAVAILABLE` keeps its own `case` below (a different severity,
+ * "warn" not "crit") but reads its lead from here too, so there is still
+ * exactly one place per code. `QUERY_EXECUTION_ERROR`, `LLM_OUTPUT_TRUNCATED`
+ * and `FORBIDDEN_SQL` are deliberately NOT here: each keeps its own
+ * `case`, unchanged, below (`QUERY_EXECUTION_ERROR` is being reworked in a
+ * parallel change to this same file; touching any of the three now would
+ * either collide with that work or need a design decision nobody made for
+ * this task).
+ *
+ * Any code NOT listed here (including `INTERNAL_ERROR` itself) falls back
+ * to the `INTERNAL_ERROR` entry -- see the `default:` case below.
+ */
+export const FAILURE_BY_CODE = Object.freeze({
+  MODEL_UNAVAILABLE: {
+    lead: "پرسش شما نگه داشته شد — سامانهٔ مدل در دسترس نبود. این یک مشکل سیستمی است، نه ایرادی در پرسش شما.",
+    actions: ["retry"],
+  },
+  MODEL_TIMEOUT: {
+    lead: "مدل در زمان مجاز پاسخ نداد. پرسش شما نگه داشته شد.",
+    actions: ["retry"],
+  },
+  OUT_OF_SCOPE: {
+    lead: "این پرسش به داده‌هایی که این سامانه در اختیار دارد مربوط نیست.",
+    actions: ["rephrase"],
+  },
+  NO_PREVIOUS_TURN: {
+    lead:
+      "این پرسش ادامهٔ پرسش قبلی به نظر می‌رسد، اما در این گفتگو پرسش قبلی‌ای برای ادامه نیست. " +
+      "آن را به‌صورت یک پرسش کامل بنویسید.",
+    actions: ["rephrase"],
+  },
+  EMPTY_SQL_RESPONSE: {
+    lead: "مدل برای این پرسش هیچ پرس‌وجویی تولید نکرد.",
+    actions: ["rephrase", "retry"],
+  },
+  INVALID_SQL_RESPONSE: {
+    lead: "پاسخ مدل یک پرس‌وجوی معتبر نبود.",
+    actions: ["retry"],
+  },
+  QUERY_TIMEOUT: {
+    lead:
+      "اجرای پرس‌وجو بیش از زمان مجاز طول کشید و متوقف شد. پرسش را محدودتر کنید — " +
+      "بازهٔ زمانی کوتاه‌تر یا فیلتر بیشتر.",
+    actions: ["rephrase"],
+  },
+  DATABASE_UNAVAILABLE: {
+    lead: "پایگاه داده در دسترس نبود — این یک مشکل سیستمی است، نه ایرادی در پرسش شما.",
+    actions: ["retry"],
+  },
+  SERVER_OVERLOAD: {
+    lead: "سامانه الان پرمشغله است. چند ثانیه بعد دوباره تلاش کنید.",
+    actions: ["retry"],
+  },
+  MAINTENANCE_MODE: {
+    lead: "سامانه موقتاً برای نگهداری در دسترس نیست.",
+    actions: [],
+  },
+  TRANSPORT_ERROR: {
+    lead: "ارتباط با سرور برقرار نشد. اتصال شبکه را بررسی کنید و دوباره تلاش کنید.",
+    actions: ["retry"],
+  },
+  INJECTION_ATTEMPT: {
+    lead:
+      "این پرسش شامل دستورهایی خطاب به خودِ سامانه بود و پردازش نشد. لطفاً فقط پرسش تحلیلی خود را بنویسید.",
+    actions: ["rephrase"],
+  },
+  UNAUTHENTICATED: {
+    lead: "کلید API معتبر نیست یا دیگر فعال نیست.",
+    actions: [],
+  },
+  INTERNAL_ERROR: {
+    lead: "خطای داخلی سامانه. اگر تکرار شد، شناسهٔ درخواست را به مدیر سامانه بدهید.",
+    actions: ["retry"],
+  },
+  // Neither is raised as this code in production today (api/errors.py's
+  // own docstring: Pydantic rejects a too-short/too-long question before
+  // the pipeline sees it, as a generic "VALIDATION_ERROR", not this code)
+  // -- kept here, in the same Persian register as the rest, purely so a
+  // future direct raise of QuestionTooShortError/QuestionTooLongError (or
+  // a validation-layer change that starts using these codes) never shows
+  // English by default. Flagged for owner review per this task's brief.
+  QUESTION_TOO_SHORT: {
+    lead: "پرسش خیلی کوتاه است — کمی بیشتر توضیح دهید.",
+    actions: [],
+  },
+  QUESTION_TOO_LONG: {
+    lead: "پرسش از حداکثر طول مجاز بلندتر است — آن را کوتاه‌تر کنید.",
+    actions: [],
+  },
+});
+
+/** Turns `FAILURE_BY_CODE`'s action KINDS ("retry"/"rephrase") into real
+ * `[label, onClick]` pairs, in order, skipping any kind whose callback
+ * was not supplied -- the same "offer only what is wired" rule
+ * `renderFailureState`'s guard branch already followed before this table
+ * existed. */
+function actionsFor(kinds, ctx, turnId) {
+  const out = [];
+  for (const kind of kinds) {
+    if (kind === "retry" && ctx.onRerun) {
+      out.push(["تلاش دوباره", () => ctx.onRerun(turnId)]);
+    } else if (kind === "rephrase" && ctx.onRephrase) {
+      out.push(["ویرایش پرسش", () => ctx.onRephrase(turnId)]);
+    }
+  }
+  return out;
+}
+
+/**
  * Renders the §8 failure anatomy: what happened (in the analyst's terms,
  * not the system's), why when the reason is known, and a next action as
  * a control — never a sentence telling them to go do something. The
@@ -408,9 +563,16 @@ function renderFailureState(turn, ctx) {
     // them the only honest option was one generic action for every guard
     // rejection, which is what shipped before this field existed.
     const { reason, subject } = turn.guard;
+    // `denied_column` keeps its own dedicated sentence (built here, not in
+    // `GUARD_REASON_LEADS`, since it never varies by `subject` -- the
+    // column name itself only ever appears in the targeted action button
+    // below). Every other named reason gets its own sentence from that
+    // table; "other", a missing `reason`, or any value the table does not
+    // recognise (an older persisted turn) falls back to the same generic
+    // sentence this file always showed here before the table existed.
     const lead = reason === "denied_column"
       ? "این پرسش اجرا نشد — یکی از ستون‌های لازم برای پاسخ به آن برای حساب شما محدود شده است. این به معنای «نتیجه‌ای یافت نشد» نیست."
-      : "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.";
+      : GUARD_REASON_LEADS[reason] || GENERIC_GUARD_LEAD;
 
     const actions = [];
     // The targeted action DESIGN-INVARIANTS.md §8's table names for this
@@ -460,13 +622,17 @@ function renderFailureState(turn, ctx) {
     // ran or a database that actively refused one reads as "crit" (red)
     // — both are a harder stop than "try again in a moment".
     case "MODEL_UNAVAILABLE":
+      // Lead stays what it always was; the English "why" line (the raw
+      // `session/engine.py::_classify_router_failure` message) is gone —
+      // it stays in the server log/audit, same rule as every code in
+      // `FAILURE_BY_CODE`.
       return buildFailureBanner({
         severity: "warn",
-        lead: "پرسش شما نگه داشته شد — سامانهٔ مدل در دسترس نبود. این یک مشکل سیستمی است، نه ایرادی در پرسش شما.",
-        why: turn.error.message,
+        lead: FAILURE_BY_CODE.MODEL_UNAVAILABLE.lead,
+        why: null,
         code: turn.error.code,
         requestId,
-        actions: retry ? [["تلاش دوباره", retry]] : [],
+        actions: actionsFor(FAILURE_BY_CODE.MODEL_UNAVAILABLE.actions, ctx, turn.turn_id),
       });
 
     case "LLM_OUTPUT_TRUNCATED":
@@ -505,18 +671,23 @@ function renderFailureState(turn, ctx) {
         actions: retry ? [["تلاش دوباره", retry]] : [],
       });
 
-    default:
-      // Every other code (MODEL_TIMEOUT, DATABASE_UNAVAILABLE, ...) still
-      // gets the anatomy — message as "what happened", code subordinate,
-      // and a real retry control — just not a code-specific sentence.
+    default: {
+      // Every other code (MODEL_TIMEOUT, OUT_OF_SCOPE, DATABASE_UNAVAILABLE,
+      // ...) still gets the anatomy — a code-specific Persian sentence from
+      // `FAILURE_BY_CODE`, code subordinate, and whatever action(s) that
+      // table lists — `turn.error.message` (the backend's English text) is
+      // never read here. A code this table does not recognise falls back
+      // to its `INTERNAL_ERROR` entry, same as an unlisted code would.
+      const entry = FAILURE_BY_CODE[turn.error.code] || FAILURE_BY_CODE.INTERNAL_ERROR;
       return buildFailureBanner({
         severity: "crit",
-        lead: turn.error.message,
+        lead: entry.lead,
         why: null,
         code: turn.error.code,
         requestId,
-        actions: retry ? [["تلاش دوباره", retry]] : [],
+        actions: actionsFor(entry.actions, ctx, turn.turn_id),
       });
+    }
   }
 }
 

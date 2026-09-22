@@ -236,7 +236,7 @@ prose — never instead of it.
 | Path | What happened (leading sentence) | Next action |
 |---|---|---|
 | Guard: denied column | The query did not run — a column it needed is restricted for your account. **Not** "no results" | Ask without that column · Request access |
-| Guard: forbidden statement | Refused before running: the generated query tried to change data | Rephrase · See the SQL |
+| Guard: forbidden statement | Refused before running: the generated query tried to do something this system does not allow — change data, or read the server's own state instead of warehouse data | Rephrase · See the SQL |
 | `MODEL_UNAVAILABLE` | Your question was kept. The engine could not be reached — a system problem, not your question | Try again · Notify admin |
 | `LLM_OUTPUT_TRUNCATED` | The model stopped before finishing the query | Retry shorter · (operator: raise the cap) |
 | Zero rows | The query ran correctly and nothing matched. The likeliest cause is one of the assumptions | Offer each assumption as an editable chip |
