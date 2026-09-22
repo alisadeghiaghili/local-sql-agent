@@ -23,7 +23,8 @@ jobs:
     # Only Linux was ever in this matrix, so "OS-agnostic" was a claim the
     # code made about itself that CI did not actually check. Running both
     # here is what turns that claim into something verified rather than
-    # asserted.
+    # asserted. macOS joined for the same reason: it was the last major OS
+    # this matrix left unverified.
     #
     # bash as the run-step shell on every OS (rather than the pwsh default
     # Windows runners otherwise use) keeps every step below a single
@@ -36,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
@@ -48,6 +49,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+
+      # pyodbc ships binary wheels for macOS, so pip install succeeds without
+      # this, but the wheel isn't self-contained: it dynamically links
+      # against unixODBC's driver manager (libodbc.dylib), which is not
+      # bundled and is absent from GitHub's macOS runners by default.
+      # Without it, importing pyodbc fails at test-collection time with
+      # "Library not loaded" rather than at install time -- so this has to
+      # run before dependencies are installed, not in response to a pip
+      # failure. Linux and Windows wheels don't have this gap (manylinux
+      # wheels bundle unixODBC; the Windows driver manager ships with the OS).
+      - name: Install unixODBC driver manager (macOS)
+        if: runner.os == 'macOS'
+        run: brew install unixodbc
 
       - name: Install dependencies
         run: |
