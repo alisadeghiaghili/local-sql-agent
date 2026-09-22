@@ -147,11 +147,22 @@ export class V2NotSupportedError extends Error {
   }
 }
 
+/** `code` is the server's `error.code` (api/errors.py's `_error_response`
+ * envelope — `MAINTENANCE_MODE`, `SERVER_OVERLOAD`, `INJECTION_ATTEMPT`,
+ * ...) when this came back from a real HTTP response, or `null` when it
+ * did not (an unparseable body, or a response this class was constructed
+ * for without one). Threading it through here — rather than discarding it
+ * the way this class used to — is what lets a catch site downstream (e.g.
+ * main.js's `askTurnStream`) recover the REAL failure reason instead of
+ * relabelling every non-transport ApiError as a generic transport
+ * failure; see render/turn.js's `FAILURE_BY_CODE`, the one table that
+ * turns a code into the Persian sentence an analyst actually reads. */
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, code = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -162,8 +173,8 @@ export class ApiError extends Error {
  * key was never sent or was sent and rejected, so this UI does not try to
  * tell those two cases apart either). */
 export class UnauthorizedError extends ApiError {
-  constructor(message) {
-    super(message, 401);
+  constructor(message, code = "UNAUTHENTICATED") {
+    super(message, 401, code);
     this.name = "UnauthorizedError";
   }
 }
@@ -173,8 +184,8 @@ export class UnauthorizedError extends ApiError {
  * from the error body (`retry_after_seconds`) so the UI can surface a
  * useful, specific message instead of a generic error. */
 export class RateLimitError extends ApiError {
-  constructor(message, retryAfterSeconds) {
-    super(message, 429);
+  constructor(message, retryAfterSeconds, code = "RATE_LIMIT_EXCEEDED") {
+    super(message, 429, code);
     this.name = "RateLimitError";
     this.retryAfterSeconds = retryAfterSeconds;
   }
@@ -451,7 +462,12 @@ export class Api {
         headers,
       });
     } catch (err) {
-      throw new ApiError(describeTransportFailure(this.baseUrl, path, err), 0);
+      // No HTTP response was ever received (host unreachable, DNS
+      // failure, a refused cross-origin preflight, ...) — the one
+      // genuinely transport-level failure this method can throw, so it
+      // is the one case that gets the "TRANSPORT_ERROR" code explicitly
+      // rather than reading one off a body that does not exist.
+      throw new ApiError(describeTransportFailure(this.baseUrl, path, err), 0, "TRANSPORT_ERROR");
     }
     if (res.status === 404) {
       throw new V2NotSupportedError(
@@ -460,13 +476,16 @@ export class Api {
     }
     if (res.status === 401) {
       const body = await _safeJson(res);
-      throw new UnauthorizedError(body?.error?.message || body?.detail || "Missing or invalid API key.");
+      throw new UnauthorizedError(
+        body?.error?.message || body?.detail || "Missing or invalid API key.",
+        body?.error?.code || "UNAUTHENTICATED",
+      );
     }
     if (res.status === 429) {
       const body = await _safeJson(res);
       const message = body?.error?.message || body?.detail || `HTTP 429 calling ${path}`;
       const retryAfterSeconds = body?.error?.retry_after_seconds ?? null;
-      throw new RateLimitError(message, retryAfterSeconds);
+      throw new RateLimitError(message, retryAfterSeconds, body?.error?.code || "RATE_LIMIT_EXCEEDED");
     }
     if (!res.ok) {
       const body = await _safeJson(res);
@@ -476,7 +495,11 @@ export class Api {
       // actually matched it, so every non-2xx response rendered as a
       // bare "HTTP <status>" regardless of what the server said.
       const detail = body?.error?.message || body?.detail || `HTTP ${res.status}`;
-      throw new ApiError(detail, res.status);
+      // `body?.error?.code` (e.g. "MAINTENANCE_MODE", "SERVER_OVERLOAD",
+      // "INJECTION_ATTEMPT") is carried on the thrown error so a catch
+      // site downstream can render the real reason instead of a generic
+      // one — see the `code` field's own docstring on `ApiError` above.
+      throw new ApiError(detail, res.status, body?.error?.code || null);
     }
     return res;
   }
