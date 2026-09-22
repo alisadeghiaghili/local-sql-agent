@@ -234,7 +234,7 @@ from core.persian import normalize_for_matching
 from retrieval.value_resolver import ExecuteParamsFn
 from schema_data.registry import get_prefetchable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal
-from security.dialects import get_dialect_profile
+from security.dialects import get_dialect_profile, quote_tsql_identifier
 from security.sql_guard import transpile_sql
 from session.models import Clarification
 
@@ -300,11 +300,11 @@ def _prefetch_query(table: str, column: str, dialect: str = "tsql") -> str:
     """
     profile = get_dialect_profile(dialect)
     if profile.schema_qualification == "none":
-        table_ref = f"[{table}]"
+        table_ref = quote_tsql_identifier(table)
     else:
         schema = _TABLE_SCHEMAS[table]
-        table_ref = f"[{schema}].[{table}]"
-    tsql = f"SELECT DISTINCT TOP (?) [{column}] FROM {table_ref}"
+        table_ref = f"{quote_tsql_identifier(schema)}.{quote_tsql_identifier(table)}"
+    tsql = f"SELECT DISTINCT TOP (?) {quote_tsql_identifier(column)} FROM {table_ref}"
     if dialect == "tsql":
         return tsql
     return transpile_sql(tsql, source_dialect="tsql", target_dialect=dialect)
