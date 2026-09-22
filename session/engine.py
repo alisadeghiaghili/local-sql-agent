@@ -41,6 +41,7 @@ import pandas as pd
 
 import config as cfg
 from core.models import RetrievalContext
+from database.errors import classify_database_error
 from knowledge.session_policy import DEFAULT_SCOPE_FIELD_NAME, DEFAULT_SCOPE_FILTER_KEY
 from llm.router import (
     LLMRouter,
@@ -632,13 +633,22 @@ class TurnEngine:
             with timer.stage("execute"):
                 df = self._execute(capped)
         except Exception as exc:  # noqa: BLE001
+            # See database.errors.classify_database_error's docstring: a
+            # connection/login/availability failure or a timeout must not
+            # be reported as QUERY_EXECUTION_ERROR, and even a genuine
+            # statement error must not carry the raw SQLAlchemy dump
+            # (SQL text, bound parameters, host/instance, sqlalche.me URL)
+            # into `TurnErrorInfo.message` -- which has no `detail` field
+            # to hide it in (finding 11). The raw error is already logged
+            # server-side by database.executor._execute.
+            classification = classify_database_error(exc)
             outcome = _GenOutcome(
                 sql=capped,
                 guard=GuardVerdict(
                     verdict="allowed", injected_top=injected_top,
                     tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
                 ),
-                error=TurnErrorInfo(code="QUERY_EXECUTION_ERROR", message=str(exc)),
+                error=TurnErrorInfo(code=classification.code, message=classification.client_message),
                 llm_status=llm_status,
             )
             return outcome, resolved_question, ambiguity_block, dict(basis_decision.inherited_filters), mem_warnings
@@ -899,15 +909,22 @@ class TurnEngine:
                 with timer.stage("execute"):
                     df = self._execute(capped)
             except Exception as exc:  # noqa: BLE001
+                # `last_error` keeps the raw text -- it feeds the next
+                # correction round's prompt (line ~781), which is a
+                # server-internal use the LLM needs the real error for.
+                # Only the client-facing TurnErrorInfo below goes through
+                # classify_database_error's sanitising (see the identical
+                # comment on the non-retry execute() failure above).
                 last_error = str(exc)
                 if correction_round == self._max_corrections:
+                    classification = classify_database_error(exc)
                     return _GenOutcome(
                         sql=capped,
                         guard=GuardVerdict(
                             verdict="allowed", injected_top=injected_top,
                             tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
                         ),
-                        error=TurnErrorInfo(code="QUERY_EXECUTION_ERROR", message=last_error),
+                        error=TurnErrorInfo(code=classification.code, message=classification.client_message),
                         llm_status=llm_status,
                     )
                 continue
