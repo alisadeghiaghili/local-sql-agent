@@ -46,11 +46,13 @@ Record counts, latency percentiles, distributions (``finish_reason``,
 ``error_code``, provider, cache hit rates, correction-round counts), and
 generated-SQL *shape* (which tables were touched and how many joins —
 never the SQL text or the question that produced it). The same holds for
-a guard *rejection*: only its ``reason`` and the refused statement's shape
-(tables touched + join count) leave the machine — never the refused SQL
-text itself, exactly as strictly as for an executed query. Nothing that
-could identify a specific query, a specific user, or a specific piece of
-commodity-exchange business data.
+a guard *rejection*: its ``reason``, its ``subject`` (the single
+keyword/column/table the guard named — already shown to the analyst on
+screen, so nothing new leaves the machine), and the refused statement's
+shape (tables touched + join count) leave the machine — never the refused
+SQL text itself, exactly as strictly as for an executed query. Nothing
+that could identify a specific query, a specific user, or a specific piece
+of commodity-exchange business data.
 
 Report sections
 ----------------
@@ -76,17 +78,23 @@ Report sections
 6. :func:`_sql_shape_clusters`    — intent clusters by generated-SQL
    *shape* (tables touched + join count), not by question text — Phase
    6's input, computed without reading a single word of any question.
-7. :func:`guard_rejection_report` — guard rejections by ``reason``, and
-   for each reason the most frequent refused-statement *shapes* (tables
-   touched + join count, via the same normalisation
-   :func:`_sql_shape_clusters` uses) — REFUSED, NEVER EXECUTED, never the
-   raw statement text. A rejection with no ``guard.rejected_sql`` (a
-   record written before PR #105, or one from the older v1 path) is
-   counted under an explicit "statement not recorded" bucket rather than
-   dropped, and a table-less refusal (``no_table_reference``, a
-   session-state read) still gets a shape entry instead of being silently
-   excluded the way :func:`_sql_shape_clusters` excludes an empty
-   ``tables_touched`` for *executed* SQL.
+7. :func:`guard_rejection_report` — guard rejections by ``reason``; for
+   each reason, a count by ``guard.subject`` (the single keyword/column/
+   table the guard named — safe in every mode, since it is already shown
+   to the analyst on screen); and, in the default report, the most
+   frequent refused-statement *shapes* (tables touched + join count, via
+   the same normalisation :func:`_sql_shape_clusters` uses) — REFUSED,
+   NEVER EXECUTED, never the raw statement text. ``--include-examples``
+   additionally attaches up to 3 verbatim refused statements per reason,
+   labelled the same way, exactly mirroring how :func:`failure_taxonomy`
+   already opts ``question``/``error_message`` into that flag. A rejection
+   with no ``guard.rejected_sql`` (a record written before PR #105, or one
+   from the older v1 path) is counted under an explicit "statement not
+   recorded" bucket rather than dropped, and a table-less refusal
+   (``no_table_reference``, a session-state read) still gets a shape entry
+   — and, via ``subject``, a name — instead of being silently excluded the
+   way :func:`_sql_shape_clusters` excludes an empty ``tables_touched`` for
+   *executed* SQL.
 8. :func:`_correction_rounds`     — how many self-correction rounds a
    query needed, and whether spending them ever actually succeeded.
 9. :func:`_llm_meta_summary`      — reasoning-channel detections,
@@ -550,6 +558,34 @@ def sql_shape_clusters(
 #: refused statement to show.
 _STATEMENT_NOT_RECORDED = "statement not recorded (pre-5.1.x record)"
 
+#: Bucket label for a guard rejection whose ``guard.subject`` is missing or
+#: ``None`` -- the rejection was about the query's *shape* rather than one
+#: nameable identifier (see ``session.models.GuardVerdict.subject``'s own
+#: docstring: "``None`` when it is about the query's shape rather than a
+#: single identifier"). Counted explicitly rather than skipped, so a reason
+#: with mostly shape-level rejections does not read as having no subjects
+#: worth reporting at all.
+_NO_SINGLE_SUBJECT = "(no single subject)"
+
+
+def _safe_display(text: str) -> str:
+    """Collapse *text* to a single line for the human-readable renderer.
+
+    ``text`` here is always untrusted model output (a guard ``subject`` or
+    a refused statement) -- ``render_text`` builds each of its rows by
+    joining one entry per output line, so an embedded newline (or run of
+    other whitespace) in untrusted text would otherwise let that text
+    masquerade as extra report lines / rows. Collapsing every run of
+    whitespace to a single space neutralises that without needing a
+    spreadsheet-specific defusal (``exporters.sanitize.defuse_formula``
+    guards a *different* threat -- a leading ``=``/``+``/``-``/``@`` opened
+    as a formula by Excel/LibreOffice on an *exported* file -- and does not
+    apply here since this module never writes CSV/Excel; JSON output needs
+    no such treatment either, since :func:`json.dumps` already escapes
+    quotes/commas/newlines correctly on its own).
+    """
+    return re.sub(r"\s+", " ", text).strip()
+
 
 def _guard_rejection_shape(sql: str) -> tuple[tuple[str, ...], str]:
     """The same ``(tables_touched, join_bucket)`` shape key
@@ -581,18 +617,34 @@ def _guard_rejection_shape(sql: str) -> tuple[tuple[str, ...], str]:
 
 
 def guard_rejection_report(
-    records: list[dict[str, Any]], *, top_n: int = 25,
+    records: list[dict[str, Any]], *, include_examples: bool = False, top_n: int = 25,
 ) -> dict[str, Any]:
-    """Counts of guard rejections by ``guard.reason``, and for each reason
-    the most frequent refused-statement *shapes* — REFUSED, NEVER EXECUTED
-    — normalised exactly the way :func:`sql_shape_clusters` normalises
-    executed SQL (tables touched + join-count bucket, via
-    :func:`_guard_rejection_shape`), never the raw statement text. A guard
-    rejection is exactly as privacy-sensitive as an executed query — see
-    the module docstring's "Two modes" section — so this section carries
-    the same shape-only treatment in every mode; there is no
-    ``include_examples`` branch here because there is nothing more
-    permissive to opt into.
+    """Counts of guard rejections by ``guard.reason``; for each reason, a
+    count by ``guard.subject`` (the single keyword/column/table the guard
+    named); and, in the default (safe) mode, the most frequent
+    refused-statement *shapes* — REFUSED, NEVER EXECUTED — normalised
+    exactly the way :func:`sql_shape_clusters` normalises executed SQL
+    (tables touched + join-count bucket, via :func:`_guard_rejection_shape`),
+    never the raw statement text.
+
+    ``guard.subject`` is safe to show unconditionally, in every mode:
+    ``session.models.GuardVerdict.subject``'s own docstring calls it
+    "[s]erver-supplied text originating from the analyst's own question and
+    the schema ... but still untrusted input" — the same status ordinary
+    generated-SQL *shape* already has in this report — and it is already
+    shown to the analyst on screen (``web/js/render/turn.js``), so there is
+    nothing here a reader of this report could not already see in the
+    product. The shape breakdown carries the same "never raw text" rule the
+    rest of this module's default mode follows.
+
+    ``rejected_sql`` itself is the one piece of this section that follows
+    this module's ``include_examples`` opt-in, exactly like ``question``
+    and ``error_message`` elsewhere (see :func:`failure_taxonomy`): when
+    *include_examples* is true, up to 3 verbatim refused statements are
+    attached per reason, each labelled ``"REFUSED, NEVER EXECUTED"`` so a
+    reader can never mistake one for SQL that ran — never populated
+    otherwise, per this module's two-mode design (see the module
+    docstring).
 
     A record counts as a guard rejection when ``guard.verdict ==
     "rejected"`` (read directly off the record, not inferred from
@@ -604,11 +656,16 @@ def guard_rejection_report(
     ``guard.reason`` missing entirely — an older record, or a rejection
     ``GuardVerdict.reason``'s own docstring says predates that field — is
     bucketed under ``"(reason not recorded)"`` rather than dropped.
+    ``guard.subject`` missing or ``None`` — a rejection about the query's
+    shape rather than one nameable identifier — is bucketed under
+    :data:`_NO_SINGLE_SUBJECT` rather than dropped.
 
     A rejection with no ``guard.rejected_sql`` is counted in
     :data:`_STATEMENT_NOT_RECORDED` (per *reason*) rather than skipped
     silently — see that constant's own docstring for the two cases this
-    covers.
+    covers. Such a rejection still contributes to ``by_reason`` and the
+    subject counts (both independent of whether a statement was recorded),
+    just not to the shape breakdown or the examples.
 
     A table-less refusal (``no_table_reference``, or any other reason
     whose statement resolves to zero known tables — a session-state read
@@ -619,18 +676,25 @@ def guard_rejection_report(
     report — see that function's own docstring); that exclusion is correct
     there and is left untouched, but applying it here would silently drop
     exactly the class of rejection — ADR-001's own table-less exclusion —
-    this section exists to surface.
+    this section exists to surface. ``guard.subject`` is exactly what
+    fills the gap a table-less *shape* alone cannot: an unknown-table or
+    state-reading rejection resolves to the same empty shape as any other
+    table-less statement, but its ``subject`` (``"NoSuchTable"``,
+    ``"SERVERPROPERTY"``, ...) says what was actually attempted.
 
     Returned as ``{"total_rejections", "by_reason",
     "statement_not_recorded_total", "statement_not_recorded_by_reason",
-    "refused_statement_shapes_by_reason"}``, the last a ``{reason: [shape,
-    ...]}`` mapping of shapes sorted by descending count and capped at
-    *top_n* per reason, mirroring :func:`sql_shape_clusters`'s own
-    ``top_n`` cap.
+    "subject_counts_by_reason", "refused_statement_shapes_by_reason"}``,
+    plus ``"refused_statement_examples_by_reason"`` when *include_examples*
+    is true. Both the shape and subject mappings are ``{reason: [...]}``,
+    sorted by descending count and capped at *top_n* per reason, mirroring
+    :func:`sql_shape_clusters`'s own ``top_n`` cap.
     """
     by_reason: Counter[str] = Counter()
     not_recorded_by_reason: Counter[str] = Counter()
     shape_counts: Counter[tuple[str, tuple[tuple[str, ...], str]]] = Counter()
+    subject_counts: Counter[tuple[str, str]] = Counter()
+    examples: dict[str, list[dict[str, str]]] = defaultdict(list)
 
     for rec in records:
         guard = rec.get("guard")
@@ -640,12 +704,21 @@ def guard_rejection_report(
         reason = guard.get("reason") or "(reason not recorded)"
         by_reason[reason] += 1
 
+        subject = guard.get("subject") or _NO_SINGLE_SUBJECT
+        subject_counts[(reason, subject)] += 1
+
         rejected_sql = guard.get("rejected_sql")
         if not rejected_sql:
             not_recorded_by_reason[reason] += 1
             continue
 
         shape_counts[(reason, _guard_rejection_shape(rejected_sql))] += 1
+
+        if include_examples and len(examples[reason]) < 3:
+            examples[reason].append({
+                "rejected_sql": rejected_sql,
+                "label": "REFUSED, NEVER EXECUTED",
+            })
 
     by_reason_shapes: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for (reason, (tables, join_bucket)), count in shape_counts.items():
@@ -660,13 +733,26 @@ def guard_rejection_report(
         shapes.sort(key=lambda e: e["count"], reverse=True)
         shapes_result[reason] = shapes[:top_n]
 
-    return {
+    by_reason_subjects: dict[str, Counter[str]] = defaultdict(Counter)
+    for (reason, subject), count in subject_counts.items():
+        by_reason_subjects[reason][subject] = count
+
+    subjects_result: dict[str, dict[str, int]] = {
+        reason: dict(counts.most_common(top_n))
+        for reason, counts in by_reason_subjects.items()
+    }
+
+    result: dict[str, Any] = {
         "total_rejections": sum(by_reason.values()),
         "by_reason": dict(by_reason.most_common()),
         "statement_not_recorded_total": sum(not_recorded_by_reason.values()),
         "statement_not_recorded_by_reason": dict(not_recorded_by_reason.most_common()),
+        "subject_counts_by_reason": subjects_result,
         "refused_statement_shapes_by_reason": shapes_result,
     }
+    if include_examples:
+        result["refused_statement_examples_by_reason"] = {k: v for k, v in examples.items()}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -990,7 +1076,7 @@ def build_report(
         "failure_taxonomy": failure_taxonomy(records, include_examples=include_examples),
         "cache_behaviour": cache_behaviour(records),
         "sql_shape_clusters": sql_shape_clusters(records, include_examples=include_examples),
-        "guard_rejections": guard_rejection_report(records),
+        "guard_rejections": guard_rejection_report(records, include_examples=include_examples),
         "correction_rounds": correction_rounds(records),
         "llm_meta_summary": llm_meta_summary(records),
     }
@@ -1092,6 +1178,13 @@ def render_text(report: dict[str, Any]) -> str:
         w(f"  {_STATEMENT_NOT_RECORDED} by reason:")
         for reason, count in gr["statement_not_recorded_by_reason"].items():
             w(f"    {reason:<25} {count}")
+    w("  subject counts by reason (the single keyword/column/table the "
+      "guard named):")
+    for reason, subjects in gr["subject_counts_by_reason"].items():
+        parts = ", ".join(
+            f"{_safe_display(subject)} ×{count}" for subject, count in subjects.items()
+        )
+        w(f"    {reason}: {parts}")
     w("  refused statement shapes by reason (tables touched + join count; "
       "REFUSED, NEVER EXECUTED):")
     for reason, shapes in gr["refused_statement_shapes_by_reason"].items():
@@ -1137,10 +1230,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Aggregate report over logs/audit_log.jsonl (and rotated backups), "
-            "including a guard-rejection section (counts by reason, plus the "
-            "shape of the most frequently refused statements -- REFUSED, NEVER "
-            "EXECUTED). Default output is fully aggregated and safe to copy off "
-            "the server; see --include-examples."
+            "including a guard-rejection section (counts by reason and by "
+            "subject, plus the shape of the most frequently refused "
+            "statements -- REFUSED, NEVER EXECUTED). Default output is "
+            "fully aggregated and safe to copy off the server; see "
+            "--include-examples for up to 3 verbatim refused statements "
+            "per reason."
         ),
     )
     parser.add_argument(
