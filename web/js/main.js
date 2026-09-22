@@ -163,6 +163,83 @@ function wireTopbar() {
   updateLangSegment();
 }
 
+/** ADR-004 part 1: populate the account menu's "درخواست‌های دسترسی"
+ * (access requests) status list -- the minimal place an analyst can see
+ * their own requests' status and, once denied, the reason. Reuses the
+ * account/menu area (theme/language/API key already live there) instead
+ * of adding a new panel, and refreshes on every menu open rather than
+ * polling, since this list only ever changes as a side effect of the
+ * analyst's own actions (submitting a request) or an admin's (approving/
+ * denying one) elsewhere.
+ *
+ * LIVE mode only -- SIMULATED mode has no server-side request store to
+ * read (turnCtx().onRequestAccess never actually submits one in that
+ * mode either). Every value rendered here (column name, denial reason) is
+ * server-supplied and untrusted -- built with `textContent` assignments
+ * only, the same rule turn.js's own denied-column rendering follows;
+ * never string-built HTML.
+ */
+async function refreshAccessRequestsList() {
+  const host = $("access-requests-list");
+  if (!host) return;
+
+  const showEmpty = (message) => {
+    host.innerHTML = "";
+    const p = document.createElement("p");
+    p.className = "access-requests-empty";
+    p.textContent = message;
+    host.appendChild(p);
+  };
+
+  if (state.mode !== "live") {
+    showEmpty(t("accessRequestsEmpty"));
+    return;
+  }
+
+  const STATUS_LABELS = {
+    open: t("accessRequestStatusOpen"),
+    approved: t("accessRequestStatusApproved"),
+    denied: t("accessRequestStatusDenied"),
+  };
+
+  try {
+    const { access_requests: rows } = await api.listAccessRequests();
+    if (!rows || !rows.length) {
+      showEmpty(t("accessRequestsEmpty"));
+      return;
+    }
+    host.innerHTML = "";
+    for (const row of rows) {
+      const item = document.createElement("div");
+      item.className = "access-request-item";
+
+      const columnEl = document.createElement("span");
+      columnEl.className = "access-request-column";
+      columnEl.textContent = row.column_name;
+      item.appendChild(columnEl);
+
+      const statusEl = document.createElement("span");
+      statusEl.className = `access-request-status access-request-status-${row.status}`;
+      statusEl.textContent = STATUS_LABELS[row.status] || row.status;
+      item.appendChild(statusEl);
+
+      if (row.status === "denied" && row.resolution_note) {
+        const reasonEl = document.createElement("p");
+        reasonEl.className = "access-request-reason";
+        reasonEl.textContent = row.resolution_note;
+        item.appendChild(reasonEl);
+      }
+
+      host.appendChild(item);
+    }
+  } catch (err) {
+    // A missing/unsupported endpoint or a network error must not break
+    // the rest of the menu -- shown as the same empty-state paragraph,
+    // with the real message when there is one.
+    showEmpty((err && err.message) || t("accessRequestsEmpty"));
+  }
+}
+
 /** User menu: theme, language, API key — one popover, not topbar clutter. */
 function wireUserMenu() {
   const btn = $("user-menu-btn");
@@ -176,6 +253,7 @@ function wireUserMenu() {
   const open = () => {
     panel.hidden = false;
     btn.setAttribute("aria-expanded", "true");
+    refreshAccessRequestsList();
   };
 
   btn.addEventListener("click", () => {
@@ -968,6 +1046,27 @@ function turnCtx() {
       $("question").value = `${t.question} (بدون ستون «${column}»)`;
       $("question").focus();
       scrollIntoViewMaybeSmooth($("question"), { block: "center" });
+    },
+    // "درخواست دسترسی" (ADR-004 part 1) -- the denied-column failure
+    // state's second action, beside "پرسش بدون «ستون»"
+    // (DESIGN-INVARIANTS.md §8: "Ask without that column · Request
+    // access"). LIVE mode really submits it, scoped to the session this
+    // transcript is currently showing; the requester is stamped
+    // server-side and the column is re-derived server-side from the audit
+    // record, so this call sends nothing but the turn's own identifiers.
+    // SIMULATED mode has no server to send it to, so it is accepted
+    // locally and shown as such -- mirrors onFlag's own simulated-mode
+    // behaviour just below.
+    onRequestAccess: async (turnId, _column) => {
+      if (state.mode === "live") {
+        if (!state.sessionId) throw new Error("هیچ گفتگوی زنده‌ای در جریان نیست.");
+        return await api.submitAccessRequest(state.sessionId, turnId);
+      }
+      showNotice(
+        "ok",
+        "در حالت نمایشی، درخواست‌های دسترسی به سرور واقعی ارسال نمی‌شوند (فقط شبیه‌سازی محلی).",
+      );
+      return { already_pending: false };
     },
     // "این عدد درست نیست" (admin panel phase 4). LIVE mode really submits
     // it to the backend, against the session this transcript is currently

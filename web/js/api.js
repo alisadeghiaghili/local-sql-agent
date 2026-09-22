@@ -385,6 +385,29 @@ export class Api {
     return res.json();
   }
 
+  /** "درخواست دسترسی" (ADR-004 part 1) -- requests access to the denied
+   * column that caused a guard rejection on this turn. No request body:
+   * the requester is stamped server-side from the authenticated
+   * principal, and the column is resolved server-side from the joined
+   * audit record -- this call has nothing to send but the turn's own
+   * identifiers. Returns the stored (or, on dedup, the already-open)
+   * request row plus `already_pending`. */
+  async submitAccessRequest(sessionId, turnId) {
+    const res = await this._fetchV2(
+      `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/access-request`,
+      { method: "POST" },
+    );
+    return res.json();
+  }
+
+  /** GET /v2/access-requests -- the caller's own access requests, across
+   * every session, with current status and (once resolved) a denial
+   * reason -- the minimal status read the account/menu UI shows. */
+  async listAccessRequests() {
+    const res = await this._fetchV2(`/v2/access-requests`, { method: "GET" });
+    return res.json();
+  }
+
   async patchAssumptions(sessionId, turnId, assumptions) {
     const res = await this._fetchV2(
       `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/assumptions`,

@@ -19,6 +19,7 @@
 "use strict";
 
 import { AdminApi, AdminUnauthorizedError, AdminForbiddenError, AdminApiError } from "./admin.js";
+import { renderAccessRequestsList } from "./access-requests.js";
 import { getApiKey, setApiKey, clearApiKey, hasApiKey } from "../js/apikey.js";
 import { state, loadPersisted, persistTheme, persistBaseUrl, applyTheme } from "../js/state.js";
 
@@ -32,7 +33,7 @@ const $ = (id) => document.getElementById(id);
  * defined" value, so this array cannot sit below the code that runs
  * before the module finishes its first pass. */
 const CARDS = [
-  "summary", "health", "cache", "config", "feedback",
+  "summary", "health", "cache", "config", "feedback", "accessRequests",
   "maintenance", "keys", "schemaDrift", "vocabulary", "usage", "authFailures",
 ];
 
@@ -44,8 +45,17 @@ const CARDS = [
  * serves four of them and `require_operations_or_security` the other six,
  * so a key holding only some of the three legitimately sees a 403 on the
  * rest. Before phase 7 that produced a banner claiming the key was not an
- * admin key at all -- which is false, and points at the wrong fix. */
-const CARDS_WHERE_403_IS_A_CAPABILITY_GAP = new Set(["keys"]);
+ * admin key at all -- which is false, and points at the wrong fix.
+ *
+ * Maps each such card to the ONE capability it needs -- "keys" wants
+ * `operations`, "accessRequests" (ADR-004 part 1, security-only both for
+ * listing and acting) wants `security`; the two must not share one
+ * hardcoded message, or one of them would tell the operator to issue the
+ * wrong kind of key. */
+const CARDS_WHERE_403_IS_A_CAPABILITY_GAP = new Map([
+  ["keys", "operations"],
+  ["accessRequests", "security"],
+]);
 
 loadPersisted();
 applyTheme();
@@ -299,6 +309,9 @@ async function refreshOne(name) {
       const [stats, list] = await Promise.all([api.feedbackStats(), api.feedbackList(status)]);
       _rail.feedback = { ...(stats || {}), ...(list || {}) };
       renderFeedback(stats, list.feedback || []);
+    } else if (name === "accessRequests") {
+      const payload = await api.accessRequestsList();
+      renderAccessRequestsCard(payload.access_requests || []);
     } else if (name === "maintenance") {
       const payload = await api.maintenanceState();
       _rail.maintenance = payload;
@@ -318,9 +331,10 @@ async function refreshOne(name) {
   } catch (err) {
     body.innerHTML = "";
     if (err instanceof AdminForbiddenError && CARDS_WHERE_403_IS_A_CAPABILITY_GAP.has(name)) {
+      const capability = CARDS_WHERE_403_IS_A_CAPABILITY_GAP.get(name);
       body.innerHTML =
-        `<p class="admin-loading">این بخش به نقش <code>operations</code> نیاز دارد و کلید شما آن را ندارد. ` +
-        `کلیدی با <code>--operations</code> (یا <code>--full-admin</code>) صادر کنید — ` +
+        `<p class="admin-loading">این بخش به نقش <code>${capability}</code> نیاز دارد و کلید شما آن را ندارد. ` +
+        `کلیدی با <code>--${capability}</code> (یا <code>--full-admin</code>) صادر کنید — ` +
         `<code>python -m scripts.issue_api_key</code>.</p>`;
     } else if (err instanceof AdminForbiddenError) {
       showForbiddenBanner(
@@ -720,6 +734,47 @@ async function resolveFeedbackRow(btn) {
     await refreshOne("feedback");
   } catch (err) {
     showNotice("error", `ثبت نتیجه ناموفق بود: ${err.message || err}`);
+    btn.disabled = false;
+  }
+}
+
+/* ── ADR-004 part 1: "Request access" triage queue -- security only ──
+ * The DOM building itself lives in access-requests.js (renderAccessRequestsList),
+ * kept separate and import-testable under Node the same way
+ * web/js/render/feedback.js is -- see that module's own docstring. This
+ * function is only the fetch-card glue: which host element, and what the
+ * approve/deny buttons actually do once clicked. */
+
+function renderAccessRequestsCard(rows) {
+  const body = $("accessRequests-body");
+  renderAccessRequestsList(body, rows, {
+    onApprove: (requestId, btn) => approveAccessRequestRow(requestId, btn),
+    onDeny: (requestId, reason, btn) => denyAccessRequestRow(requestId, reason, btn),
+  });
+}
+
+async function approveAccessRequestRow(requestId, btn) {
+  btn.disabled = true;
+  try {
+    await api.approveAccessRequest(requestId);
+    await refreshOne("accessRequests");
+  } catch (err) {
+    showNotice("error", `تأیید درخواست دسترسی ناموفق بود: ${err.message || err}`);
+    btn.disabled = false;
+  }
+}
+
+async function denyAccessRequestRow(requestId, reason, btn) {
+  if (!reason || !reason.trim()) {
+    showNotice("error", "برای رد درخواست، نوشتن دلیل الزامی است.");
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api.denyAccessRequest(requestId, reason.trim());
+    await refreshOne("accessRequests");
+  } catch (err) {
+    showNotice("error", `رد درخواست دسترسی ناموفق بود: ${err.message || err}`);
     btn.disabled = false;
   }
 }

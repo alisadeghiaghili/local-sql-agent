@@ -39,6 +39,7 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
+import api.admin_access_requests_routes as admin_access_requests_routes
 import api.admin_config_routes as admin_config_routes
 import api.admin_feedback_routes as admin_feedback_routes
 import api.admin_ops_routes as admin_ops_routes
@@ -346,6 +347,10 @@ app.include_router(admin_config_routes.router)
 
 # --- Admin panel, phase 4: wrong-answer feedback and its triage ---
 app.include_router(admin_feedback_routes.router)
+
+# --- ADR-004 part 1: "Request access" from a denied-column guard
+#     rejection -- security-only triage queue ---
+app.include_router(admin_access_requests_routes.router)
 
 # --- Admin panel, phase 6: the operational tier (maintenance mode,
 #     schema drift, vocabulary freshness, per-analyst usage, cache

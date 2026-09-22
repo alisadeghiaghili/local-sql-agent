@@ -26,13 +26,19 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import config as cfg
 from api.auth import require_principal
 from api.maintenance import require_not_in_maintenance
+from appdb.access_requests import (
+    NotDeniedColumnError,
+    TurnNotAuditedError as AccessRequestTurnNotAuditedError,
+    list_requests as list_access_requests,
+    submit_request,
+)
 from appdb.feedback import TurnNotAuditedError, list_feedback, submit_flag
 from knowledge.memory_policy import get_memory_keys
 from security.auth import Principal
@@ -672,6 +678,77 @@ def get_turn_feedback(
 
     all_for_session = list_feedback(session_id=session_id)
     return {"feedback": [f for f in all_for_session if f["turn_id"] == turn_id]}
+
+
+# ---------------------------------------------------------------------------
+# POST /v2/sessions/{sid}/turns/{tid}/access-request -- ADR-004 part 1
+# ---------------------------------------------------------------------------
+# "Request access", the next action DESIGN-INVARIANTS.md §8's failure-
+# anatomy table names beside "Ask without that column" for a denied-column
+# guard rejection. Ownership is enforced exactly like the feedback routes
+# above (_require_owned_session -- 404, never 403, for a turn on someone
+# else's session). The request body carries only session_id/turn_id (path
+# parameters, not even a JSON body): the requester is stamped server-side
+# from the authenticated principal, and the column is re-derived
+# server-side from the joined audit record -- appdb.access_requests never
+# accepts either from the client, so there is nothing here for a client to
+# forge.
+
+
+@router.post(
+    "/sessions/{session_id}/turns/{turn_id}/access-request",
+    status_code=201,
+    summary="Request access to this turn's denied column (analyst-facing, ADR-004)",
+)
+def submit_access_request(
+    session_id: str,
+    turn_id: str,
+    response: Response,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+
+    if get_session_store().find_turn(record, turn_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown turn_id: {turn_id!r}")
+
+    try:
+        row, created = submit_request(
+            session_id=session_id, turn_id=turn_id, requester_principal_id=principal.id,
+        )
+    except AccessRequestTurnNotAuditedError as exc:
+        # Same reasoning as submit_turn_feedback's identical branch: the
+        # turn exists in the session store but no audit record can be
+        # joined to it (the audit log has since rotated past it) -- 422,
+        # not 404: the turn itself is real, only the join failed.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NotDeniedColumnError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # 200 for "this merged into an existing open request" vs. 201 for a
+    # genuinely new one -- the default the route decorator sets is for the
+    # common case; this is the one branch that must override it.
+    if not created:
+        response.status_code = 200
+    return {"already_pending": not created, **row}
+
+
+@router.get(
+    "/access-requests",
+    summary="The caller's own access requests and their status (analyst-facing, ADR-004)",
+)
+def list_own_access_requests(principal: Principal = Depends(require_principal)) -> dict[str, Any]:
+    """The minimal status read an analyst needs: every request THEY raised,
+    across every session, with its current status and -- once resolved --
+    a denial reason. Scoped by `requester_principal_id` alone (never by
+    session), the same "an id, never a second store" posture the rest of
+    this module holds; a security admin's denial reason is visible here
+    because this read is already confined to the requester's own rows,
+    never to the general triage queue (`api/admin_access_requests_routes.py`)."""
+    return {"access_requests": list_access_requests(requester_principal_id=principal.id)}
 
 
 # ---------------------------------------------------------------------------

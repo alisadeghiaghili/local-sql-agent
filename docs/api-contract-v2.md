@@ -81,6 +81,8 @@ DELETE /v2/sessions/{sid}               → drop (and free cached state)
 POST   /v2/sessions/{sid}/turns         → ask; returns a Turn
 POST   /v2/sessions/{sid}/turns?stream=1 → same, as SSE
 PATCH  /v2/sessions/{sid}/turns/{tid}/assumptions → re-run with edited assumptions
+POST   /v2/sessions/{sid}/turns/{tid}/access-request → request access to this turn's denied column
+GET    /v2/access-requests              → the caller's own access requests + status
 GET    /v2/memory                       → the caller's entries + which keys are rememberable
 PUT    /v2/memory/{key}                 → set one entry
 DELETE /v2/memory/{key}                 → forget one
@@ -99,6 +101,29 @@ governs how long it stays listable/reopenable at all.
 `PATCH .../assumptions` is what makes the assumption chips in the UI
 interactive: the client sends back a modified assumption set and gets a fresh
 turn. It does not mutate the original turn.
+
+`POST .../access-request` is "Request access" (ADR-004 part 1;
+`docs/design/DESIGN-INVARIANTS.md` §8's failure-anatomy table names it beside
+"Ask without that column" for a denied-column guard rejection). No request
+body: the caller is stamped server-side from the authenticated principal, and
+the column is re-derived server-side by joining `session_id`/`turn_id` back to
+the audit record and reading `guard.subject` — it must be a turn whose
+`guard.reason == "denied_column"`, and nothing here ever accepts a column name
+from the client. Session/turn ownership is enforced the same way as every
+other route in this module (404, never 403, for a turn on someone else's
+session). While an open request already exists for the same principal and
+column, a second call returns that existing request (`already_pending: true`,
+HTTP 200) instead of creating another (HTTP 201 for a new one). Approving or
+denying the request is a `security`-only admin action
+(`POST /admin/access-requests/{id}/approve` / `.../deny`, out of scope for
+this document — see the admin panel's own routes) that widens `denied_columns`
+on every live key the requester holds, through the existing ACL path.
+
+`GET /v2/access-requests` is the caller's own minimal status read — every
+access request they raised, across every session, with its current status and,
+once denied, the reason. Scoped by the caller's principal id alone; a security
+admin's denial reason is visible here precisely because this read is already
+confined to the requester's own rows.
 
 `GET /v2/sessions` — the conversation index, owner-scoped (a caller only ever
 sees sessions it created):

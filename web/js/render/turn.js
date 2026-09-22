@@ -49,6 +49,7 @@ function el(tag, className, text) {
  *   onRerun?: (turnId: string) => void,
  *   onRephrase?: (turnId: string) => void,
  *   onAskWithoutColumn?: (turnId: string, column: string) => void,
+ *   onRequestAccess?: (turnId: string, column: string) => Promise<{already_pending: boolean}>,
  *   onFlag?: (turnId: string, category: string, note: string) => Promise<void>,
  *   progressive?: boolean,
  * }} ctx
@@ -550,6 +551,7 @@ function actionsFor(kinds, ctx, turnId) {
  *   onRerun?: (turnId: string) => void,
  *   onRephrase?: (turnId: string) => void,
  *   onAskWithoutColumn?: (turnId: string, column: string) => void,
+ *   onRequestAccess?: (turnId: string, column: string) => Promise<{already_pending: boolean}>,
  * }} ctx
  * @returns {HTMLElement|null}
  */
@@ -585,6 +587,20 @@ function renderFailureState(turn, ctx) {
       actions.push([
         `پرسش بدون «${subject}»`,
         () => ctx.onAskWithoutColumn(turn.turn_id, subject),
+      ]);
+    }
+    // "Request access" (ADR-004 part 1) -- the second action
+    // DESIGN-INVARIANTS.md §8's table names for this row, right beside
+    // "Ask without that column". Unlike every other action in this
+    // banner (all synchronous: they only put an edited question back in
+    // the input box), this one is a real network call, so it cannot be a
+    // plain onClick -- see handleRequestAccessClick for how it shows its
+    // own outcome inline instead of silently doing something elsewhere on
+    // the page.
+    if (reason === "denied_column" && subject && ctx.onRequestAccess) {
+      actions.push([
+        "درخواست دسترسی",
+        (evt) => handleRequestAccessClick(evt, turn.turn_id, subject, ctx.onRequestAccess),
       ]);
     }
     // The generic action stays as a fallback for every OTHER guard
@@ -689,6 +705,66 @@ function renderFailureState(turn, ctx) {
       });
     }
   }
+}
+
+/**
+ * "درخواست دسترسی" click handler (ADR-004 part 1). Reads the button from
+ * the click event itself (`evt.currentTarget`) rather than a closed-over
+ * reference, since `buildFailureBanner` builds the actual `<button>`
+ * element after this handler is constructed in `renderFailureState`.
+ *
+ * Shows its own outcome inline, in the banner, right after the actions
+ * row: a pending confirmation on success (worded differently for a fresh
+ * request vs. one that merged into an already-open request -- the
+ * `already_pending` flag `Api.submitAccessRequest` returns), or the
+ * failure message with the control re-enabled to retry, mirroring
+ * render/feedback.js's own recovery pattern for a rejected submission.
+ *
+ * `column` is untrusted (`GuardVerdict.subject`, server-supplied) and is
+ * rendered only through `.textContent` assignment below -- never
+ * interpolated into markup -- per DESIGN-INVARIANTS.md §1.3's rendering
+ * rule.
+ *
+ * @param {MouseEvent} evt
+ * @param {string} turnId
+ * @param {string} column
+ * @param {(turnId: string, column: string) => Promise<{already_pending: boolean}>} onRequestAccess
+ */
+function handleRequestAccessClick(evt, turnId, column, onRequestAccess) {
+  const btn = /** @type {HTMLButtonElement} */ (evt.currentTarget);
+  const banner = btn.closest(".failure-state");
+  if (!banner) return;
+
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = "در حال ارسال…";
+
+  let status = banner.querySelector(".request-access-status");
+  if (!status) {
+    status = el("p", "request-access-status");
+    const actionsRow = btn.closest(".failure-actions");
+    if (actionsRow && actionsRow.parentNode) {
+      actionsRow.parentNode.insertBefore(status, actionsRow.nextSibling);
+    } else {
+      banner.appendChild(status);
+    }
+  }
+  status.textContent = "";
+  status.classList.remove("ok", "error");
+
+  onRequestAccess(turnId, column).then((result) => {
+    btn.textContent = "درخواست ارسال شد ✓";
+    const alreadyPending = !!(result && result.already_pending);
+    status.textContent = alreadyPending
+      ? `درخواست دسترسی به «${column}» پیش‌تر ثبت شده و در انتظار بررسی است.`
+      : `درخواست دسترسی به «${column}» ثبت شد و در انتظار بررسی است.`;
+    status.classList.add("ok");
+  }).catch((err) => {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+    status.textContent = (err && err.message) || "ثبت درخواست دسترسی ناموفق بود.";
+    status.classList.add("error");
+  });
 }
 
 /**
