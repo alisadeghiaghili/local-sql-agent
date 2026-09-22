@@ -514,7 +514,10 @@ class OpenAIBackend(LLMBackend):
         last_exc: Exception | None = None
 
         for attempt in range(1, self._retries + 1):
-            start = time.monotonic()
+            # perf_counter, not monotonic: monotonic() is GetTickCount64-backed
+            # on Windows before Python 3.13 (~15.6ms resolution), which would
+            # quantise -- or zero out -- total_ms for any fast response.
+            start = time.perf_counter()
             try:
                 resp = requests.post(
                     f"{self._base_url}/chat/completions",
@@ -548,7 +551,7 @@ class OpenAIBackend(LLMBackend):
                     "raw": body,
                     "endpoint_status": resp.status_code,
                     "attempts": attempt,
-                    "total_ms": round((time.monotonic() - start) * 1000),
+                    "total_ms": round((time.perf_counter() - start) * 1000),
                     "finish_reason": _normalize_finish_reason(choice.get("finish_reason")),
                     "reasoning_detected": reasoning_detected,
                 }
