@@ -5,6 +5,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [5.2.0] — 2026-09-24
+
+A security fix and the first of the refusal actions the design has always
+specified but the product never offered.
+
+The security fix is the same class as finding #11 of the 4.12.1 audit, this
+time for the database rather than the model endpoint: when a query failed, the
+raw database error reached the analyst, carrying the server's host, port and
+instance, the database login name, the database name, and the full SQL with its
+bound parameter values. No passwords and no data rows were exposed, but it was
+a map of the infrastructure handed to anyone who could make a query fail.
+
+The rest is about what an analyst can do when the answer is "no". A refusal
+over a restricted column now offers a way to ask for that column; a refusal of
+any kind now shows the statement that was refused; and every failure is
+explained in Persian, in the analyst's terms, instead of in the backend's
+English. The test matrix also grew to Windows and macOS, which surfaced a real
+bug in how the router measured latency on Windows.
+
+### Security
+
+- **Database error text no longer leaks infrastructure detail (PR #109).** Before this change, when a query failed, `database/executor.py` wrapped the raw SQLAlchemy error and both the v2 conversation path and the v1 `/query` path showed it to the analyst. Depending on the database that exposed the server host, port and instance, the driver name and version, the database login name, the database name, and — for any execution error — the full SQL and the bound parameter values. It is the same class of problem as finding #11 in the 4.12.1 audit (the model endpoint), this time for the database. Now one shared classifier (`database/errors.py`) handles every path: connection and login failures become `DATABASE_UNAVAILABLE` and timeouts become `QUERY_TIMEOUT`, both with generic messages; a malformed query shows only the database's own sentence (for example `Invalid column name 'X'. (207)`). It fails closed: database text is shown only when the error is positively recognised as a statement error, and a final check replaces any text that still contains an IP address, a port, `user@host`, or driver/host/login wording. The full raw error is still written to the server log. Recognised across SQL Server, PostgreSQL, MySQL and SQLite.
+
+### Added
+
+- **"Request access" on a denied-column refusal (PR #110).** When the guard refuses a question because a column is restricted for the analyst's account, the refusal card now offers «درخواست دسترسی». A `security` admin reviews the request in the admin panel and approves or denies it (a denial needs a reason, which the analyst can see; the analyst sees their requests' status in the account menu). Approval removes that column from `denied_columns` on every live key the person holds; revoked keys are never touched. The column is taken from the server-side audit record, never from what the browser sends, and approval goes through the existing permission-changing code, so no new code path can widen access. A second request for the same column while one is open merges into it. New table `access_requests`.
+- **"See the SQL" on a guard refusal (PR #105).** The statement the guard refused is now kept, as `guard.rejected_sql`, and shown behind a collapsed «دیدن SQL», clearly labelled as not run. It deliberately does not reuse `Turn.sql`, which means "the SQL that ran". The refused statement is now also kept in the audit record, so operators can see what was blocked.
+- **The audit-log report shows what the guard refused (PR #106).** `scripts/analyze_audit_log.py` gains a section with refusals counted by reason and by subject (for example `SERVERPROPERTY ×2`). Verbatim refused statements appear only with `--include-examples`, so the default report stays safe to copy off the server.
+
+### Changed
+
+- **Every failure the analyst sees now has a Persian sentence (PR #107).** One sentence per error code and one per guard-refusal reason; the backend's English message no longer appears in those banners (it stays in the server log). Failures raised at the HTTP level, such as maintenance mode, now keep their real code instead of being reported as a network error. The out-of-scope message no longer names a specific deployment's domain.
+- **CI runs on Windows and macOS as well as Linux (PRs #101, #104),** across Python 3.11, 3.12 and 3.13. Getting there fixed a real bug: router latency budgets did not work on Windows before Python 3.13, where `time.monotonic()` resolves to only about 15.6 ms, so any backend call faster than that measured as zero and a budget breach was never detected; latency is now measured with `time.perf_counter()`.
+
+### Fixed
+
+- **Identifiers containing `]` no longer break retrieval queries (PR #103).** The two query builders in `retrieval/` wrapped names in square brackets by hand without escaping; they now use sqlglot to quote identifiers.
+- **The CI doctest step no longer opens real database connections (PR #102).** Doctests in `eval/runner.py` started background threads that tried to reach the configured warehouse host.
+
+### Upgrading
+
+- The new `access_requests` table is created automatically when the application starts, like the other application-database tables, so the default setup needs no manual step.
+- Deployments that manage the application database schema with Alembic instead should run `alembic upgrade head` from the repository root; it applies migration `0004_access_requests`.
+
 ## [5.1.0] — 2026-09-20
 
 A security release for the SQL guard. Tables and columns had long since moved
