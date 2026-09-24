@@ -7,9 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [5.2.0] — 2026-09-24
 
-This release hardens the security boundary between what a database returns and what an analyst sees, closes a reconnaissance channel on the column access system, and brings the test suite to Windows and macOS.
+A security fix and the first of the refusal actions the design has always
+specified but the product never offered.
 
-The database error text hardening closes a class of leak found in security audit #11: when a query fails, raw database errors exposed infrastructure topology, credentials, and query details. Now a classifier maps connection and execution failures to generic messages, and a final check scrubs any remaining text for IP addresses, ports, or driver/credential wording. The guard refusal path gains visibility into the denied columns, so an analyst can ask for access rather than submitting requests to an operator. The test infrastructure now covers Windows and macOS, which fixed a real bug in latency measurement that broke on systems where `time.time()` has low resolution.
+The security fix is the same class as finding #11 of the 4.12.1 audit, this
+time for the database rather than the model endpoint: when a query failed, the
+raw database error reached the analyst, carrying the server's host, port and
+instance, the database login name, the database name, and the full SQL with its
+bound parameter values. No passwords and no data rows were exposed, but it was
+a map of the infrastructure handed to anyone who could make a query fail.
+
+The rest is about what an analyst can do when the answer is "no". A refusal
+over a restricted column now offers a way to ask for that column; a refusal of
+any kind now shows the statement that was refused; and every failure is
+explained in Persian, in the analyst's terms, instead of in the backend's
+English. The test matrix also grew to Windows and macOS, which surfaced a real
+bug in how the router measured latency on Windows.
 
 ### Security
 
@@ -17,14 +30,14 @@ The database error text hardening closes a class of leak found in security audit
 
 ### Added
 
-- **"Request access" on a denied-column refusal (PR #110).** When the guard refuses a question because a column is restricted for the analyst's account, the refusal card now offers a request action. A `security` admin reviews the request in the admin panel and approves or denies it (a denial needs a reason, which the analyst can see; the analyst sees their requests' status in the account menu). Approval removes that column from `denied_columns` on every live key the person holds; revoked keys are never touched. The column is taken from the server-side audit record, never from what the browser sends, and approval goes through the existing permission-changing code, so no new code path can widen access. A second request for the same column while one is open merges into it. New table `access_requests`.
-- **"See the SQL" on a guard refusal (PR #105).** The statement the guard refused is now kept, as `guard.rejected_sql`, and shown behind a collapsed detail toggle, clearly labelled as not run. It deliberately does not reuse `Turn.sql`, which means "the SQL that ran". The refused statement is now also kept in the audit record, so operators can see what was blocked.
+- **"Request access" on a denied-column refusal (PR #110).** When the guard refuses a question because a column is restricted for the analyst's account, the refusal card now offers «درخواست دسترسی». A `security` admin reviews the request in the admin panel and approves or denies it (a denial needs a reason, which the analyst can see; the analyst sees their requests' status in the account menu). Approval removes that column from `denied_columns` on every live key the person holds; revoked keys are never touched. The column is taken from the server-side audit record, never from what the browser sends, and approval goes through the existing permission-changing code, so no new code path can widen access. A second request for the same column while one is open merges into it. New table `access_requests`.
+- **"See the SQL" on a guard refusal (PR #105).** The statement the guard refused is now kept, as `guard.rejected_sql`, and shown behind a collapsed «دیدن SQL», clearly labelled as not run. It deliberately does not reuse `Turn.sql`, which means "the SQL that ran". The refused statement is now also kept in the audit record, so operators can see what was blocked.
 - **The audit-log report shows what the guard refused (PR #106).** `scripts/analyze_audit_log.py` gains a section with refusals counted by reason and by subject (for example `SERVERPROPERTY ×2`). Verbatim refused statements appear only with `--include-examples`, so the default report stays safe to copy off the server.
 
 ### Changed
 
 - **Every failure the analyst sees now has a Persian sentence (PR #107).** One sentence per error code and one per guard-refusal reason; the backend's English message no longer appears in those banners (it stays in the server log). Failures raised at the HTTP level, such as maintenance mode, now keep their real code instead of being reported as a network error. The out-of-scope message no longer names a specific deployment's domain.
-- **CI runs on Windows and macOS as well as Linux (PRs #101, #104),** across Python 3.11, 3.12 and 3.13. Getting there fixed a real bug: router latency budgets did not work on Windows because of timer resolution; latency is now measured with `perf_counter`.
+- **CI runs on Windows and macOS as well as Linux (PRs #101, #104),** across Python 3.11, 3.12 and 3.13. Getting there fixed a real bug: router latency budgets did not work on Windows before Python 3.13, where `time.monotonic()` resolves to only about 15.6 ms, so any backend call faster than that measured as zero and a budget breach was never detected; latency is now measured with `time.perf_counter()`.
 
 ### Fixed
 
