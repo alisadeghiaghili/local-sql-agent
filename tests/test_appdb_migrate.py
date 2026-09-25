@@ -33,6 +33,7 @@ import config as cfg
 from appdb.engine import build_engine
 from appdb.migrate import (
     MigrationRefusedError,
+    _build_reseed_statement,
     check_schema_version,
     current_schema_version,
     export_database,
@@ -702,3 +703,141 @@ class TestNothingInTheCopyOpensASecondConnection:
         assert not empty, (
             f"these tables were copied but landed empty on the target: {empty}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Identifier quoting in reseed statements
+# ---------------------------------------------------------------------------
+
+class TestReseedStatementQuoting:
+    """Test that _build_reseed_statement safely quotes identifiers with special characters."""
+
+    def test_mssql_normal_table_name(self):
+        """Normal table name in MSSQL -- no special characters."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mssql", preparer, "my_table", 42)
+        assert "DBCC CHECKIDENT" in stmt
+        assert "RESEED, 42" in stmt
+        # MSSQL preparer only adds brackets for special characters; normal names pass through
+        quoted = preparer.quote("my_table")
+        assert quoted in stmt
+
+    def test_mssql_table_name_with_bracket(self):
+        """Table name containing a closing bracket in MSSQL."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table]Name"
+        stmt = _build_reseed_statement("mssql", preparer, table_name, 100)
+        assert "DBCC CHECKIDENT" in stmt
+        assert "RESEED, 100" in stmt
+        # MSSQL preparer escapes brackets: ] becomes ]]
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+
+    def test_mssql_table_name_with_single_quote(self):
+        """Table name containing a single quote in MSSQL."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table'Name"
+        stmt = _build_reseed_statement("mssql", preparer, table_name, 50)
+        assert "DBCC CHECKIDENT" in stmt
+        assert "RESEED, 50" in stmt
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+        # The quoted identifier should be in square brackets: [Table'Name]
+        # (single quotes inside square brackets don't need escaping)
+        assert "[Table'Name]" in stmt
+
+    def test_mssql_table_name_with_backtick(self):
+        """Table name containing a backtick in MSSQL."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table`Name"
+        stmt = _build_reseed_statement("mssql", preparer, table_name, 75)
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+
+    def test_mysql_normal_table_name(self):
+        """Normal table name in MySQL -- no special characters."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mysql", preparer, "my_table", 42)
+        assert "ALTER TABLE" in stmt
+        assert "AUTO_INCREMENT = 43" in stmt
+        # MySQL preparer only adds backticks for special characters; normal names pass through
+        quoted = preparer.quote("my_table")
+        assert quoted in stmt
+
+    def test_mysql_table_name_with_single_quote(self):
+        """Table name containing a single quote in MySQL."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table'Name"
+        stmt = _build_reseed_statement("mysql", preparer, table_name, 100)
+        assert "ALTER TABLE" in stmt
+        assert "AUTO_INCREMENT = 101" in stmt
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+
+    def test_mysql_table_name_with_backtick(self):
+        """Table name containing a backtick in MySQL."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table`Name"
+        stmt = _build_reseed_statement("mysql", preparer, table_name, 55)
+        assert "ALTER TABLE" in stmt
+        assert "AUTO_INCREMENT = 56" in stmt
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+        # MySQL escapes backticks by doubling them
+        assert "`Table``Name`" in stmt
+
+    def test_mysql_table_name_with_bracket(self):
+        """Table name containing a bracket in MySQL."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table]Name"
+        stmt = _build_reseed_statement("mysql", preparer, table_name, 30)
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+
+    def test_complex_table_name_mssql(self):
+        """Table name with multiple special characters in MSSQL."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table]With'Both`Chars"
+        stmt = _build_reseed_statement("mssql", preparer, table_name, 99)
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+        assert "DBCC CHECKIDENT" in stmt
+
+    def test_complex_table_name_mysql(self):
+        """Table name with multiple special characters in MySQL."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        table_name = "Table]With'Both`Chars"
+        stmt = _build_reseed_statement("mysql", preparer, table_name, 88)
+        quoted = preparer.quote(table_name)
+        assert quoted in stmt
+        assert "ALTER TABLE" in stmt

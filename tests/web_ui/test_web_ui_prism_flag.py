@@ -24,6 +24,7 @@ Policy: `docs/design/DESIGN.md` §16 (prettify + highlight pipeline).
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -48,7 +49,7 @@ def test_the_patch_marker_is_not_enumerable_on_the_grammar() -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=30,
+        timeout=NODE_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, (
         "prism-tsql-patch flag check failed.\n"

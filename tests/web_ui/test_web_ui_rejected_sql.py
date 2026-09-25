@@ -31,6 +31,7 @@ Node (see ``run_rejected_sql.mjs``) and asserts:
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -213,7 +214,7 @@ def test_see_the_sql_reveal_is_collapsed_safe_and_falls_back_on_null() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

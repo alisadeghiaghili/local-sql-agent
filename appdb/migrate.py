@@ -550,11 +550,48 @@ def check_target_is_empty(engine: Engine) -> None:
                 )
 
 
+def _build_reseed_statement(dialect: str, preparer, table_name: str, max_id: int) -> str:
+    """Build the reseed statement for a given dialect.
+
+    Uses the dialect's identifier_preparer to safely quote the table name,
+    handling special characters like quotes and brackets.
+
+    Parameters
+    ----------
+    dialect : str
+        The dialect name ('mssql', 'mysql', etc.)
+    preparer
+        The engine's dialect.identifier_preparer
+    table_name : str
+        The table name to reseed
+    max_id : int
+        The maximum ID to reseed to
+
+    Returns
+    -------
+    str
+        The SQL statement text
+    """
+    quoted_table = preparer.quote(table_name)
+
+    if dialect == "mssql":
+        # Use bracket-quoted identifier directly in DBCC statement
+        return f"DBCC CHECKIDENT ({quoted_table}, RESEED, {int(max_id)})"
+    elif dialect == "mysql":
+        # ALTER TABLE accepts identifiers directly
+        return f"ALTER TABLE {quoted_table} AUTO_INCREMENT = {int(max_id) + 1}"
+    else:
+        raise ValueError(f"Unsupported dialect for reseed: {dialect}")
+
+
 def _reset_autoincrement(conn, engine: Engine, table: Table, pk_column: str) -> None:
     """Reseed *table*'s autoincrement sequence to ``MAX(pk_column) + 1`` on
     the target, after inserting rows with explicit primary-key values --
     without this, the running application's *next* insert (which supplies
     no explicit id) could collide with one this tool just copied in.
+
+    Identifiers are safely quoted using the dialect's identifier_preparer
+    to handle special characters in table names.
     """
     max_id = conn.execute(select(func.max(table.c[pk_column]))).scalar()
     if max_id is None:
@@ -567,12 +604,18 @@ def _reset_autoincrement(conn, engine: Engine, table: Table, pk_column: str) -> 
             {"t": table.name, "c": pk_column, "v": max_id},
         )
     elif dialect == "mssql":
-        # DBCC CHECKIDENT does not accept the reseed value as a bind
-        # parameter; table.name and max_id are both this module's own
-        # values, never user input, so inlining them is safe here.
-        conn.execute(text(f"DBCC CHECKIDENT ('{table.name}', RESEED, {int(max_id)})"))
+        # DBCC CHECKIDENT does not accept the reseed value as a bind parameter.
+        # Use _build_reseed_statement to safely quote the table name.
+        stmt = _build_reseed_statement(
+            dialect, engine.dialect.identifier_preparer, table.name, max_id
+        )
+        conn.execute(text(stmt))
     elif dialect == "mysql":
-        conn.execute(text(f"ALTER TABLE {table.name} AUTO_INCREMENT = {int(max_id) + 1}"))
+        # ALTER TABLE accepts identifiers. Use _build_reseed_statement to safely quote.
+        stmt = _build_reseed_statement(
+            dialect, engine.dialect.identifier_preparer, table.name, max_id
+        )
+        conn.execute(text(stmt))
     elif dialect == "sqlite":
         # appdb.models declares these columns without Table's
         # sqlite_autoincrement=True kwarg, so the DDL SQLAlchemy emits for

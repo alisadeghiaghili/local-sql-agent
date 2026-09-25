@@ -26,6 +26,7 @@ every other harness in this directory.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -63,7 +64,7 @@ def test_admin_access_requests_list_renders_safely_and_wires_approve_deny() -> N
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (
