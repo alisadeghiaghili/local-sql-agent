@@ -16,10 +16,13 @@
 //   is present);
 // * MODEL_UNAVAILABLE keeps its existing Persian lead but no longer shows
 //   the English "why" line;
-// * QUERY_EXECUTION_ERROR, LLM_OUTPUT_TRUNCATED and FORBIDDEN_SQL are
-//   UNCHANGED -- they still show `turn.error.message` as their "why" line
-//   (the first is being reworked in a parallel change; this suite only
-//   proves this task did not disturb the other two);
+// * LLM_OUTPUT_TRUNCATED and FORBIDDEN_SQL are UNCHANGED -- they still show
+//   `turn.error.message` as their "why" line (this suite only proves this
+//   task did not disturb either one). QUERY_EXECUTION_ERROR is NOT covered
+//   here -- see tests/web_ui/run_execution_error_copy.mjs, which drives its
+//   own dedicated scenarios (a labelled, dir="ltr" technical-detail line
+//   instead of a "why" line, and suppressed entirely for the backend's
+//   generic fallback message);
 // * a code this UI has never seen before renders the INTERNAL_ERROR
 //   sentence, not the raw code and not the (fabricated) English message;
 // * each closed-set `GuardVerdict.reason` renders its own sentence, with
@@ -298,13 +301,12 @@ console.log("[ok] all table-driven error codes render their Persian sentence wit
   console.log("[ok] MODEL_UNAVAILABLE: unchanged Persian lead, English why line removed");
 }
 
-/* ── Scenario C: QUERY_EXECUTION_ERROR, LLM_OUTPUT_TRUNCATED and
- * FORBIDDEN_SQL are UNCHANGED -- they still show turn.error.message as
- * their "why" line (the first is being reworked in a parallel change to
- * this same file; this only proves this task did not touch the other
- * two). ─────────────────────────────────────────────────────────────── */
+/* ── Scenario C: LLM_OUTPUT_TRUNCATED and FORBIDDEN_SQL are UNCHANGED --
+ * they still show turn.error.message as their "why" line. (QUERY_EXECUTION_
+ * ERROR is deliberately not in this list -- it no longer shows a "why" line
+ * at all; see run_execution_error_copy.mjs.) ──────────────────────────── */
 
-for (const code of ["QUERY_EXECUTION_ERROR", "LLM_OUTPUT_TRUNCATED", "FORBIDDEN_SQL"]) {
+for (const code of ["LLM_OUTPUT_TRUNCATED", "FORBIDDEN_SQL"]) {
   const { ctx } = fullCtx();
   const turn = baseErrorTurn({ error: { code, message: ENGLISH_MARKER, request_id: "req_3" } });
   const card = createTurnCard(turn, ctx);

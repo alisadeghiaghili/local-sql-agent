@@ -1,40 +1,43 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""Every failure the analyst sees gets a Persian, analyst-facing sentence.
+"""``QUERY_EXECUTION_ERROR`` must never show raw backend English under its
+Persian lead.
 
-``docs/design/DESIGN-INVARIANTS.md`` §8 requires "what happened, in the
-analyst's terms, not the system's" for every failure state. Before this
-task, ``web/js/render/turn.js`` broke that rule twice over:
-
-* the ``MODEL_UNAVAILABLE`` banner's "why" line was ``turn.error.message``
-  -- raw English straight from ``session/engine.py`` -- inside an
-  otherwise entirely Persian UI;
-* every error code without its own bespoke ``case`` fell through to
-  ``default:``, whose LEAD sentence *was* ``turn.error.message``
-  (``MODEL_TIMEOUT``, ``OUT_OF_SCOPE``, ``NO_PREVIOUS_TURN``,
-  ``EMPTY_SQL_RESPONSE``, ...);
-* every guard rejection except ``denied_column`` got one generic sentence
-  regardless of ``turn.guard.reason``.
+Before this task, ``web/js/render/turn.js``'s ``QUERY_EXECUTION_ERROR`` case
+passed ``turn.error.message`` straight through as the banner's "why" line.
+That message is either the database's own sentence for a bad statement, or
+``database/errors.py``'s generic fallback (``_GENERIC_STATEMENT_MESSAGE``,
+``"The database rejected the query."``) -- either way, plain English shown
+directly under an otherwise entirely Persian sentence. This task introduces
+``DB_GENERIC_REJECTION`` (checked against the backend by
+``tests/test_failure_copy_parity.py``) to suppress the fallback case
+entirely, and an optional ``detail`` parameter on ``buildFailureBanner`` to
+render a database-specific message as a labelled, ``dir="ltr"`` technical
+detail instead of the "why" line.
 
 This drives the REAL ``web/js/render/turn.js`` (and its full real render
-dependency chain, same staging as ``test_web_ui_turn_anatomy.py``) under
-Node (see ``run_failure_sentences.mjs``) and asserts, for every code in
-the owner-approved mapping table: the rendered banner's lead is the exact
-Persian sentence, the English backend message a fixture supplies is
-ABSENT from the card's text, and the expected action buttons are present
-(and only when their callback was actually wired). It also asserts an
-unrecognised code falls back to the ``INTERNAL_ERROR`` sentence, that
-``LLM_OUTPUT_TRUNCATED``/``FORBIDDEN_SQL`` are untouched (still showing
-``turn.error.message`` as their "why" line), and that every closed-set
-``GuardVerdict.reason`` renders its own sentence. ``QUERY_EXECUTION_ERROR``
-is NOT covered here -- see
-``run_execution_error_copy.mjs``/``test_web_ui_execution_error_copy.py``
-for its own dedicated scenarios.
+dependency chain, same staging as ``test_web_ui_failure_sentences.py``)
+under Node (see ``run_execution_error_copy.mjs``) and asserts, for each
+scenario:
 
-Database-agnostic by construction: every fixture value (turn ids,
-questions, the guard's ``subject`` column name, the guard's rejected-table
-name) is synthetic text invented for this test, never a real schema/table
-identifier.
+* (a) the generic fallback message: the card shows the existing Persian
+      lead and neither the English fallback text nor any detail line;
+* (b) a database-specific message (e.g. an invalid-column error): the
+      Persian label is exactly the expected 17-character string, contains
+      no ASCII letters, and the message sits inside a ``dir="ltr"``
+      element;
+* (c) an HTML-injection attempt as the message: it renders as inert text,
+      never causes an element to be constructed from it, and never reaches
+      ``innerHTML``/``outerHTML``/``insertAdjacentHTML`` anywhere in the
+      rendered tree;
+* (d) ``DATABASE_UNAVAILABLE`` and ``QUERY_TIMEOUT`` (codes this task's
+      detail-line logic never touches) still show none of their own
+      backend English.
+
+Database-agnostic by construction: every fixture value (turn ids, the
+question text, the synthetic column name in the injection-safe message) is
+either synthetic or copied verbatim from ``database/errors.py``'s own
+message constants -- never a real schema/table identifier.
 """
 
 from __future__ import annotations
@@ -50,7 +53,7 @@ import pytest
 
 _REPO = Path(__file__).resolve().parent.parent.parent
 _WEB_JS = _REPO / "web" / "js"
-_HARNESS = Path(__file__).resolve().parent / "run_failure_sentences.mjs"
+_HARNESS = Path(__file__).resolve().parent / "run_execution_error_copy.mjs"
 _NODE = shutil.which("node")
 
 
@@ -63,7 +66,7 @@ def _rewrite_imports(src: str, mapping: dict[str, str]) -> str:
 def _stage(tmp: Path) -> Path:
     """Copy turn.js and its full real render dependency chain into *tmp*
     as ESM (``.mjs``), import paths fixed up. Returns the path to the
-    copied ``turn.mjs``. Mirrors ``test_web_ui_turn_anatomy.py``'s
+    copied ``turn.mjs``. Mirrors ``test_web_ui_failure_sentences.py``'s
     ``_stage`` -- same file set, same rewrite mapping, kept as its own
     copy per this test directory's existing one-staging-helper-per-harness
     convention."""
@@ -105,7 +108,7 @@ def _stage(tmp: Path) -> Path:
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not on PATH -- cannot execute web/js/*.js under test")
-def test_every_failure_code_gets_its_persian_sentence() -> None:
+def test_execution_error_copy() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         turn_mjs = _stage(Path(tmp))
         result = subprocess.run(
@@ -117,11 +120,12 @@ def test_every_failure_code_gets_its_persian_sentence() -> None:
             timeout=NODE_TIMEOUT_SECONDS,
         )
 
-    assert result.returncode == 0, (
-        f"Failure-sentence check failed.\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-    )
-    assert "ALL_FAILURE_SENTENCES_PASSED" in result.stdout, (
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr, file=sys.stderr)
+        pytest.fail(f"run_execution_error_copy.mjs exited with code {result.returncode}")
+
+    assert "ALL_EXECUTION_ERROR_COPY_TESTS_PASSED" in result.stdout, (
         f"harness did not report completion (partial run?).\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
