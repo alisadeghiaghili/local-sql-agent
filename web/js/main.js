@@ -1002,6 +1002,10 @@ function turnCtx() {
       showNotice("ok", `مفروضهٔ «${field}» به «${value}» تغییر کرد (شبیه‌سازی محلی — بدون اجرای مجدد واقعی).`);
     },
     onClarify: (turnId, field, option) => {
+      if (state.mode === "live") {
+        patchLiveAssumption(turnId, field, option);
+        return;
+      }
       const t = findTurn(turnId);
       if (!t) return;
       const a = t.ambiguity.assumptions.find((x) => x.field === field);
