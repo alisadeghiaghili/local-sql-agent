@@ -145,16 +145,13 @@ and verify at **375 / 768 / 1280**, `dir="rtl"`.
 Train D (site unminify, self-hosted fonts, brand hues, hero SQL join) continues
 as `IMPLEMENTATION.md` has it.
 
-Three decisions in `DESIGN-INVARIANTS.md` need a human answer before 5.0 ships,
-and none of them is a coding task:
+Two decisions in `DESIGN-INVARIANTS.md` need a human answer before 5.0 ships,
+and neither of them is a coding task:
 
 1. **Default theme** (§4). All three mockups are light; the product renders
    dark. Adopting the mockups as drawn changes the default without anyone
    choosing it.
-2. **Attribution** (§6). `IMPLEMENTATION.md` forbids AI trailers; the security
-   branch's commits carry them. The two branches disagree and a merge inherits
-   both.
-3. **`webapp/` gate** (`DESIGN.md` §3.1). Still blocked on the same question
+2. **`webapp/` gate** (`DESIGN.md` §3.1). Still blocked on the same question
    the security audit reached independently: is the Flask login the production
    auth path at IME? Finding 13 and Train E are the same question asked from
    two directions.
@@ -169,4 +166,4 @@ and none of them is a coding task:
 - [ ] Full suite green; coverage gate (90%) holds
 - [ ] `frame-ancestors` absent from every `<meta>` CSP
 - [ ] No inline `on*=` handler in either page
-- [ ] The three decisions above put to the repository owner, not guessed
+- [ ] The two decisions above put to the repository owner, not guessed

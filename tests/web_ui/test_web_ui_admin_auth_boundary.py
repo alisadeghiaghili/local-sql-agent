@@ -23,6 +23,7 @@ same as ``test_web_ui_auth_boundary.py``.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -81,7 +82,7 @@ def test_admin_panel_attaches_bearer_token_on_every_call() -> None:
             [_NODE, str(_HARNESS), str(admin_mjs)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (
