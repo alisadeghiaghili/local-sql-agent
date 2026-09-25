@@ -289,34 +289,28 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
     ------
     RequestNotFoundError
     AlreadyResolvedError
+        If the request is not open, or if another admin approved it
+        concurrently (the conditional update in step 3 affected 0 rows).
     """
     engine = get_app_engine()
-    with engine.begin() as conn:
-        row = _require_open(conn, request_id)
-        conn.execute(
-            access_requests.update()
-            .where(access_requests.c.request_id == request_id)
-            .values(
-                status="approved",
-                resolution_note=None,
-                resolved_by=actor_principal_id,
-                resolved_at=_now_iso(),
-            )
-        )
 
-    # Deliberately outside the transaction above: appdb.key_store opens its
-    # own engine.begin() per call (issue_key/set_disabled/revoke_key/
-    # update_denied_columns all do), and nesting a second write transaction
-    # inside this one would either need a shared connection this module has
-    # no reason to thread through, or risk SQLite's "database is locked" on
-    # a backend that does not support nested transactions the way this
-    # short window assumes. The request row is already marked approved by
-    # the time this runs, so a failure partway through updating keys still
-    # leaves an honest, inspectable state (some keys widened, the request
-    # recorded as approved) rather than a request stuck "open" while keys
-    # have already been changed.
+    # Step 1: Check that the request is open, fail fast before touching keys.
+    # This reads outside the transaction that marks approval, ensuring we
+    # reject a non-open request immediately.
+    with engine.connect() as conn:
+        row = _require_open(conn, request_id)
+
     column_name = row["column_name"]
     principal_id = row["requester_principal_id"]
+
+    # Step 2: Update keys (idempotent operation). Deliberately outside any
+    # transaction: appdb.key_store opens its own engine.begin() per call
+    # (issue_key/set_disabled/revoke_key/update_denied_columns all do).
+    # Nesting a second write transaction inside would either need a shared
+    # connection this module has no reason to thread through, or risk
+    # SQLite's "database is locked" on backends that don't support nested
+    # transactions. The key update is idempotent: running it twice is
+    # harmless. A failure here leaves the request "open" and retryable.
     updated = 0
     for key_row in list_keys():
         if key_row["principal_id"] != principal_id:
@@ -329,6 +323,30 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
         denied.remove(column_name)
         update_denied_columns(key_row["key_sha256"], denied)
         updated += 1
+
+    # Step 3: Mark as approved in a transaction with conditional update.
+    # If 0 rows affected, another admin resolved it concurrently; keys may
+    # already have been widened -- raise to signal the conflict.
+    with engine.begin() as conn:
+        result = conn.execute(
+            access_requests.update()
+            .where(
+                (access_requests.c.request_id == request_id)
+                & (access_requests.c.status == "open")
+            )
+            .values(
+                status="approved",
+                resolution_note=None,
+                resolved_by=actor_principal_id,
+                resolved_at=_now_iso(),
+            )
+        )
+        if result.rowcount == 0:
+            raise AlreadyResolvedError(
+                f"access request {request_id!r} was already resolved "
+                f"(it is no longer open; keys may have already been widened "
+                f"by another admin)"
+            )
 
     return get_request(request_id), updated
 
