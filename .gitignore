@@ -42,5 +42,3 @@ eval_data/
 .coverage
 .coverage.*
 htmlcov/
-
-.claude/worktrees/

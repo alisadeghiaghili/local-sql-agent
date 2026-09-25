@@ -92,7 +92,7 @@ the production path **or** FastAPI ships session login with tests.
 
 - Max human-week scope per PR.
 - Merge when CI green and review criteria in DESIGN.md §9 hold.
-- No co-author trailers. No AI attribution. Branch names are plain product nouns.
+- Branch names are plain product nouns.
 
 ## Version markers
 
