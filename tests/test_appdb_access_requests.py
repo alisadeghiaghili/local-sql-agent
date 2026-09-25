@@ -439,24 +439,6 @@ class TestAtomicTransactions:
         with pytest.raises(AlreadyResolvedError):
             approve_request(row["request_id"], actor_principal_id="security-2")
 
-    def test_deny_then_approve_fails(self, app_env):
-        """Approving a denied request raises AlreadyResolvedError and
-        changes no key."""
-        column = _any_real_column()
-        key1 = self._issue("analyst-1", "Key One")
-
-        _write_denied_column_audit("s_51", "t_51", column=column)
-        row, _ = submit_request(session_id="s_51", turn_id="t_51", requester_principal_id="analyst-1")
-
-        deny_request(row["request_id"], actor_principal_id="security-1", reason="No.")
-
-        with pytest.raises(AlreadyResolvedError):
-            approve_request(row["request_id"], actor_principal_id="security-2")
-
-        # No key was changed.
-        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
-        assert column in rows_by_hash[key1["key_sha256"]]["denied_columns"]
-
     def test_approve_then_deny_fails(self, app_env):
         """Denying an approved request raises AlreadyResolvedError and
         the request stays approved."""
@@ -475,7 +457,7 @@ class TestAtomicTransactions:
         resolved = get_request(row["request_id"])
         assert resolved["status"] == "approved"
 
-    def test_claim_condition_is_load_bearing(self, app_env, monkeypatch):
+    def test_claim_condition_is_load_bearing(self, app_env):
         """If the WHERE status='open' condition is removed from
         approve_request's claim, this test fails: approving a denied
         request would overwrite the denial. This is the mutation check."""
@@ -487,14 +469,15 @@ class TestAtomicTransactions:
 
         deny_request(row["request_id"], actor_principal_id="security-1", reason="No.")
 
-        # This should fail (denying it would overwrite). This passes currently
-        # because the condition is present.
+        # The claim matches no open row, so the approval must be refused.
         with pytest.raises(AlreadyResolvedError):
             approve_request(row["request_id"], actor_principal_id="security-2")
 
-        # Request is still denied.
+        # The denial stands and the key was not widened.
         resolved = get_request(row["request_id"])
         assert resolved["status"] == "denied"
+        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
+        assert column in rows_by_hash[key1["key_sha256"]]["denied_columns"]
 
     def test_deny_claim_condition_is_load_bearing(self, app_env):
         """If the WHERE status='open' condition is removed from
@@ -508,8 +491,7 @@ class TestAtomicTransactions:
 
         approve_request(row["request_id"], actor_principal_id="security-1")
 
-        # This should fail (denying it would overwrite). This passes currently
-        # because the condition is present.
+        # The claim matches no open row, so the denial must be refused.
         with pytest.raises(AlreadyResolvedError):
             deny_request(row["request_id"], actor_principal_id="security-2", reason="Changed our minds.")
 

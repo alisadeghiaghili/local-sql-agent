@@ -35,22 +35,27 @@ not pile up duplicate queue entries for a security admin to triage.
 
 Approval goes through the existing ACL path (owner decision)
 -------------------------------------------------------------------
-:func:`approve_request` never writes ``denied_columns_json`` itself -- it
-calls :func:`appdb.key_store.update_denied_columns`, the exact same
-security-gated function ``PATCH /admin/keys/{id}/acl`` already uses, once
-per live key. This is not a policy this module has to remember to
-uphold; it is a fact about which function it calls. Access belongs to the
-*person*, not to one key (the owner's own reasoning: a grant scoped to a
-single key would be lost the moment that key rotates), so every key
-:func:`appdb.key_store.list_keys` reports for the requesting principal
-whose ``revoked_at`` is still ``NULL`` gets the column removed from its
-``denied_columns`` -- a *disabled* key is included (disabling is
-reversible, and a re-enabled key should reflect the access decision made
-while it was off), a *revoked* key is never touched (revocation is a
-tombstone; there is nothing left to grant access on). Each call to
-:func:`~appdb.key_store.update_denied_columns` invalidates the key-store
-cache itself, so approval takes effect on the very next request, exactly
-like any other ACL change.
+:func:`approve_request` never builds the ``denied_columns_json`` update
+itself -- it calls :func:`appdb.key_store._write_denied_columns`, the same
+writer :func:`appdb.key_store.update_denied_columns` (and so
+``PATCH /admin/keys/{id}/acl``) uses, once per live key. Access belongs to
+the *person*, not to one key (the owner's own reasoning: a grant scoped to
+a single key would be lost the moment that key rotates), so every key the
+requesting principal holds whose ``revoked_at`` is still ``NULL`` gets the
+column removed from its ``denied_columns`` -- a *disabled* key is included
+(disabling is reversible, and a re-enabled key should reflect the access
+decision made while it was off), a *revoked* key is never touched
+(revocation is a tombstone; there is nothing left to grant access on).
+
+Approval is one transaction. The request is claimed with a conditional
+``UPDATE ... WHERE status = 'open'`` and the key writes run on the same
+connection, so the claim and every key change commit together or not at
+all. A failure partway leaves the request ``open`` and no key widened, and
+the admin can simply retry. :func:`deny_request` claims the same way, so a
+concurrent approve and deny cannot both succeed: whichever commits second
+matches no open row and raises :class:`AlreadyResolvedError`. The key-store
+cache is invalidated once, after the commit, so approval takes effect on
+the very next request, exactly like any other ACL change.
 
 Denial requires a reason
 --------------------------
@@ -64,18 +69,18 @@ alone, and never shown to any other analyst).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 
+# The key writer is looked up on the module at call time (not imported by
+# name) so a test can replace it to inject a failure mid-transaction.
+from appdb import key_store
 from appdb.engine import get_app_engine
-import appdb.key_store
-from appdb.key_store import invalidate_cache
 from appdb.models import access_requests, admin_api_keys
 from observability.audit import find_record_by_turn
-
-import json
 
 
 def _now_iso() -> str:
@@ -263,14 +268,10 @@ def list_requests(
 
 def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[str, Any], int]:
     """Approve *request_id* -- removes its column from ``denied_columns``
-    on every LIVE key the requesting principal holds, through the internal
-    :func:`appdb.key_store._write_denied_columns` inside one atomic
-    transaction (see module docstring's "Approval goes through the existing
-    ACL path").
-
-    The entire approval is one transaction: claim the request, read and
-    update keys, all inside the same block. If anything fails, the request
-    stays "open" and no key is changed -- a failure is retryable.
+    on every LIVE key the requesting principal holds, in one transaction
+    (see module docstring's "Approval goes through the existing ACL path").
+    If anything fails, the request stays "open" and no key is changed, so
+    the approval can be retried.
 
     Returns
     -------
@@ -335,11 +336,11 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
             if column_name not in denied:
                 continue
             denied.remove(column_name)
-            appdb.key_store._write_denied_columns(conn, key_row["key_sha256"], denied, now)
+            key_store._write_denied_columns(conn, key_row["key_sha256"], denied, now)
             updated += 1
 
     # After the transaction commits, invalidate the cache once.
-    invalidate_cache()
+    key_store.invalidate_cache()
 
     return get_request(request_id), updated
 
