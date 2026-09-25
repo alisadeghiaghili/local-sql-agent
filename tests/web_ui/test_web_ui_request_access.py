@@ -23,6 +23,7 @@ under Node (see ``run_request_access.mjs``) and asserts:
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -202,7 +203,7 @@ def test_request_access_button_wiring_pending_state_and_xss_safety() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

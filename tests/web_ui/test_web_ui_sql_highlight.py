@@ -34,6 +34,7 @@ dependency chain including ``sql-display.js``) under Node (see
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -240,7 +241,7 @@ def test_sql_highlighting_is_presentation_only_and_copy_stays_exact() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

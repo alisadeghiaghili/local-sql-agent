@@ -46,6 +46,7 @@ is worse than no check, because it is mistaken for coverage.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -74,7 +75,7 @@ def _check(source: str) -> subprocess.CompletedProcess:
             [_node(), "--check", str(target)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
 

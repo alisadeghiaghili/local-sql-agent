@@ -35,6 +35,7 @@ Policy: ``docs/design/CHART-ENGINE-BOUNDARY.md`` §4, §5, §8.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -170,7 +171,7 @@ def test_the_engine_obeys_its_catalog_and_names_the_job():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

@@ -36,6 +36,7 @@ full scenario list) and asserts, at the actual boundary that changed:
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -89,7 +90,7 @@ def test_live_is_the_default_mode_and_base_url_precedence_still_works() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (
