@@ -123,14 +123,9 @@ class TestBoundedQueryHelper:
         """Sanity check: the shared semaphore limits concurrency to its configured size."""
         import api.concurrency as concurrency_module
 
-        # The semaphore is created lazily per event loop, so we need to get it
-        # from the running loop
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
+        async def _check():
             semaphore = concurrency_module._get_semaphore()
             assert semaphore._value == concurrency_module._QUERY_THREAD_LIMIT
-        finally:
-            concurrency_module._semaphores.clear()
-            loop.close()
+
+        asyncio.run(_check())
+        concurrency_module._semaphores.clear()
