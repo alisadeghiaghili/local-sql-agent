@@ -29,10 +29,13 @@ route already gives it.
 No new ACL-writing code (owner decision)
 -------------------------------------------
 :func:`admin_approve_access_request` calls
-:func:`appdb.access_requests.approve_request`, which in turn calls only
-:func:`appdb.key_store.update_denied_columns` -- the exact same function
-``PATCH /admin/keys/{id}/acl`` already uses. There is no second code path
-here that writes ``denied_columns_json``.
+:func:`appdb.access_requests.approve_request`, which in turn calls
+:func:`appdb.key_store._write_denied_columns` directly, on the same
+connection as the request's own status update -- the identical writer
+:func:`appdb.key_store.update_denied_columns` (and so
+``PATCH /admin/keys/{id}/acl``) calls beneath its own transaction. There
+is no second code path here that builds the ``denied_columns_json`` value;
+both routes fall through to the one writer, just on different connections.
 
 Maintenance mode stops these writes (mirrors admin_write_routes.py)
 -----------------------------------------------------------------------
