@@ -63,7 +63,16 @@ different made-up X-Forwarded-For value on every request.
 
 Concurrency tuning
 ------------------
-MAX_CONCURRENT_REQUESTS — max parallel /query requests before 503 (default: 10)
+MAX_CONCURRENT_REQUESTS — max parallel capped requests before 503 (default: 10).
+Applies to POST /query, POST /query/stream, POST /v2/sessions/{sid}/turns,
+and PATCH /v2/sessions/{sid}/turns/{tid}/assumptions (i.e., all routes that
+run the blocking pipeline: LLM call + database query).
+
+QUERY_THREAD_LIMIT — max concurrent worker threads for blocking operations
+(default: 16). Shared across all capped routes and enforced per event loop.
+This is separate from ConcurrencyMiddleware's admission control: the middleware
+decides whether to accept a request at all (503 when over capacity); this
+semaphore decides how many accepted requests occupy a worker thread simultaneously.
 
 Security headers (Finding 7, 2026 audit)
 -----------------------------------------
@@ -82,6 +91,7 @@ instead.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -90,10 +100,12 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from threading import Lock
 
+import re
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 import config as cfg
 
@@ -489,48 +501,61 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 # 3. Concurrency limiter
 # ---------------------------------------------------------------------------
 
-class ConcurrencyMiddleware(BaseHTTPMiddleware):
-    """Return 503 when more than *max_concurrent* requests are in-flight.
+def _is_capped_request(path: str, method: str) -> bool:
+    """Check if a request path and method should be subject to concurrency capping.
 
-    Only applies to ``POST /query`` — health checks and docs are always served.
+    A request is capped (must acquire a slot before proceeding) if it runs
+    a blocking pipeline operation:
 
-    Implementation note
-    --------------------
-    The previous implementation decided whether to accept a request by
-    reading ``asyncio.Semaphore``'s private, undocumented ``_value``
-    attribute, then performed a *separate* ``async with self._semaphore:``
-    to actually acquire it — a check-then-act pattern whose safety relied
-    entirely on the undocumented fact that ``Semaphore.acquire()``'s fast
-    path never suspends, rather than on anything asyncio's public contract
-    guarantees. If acquisition ever needs to yield control for real (a
-    perfectly legitimate thing for a semaphore implementation to do), an
-    excess request's stale "a slot is free" check would let it fall
-    through into the ``async with`` block anyway, where it would then
-    silently **queue** for a slot instead of being rejected outright —
-    defeating the whole point of a hard concurrency cap.
+    - ``POST /query``: translate question to SQL and/or execute
+    - ``POST /query/stream``: same, streamed as Server-Sent Events
+    - ``POST /v2/sessions/{session_id}/turns``: conversational mode
+    - ``PATCH /v2/sessions/{session_id}/turns/{turn_id}/assumptions``:
+      override assumptions and re-run the turn
 
-    (The obvious-looking replacement, ``asyncio.wait_for(sem.acquire(),
-    timeout=0)``, does not work either: asyncio special-cases
-    ``timeout<=0`` to cancel the wrapped coroutine *before it ever runs*
-    — see ``asyncio.tasks.wait_for``'s own docstring, which documents
-    this as intentional — so it raises ``TimeoutError`` unconditionally,
-    even when a slot is free. Confirmed against this interpreter: it
-    rejects 100% of requests, making it strictly worse than the bug it
-    would "fix".)
+    Everything else (health, docs, GET/DELETE sessions, feedback, memory,
+    admin operations) proceeds without acquiring a slot, because they do
+    not run the core blocking pipeline (LLM call + database query).
+    """
+    if method == "POST" and (path == "/query" or path == "/query/stream"):
+        return True
+    if method == "POST" and re.match(r"^/v2/sessions/[^/]+/turns$", path):
+        return True
+    if method == "PATCH" and re.match(r"^/v2/sessions/[^/]+/turns/[^/]+/assumptions$", path):
+        return True
+    return False
 
-    Instead, in-flight requests are tracked with a plain counter guarded
-    by a ``threading.Lock`` (the same primitive ``RateLimitMiddleware``
-    already uses for its bucket state, just below). The accept-or-reject
-    decision and the matching increment happen inside the lock with no
-    ``await`` in between, so the decision is genuinely atomic — both
-    against other asyncio tasks on the same event loop and against real
-    OS-thread concurrency touching this middleware instance (which is
-    exactly how the test suite exercises it: multiple ``TestClient``
-    instances, each with its own event loop, hitting the same app).
+
+class ConcurrencyMiddleware:
+    """ASGI middleware that caps concurrent pipeline requests and holds slots until response complete.
+
+    Applies to POST /query, POST /query/stream, POST /v2/sessions/{session_id}/turns
+    (with or without ?stream), and PATCH .../turns/{turn_id}/assumptions. Other routes
+    pass through uncapped.
+
+    Implementation (pure ASGI)
+    -------------------------
+    Unlike the previous BaseHTTPMiddleware version, this is a pure ASGI middleware:
+    __init__ and __call__ (the ASGI entry point). For capped requests, a slot is acquired
+    before awaiting self.app(scope, receive, send), and released in a finally block
+    after the full response (including any streaming body) has been sent. This ensures:
+
+    1. Streaming responses hold the slot until the body is completely sent or the
+       client disconnects (BaseHTTPMiddleware's call_next returns as soon as response
+       headers are ready, before the body streams, so the old version released slots
+       too early).
+    2. A client disconnect or exception always releases the slot, never leaking counts.
+    3. The slot is held for the actual work duration, not just the HTTP handshake.
+
+    In-flight requests are tracked with a plain counter guarded by a threading.Lock
+    (the same primitive RateLimitMiddleware uses). The accept-or-reject decision and
+    the matching increment happen inside the lock with no await in between, so the
+    decision is atomic against both asyncio tasks on the same event loop and OS-thread
+    concurrency from multiple TestClient instances hitting the same app.
     """
 
     def __init__(self, app: ASGIApp, max_concurrent: int = _MAX_CONCURRENT) -> None:
-        super().__init__(app)
+        self._app = app
         self._max = max_concurrent
         self._active = 0
         self._lock = Lock()
@@ -547,36 +572,64 @@ class ConcurrencyMiddleware(BaseHTTPMiddleware):
         with self._lock:
             self._active -= 1
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        if request.url.path != "/query":
-            return await call_next(request)
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+
+        if not _is_capped_request(path, method):
+            await self._app(scope, receive, send)
+            return
 
         if not self._try_acquire():
-            request_id = getattr(request.state, "request_id", "")
+            request_id = ""
+            # Try to extract request_id from scope state if available (set by RequestIDMiddleware)
+            if hasattr(scope, "state") and hasattr(scope.state, "request_id"):
+                request_id = scope.state.request_id
+
             logger.warning(
                 "[%s] Server overload — %d/%d slots used",
                 request_id,
+                self._active,
                 self._max,
-                self._max,
-            )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "code": "SERVER_OVERLOAD",
-                        "message": (
-                            f"Server is at capacity ({self._max} concurrent requests). "
-                            "Please retry in a few seconds."
-                        ),
-                        "request_id": request_id,
-                        "path": str(request.url.path),
-                    }
-                },
-                headers={"Retry-After": "5"},
             )
 
+            error_body = {
+                "error": {
+                    "code": "SERVER_OVERLOAD",
+                    "message": (
+                        f"Server is at capacity ({self._max} concurrent requests). "
+                        "Please retry in a few seconds."
+                    ),
+                    "request_id": request_id,
+                    "path": path,
+                }
+            }
+
+            body = json.dumps(error_body, ensure_ascii=False).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"retry-after", b"5"),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                }
+            )
+            return
+
         try:
-            return await call_next(request)
+            await self._app(scope, receive, send)
         finally:
             self._release()
 
