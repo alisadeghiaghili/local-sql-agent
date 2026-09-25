@@ -27,9 +27,7 @@ GET  /admin/summary, /admin/health/checks, /admin/cache, /admin/config
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -97,6 +95,19 @@ _system_prompt: str = ""
 # - Admission control to be tight (reject excess requests fast)
 # - Worker pool to be generous (accommodate accepted requests that might
 #   queue briefly on the semaphore)
+#
+# _query_semaphore / _QUERY_THREAD_LIMIT below are aliases of the SAME
+# objects api/concurrency.py owns (module-level names, not copies), kept
+# for backward compatibility with tests written against this module
+# directly. Every actual acquire goes through api.concurrency.run_bounded
+# (via _run_query_bounded just below), which looks the semaphore up fresh
+# on each call (api.concurrency._get_semaphore()) rather than capturing
+# either of these aliases -- so a test that swaps out
+# api.concurrency._semaphore for a new object (to exercise a tight bound)
+# is honoured by every caller, while these two names keep pointing at
+# whatever object existed at this module's own import time.
+_query_semaphore = concurrency._semaphore
+_QUERY_THREAD_LIMIT = concurrency._QUERY_THREAD_LIMIT
 
 
 async def _run_query_bounded(**kwargs) -> QueryResponse:

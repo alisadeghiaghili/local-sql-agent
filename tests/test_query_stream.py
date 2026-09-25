@@ -120,12 +120,7 @@ class TestBoundedQueryHelper:
                 )
 
     def test_semaphore_bounds_concurrent_threads(self):
-        """Sanity check: the shared semaphore limits concurrency to its configured size."""
-        import api.concurrency as concurrency_module
+        """Sanity check: the semaphore actually limits concurrency to its configured size."""
+        import api.server as server_module
 
-        async def _check():
-            semaphore = concurrency_module._get_semaphore()
-            assert semaphore._value == concurrency_module._QUERY_THREAD_LIMIT
-
-        asyncio.run(_check())
-        concurrency_module._semaphores.clear()
+        assert server_module._query_semaphore._value == server_module._QUERY_THREAD_LIMIT
