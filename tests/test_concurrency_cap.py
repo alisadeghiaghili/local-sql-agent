@@ -305,23 +305,26 @@ def clear_semaphores():
 
 
 class TestRunBounded:
-    @pytest.mark.asyncio
-    async def test_run_bounded_executes_function(self):
+    def test_run_bounded_executes_function(self):
         """run_bounded executes the function and returns its result."""
-        result = await run_bounded(lambda x: x * 2, 5)
-        assert result == 10
+        async def _test():
+            result = await run_bounded(lambda x: x * 2, 5)
+            assert result == 10
 
-    @pytest.mark.asyncio
-    async def test_run_bounded_propagates_exception(self):
+        asyncio.run(_test())
+
+    def test_run_bounded_propagates_exception(self):
         """run_bounded propagates exceptions from the function."""
         def failing():
             raise ValueError("test error")
 
-        with pytest.raises(ValueError, match="test error"):
-            await run_bounded(failing)
+        async def _test():
+            with pytest.raises(ValueError, match="test error"):
+                await run_bounded(failing)
 
-    @pytest.mark.asyncio
-    async def test_run_bounded_acquires_and_releases_slot(self):
+        asyncio.run(_test())
+
+    def test_run_bounded_acquires_and_releases_slot(self):
         """run_bounded acquires a slot, runs the function, and releases."""
         call_count = {"value": 0}
 
@@ -330,78 +333,87 @@ class TestRunBounded:
             time.sleep(0.01)
             return "done"
 
-        result = await run_bounded(work)
-        assert result == "done"
-        assert call_count["value"] == 1
+        async def _test():
+            result = await run_bounded(work)
+            assert result == "done"
+            assert call_count["value"] == 1
 
-    @pytest.mark.asyncio
-    async def test_concurrent_requests_share_semaphore(self):
+        asyncio.run(_test())
+
+    def test_concurrent_requests_share_semaphore(self):
         """Multiple concurrent requests share one per-loop semaphore."""
-        semaphore = _get_semaphore()
-        initial_value = semaphore._value
+        async def _test():
+            semaphore = _get_semaphore()
+            initial_value = semaphore._value
 
-        async def work():
-            result = await run_bounded(lambda: time.sleep(0.01))
-            return result
+            async def work():
+                result = await run_bounded(lambda: time.sleep(0.01))
+                return result
 
-        # Run two tasks concurrently
-        await asyncio.gather(work(), work())
+            # Run two tasks concurrently
+            await asyncio.gather(work(), work())
 
-        # After both complete, semaphore should be back to initial
-        assert semaphore._value == initial_value
+            # After both complete, semaphore should be back to initial
+            assert semaphore._value == initial_value
 
-    @pytest.mark.asyncio
-    async def test_semaphore_blocks_excess_requests(self):
+        asyncio.run(_test())
+
+    def test_semaphore_blocks_excess_requests(self):
         """Requests beyond the limit block on the semaphore."""
-        # Clear semaphores and create a new one with limit 1
-        _semaphores.clear()
+        async def _test():
+            # Clear semaphores and create a new one with limit 1
+            _semaphores.clear()
 
-        calls = []
+            calls = []
 
-        def work(n):
-            time.sleep(0.02)
-            calls.append(n)
-            return n
+            def work(n):
+                time.sleep(0.02)
+                calls.append(n)
+                return n
 
-        # Run three tasks concurrently with a limit of 1
-        # They should serialize (queue for the semaphore and run one at a time)
-        tasks = [run_bounded(work, n) for n in range(3)]
-        results = await asyncio.gather(*tasks)
+            # Run three tasks concurrently with a limit of 1
+            # They should serialize (queue for the semaphore and run one at a time)
+            tasks = [run_bounded(work, n) for n in range(3)]
+            results = await asyncio.gather(*tasks)
 
-        # gather() preserves the order of the results from the tasks
-        assert results == [0, 1, 2]
-        # Key test: all calls were made and serialized (only one at a time)
-        # Order is not guaranteed, just check that all were executed
-        assert set(calls) == {0, 1, 2}
-        assert len(calls) == 3
+            # gather() preserves the order of the results from the tasks
+            assert results == [0, 1, 2]
+            # Key test: all calls were made and serialized (only one at a time)
+            # Order is not guaranteed, just check that all were executed
+            assert set(calls) == {0, 1, 2}
+            assert len(calls) == 3
 
-    @pytest.mark.asyncio
-    async def test_no_deadlock_with_streaming_and_queue(self):
+        asyncio.run(_test())
+
+    def test_no_deadlock_with_streaming_and_queue(self):
         """No deadlock: streaming generator with queue reads succeeds."""
-        import queue as stdlib_queue
+        async def _test():
+            import queue as stdlib_queue
 
-        q: stdlib_queue.Queue = stdlib_queue.Queue()
+            q: stdlib_queue.Queue = stdlib_queue.Queue()
 
-        def producer():
-            """This function runs in a worker thread."""
-            for i in range(3):
-                q.put(i)
-                time.sleep(0.01)
-            q.put(None)  # Sentinel
+            def producer():
+                """This function runs in a worker thread."""
+                for i in range(3):
+                    q.put(i)
+                    time.sleep(0.01)
+                q.put(None)  # Sentinel
 
-        async def consumer():
-            """Async generator that reads from queue without holding slot."""
-            task = asyncio.create_task(run_bounded(producer))
-            while True:
-                # Queue reads do NOT hold semaphore slot
-                item = await asyncio.to_thread(q.get)
-                if item is None:
-                    break
-                yield item
-            await task
+            async def consumer():
+                """Async generator that reads from queue without holding slot."""
+                task = asyncio.create_task(run_bounded(producer))
+                while True:
+                    # Queue reads do NOT hold semaphore slot
+                    item = await asyncio.to_thread(q.get)
+                    if item is None:
+                        break
+                    yield item
+                await task
 
-        items = []
-        async for item in consumer():
-            items.append(item)
+            items = []
+            async for item in consumer():
+                items.append(item)
 
-        assert items == [0, 1, 2]
+            assert items == [0, 1, 2]
+
+        asyncio.run(_test())
