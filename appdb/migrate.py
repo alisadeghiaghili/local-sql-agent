@@ -576,7 +576,8 @@ def _build_reseed_statement(dialect: str, preparer, table_name: str, max_id: int
 
     if dialect == "mssql":
         # identifier_preparer.quote() leaves ordinary names unquoted and brackets them
-        # when required, doubling ] for escaping. DBCC CHECKIDENT accepts an identifier.
+        # when required, doubling ] for escaping. DBCC CHECKIDENT accepts an identifier,
+        # so no string literal is needed.
         return f"DBCC CHECKIDENT ({quoted_table}, RESEED, {int(max_id)})"
     elif dialect == "mysql":
         # identifier_preparer.quote() leaves ordinary names unquoted and backtick-quotes

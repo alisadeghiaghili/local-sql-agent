@@ -712,121 +712,56 @@ class TestNothingInTheCopyOpensASecondConnection:
 class TestReseedStatementQuoting:
     """Test that _build_reseed_statement safely quotes identifiers with special characters."""
 
-    def test_mssql_normal_table_name(self):
-        """Normal table name in MSSQL -- no special characters."""
+    def test_mssql_access_requests_exact_string(self):
+        """MSSQL with normal table name 'access_requests' matches exact string."""
         from sqlalchemy.dialects import mssql
 
         dialect_obj = mssql.dialect()
         preparer = dialect_obj.identifier_preparer
-        stmt = _build_reseed_statement("mssql", preparer, "my_table", 42)
-        quoted = preparer.quote("my_table")
-        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 42)"
-        assert stmt == expected
+        stmt = _build_reseed_statement("mssql", preparer, "access_requests", 7)
+        assert stmt == "DBCC CHECKIDENT (access_requests, RESEED, 7)"
 
-    def test_mssql_table_name_with_bracket(self):
-        """Table name containing a closing bracket in MSSQL."""
+    def test_mssql_complex_identifier_exact_string(self):
+        """MSSQL with 'a]b`c'd' table name matches exact bracketed string."""
         from sqlalchemy.dialects import mssql
 
         dialect_obj = mssql.dialect()
         preparer = dialect_obj.identifier_preparer
-        table_name = "Table]Name"
-        stmt = _build_reseed_statement("mssql", preparer, table_name, 100)
-        quoted = preparer.quote(table_name)
-        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 100)"
-        assert stmt == expected
+        stmt = _build_reseed_statement("mssql", preparer, "a]b`c'd", 7)
+        assert stmt == "DBCC CHECKIDENT ([a]]b`c'd], RESEED, 7)"
 
-    def test_mssql_table_name_with_single_quote(self):
-        """Table name containing a single quote in MSSQL."""
+    def test_mssql_quoted_name_exact_string(self):
+        """MSSQL with 'Table'Name' table name matches exact bracketed string."""
         from sqlalchemy.dialects import mssql
 
         dialect_obj = mssql.dialect()
         preparer = dialect_obj.identifier_preparer
-        table_name = "Table'Name"
-        stmt = _build_reseed_statement("mssql", preparer, table_name, 50)
-        quoted = preparer.quote(table_name)
-        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 50)"
-        assert stmt == expected
-        # Inside a bracketed identifier, a single quote needs no escaping
+        stmt = _build_reseed_statement("mssql", preparer, "Table'Name", 7)
+        assert stmt == "DBCC CHECKIDENT ([Table'Name], RESEED, 7)"
 
-    def test_mssql_table_name_with_backtick(self):
-        """Table name containing a backtick in MSSQL."""
-        from sqlalchemy.dialects import mssql
-
-        dialect_obj = mssql.dialect()
-        preparer = dialect_obj.identifier_preparer
-        table_name = "Table`Name"
-        stmt = _build_reseed_statement("mssql", preparer, table_name, 75)
-        quoted = preparer.quote(table_name)
-        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 75)"
-        assert stmt == expected
-
-    def test_mysql_normal_table_name(self):
-        """Normal table name in MySQL -- no special characters."""
+    def test_mysql_access_requests_exact_string(self):
+        """MySQL with normal table name 'access_requests' matches exact string."""
         from sqlalchemy.dialects import mysql
 
         dialect_obj = mysql.dialect()
         preparer = dialect_obj.identifier_preparer
-        stmt = _build_reseed_statement("mysql", preparer, "my_table", 42)
-        quoted = preparer.quote("my_table")
-        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 43"
-        assert stmt == expected
+        stmt = _build_reseed_statement("mysql", preparer, "access_requests", 7)
+        assert stmt == "ALTER TABLE access_requests AUTO_INCREMENT = 8"
 
-    def test_mysql_table_name_with_single_quote(self):
-        """Table name containing a single quote in MySQL."""
+    def test_mysql_complex_identifier_exact_string(self):
+        """MySQL with 'a]b`c'd' table name matches exact backtick string."""
         from sqlalchemy.dialects import mysql
 
         dialect_obj = mysql.dialect()
         preparer = dialect_obj.identifier_preparer
-        table_name = "Table'Name"
-        stmt = _build_reseed_statement("mysql", preparer, table_name, 100)
-        quoted = preparer.quote(table_name)
-        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 101"
-        assert stmt == expected
+        stmt = _build_reseed_statement("mysql", preparer, "a]b`c'd", 7)
+        assert stmt == "ALTER TABLE `a]b``c'd` AUTO_INCREMENT = 8"
 
-    def test_mysql_table_name_with_backtick(self):
-        """Table name containing a backtick in MySQL."""
+    def test_mysql_quoted_name_exact_string(self):
+        """MySQL with 'Table'Name' table name matches exact backtick string."""
         from sqlalchemy.dialects import mysql
 
         dialect_obj = mysql.dialect()
         preparer = dialect_obj.identifier_preparer
-        table_name = "Table`Name"
-        stmt = _build_reseed_statement("mysql", preparer, table_name, 55)
-        quoted = preparer.quote(table_name)
-        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 56"
-        assert stmt == expected
-
-    def test_mysql_table_name_with_bracket(self):
-        """Table name containing a bracket in MySQL."""
-        from sqlalchemy.dialects import mysql
-
-        dialect_obj = mysql.dialect()
-        preparer = dialect_obj.identifier_preparer
-        table_name = "Table]Name"
-        stmt = _build_reseed_statement("mysql", preparer, table_name, 30)
-        quoted = preparer.quote(table_name)
-        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 31"
-        assert stmt == expected
-
-    def test_complex_table_name_mssql(self):
-        """Table name with multiple special characters in MSSQL."""
-        from sqlalchemy.dialects import mssql
-
-        dialect_obj = mssql.dialect()
-        preparer = dialect_obj.identifier_preparer
-        table_name = "Table]With'Both`Chars"
-        stmt = _build_reseed_statement("mssql", preparer, table_name, 99)
-        quoted = preparer.quote(table_name)
-        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 99)"
-        assert stmt == expected
-
-    def test_complex_table_name_mysql(self):
-        """Table name with multiple special characters in MySQL."""
-        from sqlalchemy.dialects import mysql
-
-        dialect_obj = mysql.dialect()
-        preparer = dialect_obj.identifier_preparer
-        table_name = "Table]With'Both`Chars"
-        stmt = _build_reseed_statement("mysql", preparer, table_name, 88)
-        quoted = preparer.quote(table_name)
-        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 89"
-        assert stmt == expected
+        stmt = _build_reseed_statement("mysql", preparer, "Table'Name", 7)
+        assert stmt == "ALTER TABLE `Table'Name` AUTO_INCREMENT = 8"
