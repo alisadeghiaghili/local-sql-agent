@@ -69,10 +69,12 @@ and PATCH /v2/sessions/{sid}/turns/{tid}/assumptions (i.e., all routes that
 run the blocking pipeline: LLM call + database query).
 
 QUERY_THREAD_LIMIT — max concurrent worker threads for blocking operations
-(default: 16). Shared across all capped routes and enforced per event loop.
-This is separate from ConcurrencyMiddleware's admission control: the middleware
-decides whether to accept a request at all (503 when over capacity); this
-semaphore decides how many accepted requests occupy a worker thread simultaneously.
+(default: 16). Enforced by ONE shared module-level ``asyncio.Semaphore`` in
+``api/concurrency.py`` (see that module's docstring for why a single
+semaphore, not one per event loop). This is separate from
+ConcurrencyMiddleware's admission control: the middleware decides whether
+to accept a request at all (503 when over capacity); that semaphore
+decides how many accepted requests occupy a worker thread simultaneously.
 
 Security headers (Finding 7, 2026 audit)
 -----------------------------------------
@@ -91,7 +93,6 @@ instead.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -530,8 +531,8 @@ class ConcurrencyMiddleware:
     """ASGI middleware that caps concurrent pipeline requests and holds slots until response complete.
 
     Applies to POST /query, POST /query/stream, POST /v2/sessions/{session_id}/turns
-    (with or without ?stream), and PATCH .../turns/{turn_id}/assumptions. Other routes
-    pass through uncapped.
+    (with or without ?stream), and PATCH .../turns/{turn_id}/assumptions (see
+    ``_is_capped_request``). Other routes pass through uncapped.
 
     Implementation (pure ASGI)
     -------------------------
@@ -552,10 +553,36 @@ class ConcurrencyMiddleware:
     the matching increment happen inside the lock with no await in between, so the
     decision is atomic against both asyncio tasks on the same event loop and OS-thread
     concurrency from multiple TestClient instances hitting the same app.
+
+    The wrapped app is stored as ``self.app`` (not a name-mangled ``self._app``) to
+    match the attribute name every other ASGI middleware in this stack uses
+    (``BaseHTTPMiddleware.__init__`` does the same) -- among other things, that
+    uniform name is what lets a test walk a live, already-built middleware stack
+    (``app.middleware_stack``, then repeatedly follow ``.app``) to find whichever
+    instance is actually wired into a running app, regardless of which middleware
+    classes sit around it.
+
+    Reading the request id on rejection
+    ------------------------------------
+    ``RequestIDMiddleware`` stamps the id via ``request.state.request_id = ...``,
+    which (per Starlette's ``Request.state`` implementation) writes into
+    ``scope["state"]["request_id"]`` -- ``scope`` is an ordinary ``dict``, not an
+    object with a ``.state`` attribute, so it must be read back with
+    ``scope.get("state", {}).get("request_id", "")``, never ``hasattr(scope,
+    "state")`` (which is always False for a dict and silently produced an empty
+    id in every 503 this middleware ever sent).
+
+    The 503 response itself is built with ``starlette.responses.JSONResponse``
+    and sent by calling it as an ASGI app (``await response(scope, receive,
+    send)``) rather than hand-assembling ``http.response.start`` /
+    ``http.response.body`` messages, so it gets a correct ``Content-Length``
+    (and the same ``content-type: application/json`` framing) the same way
+    every other JSON error response in this codebase does -- a hand-rolled send
+    left ``Content-Length`` out entirely.
     """
 
     def __init__(self, app: ASGIApp, max_concurrent: int = _MAX_CONCURRENT) -> None:
-        self._app = app
+        self.app = app
         self._max = max_concurrent
         self._active = 0
         self._lock = Lock()
@@ -574,21 +601,21 @@ class ConcurrencyMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
-            await self._app(scope, receive, send)
+            await self.app(scope, receive, send)
             return
 
         path = scope.get("path", "")
         method = scope.get("method", "")
 
         if not _is_capped_request(path, method):
-            await self._app(scope, receive, send)
+            await self.app(scope, receive, send)
             return
 
         if not self._try_acquire():
-            request_id = ""
-            # Try to extract request_id from scope state if available (set by RequestIDMiddleware)
-            if hasattr(scope, "state") and hasattr(scope.state, "request_id"):
-                request_id = scope.state.request_id
+            # scope is a plain dict, not an object -- RequestIDMiddleware's
+            # request.state.request_id = ... writes into
+            # scope["state"]["request_id"] (see this class's docstring).
+            request_id = scope.get("state", {}).get("request_id", "")
 
             logger.warning(
                 "[%s] Server overload — %d/%d slots used",
@@ -609,27 +636,14 @@ class ConcurrencyMiddleware:
                 }
             }
 
-            body = json.dumps(error_body, ensure_ascii=False).encode("utf-8")
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 503,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"retry-after", b"5"),
-                    ],
-                }
+            response = JSONResponse(
+                error_body, status_code=503, headers={"Retry-After": "5"},
             )
-            await send(
-                {
-                    "type": "http.response.body",
-                    "body": body,
-                }
-            )
+            await response(scope, receive, send)
             return
 
         try:
-            await self._app(scope, receive, send)
+            await self.app(scope, receive, send)
         finally:
             self._release()
 
