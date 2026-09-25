@@ -410,4 +410,64 @@ for (const [reason, expectedLead] of GUARD_REASON_TABLE) {
   console.log("[ok] guard reason \"denied_column\": unchanged sentence, targeted action still wired");
 }
 
+/* ── Scenario G: the guard-rejection banner no longer shows the guard's
+ * free-text English rule as a "why" line -- it stays visible only in the
+ * SQL panel's .guard-rule element, now marked dir="ltr" so the embedded
+ * English does not scramble inside the right-to-left page. denied_column's
+ * two actions ("Ask without that column" and "Request access") are
+ * unaffected by this change. ───────────────────────────────────────────── */
+
+{
+  const englishRule = "Forbidden keyword detected: denied column 'synthetic_secret_column'";
+  const turn = baseGuardTurn({
+    sql: "SELECT synthetic_secret_column FROM synthetic_table", // synthetic, never a real schema identifier
+    guard: {
+      verdict: "rejected", rule: englishRule, reason: "forbidden_statement",
+      subject: null, rejected_sql: null, injected_top: null, tables_touched: [],
+    },
+  });
+  const { ctx } = fullCtx();
+  const card = createTurnCard(turn, ctx);
+
+  const banner = card.el.querySelector(".failure-state");
+  assert.ok(banner, "guard rejection: expected a .failure-state banner");
+  assert.equal(
+    banner.querySelector(".failure-why"),
+    null,
+    "guard rejection: the banner must not render a .failure-why element",
+  );
+  assert.ok(
+    !banner.textContent.includes(englishRule),
+    "guard rejection: the banner's own text must not contain the guard's English rule",
+  );
+
+  const guardRuleEl = card.el.querySelector(".guard-rule");
+  assert.ok(guardRuleEl, "guard rejection: the SQL panel must still show .guard-rule");
+  assert.equal(guardRuleEl.textContent, englishRule, "guard rejection: .guard-rule must still hold the rule text");
+  assert.equal(guardRuleEl.dir, "ltr", 'guard rejection: .guard-rule must be marked dir="ltr"');
+
+  console.log('[ok] guard rejection: English rule dropped from the banner, kept (dir="ltr") in the SQL panel');
+}
+
+{
+  // denied_column's two actions stay wired exactly as before -- this
+  // change only touched the banner's "why" line and the SQL panel, never
+  // the guard's action buttons.
+  const { ctx, calls } = fullCtx();
+  ctx.onRequestAccess = async () => ({ already_pending: false });
+  const turn = baseGuardTurn({
+    guard: {
+      verdict: "rejected", rule: "Forbidden keyword detected: denied column 'synthetic_secret_column'",
+      reason: "denied_column", subject: "synthetic_secret_column",
+      rejected_sql: null, injected_top: null, tables_touched: [],
+    },
+  });
+  const card = createTurnCard(turn, ctx);
+  const labels = actionLabels(card);
+  assert.ok(labels.includes("پرسش بدون «synthetic_secret_column»"), "denied_column: targeted column action must still render");
+  assert.ok(labels.includes("درخواست دسترسی"), "denied_column: request-access action must still render");
+  assert.ok(labels.includes("ویرایش پرسش"), "denied_column: generic rephrase action must still render");
+  console.log("[ok] guard rejection: denied_column's actions (ask without / request access) unaffected");
+}
+
 console.log("ALL_FAILURE_SENTENCES_PASSED");

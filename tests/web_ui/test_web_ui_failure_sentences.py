@@ -25,9 +25,11 @@ ABSENT from the card's text, and the expected action buttons are present
 (and only when their callback was actually wired). It also asserts an
 unrecognised code falls back to the ``INTERNAL_ERROR`` sentence, that
 ``LLM_OUTPUT_TRUNCATED``/``FORBIDDEN_SQL`` are untouched (still showing
-``turn.error.message`` as their "why" line), and that every closed-set
-``GuardVerdict.reason`` renders its own sentence. ``QUERY_EXECUTION_ERROR``
-is NOT covered here -- see
+``turn.error.message`` as their "why" line), that every closed-set
+``GuardVerdict.reason`` renders its own sentence, and that a guard
+rejection's banner no longer shows the guard's free-text English rule (it
+stays visible, marked ``dir="ltr"``, in the SQL panel's ``.guard-rule``
+element instead). ``QUERY_EXECUTION_ERROR`` is NOT covered here -- see
 ``run_execution_error_copy.mjs``/``test_web_ui_execution_error_copy.py``
 for its own dedicated scenarios.
 

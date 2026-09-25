@@ -186,7 +186,15 @@ export function createTurnCard(turn, ctx) {
     sqlSection.appendChild(meta);
 
     if (turn.guard && turn.guard.verdict === "rejected" && turn.guard.rule) {
-      sqlSection.appendChild(el("div", "guard-rule", turn.guard.rule));
+      // `dir="ltr"` -- the rule is the guard's own free-text English
+      // (kept verbatim for the audit trail), and this is now its only
+      // home in the UI (the failure banner above no longer shows it, see
+      // `renderFailureState`'s guard branch): without an explicit
+      // direction it would scramble inside the surrounding
+      // right-to-left page.
+      const guardRule = el("div", "guard-rule", turn.guard.rule);
+      guardRule.dir = "ltr";
+      sqlSection.appendChild(guardRule);
     }
 
     // Collapse after a successful result is already on screen (DESIGN §5.2).
@@ -628,10 +636,18 @@ function renderFailureState(turn, ctx) {
       actions.push(["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]);
     }
 
+    // `turn.guard.rule` is NOT passed as `why` here. It is the guard's
+    // own free-text English rule, kept verbatim for the audit trail (see
+    // `security.sql_guard`'s docstring) -- exactly the kind of raw,
+    // system-side English DESIGN-INVARIANTS.md §8 keeps out of the
+    // analyst-facing banner, and `lead`/`GUARD_REASON_LEADS` above already
+    // give the Persian sentence for every reason. The rule stays visible
+    // where technical detail belongs instead: the SQL panel's
+    // `.guard-rule` element below, marked `dir="ltr"` so the embedded
+    // English does not scramble inside the right-to-left page.
     return buildFailureBanner({
       severity: "crit",
       lead,
-      why: turn.guard.rule,
       code: "FORBIDDEN_SQL",
       // A guard rejection never populates `turn.error` on this (SSE) path
       // (see `isGuardRejected`'s own docstring) -- `request_id` lives on
