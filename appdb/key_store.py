@@ -388,6 +388,20 @@ def revoke_key(key_sha256: str) -> None:
     invalidate_cache()
 
 
+def _write_denied_columns(conn, key_sha256: str, denied_columns: list[str], now: str) -> None:
+    """Internal writer for denied_columns inside an existing transaction.
+
+    Called by :func:`update_denied_columns` and by
+    :func:`appdb.access_requests.approve_request` to update keys within a
+    larger atomic transaction.
+    """
+    conn.execute(
+        admin_api_keys.update()
+        .where(admin_api_keys.c.key_sha256 == key_sha256)
+        .values(denied_columns_json=json.dumps(list(denied_columns)), updated_at=now)
+    )
+
+
 def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> None:
     """Set the key identified by *key_sha256*'s ``denied_columns`` — the
     security-gated ACL loosening/tightening endpoint
@@ -397,11 +411,7 @@ def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> None:
     engine = get_app_engine()
     with engine.begin() as conn:
         _get_row(conn, key_sha256)
-        conn.execute(
-            admin_api_keys.update()
-            .where(admin_api_keys.c.key_sha256 == key_sha256)
-            .values(denied_columns_json=json.dumps(list(denied_columns)), updated_at=now)
-        )
+        _write_denied_columns(conn, key_sha256, denied_columns, now)
     invalidate_cache()
 
 

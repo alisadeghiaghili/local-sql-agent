@@ -70,9 +70,12 @@ from typing import Any
 from sqlalchemy import select
 
 from appdb.engine import get_app_engine
-from appdb.key_store import list_keys, update_denied_columns
-from appdb.models import access_requests
+import appdb.key_store
+from appdb.key_store import invalidate_cache
+from appdb.models import access_requests, admin_api_keys
 from observability.audit import find_record_by_turn
+
+import json
 
 
 def _now_iso() -> str:
@@ -258,25 +261,16 @@ def list_requests(
 # ---------------------------------------------------------------------------
 
 
-def _require_open(conn, request_id: int) -> dict[str, Any]:
-    row = conn.execute(
-        select(access_requests).where(access_requests.c.request_id == request_id)
-    ).mappings().first()
-    if row is None:
-        raise RequestNotFoundError(f"no access request {request_id!r}")
-    if row["status"] != "open":
-        raise AlreadyResolvedError(
-            f"access request {request_id!r} was already resolved as "
-            f"{row['status']!r} by {row['resolved_by']!r} at {row['resolved_at']!r}"
-        )
-    return dict(row)
-
-
 def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[str, Any], int]:
     """Approve *request_id* -- removes its column from ``denied_columns``
-    on every LIVE key the requesting principal holds, through the existing
-    :func:`appdb.key_store.update_denied_columns` (see module docstring's
-    "Approval goes through the existing ACL path").
+    on every LIVE key the requesting principal holds, through the internal
+    :func:`appdb.key_store._write_denied_columns` inside one atomic
+    transaction (see module docstring's "Approval goes through the existing
+    ACL path").
+
+    The entire approval is one transaction: claim the request, read and
+    update keys, all inside the same block. If anything fails, the request
+    stays "open" and no key is changed -- a failure is retryable.
 
     Returns
     -------
@@ -289,64 +283,63 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
     ------
     RequestNotFoundError
     AlreadyResolvedError
-        If the request is not open, or if another admin approved it
-        concurrently (the conditional update in step 3 affected 0 rows).
     """
     engine = get_app_engine()
+    now = _now_iso()
 
-    # Step 1: Check that the request is open, fail fast before touching keys.
-    # This reads outside the transaction that marks approval, ensuring we
-    # reject a non-open request immediately.
-    with engine.connect() as conn:
-        row = _require_open(conn, request_id)
-
-    column_name = row["column_name"]
-    principal_id = row["requester_principal_id"]
-
-    # Step 2: Update keys (idempotent operation). Deliberately outside any
-    # transaction: appdb.key_store opens its own engine.begin() per call
-    # (issue_key/set_disabled/revoke_key/update_denied_columns all do).
-    # Nesting a second write transaction inside would either need a shared
-    # connection this module has no reason to thread through, or risk
-    # SQLite's "database is locked" on backends that don't support nested
-    # transactions. The key update is idempotent: running it twice is
-    # harmless. A failure here leaves the request "open" and retryable.
-    updated = 0
-    for key_row in list_keys():
-        if key_row["principal_id"] != principal_id:
-            continue
-        if key_row["revoked_at"] is not None:
-            continue  # revoked keys are never touched (module docstring)
-        denied = list(key_row["denied_columns"])
-        if column_name not in denied:
-            continue
-        denied.remove(column_name)
-        update_denied_columns(key_row["key_sha256"], denied)
-        updated += 1
-
-    # Step 3: Mark as approved in a transaction with conditional update.
-    # If 0 rows affected, another admin resolved it concurrently; keys may
-    # already have been widened -- raise to signal the conflict.
     with engine.begin() as conn:
+        # Claim the request with a conditional update.
         result = conn.execute(
             access_requests.update()
-            .where(
-                (access_requests.c.request_id == request_id)
-                & (access_requests.c.status == "open")
-            )
+            .where(access_requests.c.request_id == request_id, access_requests.c.status == "open")
             .values(
                 status="approved",
                 resolution_note=None,
                 resolved_by=actor_principal_id,
-                resolved_at=_now_iso(),
+                resolved_at=now,
             )
         )
+
+        # If the update affected 0 rows, the request was either not found
+        # or already resolved by another admin concurrently.
         if result.rowcount == 0:
+            row = conn.execute(
+                select(access_requests).where(access_requests.c.request_id == request_id)
+            ).mappings().first()
+            if row is None:
+                raise RequestNotFoundError(f"no access request {request_id!r}")
             raise AlreadyResolvedError(
-                f"access request {request_id!r} was already resolved "
-                f"(it is no longer open; keys may have already been widened "
-                f"by another admin)"
+                f"access request {request_id!r} was already resolved as "
+                f"{row['status']!r} by {row['resolved_by']!r} at {row['resolved_at']!r}; "
+                "no key was changed"
             )
+
+        # Read the request row to get column_name and principal_id.
+        row = conn.execute(
+            select(access_requests).where(access_requests.c.request_id == request_id)
+        ).mappings().first()
+
+        column_name = row["column_name"]
+        principal_id = row["requester_principal_id"]
+
+        # Read all keys for this principal and update those that deny the column.
+        key_rows = conn.execute(
+            select(admin_api_keys).where(admin_api_keys.c.principal_id == principal_id)
+        ).mappings().all()
+
+        updated = 0
+        for key_row in key_rows:
+            if key_row["revoked_at"] is not None:
+                continue  # revoked keys are never touched (module docstring)
+            denied = list(json.loads(key_row["denied_columns_json"]))
+            if column_name not in denied:
+                continue
+            denied.remove(column_name)
+            appdb.key_store._write_denied_columns(conn, key_row["key_sha256"], denied, now)
+            updated += 1
+
+    # After the transaction commits, invalidate the cache once.
+    invalidate_cache()
 
     return get_request(request_id), updated
 
@@ -354,6 +347,11 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
 def deny_request(request_id: int, *, actor_principal_id: str, reason: str) -> dict[str, Any]:
     """Deny *request_id* with a required, non-blank *reason* (module
     docstring's "Denial requires a reason").
+
+    The status update is conditional (WHERE status = 'open') so a concurrent
+    approval cannot be silently overwritten. If another admin approved the
+    request concurrently, this raises AlreadyResolvedError and changes
+    nothing.
 
     Raises
     ------
@@ -369,16 +367,33 @@ def deny_request(request_id: int, *, actor_principal_id: str, reason: str) -> di
         )
 
     engine = get_app_engine()
+    now = _now_iso()
+
     with engine.begin() as conn:
-        _require_open(conn, request_id)
-        conn.execute(
+        # Deny with a conditional update.
+        result = conn.execute(
             access_requests.update()
-            .where(access_requests.c.request_id == request_id)
+            .where(access_requests.c.request_id == request_id, access_requests.c.status == "open")
             .values(
                 status="denied",
                 resolution_note=reason,
                 resolved_by=actor_principal_id,
-                resolved_at=_now_iso(),
+                resolved_at=now,
             )
         )
+
+        # If the update affected 0 rows, the request was either not found
+        # or already resolved by another admin concurrently.
+        if result.rowcount == 0:
+            row = conn.execute(
+                select(access_requests).where(access_requests.c.request_id == request_id)
+            ).mappings().first()
+            if row is None:
+                raise RequestNotFoundError(f"no access request {request_id!r}")
+            raise AlreadyResolvedError(
+                f"access request {request_id!r} was already resolved as "
+                f"{row['status']!r} by {row['resolved_by']!r} at {row['resolved_at']!r}; "
+                "no change was made"
+            )
+
     return get_request(request_id)

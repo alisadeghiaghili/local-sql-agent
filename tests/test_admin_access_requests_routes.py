@@ -320,25 +320,26 @@ class TestAdminAuditTrail:
         assert len(matching) == 1
         assert matching[0]["detail"]["reason"] == "Column is under legal hold."
 
+
     def test_approve_route_returns_non_2xx_on_key_update_failure(self, client, app_db):
-        """When update_denied_columns fails, the route must return non-2xx
-        and NOT record an admin-action entry."""
+        """When key update fails, the route must return non-2xx
+        and NOT record an admin-action entry. The entire transaction rolls
+        back: request stays open, no keys are changed."""
         import unittest.mock
-        from appdb import access_requests as ar_module
+        from appdb import key_store as ks_module
         from appdb.key_store import bootstrap_from_env
+        from appdb.access_requests import get_request
 
         # Bootstrap keys so there are keys to update
         bootstrap_from_env()
 
         row = _ask_denied_and_request_access(client)
 
-        # Monkeypatch to always fail
-        real_update = ar_module.update_denied_columns
-
-        def patched_update(*args, **kwargs):
+        # Patch _write_denied_columns to always fail.
+        def failing_writer(conn, key_sha256, denied_columns, now):
             raise RuntimeError("Simulated key update failure")
 
-        with unittest.mock.patch.object(ar_module, "update_denied_columns", side_effect=patched_update):
+        with unittest.mock.patch.object(ks_module, "_write_denied_columns", side_effect=failing_writer):
             resp = client.post(
                 f"/admin/access-requests/{row['request_id']}/approve",
                 headers=_auth(RAW_SECURITY_KEY),
@@ -354,11 +355,15 @@ class TestAdminAuditTrail:
             "failed approval must not record an admin-action entry"
         )
 
+        # Verify request is still open (transaction rolled back)
+        current = get_request(row["request_id"])
+        assert current["status"] == "open", "transaction rollback should leave request open"
+
     def test_approve_succeeds_after_failed_attempt(self, client, app_db):
         """After a failed approval due to key update failure, retrying the
         approval should succeed and record the admin-action entry."""
         import unittest.mock
-        from appdb import access_requests as ar_module
+        from appdb import key_store as ks_module
         from appdb.key_store import bootstrap_from_env
 
         # Bootstrap keys so there are keys to update
@@ -367,12 +372,10 @@ class TestAdminAuditTrail:
         row = _ask_denied_and_request_access(client)
 
         # First attempt: fail on all key updates
-        real_update = ar_module.update_denied_columns
-
-        def patched_update_fail(*args, **kwargs):
+        def failing_writer(conn, key_sha256, denied_columns, now):
             raise RuntimeError("Simulated key update failure")
 
-        with unittest.mock.patch.object(ar_module, "update_denied_columns", side_effect=patched_update_fail):
+        with unittest.mock.patch.object(ks_module, "_write_denied_columns", side_effect=failing_writer):
             resp = client.post(
                 f"/admin/access-requests/{row['request_id']}/approve",
                 headers=_auth(RAW_SECURITY_KEY),

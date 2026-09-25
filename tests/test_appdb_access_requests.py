@@ -294,71 +294,6 @@ class TestApprovalUpdatesLiveKeysOnly:
         with pytest.raises(RequestNotFoundError):
             approve_request(999_999, actor_principal_id="security-1")
 
-    def test_approval_is_retryable_on_midway_failure(self, app_env):
-        """When update_denied_columns fails partway through, the request
-        stays open and can be approved again. Verify:
-        1. Failure midway: some keys widened, request still open
-        2. Retry succeeds: all keys widened, request approved
-        3. Third approval is rejected."""
-        import unittest.mock
-        from appdb import access_requests as ar_module
-
-        column = _any_real_column()
-        key1 = self._issue("analyst-1", "Key One")
-        key2 = self._issue("analyst-1", "Key Two")
-
-        _write_denied_column_audit("s_50", "t_50", column=column)
-        row, _ = submit_request(session_id="s_50", turn_id="t_50", requester_principal_id="analyst-1")
-
-        # Monkeypatch update_denied_columns to fail on the second call
-        real_update = ar_module.update_denied_columns
-        call_count = [0]
-
-        def patched_update(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 2:
-                raise RuntimeError("Simulated failure on second key update")
-            return real_update(*args, **kwargs)
-
-        with unittest.mock.patch.object(ar_module, "update_denied_columns", side_effect=patched_update):
-            # First approval fails
-            with pytest.raises(RuntimeError):
-                approve_request(row["request_id"], actor_principal_id="security-1")
-
-        # Verify: request is still open, exactly one key was widened
-        current = get_request(row["request_id"])
-        assert current["status"] == "open", "request must remain open after midway failure"
-
-        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
-        key1_widened = column not in rows_by_hash[key1["key_sha256"]]["denied_columns"]
-        key2_widened = column not in rows_by_hash[key2["key_sha256"]]["denied_columns"]
-        assert key1_widened != key2_widened, (
-            f"exactly one key should be widened: "
-            f"key1 widened={key1_widened}, key2 widened={key2_widened}"
-        )
-
-        # Remove the monkeypatch and retry
-        call_count[0] = 0  # Reset counter
-        resolved, updated_count = approve_request(row["request_id"], actor_principal_id="security-1")
-        assert resolved["status"] == "approved"
-        # Idempotent operation: only the second key needs updating now (first already widened)
-        assert updated_count == 1, (
-            f"second approval should update only the remaining key, got {updated_count}"
-        )
-
-        # Verify: now both keys are widened
-        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
-        assert column not in rows_by_hash[key1["key_sha256"]]["denied_columns"], (
-            "key1 should remain widened after first failed attempt"
-        )
-        assert column not in rows_by_hash[key2["key_sha256"]]["denied_columns"], (
-            "key2 should be widened on retry"
-        )
-
-        # Third approval is rejected
-        with pytest.raises(AlreadyResolvedError):
-            approve_request(row["request_id"], actor_principal_id="security-2")
-
     def test_approving_a_denied_request_raises_and_changes_no_key(self, app_env):
         """Approving a request that was already denied raises
         AlreadyResolvedError and leaves no keys changed."""
@@ -442,3 +377,193 @@ class TestListScoping:
         assert len(list_requests(status="open")) == 1
         assert len(list_requests(status="denied")) == 1
         assert len(list_requests()) == 2
+
+
+# ---------------------------------------------------------------------------
+# Atomic transactions: failure midway, concurrent deny/approve
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicTransactions:
+    def _issue(self, principal_id: str, name: str) -> dict:
+        _, entry = issue_key(principal_id, name)
+        return entry
+
+    def test_failure_midway_leaves_request_open_no_keys_changed(self, app_env, monkeypatch):
+        """Failure during key updates rolls back the entire transaction:
+        the request stays open and NO key is widened."""
+        column = _any_real_column()
+        key1 = self._issue("analyst-1", "Key One")
+        key2 = self._issue("analyst-1", "Key Two")
+
+        _write_denied_column_audit("s_50", "t_50", column=column)
+        row, _ = submit_request(session_id="s_50", turn_id="t_50", requester_principal_id="analyst-1")
+
+        # Patch _write_denied_columns to fail on the second call.
+        from appdb import key_store
+        real_writer = key_store._write_denied_columns
+        call_count = [0]
+
+        def failing_writer(conn, key_sha256, denied_columns, now):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise RuntimeError("simulated key update failure")
+            return real_writer(conn, key_sha256, denied_columns, now)
+
+        monkeypatch.setattr(key_store, "_write_denied_columns", failing_writer)
+
+        # Approval fails midway.
+        with pytest.raises(RuntimeError, match="simulated key update failure"):
+            approve_request(row["request_id"], actor_principal_id="security-1")
+
+        # Request is still open.
+        resolved = get_request(row["request_id"])
+        assert resolved["status"] == "open"
+
+        # NO keys were changed (not even the first one that succeeded before the failure).
+        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
+        assert column in rows_by_hash[key1["key_sha256"]]["denied_columns"]
+        assert column in rows_by_hash[key2["key_sha256"]]["denied_columns"]
+
+        # Remove the patch and approve again -- should succeed.
+        monkeypatch.setattr(key_store, "_write_denied_columns", real_writer)
+        resolved, updated_count = approve_request(row["request_id"], actor_principal_id="security-1")
+        assert resolved["status"] == "approved"
+        assert updated_count == 2
+
+        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
+        assert column not in rows_by_hash[key1["key_sha256"]]["denied_columns"]
+        assert column not in rows_by_hash[key2["key_sha256"]]["denied_columns"]
+
+        # A third approval raises AlreadyResolvedError.
+        with pytest.raises(AlreadyResolvedError):
+            approve_request(row["request_id"], actor_principal_id="security-2")
+
+    def test_deny_then_approve_fails(self, app_env):
+        """Approving a denied request raises AlreadyResolvedError and
+        changes no key."""
+        column = _any_real_column()
+        key1 = self._issue("analyst-1", "Key One")
+
+        _write_denied_column_audit("s_51", "t_51", column=column)
+        row, _ = submit_request(session_id="s_51", turn_id="t_51", requester_principal_id="analyst-1")
+
+        deny_request(row["request_id"], actor_principal_id="security-1", reason="No.")
+
+        with pytest.raises(AlreadyResolvedError):
+            approve_request(row["request_id"], actor_principal_id="security-2")
+
+        # No key was changed.
+        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
+        assert column in rows_by_hash[key1["key_sha256"]]["denied_columns"]
+
+    def test_approve_then_deny_fails(self, app_env):
+        """Denying an approved request raises AlreadyResolvedError and
+        the request stays approved."""
+        column = _any_real_column()
+        self._issue("analyst-1", "Key One")
+
+        _write_denied_column_audit("s_52", "t_52", column=column)
+        row, _ = submit_request(session_id="s_52", turn_id="t_52", requester_principal_id="analyst-1")
+
+        approve_request(row["request_id"], actor_principal_id="security-1")
+
+        with pytest.raises(AlreadyResolvedError):
+            deny_request(row["request_id"], actor_principal_id="security-2", reason="Actually, no.")
+
+        # Request is still approved.
+        resolved = get_request(row["request_id"])
+        assert resolved["status"] == "approved"
+
+    def test_claim_condition_is_load_bearing(self, app_env, monkeypatch):
+        """If the WHERE status='open' condition is removed from
+        approve_request's claim, this test fails: approving a denied
+        request would overwrite the denial. This is the mutation check."""
+        column = _any_real_column()
+        key1 = self._issue("analyst-1", "Key One")
+
+        _write_denied_column_audit("s_53", "t_53", column=column)
+        row, _ = submit_request(session_id="s_53", turn_id="t_53", requester_principal_id="analyst-1")
+
+        deny_request(row["request_id"], actor_principal_id="security-1", reason="No.")
+
+        # This should fail (denying it would overwrite). This passes currently
+        # because the condition is present.
+        with pytest.raises(AlreadyResolvedError):
+            approve_request(row["request_id"], actor_principal_id="security-2")
+
+        # Request is still denied.
+        resolved = get_request(row["request_id"])
+        assert resolved["status"] == "denied"
+
+    def test_deny_claim_condition_is_load_bearing(self, app_env):
+        """If the WHERE status='open' condition is removed from
+        deny_request's claim, denying an already-approved request would
+        overwrite the approval. This is the mutation check."""
+        column = _any_real_column()
+        self._issue("analyst-1", "Key One")
+
+        _write_denied_column_audit("s_54", "t_54", column=column)
+        row, _ = submit_request(session_id="s_54", turn_id="t_54", requester_principal_id="analyst-1")
+
+        approve_request(row["request_id"], actor_principal_id="security-1")
+
+        # This should fail (denying it would overwrite). This passes currently
+        # because the condition is present.
+        with pytest.raises(AlreadyResolvedError):
+            deny_request(row["request_id"], actor_principal_id="security-2", reason="Changed our minds.")
+
+        # Request is still approved.
+        resolved = get_request(row["request_id"])
+        assert resolved["status"] == "approved"
+
+    def test_cache_invalidation_after_approval(self, app_env):
+        """After approval, cache invalidation has been called so the
+        principal's effective denied columns no longer contain the column."""
+        column = _any_real_column()
+        self._issue("analyst-1", "Key One")
+
+        _write_denied_column_audit("s_55", "t_55", column=column)
+        row, _ = submit_request(session_id="s_55", turn_id="t_55", requester_principal_id="analyst-1")
+
+        # Before approval, the column is denied.
+        from appdb.key_store import get_active_principals
+        principals_before = get_active_principals()
+        analyst_key_hashes = [k for k, p in principals_before.items() if p.id == "analyst-1"]
+        assert len(analyst_key_hashes) > 0
+        for key_hash in analyst_key_hashes:
+            assert column in principals_before[key_hash].denied_columns
+
+        # Approve.
+        approve_request(row["request_id"], actor_principal_id="security-1")
+
+        # After approval, the column is no longer denied (cache was invalidated).
+        principals_after = get_active_principals()
+        for key_hash in analyst_key_hashes:
+            assert column not in principals_after[key_hash].denied_columns
+
+    def test_unrelated_denied_columns_survive_approval(self, app_env):
+        """Approving a request for one column leaves other denied columns
+        on the same key untouched."""
+        from schema_data.columns import TABLE_COLUMNS
+        any_table = next(iter(TABLE_COLUMNS))
+        columns = list(TABLE_COLUMNS[any_table])
+        col_to_request = columns[0] if len(columns) > 0 else _any_real_column()
+        col_to_keep = columns[1] if len(columns) > 1 else _any_real_column()
+
+        if col_to_request == col_to_keep:
+            # Can't run this test if we only have one column.
+            pytest.skip("schema has fewer than 2 columns")
+
+        key1 = self._issue("analyst-1", "Key One")
+
+        _write_denied_column_audit("s_56", "t_56", column=col_to_request)
+        row, _ = submit_request(session_id="s_56", turn_id="t_56", requester_principal_id="analyst-1")
+
+        approve_request(row["request_id"], actor_principal_id="security-1")
+
+        rows_by_hash = {r["key_sha256"]: r for r in list_keys()}
+        key_denied = rows_by_hash[key1["key_sha256"]]["denied_columns"]
+        assert col_to_request not in key_denied, "requested column should be removed"
+        assert col_to_keep in key_denied, "other denied columns should survive"
+
