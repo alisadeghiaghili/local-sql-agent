@@ -33,6 +33,7 @@ import config as cfg
 from appdb.engine import build_engine
 from appdb.migrate import (
     MigrationRefusedError,
+    _build_reseed_statement,
     check_schema_version,
     current_schema_version,
     export_database,
@@ -702,3 +703,65 @@ class TestNothingInTheCopyOpensASecondConnection:
         assert not empty, (
             f"these tables were copied but landed empty on the target: {empty}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Identifier quoting in reseed statements
+# ---------------------------------------------------------------------------
+
+class TestReseedStatementQuoting:
+    """Test that _build_reseed_statement safely quotes identifiers with special characters."""
+
+    def test_mssql_access_requests_exact_string(self):
+        """MSSQL with normal table name 'access_requests' matches exact string."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mssql", preparer, "access_requests", 7)
+        assert stmt == "DBCC CHECKIDENT (access_requests, RESEED, 7)"
+
+    def test_mssql_complex_identifier_exact_string(self):
+        """MSSQL with 'a]b`c'd' table name matches exact bracketed string."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mssql", preparer, "a]b`c'd", 7)
+        assert stmt == "DBCC CHECKIDENT ([a]]b`c'd], RESEED, 7)"
+
+    def test_mssql_quoted_name_exact_string(self):
+        """MSSQL with 'Table'Name' table name matches exact bracketed string."""
+        from sqlalchemy.dialects import mssql
+
+        dialect_obj = mssql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mssql", preparer, "Table'Name", 7)
+        assert stmt == "DBCC CHECKIDENT ([Table'Name], RESEED, 7)"
+
+    def test_mysql_access_requests_exact_string(self):
+        """MySQL with normal table name 'access_requests' matches exact string."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mysql", preparer, "access_requests", 7)
+        assert stmt == "ALTER TABLE access_requests AUTO_INCREMENT = 8"
+
+    def test_mysql_complex_identifier_exact_string(self):
+        """MySQL with 'a]b`c'd' table name matches exact backtick string."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mysql", preparer, "a]b`c'd", 7)
+        assert stmt == "ALTER TABLE `a]b``c'd` AUTO_INCREMENT = 8"
+
+    def test_mysql_quoted_name_exact_string(self):
+        """MySQL with 'Table'Name' table name matches exact backtick string."""
+        from sqlalchemy.dialects import mysql
+
+        dialect_obj = mysql.dialect()
+        preparer = dialect_obj.identifier_preparer
+        stmt = _build_reseed_statement("mysql", preparer, "Table'Name", 7)
+        assert stmt == "ALTER TABLE `Table'Name` AUTO_INCREMENT = 8"

@@ -37,6 +37,7 @@ either way; what it may not do is leave the outcome to an off-by-one.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -71,7 +72,7 @@ def test_the_chart_form_follows_the_datas_job() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

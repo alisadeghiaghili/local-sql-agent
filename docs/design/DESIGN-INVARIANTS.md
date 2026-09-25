@@ -184,17 +184,10 @@ one root cause; eyes rank symptoms, measurement finds causes.
 
 ---
 
-## 6. Attribution
+## 6. Commit conventions
 
-`IMPLEMENTATION.md` states "No co-author trailers. No AI attribution."
-
-Commits on `security/audit-remediation` carry a `Co-Authored-By` trailer,
-because the tooling that produced them is required to add one. The two branches
-therefore disagree, and a merge inherits both conventions.
-
-This is recorded, not resolved: how the repository owner attributes their own
-work is their call, and rewriting those trailers is a history edit only they
-should make.
+Commit subjects follow Conventional Commits (`type(scope): summary`). A merge
+to `main` goes through a pull request whose required checks are green.
 
 ---
 

@@ -23,9 +23,9 @@ What the audit found
   TABLES_IN_MIGRATION_ORDER`), never a name read from configuration, a
   request, or the source database's own catalogue, and ``max_id`` is
   always the integer result of ``MAX(pk_column)`` cast through ``int()``
-  two lines above. Neither value is attacker- or operator-reachable text,
-  so there is no injection surface here to fix -- the existing inline
-  comment saying exactly this stands.
+  two lines above. Neither value is attacker- or operator-reachable text.
+  Table identifiers in the reseed step (``_build_reseed_statement``) are
+  now quoted with the dialect's ``identifier_preparer``.
 * **No credentials are written to disk anywhere in this module.** The one
   file this tool's pipeline writes -- the temporary export artefact
   (``scripts/migrate_app_db.py``'s ``_make_export_writer``) -- is created

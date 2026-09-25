@@ -56,6 +56,7 @@ because these two suites are exactly what that proof exercises).
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -91,7 +92,7 @@ def test_engine_does_not_treat_a_calendar_word_substring_as_a_sequence() -> None
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (
@@ -123,7 +124,7 @@ def test_renderer_does_not_treat_a_calendar_word_substring_as_a_sequence() -> No
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

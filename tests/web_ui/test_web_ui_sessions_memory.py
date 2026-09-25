@@ -37,6 +37,7 @@ actually break:
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -202,7 +203,7 @@ def test_sessions_and_memory_boundaries() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

@@ -35,6 +35,7 @@ identifier.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import shutil
 import subprocess
@@ -110,7 +111,7 @@ def test_every_failure_code_gets_its_persian_sentence() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=60,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (

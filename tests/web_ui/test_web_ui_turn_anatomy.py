@@ -9,6 +9,7 @@ line and SQL header.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -79,7 +80,7 @@ def test_turn_anatomy_keeps_trust_surface_above_result() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=60,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ALL_ANATOMY_PASSED" in result.stdout, result.stdout

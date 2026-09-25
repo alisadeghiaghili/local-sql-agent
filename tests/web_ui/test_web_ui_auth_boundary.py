@@ -34,6 +34,7 @@ which is not the Python interpreter running the rest of the suite.
 """
 
 from __future__ import annotations
+from tests.web_ui import NODE_TIMEOUT_SECONDS
 
 import re
 import shutil
@@ -95,7 +96,7 @@ def test_web_ui_attaches_bearer_token_on_every_authenticated_call_and_omits_it_f
             [_NODE, str(_HARNESS), str(api_mjs)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=NODE_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, (
