@@ -719,11 +719,9 @@ class TestReseedStatementQuoting:
         dialect_obj = mssql.dialect()
         preparer = dialect_obj.identifier_preparer
         stmt = _build_reseed_statement("mssql", preparer, "my_table", 42)
-        assert "DBCC CHECKIDENT" in stmt
-        assert "RESEED, 42" in stmt
-        # MSSQL preparer only adds brackets for special characters; normal names pass through
         quoted = preparer.quote("my_table")
-        assert quoted in stmt
+        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 42)"
+        assert stmt == expected
 
     def test_mssql_table_name_with_bracket(self):
         """Table name containing a closing bracket in MSSQL."""
@@ -733,11 +731,9 @@ class TestReseedStatementQuoting:
         preparer = dialect_obj.identifier_preparer
         table_name = "Table]Name"
         stmt = _build_reseed_statement("mssql", preparer, table_name, 100)
-        assert "DBCC CHECKIDENT" in stmt
-        assert "RESEED, 100" in stmt
-        # MSSQL preparer escapes brackets: ] becomes ]]
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
+        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 100)"
+        assert stmt == expected
 
     def test_mssql_table_name_with_single_quote(self):
         """Table name containing a single quote in MSSQL."""
@@ -747,13 +743,10 @@ class TestReseedStatementQuoting:
         preparer = dialect_obj.identifier_preparer
         table_name = "Table'Name"
         stmt = _build_reseed_statement("mssql", preparer, table_name, 50)
-        assert "DBCC CHECKIDENT" in stmt
-        assert "RESEED, 50" in stmt
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
-        # The quoted identifier should be in square brackets: [Table'Name]
-        # (single quotes inside square brackets don't need escaping)
-        assert "[Table'Name]" in stmt
+        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 50)"
+        assert stmt == expected
+        # Inside a bracketed identifier, a single quote needs no escaping
 
     def test_mssql_table_name_with_backtick(self):
         """Table name containing a backtick in MSSQL."""
@@ -764,7 +757,8 @@ class TestReseedStatementQuoting:
         table_name = "Table`Name"
         stmt = _build_reseed_statement("mssql", preparer, table_name, 75)
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
+        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 75)"
+        assert stmt == expected
 
     def test_mysql_normal_table_name(self):
         """Normal table name in MySQL -- no special characters."""
@@ -773,11 +767,9 @@ class TestReseedStatementQuoting:
         dialect_obj = mysql.dialect()
         preparer = dialect_obj.identifier_preparer
         stmt = _build_reseed_statement("mysql", preparer, "my_table", 42)
-        assert "ALTER TABLE" in stmt
-        assert "AUTO_INCREMENT = 43" in stmt
-        # MySQL preparer only adds backticks for special characters; normal names pass through
         quoted = preparer.quote("my_table")
-        assert quoted in stmt
+        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 43"
+        assert stmt == expected
 
     def test_mysql_table_name_with_single_quote(self):
         """Table name containing a single quote in MySQL."""
@@ -787,10 +779,9 @@ class TestReseedStatementQuoting:
         preparer = dialect_obj.identifier_preparer
         table_name = "Table'Name"
         stmt = _build_reseed_statement("mysql", preparer, table_name, 100)
-        assert "ALTER TABLE" in stmt
-        assert "AUTO_INCREMENT = 101" in stmt
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
+        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 101"
+        assert stmt == expected
 
     def test_mysql_table_name_with_backtick(self):
         """Table name containing a backtick in MySQL."""
@@ -800,12 +791,9 @@ class TestReseedStatementQuoting:
         preparer = dialect_obj.identifier_preparer
         table_name = "Table`Name"
         stmt = _build_reseed_statement("mysql", preparer, table_name, 55)
-        assert "ALTER TABLE" in stmt
-        assert "AUTO_INCREMENT = 56" in stmt
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
-        # MySQL escapes backticks by doubling them
-        assert "`Table``Name`" in stmt
+        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 56"
+        assert stmt == expected
 
     def test_mysql_table_name_with_bracket(self):
         """Table name containing a bracket in MySQL."""
@@ -816,7 +804,8 @@ class TestReseedStatementQuoting:
         table_name = "Table]Name"
         stmt = _build_reseed_statement("mysql", preparer, table_name, 30)
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
+        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 31"
+        assert stmt == expected
 
     def test_complex_table_name_mssql(self):
         """Table name with multiple special characters in MSSQL."""
@@ -827,8 +816,8 @@ class TestReseedStatementQuoting:
         table_name = "Table]With'Both`Chars"
         stmt = _build_reseed_statement("mssql", preparer, table_name, 99)
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
-        assert "DBCC CHECKIDENT" in stmt
+        expected = f"DBCC CHECKIDENT ({quoted}, RESEED, 99)"
+        assert stmt == expected
 
     def test_complex_table_name_mysql(self):
         """Table name with multiple special characters in MySQL."""
@@ -839,5 +828,5 @@ class TestReseedStatementQuoting:
         table_name = "Table]With'Both`Chars"
         stmt = _build_reseed_statement("mysql", preparer, table_name, 88)
         quoted = preparer.quote(table_name)
-        assert quoted in stmt
-        assert "ALTER TABLE" in stmt
+        expected = f"ALTER TABLE {quoted} AUTO_INCREMENT = 89"
+        assert stmt == expected

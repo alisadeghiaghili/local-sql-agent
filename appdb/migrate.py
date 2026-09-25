@@ -575,10 +575,12 @@ def _build_reseed_statement(dialect: str, preparer, table_name: str, max_id: int
     quoted_table = preparer.quote(table_name)
 
     if dialect == "mssql":
-        # Use bracket-quoted identifier directly in DBCC statement
+        # identifier_preparer.quote() leaves ordinary names unquoted and brackets them
+        # when required, doubling ] for escaping. DBCC CHECKIDENT accepts an identifier.
         return f"DBCC CHECKIDENT ({quoted_table}, RESEED, {int(max_id)})"
     elif dialect == "mysql":
-        # ALTER TABLE accepts identifiers directly
+        # identifier_preparer.quote() leaves ordinary names unquoted and backtick-quotes
+        # them when required, doubling ` for escaping. ALTER TABLE accepts an identifier.
         return f"ALTER TABLE {quoted_table} AUTO_INCREMENT = {int(max_id) + 1}"
     else:
         raise ValueError(f"Unsupported dialect for reseed: {dialect}")
