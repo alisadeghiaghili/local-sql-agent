@@ -68,6 +68,9 @@ tables:
       CustomerID: "FK → Customer"
       OrderDate_ID: "FK → Date"
       TotalAmount: "Order total, in the store's base currency"
+      RingID: "FK → ref.Ring — sales channel the order was placed through"
+      BrokerID: "FK → ref.Broker — selling agent for the order"
+      SymbolID: "FK → ref.Symbol — product symbol the order is for"
 
   # Example 2: a dimension table
   #
@@ -129,8 +132,8 @@ tables:
       Code: "ISO currency code"
     resolvable_columns: ["PersianName"]
     prefetchable_columns: ["PersianName"]
-  DeliveryPlace:
-    description: "ref.DeliveryPlace — delivery location reference data"
+  Location:
+    description: "ref.Location — delivery location reference data"
     db_schema: "ref"
     columns:
       ID: "Primary key"
@@ -172,3 +175,12 @@ relationships:
   - from_table: "Order"
     to_table: "Date"
     join_sql: "JOIN [sales].[Date] d ON o.OrderDate_ID = d.ID"
+  - from_table: "Order"
+    to_table: "Ring"
+    join_sql: "JOIN [ref].[Ring] r ON o.RingID = r.ID"
+  - from_table: "Order"
+    to_table: "Broker"
+    join_sql: "JOIN [ref].[Broker] b ON o.BrokerID = b.ID"
+  - from_table: "Order"
+    to_table: "Symbol"
+    join_sql: "JOIN [ref].[Symbol] s ON o.SymbolID = s.ID"

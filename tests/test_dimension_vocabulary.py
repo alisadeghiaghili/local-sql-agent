@@ -63,7 +63,7 @@ class TestPrefetchAllowlist:
 
     def test_small_dimensions_are_prefetch_eligible(self):
         assert set(PREFETCH_COLUMNS) == {
-            "Broker", "Currency", "DeliveryPlace", "Ring", "Symbol",
+            "Broker", "Currency", "Location", "Ring", "Symbol",
         }
 
 
