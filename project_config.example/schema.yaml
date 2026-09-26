@@ -164,6 +164,7 @@ tables:
     columns:
       ID: "Primary key"
       Customer_Name: "Supplier display name"
+      NationalCode: "Supplier national identifier; NULL until KYC is complete, so non-NULL is used as an 'active supplier' proxy"
     # Deliberately resolvable but NOT prefetchable -- same reasoning as
     # Customer above.
     resolvable_columns: ["Customer_Name"]
