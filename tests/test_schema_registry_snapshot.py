@@ -2,7 +2,7 @@
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Pins schema_data's loaded registry to a known-good snapshot.
 
-Phase 4 moved the IME warehouse schema out of
+Phase 4 moved the real warehouse schema out of
 ``schema_data/{tables,columns,relationships}.py`` (Python literals, tracked
 by git) into ``project_config/schema.yaml`` (git-ignored, loaded through
 :mod:`schema_data.registry`). ``security.sql_guard`` derives its table and
@@ -12,34 +12,24 @@ adds a new one changes the guard's effective security posture with no
 Python-level code change at all to review.
 
 This module pins the loaded data so that kind of drift fails a test
-instead of silently changing what the guard accepts:
+instead of silently changing what the guard accepts. The exact pinned
+values (table names, column counts, relationship count, content hashes)
+are real, deployment-specific data -- they say nothing useful about
+``project_config.example/``'s generic schema, so they are NOT hardcoded
+here. Instead they live in an optional, deployment-owned fixture file,
+``<PROJECT_CONFIG_DIR>/_test_fixtures/schema_registry_snapshot.json`` (see
+``project_config.example/_test_fixtures/README.md`` for the format), loaded
+through :mod:`tests._domain_fixtures`. Every class below except
+``TestAllowlistStructuralInvariants`` is additionally marked
+``domain_data`` and auto-skips whenever ``PROJECT_CONFIG_DIR`` points at
+``project_config.example/`` (CI, a fresh clone) -- see the repo-root
+``conftest.py``; the fixture-file skip in ``tests._domain_fixtures``
+separately covers "a real ``project_config/`` is in effect, but this one
+optional fixture hasn't been created yet."
 
-1. The exact set of tables that are part of the guard's allowlist (i.e.
-   carry a ``columns`` key in ``schema.yaml``) -- ``TestGuardAllowlistTables``.
-2. The exact column count per allowlisted table, and overall -- ``87``
-   columns across ``12`` tables today -- ``TestGuardAllowlistColumns``.
-3. The full set of described tables (23: the 12 queryable ones plus 11
-   prompt-only lookup/status dimensions with no ``columns`` key) --
-   ``TestFullSchemaTableSet``.
-4. The relationship count -- ``TestRelationshipCount``.
-5. A content hash of every table's and relationship's full text, so even a
-   *wording* change to ``schema.yaml`` is visible here -- not
-   security-relevant on its own, but this module's job is "did the loaded
-   registry change at all", not just "did the allowlist shrink or grow" --
-   ``TestSchemaContentHash``.
-
-If this fails after an intentional, reviewed ``schema.yaml`` edit, that is
-expected -- recompute and update the pinned values below (see
-``_hash``'s docstring for how).
-
-Every class above this module's ``TestAllowlistStructuralInvariants`` pins
-*exact* real values, so each is marked ``domain_data`` and is auto-skipped
-whenever ``PROJECT_CONFIG_DIR`` points at ``project_config.example/`` (CI,
-a fresh clone) -- see the repo-root ``conftest.py``. Against the real
-``project_config/`` (every developer's normal local run) these run exactly
-as before. ``TestAllowlistStructuralInvariants`` at the bottom of this
-module is NOT marked ``domain_data`` -- see its own docstring for the
-schema-agnostic allowlist check that keeps running in CI regardless.
+If a check fails after an intentional, reviewed ``schema.yaml`` edit, that
+is expected -- recompute and update the deployment's own fixture file (see
+the module-level ``_hash`` docstring below for how to recompute a hash).
 """
 
 from __future__ import annotations
@@ -53,79 +43,32 @@ from schema_data.columns import TABLE_COLUMNS
 from schema_data.registry import check_allowlist_structural_invariants
 from schema_data.relationships import RELATIONSHIPS
 from schema_data.tables import TABLE_DESCRIPTIONS
-
-# ---------------------------------------------------------------------------
-# Known-good snapshot, captured from project_config/schema.yaml at the time
-# schema_data/{tables,columns,relationships}.py were retired (Phase 4).
-# ---------------------------------------------------------------------------
-
-#: Tables that carry a `columns` key in schema.yaml -- these, and only
-#: these, are queryable per security.sql_guard's table allowlist.
-_EXPECTED_ALLOWLIST_TABLES = (
-    "Broker", "Contract", "Currency", "Customer", "CustomerContract",
-    "Date", "DeliveryPlace", "Offer", "Order", "Ring", "Supplier", "Symbol",
-)
-
-_EXPECTED_COLUMNS_PER_TABLE = {
-    "Contract": 14,
-    "CustomerContract": 15,
-    "Offer": 15,
-    "Order": 8,
-    "Customer": 4,
-    "Supplier": 3,
-    "Broker": 3,
-    "Symbol": 4,
-    "Ring": 3,
-    "Date": 13,
-    "Currency": 3,
-    "DeliveryPlace": 2,
-}
-
-_EXPECTED_TOTAL_COLUMNS = 87
-
-#: Every table described in schema.yaml, including the 11 prompt-only
-#: lookup/status dimensions that have no `columns` key (Bank, BuyMethod,
-#: Carrier, ClearingKind, ContractKind, ContractStatus, GeneralStatus,
-#: OfferKind, OfferStatus, PaymentDelivery, TalarLog) and are therefore
-#: NOT part of the guard's allowlist.
-_EXPECTED_TABLE_NAMES = (
-    "Bank", "Broker", "BuyMethod", "Carrier", "ClearingKind", "Contract",
-    "ContractKind", "ContractStatus", "Currency", "Customer",
-    "CustomerContract", "Date", "DeliveryPlace", "GeneralStatus", "Offer",
-    "OfferKind", "OfferStatus", "Order", "PaymentDelivery", "Ring",
-    "Supplier", "Symbol", "TalarLog",
-)
-
-_EXPECTED_RELATIONSHIP_COUNT = 25
-
-# sha256 of the canonical (sort_keys=True) JSON form of each data source --
-# any change anywhere in it (a description edit, a column rename, an added
-# or removed entry) changes the hash. Recompute with:
-#
-#   python -c "
-#   import hashlib, json
-#   from schema_data.columns import TABLE_COLUMNS
-#   print(hashlib.sha256(
-#       json.dumps(TABLE_COLUMNS, sort_keys=True, ensure_ascii=False)
-#           .encode('utf-8')
-#   ).hexdigest())"
-#
-# (swap in TABLE_DESCRIPTIONS / RELATIONSHIPS for the other two hashes).
-_EXPECTED_COLUMNS_HASH = (
-    "761fb345d73842f97fb0e541001a05c07360c43963aa74a9973e799b8fb11972"
-)
-_EXPECTED_DESCRIPTIONS_HASH = (
-    "f8afbf92edaa7854d913972175ee4fa3483b1c44a77c268db2037b85c31b2299"
-)
-_EXPECTED_RELATIONSHIPS_HASH = (
-    "4df07f669989bb086f156f6ade4439df2c0add83f0145c72d92a8417de827999"
-)
+from tests._domain_fixtures import load_json_fixture
 
 
 def _hash(obj: object) -> str:
-    """sha256 hex digest of *obj*'s canonical (sorted-key) JSON form."""
+    """sha256 hex digest of *obj*'s canonical (sorted-key) JSON form.
+
+    Recompute with:
+
+        python -c "
+        import hashlib, json
+        from schema_data.columns import TABLE_COLUMNS
+        print(hashlib.sha256(
+            json.dumps(TABLE_COLUMNS, sort_keys=True, ensure_ascii=False)
+                .encode('utf-8')
+        ).hexdigest())"
+
+    (swap in TABLE_DESCRIPTIONS / RELATIONSHIPS for the other two hashes)
+    and paste the new value into the fixture file.
+    """
     canonical = json.dumps(obj, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@pytest.fixture(scope="module")
+def snapshot():
+    return load_json_fixture("schema_registry_snapshot.json")
 
 
 class TestGuardAllowlistTables:
@@ -133,11 +76,11 @@ class TestGuardAllowlistTables:
 
     pytestmark = pytest.mark.domain_data
 
-    def test_allowlisted_table_names(self):
-        assert sorted(TABLE_COLUMNS) == sorted(_EXPECTED_ALLOWLIST_TABLES)
+    def test_allowlisted_table_names(self, snapshot):
+        assert sorted(TABLE_COLUMNS) == sorted(snapshot["allowlist_tables"])
 
-    def test_table_count(self):
-        assert len(TABLE_COLUMNS) == 12
+    def test_table_count(self, snapshot):
+        assert len(TABLE_COLUMNS) == snapshot["allowlist_table_count"]
 
 
 class TestGuardAllowlistColumns:
@@ -145,31 +88,32 @@ class TestGuardAllowlistColumns:
 
     pytestmark = pytest.mark.domain_data
 
-    def test_column_count_per_table(self):
+    def test_column_count_per_table(self, snapshot):
         actual = {table: len(cols) for table, cols in TABLE_COLUMNS.items()}
-        assert actual == _EXPECTED_COLUMNS_PER_TABLE
+        assert actual == snapshot["columns_per_table"]
 
-    def test_total_column_count(self):
+    def test_total_column_count(self, snapshot):
         total = sum(len(cols) for cols in TABLE_COLUMNS.values())
-        assert total == _EXPECTED_TOTAL_COLUMNS
+        assert total == snapshot["total_columns"]
 
 
 class TestFullSchemaTableSet:
-    """All 23 described tables (12 queryable + 11 prompt-only), not just
-    the guard's allowlist -- catches drift in schema.yaml's `tables` key
-    even for a table that carries no `columns` sub-key."""
+    """All described tables (queryable + prompt-only ones with no
+    ``columns`` sub-key), not just the guard's allowlist -- catches drift
+    in schema.yaml's ``tables`` key even for a table with no ``columns``
+    key of its own."""
 
     pytestmark = pytest.mark.domain_data
 
-    def test_all_table_names(self):
-        assert sorted(TABLE_DESCRIPTIONS) == sorted(_EXPECTED_TABLE_NAMES)
+    def test_all_table_names(self, snapshot):
+        assert sorted(TABLE_DESCRIPTIONS) == sorted(snapshot["all_table_names"])
 
 
 class TestRelationshipCount:
     pytestmark = pytest.mark.domain_data
 
-    def test_relationship_count(self):
-        assert len(RELATIONSHIPS) == _EXPECTED_RELATIONSHIP_COUNT
+    def test_relationship_count(self, snapshot):
+        assert len(RELATIONSHIPS) == snapshot["relationship_count"]
 
 
 class TestSchemaContentHash:
@@ -177,19 +121,19 @@ class TestSchemaContentHash:
     changes -- e.g. someone edits a column's description in schema.yaml.
     Not security-relevant on its own, but this module's job is "did the
     loaded registry change at all" -- if one of these fails after a
-    deliberate, reviewed schema.yaml edit, recompute and update the pinned
-    hash above (see ``_hash``'s docstring)."""
+    deliberate, reviewed schema.yaml edit, recompute and update the
+    deployment's fixture file (see ``_hash``'s docstring)."""
 
     pytestmark = pytest.mark.domain_data
 
-    def test_columns_hash(self):
-        assert _hash(TABLE_COLUMNS) == _EXPECTED_COLUMNS_HASH
+    def test_columns_hash(self, snapshot):
+        assert _hash(TABLE_COLUMNS) == snapshot["columns_hash"]
 
-    def test_descriptions_hash(self):
-        assert _hash(TABLE_DESCRIPTIONS) == _EXPECTED_DESCRIPTIONS_HASH
+    def test_descriptions_hash(self, snapshot):
+        assert _hash(TABLE_DESCRIPTIONS) == snapshot["descriptions_hash"]
 
-    def test_relationships_hash(self):
-        assert _hash(RELATIONSHIPS) == _EXPECTED_RELATIONSHIPS_HASH
+    def test_relationships_hash(self, snapshot):
+        assert _hash(RELATIONSHIPS) == snapshot["relationships_hash"]
 
 
 class TestAllowlistStructuralInvariants:
@@ -198,7 +142,7 @@ class TestAllowlistStructuralInvariants:
     ``project_config.example/`` (unlike every class above, which is marked
     ``domain_data`` and skips there). This is the answer to "what does CI
     still verify about the guard's allowlist once the exact real snapshot
-    can no longer run there": not the specific 12 table names, but that
+    can no longer run there": not the specific table names, but that
     whatever schema.yaml IS loaded is internally consistent -- every
     allowlisted table has at least one column, every allowlisted table is
     also a described table, and every relationship connects two tables that
@@ -251,14 +195,14 @@ class TestAllowlistStructuralInvariants:
     def test_every_relationship_left_side_is_a_described_table(self):
         """Only the LEFT side is checked here -- the right side of a
         relationship key is sometimes a *role* name rather than a literal
-        table name (e.g. the real schema's "Contract -> BuyerBroker" /
-        "Contract -> SellerBroker" both resolve to the "Broker" table, one
-        per FK role), which SchemaRegistry.get_relationships's own
-        docstring already documents as a supported key shape. That is a
-        pre-existing property of schema_data/relationships.py's data
-        model, not a regression this test should flag. Every from_table in
-        both the real schema and project_config.example/schema.yaml is a
-        literal table name, so that side is safe to check strictly."""
+        table name (e.g. two relationship entries can both resolve to the
+        same physical table, one per FK role), which
+        SchemaRegistry.get_relationships's own docstring already documents
+        as a supported key shape. That is a pre-existing property of
+        schema_data/relationships.py's data model, not a regression this
+        test should flag. Every from_table in both the real schema and
+        project_config.example/schema.yaml is a literal table name, so
+        that side is safe to check strictly."""
         for key in RELATIONSHIPS:
             left = key.split(" -> ")[0]
             left_table = left.split(".")[0]
