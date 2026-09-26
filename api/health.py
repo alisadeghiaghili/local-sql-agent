@@ -248,14 +248,36 @@ def _ping_openai() -> tuple[bool, str]:
 
 
 def _ping_db() -> tuple[bool, str]:
-    """Return ``(ok, detail)`` for ``SELECT 1`` on the configured database.
+    """Return ``(ok, detail)`` for a liveness check on the configured database.
 
     Uses the shared :func:`~database.connection.get_engine` singleton so no
     extra connection pool is created. The connection is checked out from the
-    pool, used for a single no-op query, and immediately returned.
+    pool and immediately returned.
 
-    Timeout behaviour is governed by SQLAlchemy ``pool_pre_ping`` (built-in
-    liveness check) plus the driver-level socket timeout.
+    Finding 1, 2026 warehouse-load audit -- a single round trip per probe
+    -------------------------------------------------------------------------
+    This used to unconditionally run its own ``SELECT 1`` after checking a
+    connection out, on top of whatever ``pool_pre_ping`` already does on
+    that same checkout -- two round trips charged to one health probe, and
+    the DBA-visible symptom (steady low-level ``SELECT 1`` traffic) this
+    audit's Finding 1 named explicitly. Which round trip is redundant
+    depends on :attr:`config.Settings.db_pool_pre_ping`:
+
+    * **Pre-ping on (default)** -- checking a pooled connection out of
+      :func:`~database.connection.get_engine` *already* runs SQLAlchemy's
+      own lightweight liveness probe transparently, before handing the
+      connection back. Running ``SELECT 1`` again here would prove the
+      exact same fact a second time. Just checking a connection out (and
+      immediately returning it) is this probe's one round trip.
+    * **Pre-ping off** -- checkout performs no liveness check of its own,
+      so nothing here would ever prove the database actually answers a
+      query without running one explicitly. ``SELECT 1`` stays the probe
+      in this mode -- still exactly one round trip, just an explicit one
+      instead of an implicit one.
+
+    Either way this function costs at most one real round trip per call
+    (:func:`check_health`'s own TTL cache above bounds how often it is
+    called at all).
 
     The detail carries the exception *type* and message rather than a bare
     ``False``, for the same reason as :func:`_ping_openai`: "wrong host",
@@ -264,8 +286,16 @@ def _ping_db() -> tuple[bool, str]:
     """
     try:
         from database.connection import get_engine
+
+        engine = get_engine()
+        if cfg.settings.db_pool_pre_ping:
+            with engine.connect():
+                pass
+            return True, "connection checkout succeeded (pool_pre_ping verified it live)"
+
         from sqlalchemy import text
-        with get_engine().connect() as conn:
+
+        with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True, "SELECT 1 succeeded"
     except Exception as exc:  # noqa: BLE001

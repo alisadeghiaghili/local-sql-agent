@@ -26,6 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
 import config as cfg
+from database.connection_identity import with_application_name
 
 
 @lru_cache(maxsize=1)
@@ -37,10 +38,14 @@ def get_engine() -> Engine:
 
     Pool configuration
     ------------------
-    ``pool_pre_ping=True``
+    ``pool_pre_ping=cfg.settings.db_pool_pre_ping`` (default ``True``)
         Verifies connections before use.  Provides transparent recovery
-        after database restarts without manual pool recycling.
-    ``pool_recycle=3600``
+        after database restarts without manual pool recycling. The
+        steady per-checkout probe cost this trades for that safety —
+        and when turning it off is a reasonable choice instead — is
+        documented on :attr:`config.Settings.db_pool_pre_ping` (Finding
+        1, 2026 warehouse-load audit).
+    ``pool_recycle=cfg.settings.db_pool_recycle_seconds`` (default 3600)
         Recycles connections older than 1 hour to prevent stale ODBC
         handles (common with SQL Server + pyodbc on Linux).
     ``pool_size=10``
@@ -49,6 +54,17 @@ def get_engine() -> Engine:
     ``max_overflow=20``
         Extra connections allowed under peak load above ``pool_size``.
         These connections are closed when the burst subsides.
+
+    Application identification (Finding 5, 2026 warehouse-load audit)
+    -------------------------------------------------------------------
+    Before the engine is built, :func:`database.connection_identity.with_application_name`
+    is applied to :attr:`config.Settings.db_connection_url` — if that URL
+    is ``mssql+pyodbc`` and does not already set an application name, one
+    is added (:attr:`config.Settings.db_application_name`, default
+    ``"local-sql-agent"``) so a DBA can attribute this application's
+    sessions in their own traces. A no-op for any other backend/driver,
+    and never overrides a name the URL already sets — see that module's
+    own docstring.
 
     This workload is SELECT-only (every query passes through
     :func:`~security.sql_guard.validate_sql` first, and
@@ -72,10 +88,13 @@ def get_engine() -> Engine:
     ...     conn.execute(text("SELECT 1"))                # doctest: +SKIP
     <sqlalchemy.engine.cursor.CursorResult ...>           # doctest: +SKIP
     """
+    connection_url = with_application_name(
+        cfg.settings.db_connection_url, cfg.settings.db_application_name,
+    )
     engine = create_engine(
-        cfg.settings.db_connection_url,
-        pool_pre_ping=True,
-        pool_recycle=3600,
+        connection_url,
+        pool_pre_ping=cfg.settings.db_pool_pre_ping,
+        pool_recycle=cfg.settings.db_pool_recycle_seconds,
         pool_size=10,
         max_overflow=20,
         echo=False,

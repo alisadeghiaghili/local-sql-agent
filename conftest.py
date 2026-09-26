@@ -340,6 +340,26 @@ def _reset_health_cache_between_tests():
     health.reset_health_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_admin_expensive_cache_between_tests():
+    """Start every test with a cold ``api.admin_result_cache`` cache.
+
+    Mirrors ``_reset_health_cache_between_tests`` immediately above, for
+    the same reason: ``api.admin_result_cache.admin_expensive_cache`` is a
+    process-wide singleton (Required item 1, 2026 warehouse-load audit --
+    see that module's own docstring), and ``tests/test_admin.py`` /
+    ``tests/test_admin_ops_routes.py`` each call the deployment-checks and
+    schema-drift routes repeatedly with different monkeypatched checks.
+    Without this reset, whichever test populates a cache key first would
+    leak its cached result into every later test sharing this process.
+    """
+    from api.admin_result_cache import reset_admin_expensive_cache
+
+    reset_admin_expensive_cache()
+    yield
+    reset_admin_expensive_cache()
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if not _running_against_example_config():
         return

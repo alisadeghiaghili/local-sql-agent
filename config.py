@@ -179,6 +179,62 @@ class Settings:
             "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
         )
     )
+    db_pool_pre_ping: bool = field(
+        default_factory=lambda: os.getenv("DB_POOL_PRE_PING", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """Whether :func:`database.connection.get_engine` passes
+    ``pool_pre_ping=True`` to SQLAlchemy (Finding 1, 2026 warehouse-load
+    audit). Defaults to ``True`` — today's behaviour, unchanged.
+
+    What it trades off
+    -------------------
+    **On (default).** Every checkout of a connection already sitting in
+    the pool is preceded by a cheap liveness probe; a connection that has
+    gone stale (the SQL Server side closed it, a firewall/load-balancer
+    idle-timed it out) is silently discarded and replaced with a fresh
+    one instead of surfacing as a query failure. This is real safety, and
+    is why the default stays on. The cost is one extra tiny round trip
+    per checkout of a *pooled* (not newly created) connection — this is
+    what a DBA sees as steady, low-level ``SELECT 1`` traffic, and it
+    scales with how often connections are checked out, not with real
+    query volume.
+
+    **Off.** No extra round trip on checkout. A connection that went
+    stale while idle in the pool is only discovered when a real query is
+    sent through it, which then fails once and is transparently retried
+    on a fresh connection (SQLAlchemy's own pool invalidate-and-retry
+    behaviour on a disconnect-class error) — one query pays a one-time
+    retry cost instead of every checkout paying a probe cost.
+
+    **Why turning it off is a reasonable choice here, not just a
+    trade-off**: with :attr:`db_pool_recycle_seconds` (below) set well
+    under whatever idle timeout the network path (SQL Server itself, a
+    firewall, a load balancer) actually enforces, a connection is
+    proactively recycled before it would ever go stale from sitting idle
+    — the failure ``pool_pre_ping`` exists to catch becomes rare rather
+    than routine, so the steady per-checkout probe cost is paid to guard
+    against an event ``pool_recycle`` already mostly prevents. Turn this
+    off only after confirming (with the DBA) what that idle timeout
+    actually is and setting ``DB_POOL_RECYCLE_SECONDS`` comfortably below
+    it; turning it off with no matching recycle margin trades a quiet
+    steady cost for occasional, noisier first-query-after-idle failures.
+
+    Read once by :func:`database.connection.get_engine` when the engine
+    is constructed (like every other pool-shape setting there); changing
+    it at runtime has no effect until the next :func:`~database.connection.dispose_engine`.
+    Also consulted by :func:`api.health._ping_db` — see that function's
+    docstring for why it changes how many round trips one health probe
+    costs, not just whether checkout is probed."""
+    db_pool_recycle_seconds: int = field(
+        default_factory=lambda: int(os.getenv("DB_POOL_RECYCLE_SECONDS", "3600"))
+    )
+    """Seconds after which :func:`database.connection.get_engine` recycles
+    a pooled connection (SQLAlchemy's ``pool_recycle``), previously a bare
+    ``3600`` literal in that function. See :attr:`db_pool_pre_ping` above
+    for why lowering this (below whatever idle timeout the network path
+    to the warehouse actually enforces) is the documented alternative to
+    leaving ``pool_pre_ping`` on."""
     sql_dialect: str = field(
         default_factory=lambda: os.getenv("SQL_DIALECT", "tsql")
     )
@@ -208,6 +264,18 @@ class Settings:
     :func:`security.dialects.require_dialect_supported`, which fails
     closed for an unknown dialect or one with no system-catalogue
     blocklist configured -- see that function's docstring."""
+    db_application_name: str = field(
+        default_factory=lambda: os.getenv("DB_APPLICATION_NAME", "local-sql-agent")
+    )
+    """Client application name identified to the warehouse (Finding 5,
+    2026 warehouse-load audit) — what a DBA sees as ``program_name`` in
+    ``sys.dm_exec_sessions``/``sys.dm_exec_requests`` when attributing a
+    trace or a blocking session to this application instead of to "some
+    unlabelled connection". Only applied when :attr:`db_connection_url`
+    is an ``mssql+pyodbc`` URL that does not already set one (see
+    :func:`database.connection_identity.with_application_name`) — never
+    overrides a value an operator already configured, and is a no-op for
+    every other dialect (SQLite in tests, or a non-``pyodbc`` driver)."""
     query_timeout_seconds: int = field(
         default_factory=lambda: int(os.getenv("QUERY_TIMEOUT_SECONDS", "60"))
     )
@@ -262,7 +330,7 @@ class Settings:
 
     # ── /health probe cache (Finding 3, 2026 audit) ─────────────────────────
     health_cache_ttl_seconds: int = field(
-        default_factory=lambda: int(os.getenv("HEALTH_CACHE_TTL_SECONDS", "10"))
+        default_factory=lambda: int(os.getenv("HEALTH_CACHE_TTL_SECONDS", "15"))
     )
     """How long (seconds) ``api/health.py::check_health()`` reuses a probe
     result before running the (real, ~5s-timeout, connection-pool-using)
@@ -286,6 +354,39 @@ class Settings:
     via that module's ``__getattr__`` (a live read of this field on every
     access, never a value captured once at import time) so existing callers
     reading it as a module-level constant keep working unchanged."""
+
+    # ── Admin panel: expensive-card result cache (Finding 2, 2026 audit) ────
+    admin_expensive_cache_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("ADMIN_EXPENSIVE_CACHE_TTL_SECONDS", "300"))
+    )
+    """How long (seconds) the admin panel's warehouse-touching cards --
+    currently ``GET /admin/health/checks`` (every
+    :mod:`scripts.verify_deployment` check, run live) and
+    ``GET /admin/schema-drift`` (a full catalogue reflection of every
+    table/column in every schema) -- reuse their last result before
+    running the underlying checks again. See :mod:`api.admin_result_cache`'s
+    module docstring for the incident this fixes: ``web/admin/main.js``'s
+    30-second auto-refresh used to re-run both of these on every tick with
+    an admin tab merely left open, and the deployment-checks card also ran
+    a rolled-back ``CREATE TABLE`` DDL attempt and a ``WAITFOR DELAY``
+    probe on every one of those ticks (see ``api.admin_routes.admin_health_checks``'s
+    ``deep`` parameter — gating those two checks behind an explicit
+    opt-in is a separate fix, not this TTL).
+
+    ``0`` disables caching entirely (every request runs the check live),
+    matching :attr:`cache_ttl_seconds`'s own "0 = disabled" convention.
+    Each card's own ``?refresh=1`` query parameter bypasses a still-valid
+    cached value for that one request without changing this setting or
+    affecting any other card's cache. A failed check (e.g. the warehouse
+    is genuinely unreachable) is never itself cached — see
+    :mod:`api.admin_result_cache`'s "a failed computation is never
+    cached" note — so a real outage is never masked behind a stale
+    "everything passed" result for the length of this TTL.
+
+    300s (5 minutes) is long enough that leaving the panel open all day
+    costs a handful of runs rather than thousands, and short enough that
+    an operator who deployed a fix and reopens the panel a few minutes
+    later sees it reflected without needing to know to press refresh."""
 
     # ── JSONL log rotation ──────────────────────────────────────────────────
     log_max_bytes: int = field(
