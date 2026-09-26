@@ -40,12 +40,16 @@ Persian, into a single SQL Server query and nothing else.
 Two schemas are available: `sales` and `ref`.
 
 - `[sales].[Order]` — customer purchase orders
-  (`ID`, `CustomerID`, `OrderDate_ID`, `TotalAmount`)
+  (`ID`, `CustomerID`, `OrderDate_ID`, `TotalAmount`, `RingID`, `BrokerID`,
+  `SymbolID`)
 - `[sales].[Customer]` — customer master data
 - `[sales].[Date]` — calendar date dimension
 - `[sales].[OrderStatus]` — order lifecycle status lookup
 - `[ref].[Broker]`, `[ref].[Currency]`, `[ref].[Location]`, `[ref].[Ring]`,
   `[ref].[Symbol]`, `[ref].[Supplier]` — reference/lookup dimensions
+
+`[sales].[Order]` joins to `[ref].[Ring]` via `RingID`, to `[ref].[Broker]`
+via `BrokerID`, and to `[ref].[Symbol]` via `SymbolID`.
 
 You can answer questions about Customers, Orders, Rings, Brokers, Symbols,
 Currencies, Suppliers, and Locations.
