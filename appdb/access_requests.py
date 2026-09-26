@@ -259,6 +259,21 @@ def list_requests(
 
 
 def _require_open(conn, request_id: int) -> dict[str, Any]:
+    """The current row for *request_id*, refusing up front if it does not
+    exist or is already resolved.
+
+    A fast, friendly pre-check for the overwhelmingly common, non-racing
+    case -- it is NOT what makes a concurrent approve/deny resolution
+    exactly-once safe. This is a plain ``SELECT``, evaluated once, at one
+    moment; a request that is still ``"open"`` right here can still lose a
+    race to a concurrent caller's resolution that commits before this same
+    transaction's own update runs. :func:`_resolve_if_open`'s own atomic,
+    row-count-checked ``UPDATE`` is what actually closes that window (see
+    its docstring) -- this function only ever produces the same
+    :class:`AlreadyResolvedError` a little earlier, and with a friendlier
+    "this was never open to begin with" framing, for the case that is not
+    a race at all.
+    """
     row = conn.execute(
         select(access_requests).where(access_requests.c.request_id == request_id)
     ).mappings().first()
@@ -270,6 +285,61 @@ def _require_open(conn, request_id: int) -> dict[str, Any]:
             f"{row['status']!r} by {row['resolved_by']!r} at {row['resolved_at']!r}"
         )
     return dict(row)
+
+
+def _resolve_if_open(conn, request_id: int, **values: Any) -> None:
+    """Atomically transition *request_id* from ``"open"`` to whatever
+    ``values`` sets ``status`` to -- the single statement that makes
+    concurrent :func:`approve_request`/:func:`deny_request` calls racing
+    on the *same* request exactly-once safe.
+
+    Closes a real race :func:`_require_open` alone left open: two
+    concurrent callers can both run its ``SELECT`` and both see
+    ``status == "open"`` before either has written anything -- a plain
+    read never excludes another connection doing the same read at the
+    same moment, with or without SQLite's own file locking, because
+    neither read needs to touch anything the other has locked. Reproduced
+    directly while building this fix (an earlier version of this module,
+    tested against the real concurrency test in
+    ``tests/test_appdb_sqlite_concurrency.py``, let both an
+    :func:`approve_request` and a :func:`deny_request` racing on one
+    request each report success).
+
+    The fix is to make the ``UPDATE`` itself the one and only
+    test-and-set: its ``WHERE`` clause names both ``request_id`` AND
+    ``status == "open"``, so it is evaluated atomically against whatever
+    row is actually on disk at the moment *this exact statement* runs --
+    not against whatever an earlier ``SELECT`` in this same transaction
+    happened to see. Two callers racing to resolve the same request each
+    execute this statement; SQLite's own write lock lets only one
+    ``UPDATE`` actually run against the database at a time (the other
+    waits out the busy timeout set on connect -- see
+    :mod:`appdb.engine`), and whichever commits first is the only one
+    whose ``WHERE`` clause the other can still match: the loser's own
+    ``UPDATE``, once it finally runs, re-evaluates ``status == "open"``
+    against the now-already-changed row and matches zero rows.
+
+    Raises
+    ------
+    AlreadyResolvedError
+        The row was no longer ``"open"`` by the time this statement
+        actually ran -- lost a race with a concurrent resolution that
+        committed first.
+    """
+    result = conn.execute(
+        access_requests.update()
+        .where(access_requests.c.request_id == request_id, access_requests.c.status == "open")
+        .values(**values)
+    )
+    if result.rowcount == 0:
+        row = conn.execute(
+            select(access_requests).where(access_requests.c.request_id == request_id)
+        ).mappings().first()
+        raise AlreadyResolvedError(
+            f"access request {request_id!r} was already resolved as "
+            f"{row['status']!r} by {row['resolved_by']!r} at {row['resolved_at']!r} "
+            "-- lost a race with a concurrent resolution"
+        )
 
 
 def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[str, Any], int]:
@@ -293,15 +363,12 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
     engine = get_app_engine()
     with engine.begin() as conn:
         row = _require_open(conn, request_id)
-        conn.execute(
-            access_requests.update()
-            .where(access_requests.c.request_id == request_id)
-            .values(
-                status="approved",
-                resolution_note=None,
-                resolved_by=actor_principal_id,
-                resolved_at=_now_iso(),
-            )
+        _resolve_if_open(
+            conn, request_id,
+            status="approved",
+            resolution_note=None,
+            resolved_by=actor_principal_id,
+            resolved_at=_now_iso(),
         )
 
     # Deliberately outside the transaction above: appdb.key_store opens its
@@ -353,14 +420,11 @@ def deny_request(request_id: int, *, actor_principal_id: str, reason: str) -> di
     engine = get_app_engine()
     with engine.begin() as conn:
         _require_open(conn, request_id)
-        conn.execute(
-            access_requests.update()
-            .where(access_requests.c.request_id == request_id)
-            .values(
-                status="denied",
-                resolution_note=reason,
-                resolved_by=actor_principal_id,
-                resolved_at=_now_iso(),
-            )
+        _resolve_if_open(
+            conn, request_id,
+            status="denied",
+            resolution_note=reason,
+            resolved_by=actor_principal_id,
+            resolved_at=_now_iso(),
         )
     return get_request(request_id)
