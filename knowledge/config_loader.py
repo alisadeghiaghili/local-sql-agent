@@ -98,6 +98,44 @@ def load_yaml(path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+def resolve_system_prompt_path() -> Path:
+    """Return the path a deployment's system prompt must live at.
+
+    ``<PROJECT_CONFIG_DIR>/system_prompt.md`` -- the same directory (and the
+    same ``PROJECT_CONFIG_DIR`` env var / :attr:`config.Settings.project_config_dir`
+    field) that every other ``load_*`` in this module already reads from.
+    Path-only, no I/O -- callers that just need the path (to build their own
+    "refuse to start" message, or to keep an existing test seam like
+    ``patch.object(module, "_PROMPT_PATH", ...)`` working) can use this
+    without triggering :class:`ConfigNotFoundError`.
+    """
+    return _project_config_dir() / "system_prompt.md"
+
+
+def load_system_prompt() -> str:
+    """Read the deployment's system prompt from ``PROJECT_CONFIG_DIR``.
+
+    Raises
+    ------
+    ConfigNotFoundError
+        If ``system_prompt.md`` does not exist under the configured
+        directory -- the same exception every other ``load_*`` in this
+        module raises for a missing file, naming the exact expected path.
+    """
+    path = resolve_system_prompt_path()
+    if not path.exists():
+        raise ConfigNotFoundError(
+            f"{path} not found. The deployment's system prompt must be "
+            f"placed at this path (see project_config.example/system_prompt.md "
+            f"for the template) before starting."
+        )
+    return path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Pydantic v2 models
 # ---------------------------------------------------------------------------
 
