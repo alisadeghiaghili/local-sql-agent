@@ -38,9 +38,12 @@ from datetime import datetime
 from typing import Any, Callable
 
 import pandas as pd
+import sqlglot
+from sqlglot import exp
 
 import config as cfg
 from core.models import RetrievalContext
+from core.persian import normalize_for_matching
 from database.errors import classify_database_error
 from knowledge.session_policy import DEFAULT_SCOPE_FIELD_NAME, DEFAULT_SCOPE_FILTER_KEY
 from llm.router import (
@@ -90,7 +93,7 @@ from session.models import (
     TurnErrorInfo,
     TurnResult,
 )
-from session.refinement import BasisDecision, classify_basis
+from session.refinement import BasisDecision, classify_basis, display_field_name
 from session.store import SessionRecord, TurnMemory
 
 logger = logging.getLogger(__name__)
@@ -107,6 +110,33 @@ Fix ONLY the error above. Return only the corrected SQL statement.
 
 SQL:
 """
+
+# 2026 hall-filter audit (D6): a filter the turn presents as applied (from
+# the question, the vocabulary, or an override) must actually be referenced
+# by the generated SQL -- see _missing_dimension_filters. Reuses the SAME
+# correction budget as _CORRECTION_SUFFIX_TEMPLATE above, once, before
+# falling back to the warning below.
+_FILTER_CORRECTION_SUFFIX_TEMPLATE = """
+
+The SQL query you generated does not filter on every value this question
+resolved:
+--- SQL ---
+{sql}
+--- MISSING FILTER VALUE(S) ---
+{missing}
+--- INSTRUCTIONS ---
+Rewrite the query so it also filters on every value listed above, in
+addition to anything it already correctly filters on. Return only the
+corrected SQL statement.
+
+SQL:
+"""
+
+# 2026 hall-filter audit (D6) -- exact Persian text, verified byte-identical
+# to the audit's own warning_texts.json (see the repository's change history
+# for that verification). {value} is the filter's own resolved value,
+# unchanged.
+_FILTER_NOT_APPLIED_WARNING = 'فیلتر «{value}» در پرس‌وجوی نهایی اعمال نشد؛ ممکن است نتیجه شامل داده‌های بیرون از این فیلتر باشد.'
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +418,35 @@ class TurnEngine:
             basis_decision = classify_basis(question, previous_turn, previous_memory)
             context = ContextRetriever.retrieve(question)
 
+        # D2 (2026 hall-filter audit, confirmed root cause): an assumption
+        # override that changes a filter this §2 CTE refinement inherited
+        # can never reach the composed SQL -- `_handle_cte_refinement`
+        # composes over `previous_turn.sql`, which already has the OLD
+        # value baked into its own WHERE clause, and the outer LLM
+        # instruction it sends carries no filters/schema block at all for
+        # an override to land in (see session.composer.compose_refinement_sql).
+        # Silently composing anyway would show the analyst the new value
+        # in the chip while the SQL (and the answer) kept reflecting the
+        # old one. Once that conflict is detected, route through the
+        # fresh-generation path instead (with the override folded into the
+        # inherited filters it carries forward) and relabel `composition`
+        # honestly: this turn no longer reuses the previous turn's SQL at
+        # all, so it must not claim "cte" -- see docs/api-contract-v2.md §2.
+        demoted_from_cte_override = False
+        if basis_decision.kind == "refines" and basis_decision.composition == "cte":
+            overridden_inherited = _cte_override_conflict(
+                basis_decision.inherited_filters, assumption_overrides,
+            )
+            if overridden_inherited is not None:
+                demoted_from_cte_override = True
+                basis_decision = BasisDecision(
+                    kind="refines",
+                    refines_turn_id=basis_decision.refines_turn_id,
+                    composition="none",
+                    inherited_filters=overridden_inherited,
+                    period_delta=basis_decision.period_delta,
+                )
+
         session_context_text = build_session_context_text(
             record.turns, cfg.settings.session_prompt_turns
         )
@@ -410,10 +469,23 @@ class TurnEngine:
                     question, system_prompt, context, basis_decision,
                     session_context_text, timer, assumption_overrides, denied_columns,
                     effective_memory_entries,
+                    demoted_from_cte_override=demoted_from_cte_override,
                 )
             )
         if mem_warnings:
             outcome.warnings = list(outcome.warnings) + mem_warnings
+        # "The analyst must never be silently misled" (2026 hall-filter
+        # audit): `context` is computed above regardless of which path
+        # handled this turn, so a dimension the question plausibly named
+        # but the vocabulary had no chance to check (cold cache, or a
+        # stuck-failing background refresh -- see
+        # ContextRetriever.retrieve's own docstring on RetrievalContext
+        # .warnings) is surfaced here for both the fresh/carry-forward and
+        # the CTE-refinement path, through the exact same `outcome
+        # .warnings` an analyst already sees a truncated-scan or
+        # policy-rejection warning through.
+        if context.warnings:
+            outcome.warnings = list(outcome.warnings) + context.warnings
 
         if outcome.error is not None:
             # Stamped here, once, rather than threaded as a parameter
@@ -694,6 +766,8 @@ class TurnEngine:
         assumption_overrides: dict[str, str] | None,
         denied_columns: tuple[str, ...] | None = None,
         memory_entries: dict[str, MemoryEntry] | None = None,
+        *,
+        demoted_from_cte_override: bool = False,
     ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object], list[str]]:
         is_carry_forward = basis_decision.kind == "refines"
         merged_filters: dict[str, object] = dict(basis_decision.inherited_filters)
@@ -725,9 +799,20 @@ class TurnEngine:
 
         if is_carry_forward:
             ambiguity_block = Ambiguity(is_ambiguous=bool(assumptions), assumptions=assumptions, clarifications=[])
-            resolved_question = (
-                f"همان پرسش قبلی، برای {merged_filters.get('PersianYear', '')}"
-            )
+            if demoted_from_cte_override:
+                # D2: this turn was headed for §2 CTE composition until an
+                # override changed a filter already baked into the
+                # previous turn's SQL (see TurnEngine.ask). The generic
+                # carry-forward phrasing below only ever names the period
+                # -- useless here, since the override is almost always the
+                # ring/scope filter, not the period -- so build the same
+                # measure/ring/period sentence a fresh turn gets instead,
+                # reading the POST-override assumptions.
+                resolved_question = _resolved_question_for_fresh(question, assumptions, merged_filters)
+            else:
+                resolved_question = (
+                    f"همان پرسش قبلی، برای {merged_filters.get('PersianYear', '')}"
+                )
         else:
             ambiguity_block = Ambiguity(
                 is_ambiguous=is_ambiguous, assumptions=assumptions, clarifications=clarifications,
@@ -748,10 +833,43 @@ class TurnEngine:
             elif a.field == "period" and a.value.strip().isdigit():
                 merged_filters["PersianYear"] = int(a.value.strip())
 
+        # D6 (2026 hall-filter audit): every STRING-valued dimension filter
+        # this turn presents to the analyst as applied -- resolved from the
+        # question or the vocabulary this turn (context.filters), or an
+        # override that changed the ring/scope assumption above -- must be
+        # checked, after generation, against what the SQL actually
+        # references (_generate_validate_execute, below). Numeric/period
+        # filters are out of scope (PersianYear is never a str); a filter
+        # only ever *inherited* from a previous turn and never touched by
+        # this one was already checked when it was first introduced.
+        filters_to_enforce: dict[str, str] = {
+            table: value for table, value in context.filters.items() if isinstance(value, str)
+        }
+        ring_value = merged_filters.get(DEFAULT_SCOPE_FILTER_KEY)
+        if isinstance(ring_value, str) and any(
+            a.field == DEFAULT_SCOPE_FIELD_NAME and a.source == "question" for a in assumptions
+        ):
+            filters_to_enforce[DEFAULT_SCOPE_FILTER_KEY] = ring_value
+        token_tier_filters = {
+            table: tokens
+            for table, tokens in context.token_tier_filters.items()
+            if table in filters_to_enforce
+        }
+
         ctx = RetrievalContext(
             entities=context.entities, facts=context.facts, dimensions=context.dimensions,
             relationships=context.relationships, business_rules=context.business_rules,
             examples=context.examples, filters=merged_filters,
+            # 2026 hall-filter audit: without this, `resolved_values`
+            # defaults to `{}` on every fresh-turn request regardless of
+            # whether dimension_vocabulary actually matched something, so
+            # the prompt's fenced "RESOLVED WAREHOUSE VALUES" section
+            # (see RetrievalContext.resolved_values's own docstring) is
+            # silently always empty -- a secondary audit/fencing signal,
+            # not the filter application itself (the "DETECTED FILTERS"
+            # block already carries the value from `merged_filters` with
+            # its own "use exactly as provided" instruction either way).
+            resolved_values=context.resolved_values,
         )
         segments = build_prompt_segments(
             question, system_prompt, ctx, session_context=session_context_text,
@@ -759,21 +877,42 @@ class TurnEngine:
 
         outcome = self._generate_validate_execute(
             segments, system_prompt, timer, denied_columns=denied_columns,
+            filters_to_enforce=filters_to_enforce, token_tier_filters=token_tier_filters,
         )
         return outcome, resolved_question, ambiguity_block, merged_filters, mem_warnings
 
     def _generate_validate_execute(
         self, segments: PromptSegments, system_prompt: str, timer: StageTimer,
         *, denied_columns: tuple[str, ...] | None = None,
+        filters_to_enforce: dict[str, str] | None = None,
+        token_tier_filters: dict[str, tuple[str, ...]] | None = None,
     ) -> _GenOutcome:
         static_prefix_tokens = static_prefix_token_estimate(system_prompt)
         last_error: str | None = None
         last_sql: str | None = None
         raw = ""
+        filters_to_enforce = filters_to_enforce or {}
+        token_tier_filters = token_tier_filters or {}
+        # D6: set once the first (and only) time a filter-enforcement
+        # regeneration is attempted -- this reuses the SAME correction
+        # budget as an ordinary guard-rejection retry (below), never a
+        # second, unbounded one, and never fires twice for one turn.
+        pending_filter_correction: list[str] | None = None
+        filter_correction_used = False
 
         for correction_round in range(self._max_corrections + 1):
             gen_segments = segments
-            if correction_round > 0:
+            if pending_filter_correction is not None:
+                gen_segments = PromptSegments(
+                    static_prefix=segments.static_prefix,
+                    session_context=segments.session_context,
+                    question=segments.question
+                    + _FILTER_CORRECTION_SUFFIX_TEMPLATE.format(
+                        sql=last_sql or raw, missing=", ".join(pending_filter_correction),
+                    ),
+                )
+                pending_filter_correction = None
+            elif correction_round > 0:
                 gen_segments = PromptSegments(
                     static_prefix=segments.static_prefix,
                     session_context=segments.session_context,
@@ -905,6 +1044,30 @@ class TurnEngine:
                 continue
 
             last_sql = capped
+
+            # D6 (2026 hall-filter audit): a filter this turn presents as
+            # applied must actually be referenced by the SQL the guard just
+            # passed. Checked here, after the guard, before execution --
+            # regenerating once with the missing value(s) named explicitly
+            # is cheaper and more useful to the model than executing SQL
+            # already known not to filter on them. See
+            # _missing_dimension_filters's own docstring for what
+            # "referenced" means for a token-tier match.
+            missing_filters: dict[str, str] = (
+                _missing_dimension_filters(
+                    capped, filters_to_enforce, token_tier_filters, cfg.settings.sql_dialect,
+                )
+                if filters_to_enforce else {}
+            )
+            if (
+                missing_filters
+                and not filter_correction_used
+                and correction_round < self._max_corrections
+            ):
+                filter_correction_used = True
+                pending_filter_correction = list(missing_filters.values())
+                continue
+
             try:
                 with timer.stage("execute"):
                     df = self._execute(capped)
@@ -932,6 +1095,15 @@ class TurnEngine:
             columns = [str(c) for c in df.columns]
             rows = df.to_dict(orient="records")
             truncated = injected_top is not None and len(rows) >= injected_top
+            # D6: the regeneration above (if it ran) is over budget or the
+            # rewritten SQL still misses one or more filters -- the answer
+            # is still returned (never blocked), but with one warning per
+            # filter the analyst was told applied and the SQL does not
+            # actually reference.
+            filter_warnings = [
+                _FILTER_NOT_APPLIED_WARNING.format(value=value)
+                for value in missing_filters.values()
+            ]
             return _GenOutcome(
                 sql=capped,
                 guard=GuardVerdict(
@@ -942,6 +1114,7 @@ class TurnEngine:
                     columns=[ResultColumn(name=c, type=_infer_type(df[c])) for c in columns],
                     rows=rows, row_count=len(rows), truncated=truncated,
                 ),
+                warnings=filter_warnings,
                 llm_status=llm_status,
                 corrections=correction_round,
                 result_columns=columns,
@@ -1052,3 +1225,108 @@ def _resolved_question_for_fresh(question: str, assumptions, filters: dict[str, 
     if not parts:
         return question
     return f"{question} — بر اساس " + "، ".join(str(p) for p in parts)
+
+
+def _cte_override_conflict(
+    inherited_filters: dict[str, object], overrides: dict[str, str] | None,
+) -> dict[str, object] | None:
+    """D2 (2026 hall-filter audit) — does *overrides* change a filter this
+    §2 CTE refinement has already inherited (and would otherwise compose
+    over unchanged)?
+
+    Compared by the same filter-key -> displayed-field mapping
+    :func:`session.refinement.display_field_name` uses to show an
+    inherited filter to the analyst (the identical mapping
+    :func:`session.ambiguity.assumptions_for_cte_refinement` builds its
+    ``"session"``-sourced assumptions from) — an override sent under any
+    other field name (e.g. ``"measure"``) does not touch an inherited
+    filter and is not this function's concern.
+
+    Returns
+    -------
+    dict[str, object] | None
+        ``None`` when nothing inherited was overridden (the common case —
+        composing over ``_prev`` is safe). Otherwise a COPY of
+        *inherited_filters* with every overridden key updated to its new
+        (string) value, ready to become the demoted turn's
+        ``BasisDecision.inherited_filters`` — see ``TurnEngine.ask``.
+    """
+    if not overrides:
+        return None
+    updated: dict[str, object] | None = None
+    for key, value in inherited_filters.items():
+        field_name = display_field_name(key)
+        if field_name in overrides and str(overrides[field_name]) != str(value):
+            if updated is None:
+                updated = dict(inherited_filters)
+            updated[key] = overrides[field_name]
+    return updated
+
+
+def _string_literal_texts(sql: str, dialect: str) -> list[str]:
+    """Every string literal's text value in *sql* — a T-SQL national
+    literal (``N'...'``) or a plain ``'...'`` string — best-effort.
+
+    Used only by :func:`_missing_dimension_filters` (D6, 2026 hall-filter
+    audit) below. Never raises: returns ``[]`` if *sql* cannot be parsed
+    under *dialect* — this check must never itself break a turn whose SQL
+    already passed the guard.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, dialect=dialect)
+    except Exception:  # noqa: BLE001 - best-effort only, see docstring
+        return []
+    if tree is None:
+        return []
+    texts: list[str] = []
+    for node in tree.walk():
+        if isinstance(node, exp.National):
+            inner = node.this
+            texts.append(inner.this if isinstance(inner, exp.Literal) else str(inner))
+        elif isinstance(node, exp.Literal) and node.is_string:
+            texts.append(node.this)
+    return texts
+
+
+def _missing_dimension_filters(
+    sql: str,
+    filters: dict[str, str],
+    token_tier_filters: dict[str, tuple[str, ...]],
+    dialect: str,
+) -> dict[str, str]:
+    """D6 (2026 hall-filter audit) — the subset of *filters* *sql* does not
+    actually reference.
+
+    A filter is "referenced" when some string literal in *sql*, normalised
+    through the same :func:`~core.persian.normalize_for_matching` every
+    other match in this codebase uses, contains the filter's own
+    normalised value as a substring — or, for a table
+    :func:`retrieval.dimension_vocabulary.match_question_against_vocabulary`
+    matched through its token-fallback tier (*token_tier_filters*),
+    contains every one of that match's own distinctive tokens instead,
+    since the full stored value may never appear as one contiguous span
+    anywhere by the very nature of that tier (a ``LIKE '%<token>%'``
+    predicate is exactly as much "the filter applied" as an ``= N'...'``
+    one is). Every value in *filters* is always a ``str`` — numeric/period
+    filters are the caller's concern to exclude, not this function's.
+
+    Returns
+    -------
+    dict[str, str]
+        ``{table: value}`` for every filter not found — empty when every
+        one was, including when *filters* itself is empty.
+    """
+    if not filters:
+        return {}
+    literals = [normalize_for_matching(text) for text in _string_literal_texts(sql, dialect)]
+    missing: dict[str, str] = {}
+    for table, value in filters.items():
+        distinctive = token_tier_filters.get(table)
+        if distinctive:
+            referenced = any(all(tok in literal for tok in distinctive) for literal in literals)
+        else:
+            normalized_value = normalize_for_matching(value)
+            referenced = any(normalized_value in literal for literal in literals)
+        if not referenced:
+            missing[table] = value
+    return missing

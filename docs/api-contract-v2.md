@@ -68,6 +68,22 @@ Two hard requirements:
    the refinement was computed over a truncated base — a wrong number the user
    knows about beats a wrong number they don't.
 
+**An `assumption_overrides` PATCH that changes an inherited filter (2026
+hall-filter audit, D2) forces composition `"none"`, not `"cte"`.** `_prev`
+above is `previous turn's SQL`, verbatim — the previous turn's inherited
+filter (e.g. `ring=تالار سیمان`) is already baked into that SQL text, so
+composing over it unchanged while the chip shows a *different*, overridden
+value would make the chip and the executed SQL disagree, silently. When an
+override changes a filter this turn would otherwise inherit unchanged, the
+server routes the turn through fresh generation instead (the overridden
+value folded into the filters that generation sees), and `basis.composition`
+reports `"none"` honestly — a client must not assume a `"cte"`-triggering
+question phrase (§2's cue list) always yields `composition: "cte"` in the
+response; an override on the same turn can change that. `basis.kind` stays
+`"refines"` either way (this is still conceptually a refinement — a fresh
+generation with inherited filters, the same shape a carry-forward turn like
+"همین را برای سال قبل" already uses).
+
 ---
 
 ## 3. Endpoints
