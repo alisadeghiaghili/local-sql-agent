@@ -68,10 +68,22 @@ RuntimeError: System prompt not found: <resolved path>
 ```
 
 `app.py`'s REPL logs the equivalent condition and exits with status 1;
-`eval.cli` raises `knowledge.config_loader.ConfigNotFoundError`;
+`eval.cli` has its own loader and raises a plain built-in
+`FileNotFoundError: system prompt not found: <resolved path>` (not
+`knowledge.config_loader.ConfigNotFoundError` — it never imports that
+loader);
 `webapp/agent.py` raises `RuntimeError: System prompt not found: <resolved path>`
 the same way `api/server.py` does. None of the four silently falls back to
 no system instructions.
+
+Note the one behavioural asymmetry: `webapp/agent.py`'s `system_prompt()`
+call is made from inside `answer_question()`'s blanket
+`except Exception` handler, so the Flask app itself never refuses to
+start on a missing prompt — `create_app()` and login succeed regardless.
+The `RuntimeError` above is only raised, and turned into an
+`ERROR`-status result, the first time a user actually submits a
+question. The other three entry points fail at startup; this one fails
+at first use.
 
 To create your own, copy this directory's `system_prompt.md` to
 `project_config/system_prompt.md` and rewrite it to describe your real
