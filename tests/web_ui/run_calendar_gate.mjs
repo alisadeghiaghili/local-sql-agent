@@ -82,9 +82,9 @@ const jobsOf = (r) => offered(r).map((f) => f.job);
     ],
     rowCount: 5,
     truncated: false,
-    sql: "SELECT c.MonthlyCustomer, SUM(cc.Volume) AS TotalVolume FROM CustomerContract cc JOIN Customer c ON c.Id = cc.CustomerId GROUP BY c.MonthlyCustomer",
+    sql: "SELECT c.MonthlyCustomer, SUM(cc.Volume) AS TotalVolume FROM Order cc JOIN Customer c ON c.Id = cc.CustomerId GROUP BY c.MonthlyCustomer",
     resolvedQuestion: "حجم معامله به تفکیک مشتری ماهانه",
-    tablesTouched: ["CustomerContract", "Customer"],
+    tablesTouched: ["Order", "Customer"],
   };
   const out = recommend(input, FULL_CATALOG);
 
@@ -121,9 +121,9 @@ const jobsOf = (r) => offered(r).map((f) => f.job);
     ],
     rowCount: 5,
     truncated: false,
-    sql: "SELECT d.Month, SUM(cc.Volume) AS Volume FROM CustomerContract cc JOIN Date d ON d.Id = cc.DateId GROUP BY d.Month ORDER BY d.Month",
+    sql: "SELECT d.Month, SUM(cc.Volume) AS Volume FROM Order cc JOIN Date d ON d.Id = cc.DateId GROUP BY d.Month ORDER BY d.Month",
     resolvedQuestion: "روند ماهانهٔ حجم معاملات",
-    tablesTouched: ["CustomerContract", "Date"],
+    tablesTouched: ["Order", "Date"],
   };
   const out = recommend(input, FULL_CATALOG);
   assert.ok(
@@ -185,9 +185,9 @@ const jobsOf = (r) => offered(r).map((f) => f.job);
     ],
     rowCount: 3,
     truncated: false,
-    sql: "SELECT c.[تاریخچه_مشتری], SUM(cc.Volume) AS TotalVolume FROM CustomerContract cc JOIN Customer c ON c.Id = cc.CustomerId GROUP BY c.[تاریخچه_مشتری]",
+    sql: "SELECT c.[تاریخچه_مشتری], SUM(cc.Volume) AS TotalVolume FROM Order cc JOIN Customer c ON c.Id = cc.CustomerId GROUP BY c.[تاریخچه_مشتری]",
     resolvedQuestion: "حجم معامله به تفکیک تاریخچهٔ مشتری",
-    tablesTouched: ["CustomerContract", "Customer"],
+    tablesTouched: ["Order", "Customer"],
   };
   const out = recommend(input, FULL_CATALOG);
 

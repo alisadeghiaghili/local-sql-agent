@@ -173,14 +173,14 @@ const SCENARIO = {
         "SELECT TOP 100 c.Name AS CustomerName,\n" +
         "       COUNT(*) AS TransactionCount,\n" +
         "       SUM(ct.TotalPrice) AS TotalValue\n" +
-        "FROM [Auction_Fact].[CustomerContract] ct\n" +
-        "JOIN [Auction_Dim].[Customer] c ON ct.BuyerCustomer_ID = c.ID\n" +
-        "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
+        "FROM [sales].[Order] ct\n" +
+        "JOIN [sales].[Customer] c ON ct.BuyerCustomer_ID = c.ID\n" +
+        "JOIN [ref].[Ring] r ON ct.Ring_ID = r.ID\n" +
         "WHERE r.Name = N'تالار سیمان'\n" +
         "GROUP BY c.Name\n" +
         "ORDER BY TotalValue DESC",
       ambiguity: { is_ambiguous: false, assumptions: [], clarifications: [] },
-      guard: { verdict: "allowed", rule: null, injected_top: 100, tables_touched: ["CustomerContract", "Customer", "Ring"] },
+      guard: { verdict: "allowed", rule: null, injected_top: 100, tables_touched: ["Order", "Customer", "Ring"] },
       result: {
         columns: [
           { name: "CustomerName", type: "string" },
@@ -215,9 +215,9 @@ const SCENARIO = {
       sql:
         "WITH _prev AS (\n" +
         "    SELECT c.Name AS CustomerName, ct.HallMatchingWeight AS Volume\n" +
-        "    FROM [Auction_Fact].[CustomerContract] ct\n" +
-        "    JOIN [Auction_Dim].[Customer] c ON ct.BuyerCustomer_ID = c.ID\n" +
-        "    JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
+        "    FROM [sales].[Order] ct\n" +
+        "    JOIN [sales].[Customer] c ON ct.BuyerCustomer_ID = c.ID\n" +
+        "    JOIN [ref].[Ring] r ON ct.Ring_ID = r.ID\n" +
         "    WHERE r.Name = N'تالار سیمان'\n" +
         ")\n" +
         "SELECT TOP 10 CustomerName, SUM(Volume) AS TotalVolume\n" +
@@ -233,7 +233,7 @@ const SCENARIO = {
         ],
         clarifications: [],
       },
-      guard: { verdict: "allowed", rule: null, injected_top: 10, tables_touched: ["CustomerContract", "Customer", "Ring"] },
+      guard: { verdict: "allowed", rule: null, injected_top: 10, tables_touched: ["Order", "Customer", "Ring"] },
       result: {
         columns: [
           { name: "CustomerName", type: "string" },
@@ -267,10 +267,10 @@ const SCENARIO = {
       sql:
         "SELECT TOP 10 c.Name AS CustomerName, r.Name AS Ring,\n" +
         "       SUM(ct.TotalPrice) AS TotalValue\n" +
-        "FROM [Auction_Fact].[CustomerContract] ct\n" +
-        "JOIN [Auction_Dim].[Customer] c ON ct.BuyerCustomer_ID = c.ID\n" +
-        "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
-        "JOIN [Auction_Dim].[Date] d ON ct.Date_ID = d.ID\n" +
+        "FROM [sales].[Order] ct\n" +
+        "JOIN [sales].[Customer] c ON ct.BuyerCustomer_ID = c.ID\n" +
+        "JOIN [ref].[Ring] r ON ct.Ring_ID = r.ID\n" +
+        "JOIN [sales].[Date] d ON ct.Date_ID = d.ID\n" +
         "WHERE d.PersianYear = 1404\n" +
         "GROUP BY c.Name, r.Name\n" +
         "ORDER BY TotalValue DESC",
@@ -294,7 +294,7 @@ const SCENARIO = {
           },
         ],
       },
-      guard: { verdict: "allowed", rule: null, injected_top: 10, tables_touched: ["CustomerContract", "Customer", "Ring", "Date"] },
+      guard: { verdict: "allowed", rule: null, injected_top: 10, tables_touched: ["Order", "Customer", "Ring", "Date"] },
       result: {
         columns: [
           { name: "CustomerName", type: "string" },
@@ -321,17 +321,17 @@ const SCENARIO = {
       session_id: "s_demo_1404",
       index: 4,
       question: "جدول مشتریان تالار سیمان رو حذف کن و رکوردهای امسال رو پاک کن",
-      resolved_question: "درخواست حذف داده از جدول CustomerContract (عملیات نوشتنی)",
+      resolved_question: "درخواست حذف داده از جدول Order (عملیات نوشتنی)",
       basis: { kind: "fresh", refines_turn_id: null, composition: "none", inherited: [] },
       sql:
-        "DELETE FROM [Auction_Fact].[CustomerContract]\n" +
-        "WHERE Ring_ID = (SELECT ID FROM [Auction_Dim].[Ring] WHERE Name = N'تالار سیمان')",
+        "DELETE FROM [sales].[Order]\n" +
+        "WHERE Ring_ID = (SELECT ID FROM [ref].[Ring] WHERE Name = N'تالار سیمان')",
       ambiguity: { is_ambiguous: false, assumptions: [], clarifications: [] },
       guard: {
         verdict: "rejected",
         rule: "readonly-only: فقط عبارت‌های SELECT مجاز است؛ DELETE/UPDATE/INSERT/DDL مسدود می‌شوند.",
         injected_top: null,
-        tables_touched: ["CustomerContract"],
+        tables_touched: ["Order"],
       },
       result: { columns: [], rows: [], row_count: 0, truncated: false },
       interpretation: null,
@@ -373,9 +373,9 @@ const SCENARIO = {
       sql:
         "SELECT d.PersianMonthName AS Month,\n" +
         "       AVG(ct.HallMatchingWeight) AS AvgWeightTons\n" +
-        "FROM [Auction_Fact].[CustomerContract] ct\n" +
-        "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
-        "JOIN [Auction_Dim].[Date] d ON ct.Date_ID = d.ID\n" +
+        "FROM [sales].[Order] ct\n" +
+        "JOIN [ref].[Ring] r ON ct.Ring_ID = r.ID\n" +
+        "JOIN [sales].[Date] d ON ct.Date_ID = d.ID\n" +
         "WHERE r.Name = N'تالار فلزات' AND d.PersianYear = 1404\n" +
         "GROUP BY d.PersianMonthName, d.PersianMonthNumber\n" +
         "ORDER BY d.PersianMonthNumber",
@@ -387,7 +387,7 @@ const SCENARIO = {
         ],
         clarifications: [],
       },
-      guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["CustomerContract", "Ring", "Date"] },
+      guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["Order", "Ring", "Date"] },
       result: {
         columns: [
           { name: "Month", type: "string" },
@@ -464,9 +464,9 @@ const t_07 = {
   basis: { kind: "fresh", refines_turn_id: null, composition: "none", inherited: [] },
   sql:
     "SELECT AVG(ct.BasePrice) AS AvgBasePrice\n" +
-    "FROM [Auction_Fact].[CustomerContract] ct\n" +
-    "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
-    "JOIN [Auction_Dim].[Date] d ON ct.Date_ID = d.ID\n" +
+    "FROM [sales].[Order] ct\n" +
+    "JOIN [ref].[Ring] r ON ct.Ring_ID = r.ID\n" +
+    "JOIN [sales].[Date] d ON ct.Date_ID = d.ID\n" +
     "WHERE r.Name = N'تالار فلزات' AND d.PersianYear = 1404",
   ambiguity: {
     is_ambiguous: true,
@@ -479,7 +479,7 @@ const t_07 = {
     ],
     clarifications: [],
   },
-  guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["CustomerContract", "Ring", "Date"] },
+  guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["Order", "Ring", "Date"] },
   result: {
     columns: [{ name: "AvgBasePrice", type: "number" }],
     rows: [t7Row],
@@ -505,9 +505,9 @@ const t_08 = {
   basis: { kind: "refines", refines_turn_id: "t_07", composition: "none", inherited: ["ring=تالار فلزات"] },
   sql:
     "SELECT d.PersianMonthName AS Month, AVG(ct.BasePrice) AS AvgBasePrice\n" +
-    "FROM [Auction_Fact].[CustomerContract] ct\n" +
-    "JOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\n" +
-    "JOIN [Auction_Dim].[Date] d ON ct.Date_ID = d.ID\n" +
+    "FROM [sales].[Order] ct\n" +
+    "JOIN [ref].[Ring] r ON ct.Ring_ID = r.ID\n" +
+    "JOIN [sales].[Date] d ON ct.Date_ID = d.ID\n" +
     "WHERE r.Name = N'تالار فلزات' AND d.PersianYear = 1404 AND d.PersianMonthNumber >= 4 AND d.PersianMonthNumber <= 6\n" +
     "GROUP BY d.PersianMonthName, d.PersianMonthNumber\n" +
     "ORDER BY d.PersianMonthNumber",
@@ -522,7 +522,7 @@ const t_08 = {
     ],
     clarifications: [],
   },
-  guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["CustomerContract", "Ring", "Date"] },
+  guard: { verdict: "allowed", rule: null, injected_top: null, tables_touched: ["Order", "Ring", "Date"] },
   result: {
     columns: [
       { name: "Month", type: "string" },

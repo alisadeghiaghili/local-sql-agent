@@ -91,9 +91,9 @@ const RANKING = {
   ],
   rowCount: 5,
   truncated: false,
-  sql: "SELECT TOP 10 c.CustomerName, SUM(cc.Volume) AS TotalVolume FROM CustomerContract cc JOIN Customer c ON c.Id = cc.CustomerId GROUP BY c.CustomerName ORDER BY SUM(cc.Volume) DESC",
+  sql: "SELECT TOP 10 c.CustomerName, SUM(cc.Volume) AS TotalVolume FROM Order cc JOIN Customer c ON c.Id = cc.CustomerId GROUP BY c.CustomerName ORDER BY SUM(cc.Volume) DESC",
   resolvedQuestion: "بیشترین حجم معامله به تفکیک مشتری",
-  tablesTouched: ["CustomerContract", "Customer"],
+  tablesTouched: ["Order", "Customer"],
 };
 
 const MONTHLY = {
@@ -105,9 +105,9 @@ const MONTHLY = {
   ],
   rowCount: 5,
   truncated: false,
-  sql: "SELECT d.Month, SUM(cc.Volume) AS Volume FROM CustomerContract cc JOIN Date d ON d.Id = cc.DateId GROUP BY d.Month ORDER BY d.Month",
+  sql: "SELECT d.Month, SUM(cc.Volume) AS Volume FROM Order cc JOIN Date d ON d.Id = cc.DateId GROUP BY d.Month ORDER BY d.Month",
   resolvedQuestion: "روند ماهانهٔ حجم معاملات",
-  tablesTouched: ["CustomerContract", "Date"],
+  tablesTouched: ["Order", "Date"],
 };
 
 const offered = (r) => r.framings.filter((f) => !f.rejected);
