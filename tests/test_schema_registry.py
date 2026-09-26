@@ -24,7 +24,7 @@ class TestSchemaRegistry:
 
     def test_excludes_unselected_table(self):
         ctx = SchemaRegistry.build_context(("Customer",))
-        assert "CustomerContract" not in ctx or "Customer" in ctx
+        assert "Ring" not in ctx
 
     def test_none_includes_all_tables(self):
         ctx = SchemaRegistry.build_context(None)

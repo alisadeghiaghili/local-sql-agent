@@ -33,7 +33,7 @@ from llm.base import SQLGenerationResult
 # Shared fixtures / helpers
 # ---------------------------------------------------------------------------
 
-SIMPLE_SQL = "SELECT TOP 5 * FROM [Auction_Dim].[Trade]"
+SIMPLE_SQL = "SELECT TOP 5 * FROM [ref].[Broker]"
 SIMPLE_DF  = pd.DataFrame({"TradeId": [1], "Price": [100]})
 
 

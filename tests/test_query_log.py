@@ -14,7 +14,7 @@ class TestQueryLog:
         defaults = dict(
             timestamp=datetime(2026, 6, 6, 12, 0, 0),
             question="how many contracts?",
-            generated_sql="SELECT COUNT(*) FROM [Auction_Fact].[Contract]",
+            generated_sql="SELECT COUNT(*) FROM [sales].[Order]",
             model_name="test-model",
             status="SUCCESS",
             execution_time_seconds=1.23,

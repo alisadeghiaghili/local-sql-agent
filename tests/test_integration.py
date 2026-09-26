@@ -30,7 +30,7 @@ def _mock_response(text: str, status: int = 200) -> MagicMock:
     return m
 
 
-SIMPLE_SQL  = "SELECT TOP 10 * FROM [Auction_Dim].[Customer]"
+SIMPLE_SQL  = "SELECT TOP 10 * FROM [sales].[Customer]"
 SIMPLE_DF   = pd.DataFrame({"Id": [1, 2], "Name": ["علی", "سارا"]})
 SYSTEM_PROMPT = "You are an SQL generator."
 

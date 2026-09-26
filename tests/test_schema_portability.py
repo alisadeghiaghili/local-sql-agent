@@ -5,7 +5,7 @@ lives in Python source any more for value resolution / vocabulary prefetch.
 
 Before this phase, ``retrieval/value_resolver.py`` and
 ``retrieval/dimension_vocabulary.py`` each hardcoded a literal schema
-qualifier (``_SCHEMA = "Auction_Dim"``) and a hand-written
+qualifier (``_SCHEMA = "ExampleSchemaA"``) and a hand-written
 ``{table: (columns...)}`` allowlist. Both are now derived entirely from
 ``<PROJECT_CONFIG_DIR>/schema.yaml`` via ``schema_data.registry`` -- see
 that module's ``get_table_schema_qualifiers`` / ``get_resolvable_columns`` /
@@ -61,8 +61,8 @@ from schema_data.registry import load_schema
 _WAREHOUSE_A = {
     "tables": {
         "Ring": {
-            "description": "Auction_Dim.Ring — trading halls",
-            "db_schema": "Auction_Dim",
+            "description": "ExampleSchemaA.Ring — trading halls",
+            "db_schema": "ExampleSchemaA",
             "columns": {"ID": "Primary key", "Name": "Hall name"},
             "resolvable_columns": ["Name"],
             "prefetchable_columns": ["Name"],
@@ -140,7 +140,7 @@ class TestRegistryDerivesADifferentAllowlistPerConfig:
         with override_settings(project_config_dir=str(dir_b)):
             cfg_b = load_schema()
 
-        assert cfg_a.tables["Ring"].db_schema == "Auction_Dim"
+        assert cfg_a.tables["Ring"].db_schema == "ExampleSchemaA"
         assert cfg_b.tables["SalesChannel"].db_schema == "retail"
 
 
@@ -154,10 +154,10 @@ class TestRetrievalModulesBuildADifferentQueryPerConfig:
     def test_value_resolver_build_query_reflects_the_active_config(self, monkeypatch):
         from retrieval import value_resolver
 
-        monkeypatch.setitem(value_resolver._TABLE_SCHEMAS, "Ring", "Auction_Dim")
+        monkeypatch.setitem(value_resolver._TABLE_SCHEMAS, "Ring", "ExampleSchemaA")
         sql_a = value_resolver._build_query("Ring", "Name")
         assert sql_a == (
-            "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Ring] "
+            "SELECT DISTINCT TOP (?) [Name] FROM [ExampleSchemaA].[Ring] "
             "WHERE [Name] LIKE ? ESCAPE '\\'"
         )
 
@@ -173,9 +173,9 @@ class TestRetrievalModulesBuildADifferentQueryPerConfig:
     def test_dimension_vocabulary_prefetch_query_reflects_the_active_config(self, monkeypatch):
         from retrieval import dimension_vocabulary as dv
 
-        monkeypatch.setitem(dv._TABLE_SCHEMAS, "Ring", "Auction_Dim")
+        monkeypatch.setitem(dv._TABLE_SCHEMAS, "Ring", "ExampleSchemaA")
         sql_a = dv._prefetch_query("Ring", "Name")
-        assert sql_a == "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Ring]"
+        assert sql_a == "SELECT DISTINCT TOP (?) [Name] FROM [ExampleSchemaA].[Ring]"
 
         monkeypatch.setitem(dv._TABLE_SCHEMAS, "SalesChannel", "retail")
         sql_b = dv._prefetch_query("SalesChannel", "ChannelName")

@@ -41,7 +41,7 @@ from llm.sql_agent import SQLAgent, MAX_CORRECTION_ATTEMPTS
 # Stub helpers
 # ---------------------------------------------------------------------------
 
-SIMPLE_SQL = "SELECT TOP 10 * FROM [Auction_Dim].[Customer]"
+SIMPLE_SQL = "SELECT TOP 10 * FROM [sales].[Customer]"
 SIMPLE_DF = pd.DataFrame({"Id": [1, 2], "Name": ["A", "B"]})
 
 
@@ -189,10 +189,10 @@ class TestSelfCorrection:
     def test_correction_prompt_contains_failed_sql(self):
         # A real table (bad_sql is meant to fail at *execution*, not at
         # validate_sql's table allowlist -- Phase 1's table allowlist
-        # rejects an unrecognised table like the former [Auction_Dim].[Trade]
+        # rejects an unrecognised table like a made-up [ref].[Trade]
         # outright, which would turn this into a validation failure instead
         # and never reach fail_once() below).
-        bad_sql = "SELECT TOP 10 BadCol FROM [Auction_Dim].[Customer]"
+        bad_sql = "SELECT TOP 10 BadCol FROM [sales].[Customer]"
 
         call_count = 0
 
@@ -423,7 +423,7 @@ class TestEnsureTopWiring:
             return SIMPLE_DF.copy()
 
         ag = _agent(
-            ["SELECT Name FROM [Auction_Dim].[Customer]"],
+            ["SELECT Name FROM [sales].[Customer]"],
             execute_fn=_capture_execute,
         )
         with override_settings(default_top_n=17):
@@ -454,7 +454,7 @@ class TestEnsureTopWiring:
         SQLGenerationResult.sql (and therefore the API response) reports."""
         from config import override_settings
 
-        ag = _agent(["SELECT Name FROM [Auction_Dim].[Customer]"])
+        ag = _agent(["SELECT Name FROM [sales].[Customer]"])
         with override_settings(default_top_n=17):
             _, result = ag.run("test", system_prompt="")
 

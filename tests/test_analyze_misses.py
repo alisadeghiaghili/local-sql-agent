@@ -140,7 +140,7 @@ class TestAnalyse:
         log = self._write_log(tmp_path, [{
             "status":        "SUCCESS",
             "question":      "ring",
-            "generated_sql": "SELECT TOP 5 * FROM [Auction_Dim].[Ring]",
+            "generated_sql": "SELECT TOP 5 * FROM [ref].[Ring]",
         }])
         result = analyse(log)
         assert result == []
@@ -162,7 +162,7 @@ class TestAnalyse:
         log = self._write_log(tmp_path, [{
             "status":        "SUCCESS",
             "question":      "پلیمرپلاستیک بسیار نامشناس",
-            "generated_sql": "SELECT * FROM [Auction_Dim].[Bank]",
+            "generated_sql": "SELECT * FROM [ref].[Broker]",
         }])
         result = analyse(log)
         if result:  # only check if a miss was detected

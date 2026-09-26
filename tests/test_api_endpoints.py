@@ -32,7 +32,7 @@ from api.errors import (
 )
 from api.models import HealthResponse
 
-SIMPLE_SQL = "SELECT TOP 10 * FROM [Auction_Dim].[Customer]"
+SIMPLE_SQL = "SELECT TOP 10 * FROM [sales].[Customer]"
 SIMPLE_DF  = pd.DataFrame({"Id": [1, 2], "Name": ["علی", "سارا"]})
 VALID_Q    = "لیست مشتریان"
 
