@@ -15,7 +15,7 @@ below is created at `<PROJECT_CONFIG_DIR>/_test_fixtures/<name>`.
 
 Populating these files is optional and recommended, not required. Nothing
 else in the application reads this directory or these files; they exist
-only so the four test modules listed below can run for real instead of
+only so the five test modules listed below can run for real instead of
 skipping. There is no schema validator for these files beyond each
 loading test's own assertions -- an incorrectly shaped fixture simply
 fails the test that reads it, the same as any other wrong expectation
@@ -109,5 +109,23 @@ pairs that only resolve through the real `aliases.yaml`'s `ring_aliases`.
   "ring_year_month_day_persian_digits": {"query": "...", "expected": {"...": "..."}},
   "ring_season_year": {"query": "...", "expected": {"...": "..."}},
   "ring_full_date": {"query": "...", "expected": {"...": "..."}}
+}
+```
+
+## `system_prompt_ring_aliases.json`
+
+Read by `tests/test_prompts.py`'s `TestSystemPromptRingAliases`. Proves the
+real `project_config/system_prompt.md` actually enumerates the real
+`project_config/aliases.yaml` ring aliases (so the LLM can resolve a
+Persian alias phrase straight from the prompt), without hardcoding any
+real alias/hall name in tracked test source.
+
+```json
+{
+  "required_aliases": ["...", "..."],
+  "section_header": "...",
+  "alias_hall_pairs": [
+    {"alias": "...", "hall": "..."}
+  ]
 }
 ```

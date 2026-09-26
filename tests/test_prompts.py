@@ -34,6 +34,7 @@ import re
 import pytest
 
 from knowledge.config_loader import resolve_system_prompt_path
+from tests._domain_fixtures import load_json_fixture
 
 # ---------------------------------------------------------------------------
 # Fixture — load the system prompt once per session
@@ -159,3 +160,52 @@ class TestSystemPromptOutOfScope:
         for topic in ("politics", "sports", "weather"):
             assert topic in system_prompt.lower(), \
                 f"Out-of-scope topic '{topic}' missing from domain restrictions"
+
+
+# ===========================================================================
+# real ring-alias mappings (project_config/aliases.yaml) -- domain data only
+# ===========================================================================
+
+
+@pytest.fixture(scope="module")
+def ring_alias_expectations():
+    return load_json_fixture("system_prompt_ring_aliases.json")
+
+
+class TestSystemPromptRingAliases:
+    """A real deployment's ``system_prompt.md`` is expected to enumerate its
+    ``project_config/aliases.yaml`` ring aliases so the LLM can resolve a
+    Persian alias phrase directly from the prompt. Those exact alias
+    strings and their real hall mappings are deployment data, not something
+    this public tree may hardcode (``project_config.example/``'s own
+    ``aliases.yaml`` ships different, generic ring names) -- so, like
+    ``tests/test_value_retriever.py``'s ring-alias tests, these are marked
+    ``domain_data`` (skip when the example config is in effect) and read
+    the expected aliases/mappings from an optional, deployment-owned
+    fixture file, ``<PROJECT_CONFIG_DIR>/_test_fixtures/
+    system_prompt_ring_aliases.json`` (see
+    ``project_config.example/_test_fixtures/README.md`` for the format),
+    rather than a literal list here."""
+
+    @pytest.mark.domain_data
+    def test_all_required_aliases_present(self, system_prompt, ring_alias_expectations):
+        for alias in ring_alias_expectations["required_aliases"]:
+            assert alias in system_prompt, f"Ring alias '{alias}' missing from system prompt"
+
+    @pytest.mark.domain_data
+    def test_ring_aliases_section_header_present(self, system_prompt, ring_alias_expectations):
+        assert ring_alias_expectations["section_header"] in system_prompt
+
+    @pytest.mark.domain_data
+    def test_alias_maps_to_correct_hall(self, system_prompt, ring_alias_expectations):
+        for pair in ring_alias_expectations["alias_hall_pairs"]:
+            alias, hall = pair["alias"], pair["hall"]
+            idx = system_prompt.find(alias)
+            assert idx != -1, f"Ring alias '{alias}' missing from system prompt"
+            # The hall name must appear on the same line as the alias, not
+            # merely somewhere in the file.
+            line_start = system_prompt.rfind("\n", 0, idx) + 1
+            line_end = system_prompt.find("\n", idx)
+            line_end = len(system_prompt) if line_end == -1 else line_end
+            line = system_prompt[line_start:line_end]
+            assert hall in line, f"'{alias}' does not map to '{hall}' on the same line"
