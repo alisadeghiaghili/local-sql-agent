@@ -42,6 +42,7 @@ import pandas as pd
 import pytest
 
 import config as cfg
+from knowledge.config_loader import resolve_system_prompt_path
 from llm.base import LLMBackend
 from llm.providers import MockBackend
 from llm.router import LLMRouter, PromptSegments, TaskType
@@ -49,7 +50,7 @@ from llm.sql_agent import SQLAgent
 from prompt_engine.static_prefix import build_static_prefix
 
 SYSTEM_PROMPT = "You are a T-SQL expert for the Auction domain."
-GOOD_SQL = "SELECT TOP 10 * FROM [Auction_Dim].[Customer]"
+GOOD_SQL = "SELECT TOP 10 * FROM [sales].[Customer]"
 SIMPLE_DF = pd.DataFrame({"Id": [1]})
 
 
@@ -178,11 +179,12 @@ class TestPrefixInvarianceAcrossCorrections:
 
 class TestPrefixInvarianceAcrossQuestions:
     """Three different questions (two Persian, one English) share a
-    byte-identical static prefix against today's real, production
-    ``prompts/system_prompt.md`` and full knowledge base -- not a stub."""
+    byte-identical static prefix against today's real, deployment-configured
+    system prompt (``<PROJECT_CONFIG_DIR>/system_prompt.md``) and full
+    knowledge base -- not a stub."""
 
     def test_three_questions_share_the_static_prefix(self):
-        system_prompt = Path("prompts/system_prompt.md").read_text(encoding="utf-8")
+        system_prompt = resolve_system_prompt_path().read_text(encoding="utf-8")
         questions = [
             "چند مشتری فعال داریم؟",
             "میانگین قیمت معاملات چقدر است؟",

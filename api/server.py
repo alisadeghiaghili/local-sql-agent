@@ -31,7 +31,6 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,14 +68,15 @@ from api.models import (
     CacheInvalidateRequest,
 )
 from api.query_cache import query_cache
+from knowledge.config_loader import resolve_system_prompt_path
 from security.auth import ApiKeyConfigError, Principal, load_api_keys
 
 logger = logging.getLogger(__name__)
 
-# Resolved relative to this file (api/server.py), NOT the process's
-# current working directory — running uvicorn from anywhere other than
-# the repo root used to silently fail to find the prompt.
-_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "system_prompt.md"
+# Resolved under PROJECT_CONFIG_DIR (see knowledge/config_loader.py), NOT
+# the process's current working directory — running uvicorn from anywhere
+# other than the repo root used to silently fail to find the prompt.
+_PROMPT_PATH = resolve_system_prompt_path()
 _system_prompt: str = ""
 
 # ---------------------------------------------------------------------------

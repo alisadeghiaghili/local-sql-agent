@@ -62,8 +62,9 @@ from eval.runner import (
     make_offline_generator,
     run_golden_set,
 )
+from knowledge.config_loader import resolve_system_prompt_path
 
-_DEFAULT_SYSTEM_PROMPT_PATH = Path("prompts/system_prompt.md")
+_DEFAULT_SYSTEM_PROMPT_PATH = resolve_system_prompt_path()
 
 
 def _load_system_prompt(path: Path = _DEFAULT_SYSTEM_PROMPT_PATH) -> str:

@@ -220,7 +220,10 @@ class TestPromptPathIsCwdIndependent:
     to whatever the current working directory happened to be at read
     time, not to this module's own location. Running `python app.py`
     (or importing app.py) from any directory other than the repo root
-    silently broke it (item 14)."""
+    silently broke it (item 14). It is now resolved via
+    knowledge.config_loader.resolve_system_prompt_path() -- under
+    PROJECT_CONFIG_DIR, itself resolved against the repository root when
+    relative -- which keeps the same CWD-independence guarantee."""
 
     def test_prompt_path_is_absolute(self):
         assert app._PROMPT_PATH.is_absolute()

@@ -34,9 +34,10 @@ from api.errors import NLQError  # noqa: E402
 from api.runner import run_query  # noqa: E402
 from appdb.key_store import _maximally_restrictive_denied_columns  # noqa: E402
 from exporters.sanitize import defuse_formula  # noqa: E402
+from knowledge.config_loader import resolve_system_prompt_path  # noqa: E402
 from security.auth import Principal  # noqa: E402
 
-SYSTEM_PROMPT_PATH = REPO_ROOT / "prompts" / "system_prompt.md"
+SYSTEM_PROMPT_PATH = resolve_system_prompt_path()
 OUTPUT_DIR = WEBAPP_DIR / "outputs"
 
 logger = logging.getLogger(__name__)
@@ -109,9 +110,21 @@ def principal_for_username(username: str | None) -> Principal:
 
 
 def system_prompt() -> str:
-    """Load and cache the repo's system prompt."""
+    """Load and cache the repo's system prompt.
+
+    Raises
+    ------
+    RuntimeError
+        If ``SYSTEM_PROMPT_PATH`` does not exist -- named explicitly here
+        rather than surfacing a bare, unhelpful ``FileNotFoundError``, the
+        same "refuse to start with a clear message naming the expected
+        path" contract ``api/server.py``'s ``lifespan`` and ``app.py``'s
+        ``_load_system_prompt`` already give their own callers.
+    """
     global _system_prompt
     if _system_prompt is None:
+        if not SYSTEM_PROMPT_PATH.exists():
+            raise RuntimeError(f"System prompt not found: {SYSTEM_PROMPT_PATH}")
         _system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
     return _system_prompt
 

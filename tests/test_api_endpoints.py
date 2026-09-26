@@ -295,7 +295,10 @@ class TestPromptPathIsCwdIndependent:
     """_PROMPT_PATH used to be Path("prompts/system_prompt.md") -- relative
     to whatever the current working directory happened to be, not to this
     module's own location. Running uvicorn from any directory other than
-    the repo root silently broke it."""
+    the repo root silently broke it. It is now resolved via
+    knowledge.config_loader.resolve_system_prompt_path() -- under
+    PROJECT_CONFIG_DIR, itself resolved against the repository root when
+    relative -- which keeps the same CWD-independence guarantee."""
 
     def test_prompt_path_is_absolute(self):
         import api.server as server_module
