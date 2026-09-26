@@ -112,6 +112,41 @@ class RetrievalContext:
     treat it as data."
     """
 
+    # ── 2026 hall-filter audit: "the analyst must never be silently misled" ────
+    warnings: list[str] = field(default_factory=list)
+    """Persian, analyst-facing sentences for a dimension that the question
+    plausibly named but that :func:`retrieval.dimension_vocabulary.match_question_against_vocabulary`
+    could not consult at all this request (cold cache on every allowed
+    column, or a background refresh stuck failing — see that function's
+    ``unavailable_tables``). Populated by :meth:`ContextRetriever.retrieve`
+    only for a table that was ALSO entity-detected (in :attr:`entities`) --
+    a strong, existing "this question is probably about this dimension"
+    signal -- not for every candidate table :attr:`filters` was silently
+    checked against, which would warn on unrelated questions just because
+    some other, unrelated dimension's cache happened to be cold.
+
+    ``session.engine.TurnEngine.ask`` folds this into the turn's own
+    ``warnings`` list (the same mechanism a guard rejection or a truncated
+    refinement scan already uses) so a hall/currency/etc. that could not be
+    checked is never just silently absent from the answer with no signal
+    at all -- the difference this exists to surface is between a value
+    that was searched for and not found (fine, unremarkable) and a value
+    that was never searched for because there was nothing to search
+    against (worth telling the analyst)."""
+
+    token_tier_filters: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """``{table_name: (distinctive_token, ...)}`` for a :attr:`filters` entry
+    that came from :mod:`retrieval.dimension_vocabulary`'s token-fallback
+    tier rather than an exact full-value match — see
+    ``retrieval.dimension_vocabulary.VocabularyMatchResult.token_tier_filters``
+    for what "distinctive" means here. ``session.engine.TurnEngine``'s
+    post-generation filter-enforcement check (2026 hall-filter audit)
+    reads this to confirm the generated SQL actually references such a
+    filter by its distinctive tokens rather than by the full stored value,
+    which — by the very nature of a token-tier match — may never appear as
+    one contiguous span anywhere, including in the SQL a correct query
+    would still produce (e.g. a ``LIKE '%<token>%'`` predicate)."""
+
     # ── convenience ──────────────────────────────────────────────────────────
     @property
     def selected_tables(self) -> list[str]:

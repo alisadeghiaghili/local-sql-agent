@@ -21,9 +21,12 @@ def __getattr__(name: str) -> Any:
         if "_loaded" not in _cache:
             cfg = load_entities()
             # Expose as plain dict matching original structure:
-            # {EntityName: {"aliases": [...], "table": "..."}}
+            # {EntityName: {"aliases": [...], "table": "...", "label": ...}}
+            # "label" (2026 hall-filter audit) is optional in entities.yaml
+            # and None whenever a deployment's config does not set it --
+            # see EntityDefinition.label's own docstring.
             _cache["ENTITIES"] = {
-                k: {"aliases": v.aliases, "table": v.table}
+                k: {"aliases": v.aliases, "table": v.table, "label": v.label}
                 for k, v in cfg.entities.items()
             }
             _cache["_loaded"] = True
