@@ -191,6 +191,54 @@ Matching rules
   table's result is a :class:`~session.models.Clarification` naming both,
   never one silently chosen -- the exact same "several matches -> declare,
   don't pick" contract ``resolve_value`` upholds on its own path.
+* **Token fallback (on by default -- see**
+  :attr:`~config.Settings.dimension_vocabulary_token_fallback_enabled` **).**
+  The rule above requires the ENTIRE cached value to appear as one
+  contiguous substring of the question -- there is no token/partial
+  matching in that pass. A multi-word value (e.g. «تالار محصولات صنعتی»)
+  whose words are not exactly adjacent in the question's own phrasing (an
+  inserted word, a different modifier order) never matches under that rule
+  alone, even though every word of it is genuinely present -- this is the
+  2026 hall-filter audit's confirmed root cause for "the hall named in the
+  question is ignored" whenever the question names only part of it.
+
+  When a table's full-value pass above finds nothing, this tier splits
+  every cached value into normalised whitespace tokens (dropping any
+  shorter than :data:`MIN_MATCH_LENGTH`, the same rule the full-value pass
+  applies) and scores each value by how many of its *distinctive* tokens
+  the question also contains:
+
+  * A token is **generic** for a column when it occurs in at least half of
+    that column's cached values AND the column holds at least 3 values
+    (e.g. «تالار» prefixing every hall name) -- too common to single out
+    any one value, so it never counts toward a score.
+  * A value's **distinctive tokens** are its own tokens minus the generic
+    ones for its column. A value with NO distinctive tokens (every token
+    of it is generic) can never match in this tier, no matter what the
+    question says -- nothing about it would distinguish it from its
+    siblings.
+  * A value's **score** is how many of its distinctive tokens the
+    question's own token set contains. The unique value with the highest
+    score (score >= 1) wins; several values tied at the highest score go
+    through the exact same "declare, don't pick" :class:`Clarification`
+    path a tied full-value match does above -- never silently chosen.
+
+  A token-tier win lands in :attr:`VocabularyMatchResult.filters` exactly
+  like a full-value win (same dict, same key) -- an analyst sees and can
+  edit it through the identical chip either way; the winning value's own
+  distinctive tokens are additionally reported in
+  :attr:`VocabularyMatchResult.token_tier_filters`, for a caller (see
+  ``session.engine.TurnEngine``'s post-generation filter-enforcement check)
+  that needs to confirm the generated SQL actually references this match,
+  since the full value itself may never appear as one contiguous span
+  anywhere, including in the SQL. Ships **on** by default (2026
+  hall-filter audit: this is the fix the reported "the hall named in the
+  question is ignored" complaint needed); turn off with
+  :attr:`~config.Settings.dimension_vocabulary_token_fallback_enabled` if a
+  real deployment's dimension values are short/generic enough that this
+  trades too many clarifications (or, worst case, a match against a value
+  whose distinctive words are scattered through an unrelated question) for
+  the partial-naming matches it recovers.
 
 ACL
 ---
@@ -672,11 +720,132 @@ class VocabularyMatchResult:
         *identifiers* only, for the audit trail. A table left out
         entirely (cache miss / ACL-denied / not a prefetch table)
         contributes nothing here.
+    unavailable_tables:
+        Table names that were candidates but could not be searched at
+        all this request because every one of their ACL-allowed
+        prefetchable columns has never been cached (cold-start, or a
+        background refresh stuck failing — see the module docstring's
+        "Background refresh" section). Deliberately **not** raised for a
+        table whose cache is merely *stale* — a stale value is still
+        served (see "Matching rules") and is not a resolution failure at
+        all. Also not raised for a table every one of whose columns is
+        ACL-denied — that is a policy exclusion, not an outage. Callers
+        that want to warn an analyst "this dimension could not be
+        checked, the answer may not be filtered by it" (rather than
+        silently proceeding as if the question simply named nothing
+        matchable) read this list — see
+        ``retrieval.context_retriever.ContextRetriever.retrieve``.
+    token_tier_filters:
+        ``{table_name: (distinctive_token, ...)}`` — present only for a
+        table whose :attr:`filters` entry came from the token-fallback
+        tier (see the module docstring's "Matching rules"), never for a
+        full-value match. The tokens are the winning value's own
+        distinctive tokens (its non-generic tokens for the column it came
+        from). A caller that must confirm the generated SQL actually
+        references a token-tier match reads this instead of the value
+        itself — the full value may never appear as one contiguous span
+        anywhere, including in the SQL, by the very nature of this tier.
     """
 
     filters: dict[str, str] = field(default_factory=dict)
     clarifications: list[Clarification] = field(default_factory=list)
     resolved_columns: tuple[str, ...] = field(default_factory=tuple)
+    unavailable_tables: tuple[str, ...] = field(default_factory=tuple)
+    token_tier_filters: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+def _token_tier_winners(
+    pool: list[tuple[str, str, str]],
+    column_values: dict[str, list[str]],
+    question_normalized: str,
+) -> tuple[dict[str, None], tuple[str, ...] | None]:
+    """The token-fallback tier — see the module docstring's "Matching
+    rules" bullet on it. Only ever called (from
+    :func:`match_question_against_vocabulary`) when the full-value pass —
+    the exact contiguous-substring rule — found nothing for this table.
+
+    Parameters
+    ----------
+    pool:
+        ``(normalised_value, raw_value, source_column)`` for every value
+        already known to be cached and long enough to match (see the
+        caller's own pool-building loop) — the *same* pool the full-value
+        pass searched, just with each value's source column kept
+        alongside it so this tier can look up that column's own
+        genericity profile.
+    column_values:
+        ``{column: [raw_value, ...]}`` — every value currently cached for
+        each column consulted this call (unfiltered by length), used to
+        compute which tokens are generic for that column.
+    question_normalized:
+        The question, already normalised.
+
+    Returns
+    -------
+    tuple[dict[str, None], tuple[str, ...] | None]
+        ``(winners, distinctive_tokens)``. ``winners`` mirrors the
+        full-value pass's own shape — ``{raw_value: None}``, one entry for
+        a unique highest-scoring value, several when tied (the caller
+        turns that into a :class:`Clarification`, exactly like a tied
+        full-value match, never a silent pick), empty when nothing scored
+        at all. ``distinctive_tokens`` is the unique winner's own
+        distinctive-token tuple — ``None`` when there is no unique winner
+        (a tie, or no value scored), since there is then no single
+        winning value's tokens to report.
+    """
+    question_tokens = set(question_normalized.split())
+
+    # A token is generic for a column when it occurs in at least half of
+    # that column's own cached values AND the column holds at least 3
+    # values — a column with fewer than 3 values never has a generic
+    # token at all (there is no meaningful "common to most of them" with
+    # that few data points), so every one of its values' tokens stays
+    # distinctive.
+    generic_by_column: dict[str, set[str]] = {}
+    for column, raw_values in column_values.items():
+        if len(raw_values) < 3:
+            generic_by_column[column] = set()
+            continue
+        occurrence: dict[str, int] = {}
+        for raw_value in raw_values:
+            value_tokens = {
+                tok for tok in normalize_for_matching(raw_value).split()
+                if len(tok) >= MIN_MATCH_LENGTH
+            }
+            for tok in value_tokens:
+                occurrence[tok] = occurrence.get(tok, 0) + 1
+        half = len(raw_values) / 2.0
+        generic_by_column[column] = {tok for tok, n in occurrence.items() if n >= half}
+
+    scores: dict[str, int] = {}
+    distinctive_by_value: dict[str, tuple[str, ...]] = {}
+    for norm, raw, column in pool:
+        value_tokens = [tok for tok in norm.split() if len(tok) >= MIN_MATCH_LENGTH]
+        generic = generic_by_column.get(column, set())
+        distinctive = tuple(dict.fromkeys(tok for tok in value_tokens if tok not in generic))
+        if not distinctive:
+            # No distinctive tokens at all -- can never match in this
+            # tier, whatever the question says (see the module docstring).
+            continue
+        score = len({tok for tok in distinctive if tok in question_tokens})
+        if score < 1:
+            continue
+        # A raw value could in principle be cached under more than one
+        # column of the same table -- keep the higher-scoring reading
+        # rather than whichever column happened to be seen last.
+        if score > scores.get(raw, -1):
+            scores[raw] = score
+            distinctive_by_value[raw] = distinctive
+
+    if not scores:
+        return {}, None
+
+    best = max(scores.values())
+    winners = {raw: None for raw, s in scores.items() if s == best}
+    if len(winners) == 1:
+        (only_value,) = winners
+        return winners, distinctive_by_value[only_value]
+    return winners, None
 
 
 def match_question_against_vocabulary(
@@ -726,18 +895,30 @@ def match_question_against_vocabulary(
     filters: dict[str, str] = {}
     clarifications: list[Clarification] = []
     resolved_columns: list[str] = []
+    unavailable_tables: list[str] = []
+    token_tier_filters: dict[str, tuple[str, ...]] = {}
 
     for table in dict.fromkeys(candidate_tables):  # order-preserving dedup
         columns = PREFETCH_COLUMNS.get(table)
         if columns is None:
             continue
 
-        # (normalised_value, raw_value) pool merged across every allowed,
-        # cached (fresh or stale) column for this table.
-        pool: list[tuple[str, str]] = []
-        for column in columns:
-            if column.lower() in denied:
-                continue
+        allowed_columns = [c for c in columns if c.lower() not in denied]
+        if not allowed_columns:
+            # Every column ACL-denied: a policy exclusion, not an outage --
+            # never counted as "unavailable" (see VocabularyMatchResult's
+            # docstring). Nothing to search or warn about either.
+            continue
+
+        # (normalised_value, raw_value, source_column) pool merged across
+        # every allowed, cached (fresh or stale) column for this table --
+        # the source column travels with each value so the token tier
+        # below (_token_tier_winners) can apply that column's own
+        # genericity profile to it.
+        pool: list[tuple[str, str, str]] = []
+        column_values: dict[str, list[str]] = {}
+        any_cached = False
+        for column in allowed_columns:
             values, fresh = _cache.get_with_state(table, column)
             if values is None:
                 logger.debug(
@@ -747,6 +928,7 @@ def match_question_against_vocabulary(
                 )
                 _trigger_background_refresh(table, column)
                 continue
+            any_cached = True
             if not fresh:
                 logger.debug(
                     "dimension_vocabulary: %s.%s cache stale -- serving "
@@ -756,27 +938,49 @@ def match_question_against_vocabulary(
                 _trigger_background_refresh(table, column)
 
             resolved_columns.append(f"{table}.{column}")
+            column_values[column] = values
             for raw in values:
                 normalized = normalize_for_matching(raw)
                 if len(normalized) >= MIN_MATCH_LENGTH:
-                    pool.append((normalized, raw))
+                    pool.append((normalized, raw, column))
 
-        matches = [(norm, raw) for norm, raw in pool if norm in question_normalized]
-        if not matches:
+        if not any_cached:
+            # Cold on every allowed column: there is no pool at all to
+            # search the question against, as opposed to "searched and
+            # nothing matched". See VocabularyMatchResult.unavailable_tables.
+            unavailable_tables.append(table)
             continue
 
-        max_len = max(len(norm) for norm, _raw in matches)
-        # Longest match wins: only values tied at the longest length found
-        # are candidates; a shorter value that also happens to be a
-        # substring of the question loses outright, not just the tie-break.
+        matches = [(norm, raw) for norm, raw, _col in pool if norm in question_normalized]
         winners: dict[str, None] = {}
-        for norm, raw in matches:
-            if len(norm) == max_len:
-                winners.setdefault(raw, None)
+        winning_distinctive_tokens: tuple[str, ...] | None = None
+
+        if matches:
+            max_len = max(len(norm) for norm, _raw in matches)
+            # Longest match wins: only values tied at the longest length
+            # found are candidates; a shorter value that also happens to
+            # be a substring of the question loses outright, not just the
+            # tie-break.
+            for norm, raw in matches:
+                if len(norm) == max_len:
+                    winners.setdefault(raw, None)
+        elif cfg.settings.dimension_vocabulary_token_fallback_enabled:
+            # Token-fallback tier -- only reached when the full-value pass
+            # above found nothing for this table. See the module
+            # docstring's "Matching rules" bullet and
+            # _token_tier_winners's own docstring for the algorithm.
+            winners, winning_distinctive_tokens = _token_tier_winners(
+                pool, column_values, question_normalized,
+            )
+
+        if not winners:
+            continue
 
         if len(winners) == 1:
             (value,) = winners
             filters[table] = value
+            if winning_distinctive_tokens is not None:
+                token_tier_filters[table] = winning_distinctive_tokens
         else:
             clarifications.append(
                 Clarification(
@@ -790,6 +994,8 @@ def match_question_against_vocabulary(
         filters=filters,
         clarifications=clarifications,
         resolved_columns=tuple(resolved_columns),
+        unavailable_tables=tuple(unavailable_tables),
+        token_tier_filters=token_tier_filters,
     )
 
 
