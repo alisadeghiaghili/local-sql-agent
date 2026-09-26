@@ -26,11 +26,14 @@
 //     not accidentally widen the leak to codes it was not supposed to
 //     touch.
 //
-// The expected Persian label is written here as a JS string literal built
-// from \u escapes (this whole file's source is ASCII-only) so the
-// expectation is independent of turn.js's own literal Persian text -- this
-// test would fail if turn.js's label were ever silently changed, rather
-// than trivially agreeing with whatever turn.js happens to say.
+// The expected Persian label (EXPECTED_LABEL, below) is written as a JS
+// string literal built from \u escapes -- not copied as literal Persian
+// text -- so the expectation is independent of turn.js's own literal
+// Persian text (and of this file's own encoding of it): this test would
+// fail if turn.js's label were ever silently changed, rather than
+// trivially agreeing with whatever turn.js happens to say. Other fixture
+// strings in this file (e.g. the sample question text) are ordinary
+// literal Persian, same as the rest of this test suite.
 //
 // Usage: node run_execution_error_copy.mjs <path-to-copied-turn.mjs>
 //
@@ -199,12 +202,12 @@ const DB_UNAVAILABLE_MSG = "The database is currently unavailable. Please try ag
 const QUERY_TIMEOUT_MSG = "The query took too long to run and was cancelled. Please try again or narrow your request.";
 
 // The Persian label turn.js must render before a database-specific
-// message, built from \u escapes so this ASCII-only source file's
-// expectation does not depend on turn.js's own literal Persian text.
-// Decodes to "پیام پایگاه داده:" ("Database message:").
+// message, built from \u escapes (not literal Persian text) so this
+// expectation does not depend on turn.js's own literal Persian text, or
+// on this file's own encoding of it. Decodes to "Database message:"
+// (payam-e paygah-e dadeh:).
 const EXPECTED_LABEL =
-  "پیام پایگاه" +
-  " داده:";
+  "\u067e\u06cc\u0627\u0645\u0020\u067e\u0627\u06cc\u06af\u0627\u0647\u0020\u062f\u0627\u062f\u0647\u003a";
 assert.equal(EXPECTED_LABEL.length, 17, "sanity check: the expected label must be 17 code points");
 
 /* ── Test (a): the generic fallback message suppresses the detail line
