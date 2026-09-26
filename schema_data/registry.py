@@ -198,18 +198,28 @@ class SchemaConfig(BaseModel):
 # Loading
 # ---------------------------------------------------------------------------
 
+#: Repository root, used to resolve a *relative* ``PROJECT_CONFIG_DIR``
+#: deterministically -- see :func:`_project_config_dir`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
 def _project_config_dir() -> Path:
     """Return the configured project-config directory, resolved at call time.
 
     Mirrors ``knowledge.config_loader._project_config_dir`` exactly (reads
     ``cfg.settings.project_config_dir`` fresh on every call rather than once
-    at import time), so :func:`config.override_settings` and a changed
-    ``PROJECT_CONFIG_DIR`` environment variable both take effect
-    immediately.
+    at import time, and resolves a *relative* value against the repository
+    root rather than the current working directory), so
+    :func:`config.override_settings` and a changed ``PROJECT_CONFIG_DIR``
+    environment variable both take effect immediately, and so a relative
+    setting means the same directory here as everywhere else it is read.
     """
     import config as cfg  # deferred: avoids a hard import-time dependency
 
-    return Path(cfg.settings.project_config_dir)
+    configured = Path(cfg.settings.project_config_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured
 
 
 def load_schema() -> SchemaConfig:

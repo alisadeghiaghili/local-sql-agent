@@ -27,6 +27,10 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
+#: Repository root, used to resolve a *relative* ``PROJECT_CONFIG_DIR``
+#: deterministically -- see :func:`_project_config_dir`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _project_config_dir() -> Path:
     """Return the configured project-config directory, resolved at call time.
@@ -35,15 +39,33 @@ def _project_config_dir() -> Path:
     import time) so that :func:`config.override_settings` and a changed
     ``PROJECT_CONFIG_DIR`` environment variable both take effect
     immediately, per this codebase's read-through-``cfg.settings``
-    convention (see ``config.py``'s module docstring). A relative value
-    (the default, ``"project_config"``) is resolved against the current
-    working directory, matching how :attr:`config.Settings.log_dir` and
-    :attr:`config.Settings.export_dir` are already resolved elsewhere in
-    this codebase; an absolute path is used as-is.
+    convention (see ``config.py``'s module docstring).
+
+    A *relative* value (the default, ``"project_config"``) is resolved
+    against the repository root (``Path(__file__).resolve().parent.parent``
+    from this module) -- the same pattern ``conftest.py``'s own
+    ``_running_against_example_config()`` already uses for this exact
+    setting -- not against the process's current working directory. An
+    absolute path is used as-is.
+
+    Behaviour-change note
+    ----------------------
+    Earlier revisions of this function returned ``Path(cfg.settings.project_config_dir)``
+    unresolved, which was silently CWD-dependent (nothing exercised or
+    tested that dependency). For the universal case -- a relative
+    ``PROJECT_CONFIG_DIR`` (or the default) with the process started from
+    the repository root -- behaviour is unchanged. A deployment that sets a
+    *relative* ``PROJECT_CONFIG_DIR`` and starts the server from a
+    *different* directory will now resolve against the repository root
+    instead of that other directory; see the upgrade notes shipped with
+    this release and ``docs/deployment-runbook.md``.
     """
     import config as cfg  # deferred: avoids a hard import-time dependency
 
-    return Path(cfg.settings.project_config_dir)
+    configured = Path(cfg.settings.project_config_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured
 
 
 # ---------------------------------------------------------------------------
