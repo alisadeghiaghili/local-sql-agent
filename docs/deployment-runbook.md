@@ -188,6 +188,15 @@ and re-run it. The two most common fail-closed exits, both intentional:
 
 Also confirm `System prompt loaded (N chars)` appears — a missing
 `<PROJECT_CONFIG_DIR>/system_prompt.md` is a packaging error, not a config one.
+**The server refuses to start without this file**: `api/server.py`'s
+`lifespan` raises, verbatim, `RuntimeError: System prompt not found:
+<resolved path>`, which is exactly the exit this section's preflight
+should already have caught. If you see it, create the file by copying
+`project_config.example/system_prompt.md` to
+`<PROJECT_CONFIG_DIR>/system_prompt.md` and rewriting it to describe your
+real schema, business rules, and dialect requirements — the example copy
+describes only the generic example schema and is not meant to be used
+as-is.
 
 ## 6. Confirm the audit log is being written
 
