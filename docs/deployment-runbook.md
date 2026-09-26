@@ -86,7 +86,15 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
 - `API_KEYS_JSON` — the array from step 1 (every issued key's entry).
 - `PROJECT_CONFIG_DIR` — leave unset (defaults to `project_config/`, this
   deployment's real domain data) unless you deliberately mean to run
-  against the sample `project_config.example/` template.
+  against the sample `project_config.example/` template. If you do set it
+  to a **relative** path, it is resolved against the repository root, not
+  against whatever directory you happen to start the server from. If your
+  deployment starts the server from a directory other than the repository
+  root (a systemd `WorkingDirectory`, a container `WORKDIR`, a process
+  manager's cwd) and sets a relative `PROJECT_CONFIG_DIR`, double-check
+  that it still resolves to the directory you expect after upgrading —
+  use an absolute path if you want to be certain regardless of the
+  process's working directory.
 
 Leave `RATE_LIMIT_*`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`, `AUTH_REQUIRED`,
 and `MAX_CONCURRENT_REQUESTS` at their shipped defaults unless step 3 below
@@ -179,7 +187,7 @@ and re-run it. The two most common fail-closed exits, both intentional:
   step 1/2 was skipped or the entry didn't make it into `.env`.
 
 Also confirm `System prompt loaded (N chars)` appears — a missing
-`prompts/system_prompt.md` is a packaging error, not a config one.
+`<PROJECT_CONFIG_DIR>/system_prompt.md` is a packaging error, not a config one.
 
 ## 6. Confirm the audit log is being written
 

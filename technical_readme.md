@@ -116,47 +116,33 @@
 
 ### 1.5 Database Schema Overview
 
-The system operates on a **Star Schema** data warehouse called `Auction_DM`:
+The system operates on a **Star Schema** data warehouse (`sales`/`ref` in
+the shipped example config):
 
 ```
                               ┌──────────────┐
-                              │  General_Dim │
+                              │    sales     │
                               │    Date      │
                               └──────┬───────┘
                                      │
   ┌──────────────┐   ┌───────────────┼───────────────┐   ┌──────────────┐
-  │  Auction_Dim │   │               │               │   │  Auction_Dim │
+  │    sales     │   │               │               │   │     ref      │
   │  Customer    ├───┤               │               ├───┤  Ring        │
   └──────────────┘   │               │               │   └──────────────┘
                      │               │               │
   ┌──────────────┐   │               │               │   ┌──────────────┐
-  │  Auction_Dim │   │               │               │   │  Auction_Dim │
+  │     ref      │   │               │               │   │     ref      │
   │  Broker      ├───┤               │               ├───┤  Symbol      │
   └──────────────┘   │               │               │   └──────────────┘
                      │    ┌──────────┴──────────┐    │
-                     │    │                     │    │
-                     │    │   Auction_Fact       │    │
+                     │    │        sales         │    │
                      │    │   ┌─────────────┐   │    │
-                     ├───┼───┤  Contract    ├───┼────┤
-                     │    │   └─────────────┘   │    │
-                     │    │                     │    │
-                     │    │   ┌─────────────┐   │    │
-                     ├───┼───┤  Customer    ├───┼────┤
-                     │    │   │  Contract    │   │    │
-                     │    │   └─────────────┘   │    │
-                     │    │                     │    │
-                     │    │   ┌─────────────┐   │    │
-                     │    ├───┤  Offer      ├───┤    │
-                     │    │   └─────────────┘   │    │
-                     │    │                     │    │
-                     │    │   ┌─────────────┐   │    │
-                     │    └───┤  Order      ├───┘    │
-                     │        └─────────────┘        │
-                     └───────────────────────────────┘
+                     └────┴───┤   Order     ├───┴────┘
+                          │   └─────────────┘   │
+                          └─────────────────────┘
 
-  Auction_Fact  = Fact tables (transactions, numbers)
-  Auction_Dim   = Dimension tables (customers, rings, brokers)
-  General_Dim   = Shared dimensions (date/calendar)
+  sales = Fact + core dimension tables (Order, Customer, Date, OrderStatus)
+  ref   = Shared reference/dimension tables (Broker, Currency, Location, Ring, Symbol, Supplier)
 ```
 
 ---
@@ -303,7 +289,7 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  │                          ▼                                     │   ║
 ║  │   ┌──────────────────────────────────────────────────────┐    │   ║
 ║  │   │  SQL Server (ODBC Driver 17)                         │    │   ║
-║  │   │  Auction_DM database                                 │    │   ║
+║  │   │  the warehouse database                              │    │   ║
 ║  │   └──────────────────────┬───────────────────────────────┘    │   ║
 ║  │                          │                                     │   ║
 ║  │                          ▼                                     │   ║
@@ -636,7 +622,7 @@ This is the **most critical step**. Instead of sending the entire database schem
   │   │  │  ──────────────────  │                                │ │
   │   │  │                      │                                │ │
   │   │  │  Input:  question    │                                │ │
-  │   │  │  Output: fact tables │──► Contract, CustomerContract  │ │
+  │   │  │  Output: fact tables │──► Order                       │ │
   │   │  │                      │                                │ │
   │   │  │  Method:             │                                │ │
   │   │  │  1. Alias match      │                                │ │
@@ -649,8 +635,7 @@ This is the **most critical step**. Instead of sending the entire database schem
   │   │  │  ──────────────────  │                                │ │
   │   │  │                      │                                │ │
   │   │  │  Input:  [Ring,      │                                │ │
-  │   │  │   Customer, Contract,│                                │ │
-  │   │  │   CustomerContract]  │                                │ │
+  │   │  │   Customer, Order]   │                                │ │
   │   │  │                      │                                │ │
   │   │  │  Output: JOIN clauses│                                │ │
   │   │  │                      │                                │ │
@@ -700,7 +685,7 @@ This is the **most critical step**. Instead of sending the entire database schem
   │   │  RetrievalContext (frozen dataclass)                     │ │
   │   │                                                          │ │
   │   │  .entities      = ["Ring", "Customer"]                   │ │
-  │   │  .facts         = ["Contract", "CustomerContract"]       │ │
+  │   │  .facts         = ["Order"]                              │ │
   │   │  .relationships = ["JOIN ... ON ...", "JOIN ... ON ..."] │ │
   │   │  .business_rules= ["Ring names...", "Persian year..."]   │ │
   │   │  .examples      = [{question, sql, tags}, ...]           │ │
@@ -727,7 +712,7 @@ Each sub-retriever uses a **two-tier matching strategy**:
   │   │  Check if question contains known aliases:      │    │
   │   │                                                 │    │
   │   │  "پتروشیمی" ──► Ring                           │    │
-  │   │  "خرید"     ──► CustomerContract                │    │
+  │   │  "خرید"     ──► Order                            │    │
   │   │  "سال 1402" ──► Date (PersianYear=1402)        │    │
   │   └────────────────────────────────────────────────┘    │
   │                                                          │
@@ -781,7 +766,7 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │   │  "You are an expert Microsoft SQL Server           │      │
   │   │   query generator..."                               │      │
   │   │                                                     │      │
-  │   │  Source: prompts/system_prompt.md                   │      │
+  │   │  Source: <PROJECT_CONFIG_DIR>/system_prompt.md      │      │
   │   │                                                     │      │
   │   ├─────────────────────────────────────────────────────┤      │
   │   │                                                     │      │
@@ -809,9 +794,9 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │   │                                                     │      │
   │   │  Section 4: RELATIONSHIPS                           │      │
   │   │  ──────────────────────                             │      │
-  │   │  JOIN [Auction_Dim].[Ring] ON                       │      │
-  │   │    [Auction_Fact].[Contract].[RingID] =             │      │
-  │   │    [Auction_Dim].[Ring].[ID]                        │      │
+  │   │  JOIN [ref].[Ring] ON                       │      │
+  │   │    [sales].[Order].[RingID] =             │      │
+  │   │    [ref].[Ring].[ID]                        │      │
   │   │                                                     │      │
   │   │  Source: RelationshipRetriever (Step 4.3)           │      │
   │   │                                                     │      │
@@ -944,8 +929,8 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │   │  INPUT:                                                 │  │
   │   │  ```sql                                                 │  │
   │   │  SELECT TOP 100 c.Name, SUM(cc.TotalPrice) AS Value    │  │
-  │   │  FROM [Auction_Fact].[Contract] c                       │  │
-  │   │  JOIN [Auction_Dim].[Customer] cc ON c.CustID = cc.ID   │  │
+  │   │  FROM [sales].[Order] c                       │  │
+  │   │  JOIN [sales].[Customer] cc ON c.CustID = cc.ID   │  │
   │   │  LIMIT 100                                              │  │
   │   │  ```                                                    │  │
   │   └─────────────────────┬───────────────────────────────────┘  │
@@ -994,8 +979,8 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │   ┌─────────────────────────────────────────────────────────┐  │
   │   │  OUTPUT:                                                │  │
   │   │  SELECT TOP 100 c.Name, SUM(cc.TotalPrice) AS Value    │  │
-  │   │  FROM [Auction_Fact].[Contract] c                       │  │
-  │   │  JOIN [Auction_Dim].[Customer] cc ON c.CustID = cc.ID   │  │
+  │   │  FROM [sales].[Order] c                       │  │
+  │   │  JOIN [sales].[Customer] cc ON c.CustID = cc.ID   │  │
   │   │                                                         │  │
   │   └─────────────────────────────────────────────────────────┘  │
   │                                                                 │
@@ -1362,10 +1347,9 @@ local-sql-agent/
 │   ├── models.py              #   RetrievalContext, SQLGenerationResult
 │   └── analyze_misses.py      #   Offline retrieval miss diagnostics
 │
-├── prompts/                   # Prompt templates
-│   ├── system_prompt.md       #   Core system instructions for the LLM
-│   ├── few_shots.md           #   Additional few-shot examples
-│   └── business_glossary.md   #   Domain glossary
+├── project_config/             # Deployment-specific config, git-ignored
+│   └── system_prompt.md       #   Core system instructions for the LLM
+│                               #   (see project_config.example/ for the template)
 │
 ├── scripts/                   # Utility scripts
 │   ├── create_db.py           #   Database setup

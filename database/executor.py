@@ -20,7 +20,7 @@ Typical usage::
 
     from database.executor import execute_sql
 
-    df = execute_sql("SELECT TOP 10 * FROM [Auction_Fact].[Contract]")
+    df = execute_sql("SELECT TOP 10 * FROM [sales].[Order]")
     print(df.shape)   # (10, <n_columns>)
 """
 
@@ -260,7 +260,7 @@ def execute_sql(sql: str) -> pd.DataFrame:
 
     Examples
     --------
-    >>> df = execute_sql("SELECT TOP 5 * FROM [Auction_Fact].[Contract]")  # doctest: +SKIP
+    >>> df = execute_sql("SELECT TOP 5 * FROM [sales].[Order]")  # doctest: +SKIP
     >>> isinstance(df, pd.DataFrame)                                        # doctest: +SKIP
     True
     >>> len(df) <= 5                                                         # doctest: +SKIP
@@ -322,7 +322,7 @@ def execute_sql_params(sql: str, params: Sequence[object]) -> pd.DataFrame:
     Examples
     --------
     >>> df = execute_sql_params(
-    ...     "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] "
+    ...     "SELECT DISTINCT TOP (?) [Name] FROM [sales].[Customer] "
     ...     "WHERE [Name] LIKE ?",
     ...     (10, "%foo%"),
     ... )  # doctest: +SKIP

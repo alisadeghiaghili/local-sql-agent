@@ -54,10 +54,10 @@ and two hand-maintained ``{table: (columns...)}`` dicts (``RESOLVABLE_COLUMNS``,
 Both are now per-table fields on :class:`TableDefinition`, read here instead:
 
 * ``db_schema`` -- the schema/database qualifier a query must use for this
-  table (e.g. ``"Auction_Dim"``), via :func:`get_table_schema_qualifiers`.
+  table (e.g. ``"ref"``), via :func:`get_table_schema_qualifiers`.
   A per-*table* field, not one global constant, because a real warehouse
-  routinely has more than one schema (this one has at least ``Auction_Dim``
-  and ``Auction_Fact``) -- a single shared literal would be the wrong shape
+  routinely has more than one schema (this one has at least ``sales``
+  and ``ref``) -- a single shared literal would be the wrong shape
   even before portability is considered.
 * ``resolvable_columns`` -- columns :func:`~retrieval.value_resolver.resolve_value`
   is allowed to query for this table, via :func:`get_resolvable_columns`.
@@ -580,8 +580,8 @@ class SchemaRegistry:
         silently omitted.
 
         Relationship keys follow the format ``"LeftTable -> RightTable"``
-        (with optional schema prefix, e.g. ``"Contract.ContractID ->
-        CustomerContract.ContractID"``).
+        (with optional schema prefix, e.g. ``"Order.CustomerID ->
+        Customer.ID"``).
 
         Parameters
         ----------
@@ -595,9 +595,9 @@ class SchemaRegistry:
             SQL JOIN snippets (one per relevant FK edge), e.g.::
 
                 [
-                    "JOIN [Auction_Dim].[Customer] ON "
-                    "[Auction_Fact].[Contract].[CustomerID] = "
-                    "[Auction_Dim].[Customer].[CustomerID]",
+                    "JOIN [sales].[Customer] ON "
+                    "[sales].[Order].[CustomerID] = "
+                    "[sales].[Customer].[ID]",
                     ...
                 ]
 

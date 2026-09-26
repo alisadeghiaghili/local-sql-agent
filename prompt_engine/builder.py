@@ -123,7 +123,7 @@ class PromptBuilder:
             The original natural-language question in Persian or English.
         system_prompt:
             Domain-specific system instructions loaded from
-            ``prompts/system_prompt.md`` at server startup.
+            ``<PROJECT_CONFIG_DIR>/system_prompt.md`` at server startup.
         context:
             Fully populated :class:`~core.models.RetrievalContext` produced
             by :class:`~retrieval.context_retriever.ContextRetriever`. Only

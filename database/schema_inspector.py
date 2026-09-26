@@ -24,7 +24,7 @@ Typical usage::
     from database.schema_inspector import SchemaInspector
 
     inspector = SchemaInspector("mssql+pyodbc://...")
-    schema = inspector.inspect(include_schemas=["Auction_Dim", "Auction_Fact"])
+    schema = inspector.inspect(include_schemas=["sales", "ref"])
     entities_yaml      = inspector.draft_entities_yaml(schema)
     aliases_yaml       = inspector.draft_aliases_yaml(schema)
     relationships_yaml = inspector.draft_relationships_yaml(schema)

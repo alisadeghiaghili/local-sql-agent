@@ -6,7 +6,7 @@ Pipeline
 --------
     question
         ├── EntityRetriever      → dimension tables (Ring, Customer, Symbol …)
-        ├── FactRetriever        → fact tables (Contract, CustomerContract …)
+        ├── FactRetriever        → fact tables (Order …)
         ├── RelationshipRetriever → JOIN clauses for selected tables
         ├── RuleRetriever        → business rules injected into the prompt
         ├── ExampleRetriever     → few-shot SQL examples ranked by tag overlap
@@ -80,7 +80,7 @@ class ContextRetriever:
            :mod:`retrieval.dimension_vocabulary` prefetched and cached out
            of band (see that module's docstring for the cold-start/TTL
            story). Covers ``Ring``, ``Currency``, ``Broker``,
-           ``DeliveryPlace``, ``Symbol``.
+           ``Location``, ``Symbol``.
         3. ``Customer``/``Supplier`` are resolved by **neither** tier today.
            ``retrieval.value_resolver.resolve_value`` exists, is fully
            tested, and could resolve them — but is not called from here.
