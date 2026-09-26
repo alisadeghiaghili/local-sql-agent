@@ -232,7 +232,25 @@ _ALLOWED_HASH_LOCATIONS: dict[str, str] = {}
 _RUN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 #: Splits one run into pieces on "_" and CamelCase boundaries.
-_PIECE_RE = re.compile(r"[A-Z][a-z0-9]*|[A-Z]+(?![a-z])|[a-z0-9]+")
+#:
+#: Order matters: regex alternation takes the first alternative that
+#: matches at a position, not the longest, so the whole-acronym
+#: alternative (``[A-Z]+(?![a-z])``) must come *before*
+#: ``[A-Z][a-z0-9]*`` -- otherwise the single-capital alternative wins at
+#: every position of an all-caps run (e.g. a synthetic "FOO_BAR") and
+#: shatters it into one-character pieces ("F", "O", "O", ...), so a whole
+#: all-caps identifier never reassembles into a window long enough to
+#: match :data:`_FORBIDDEN_HASHES`, silently breaking the guard's
+#: documented case-insensitivity for any all-caps spelling of a
+#: forbidden identifier. With this order, "FOO_BAR" splits into
+#: ["FOO", "BAR"] (each matched whole by the acronym alternative, since
+#: nothing lower-case ever follows within the run), while "FooBar" still
+#: splits into ["Foo", "Bar"] as before (at each capital, the acronym
+#: alternative's negative lookahead fails against the following
+#: lower-case letter, so the engine falls through to the single-capital
+#: alternative) and "SQLConnection" still splits into
+#: ["SQL", "Connection"].
+_PIECE_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 #: Extensions that are never worth attempting a UTF-8 decode of -- a fast
 #: pre-filter; the real safety net is the try/except in _read_lines, so
@@ -599,6 +617,42 @@ class TestSelfTestDetectsAViolation:
         planted_file.write_text("x = 1\n", encoding="utf-8")
         synthetic = self._synthetic_forbidden()
         signatures = self._synthetic_signatures()
+        component_hits = {
+            component: _hashes_in_text(component, signatures) & synthetic
+            for component in planted_file.parts
+        }
+        assert any(component_hits.values())
+
+    def test_detects_synthetic_identifier_all_caps(self, tmp_path: Path) -> None:
+        """Regression guard for the piece-splitter's alternation order:
+        an ALL-CAPS spelling of a multi-piece identifier must be
+        detected exactly like its PascalCase and lower_case forms are,
+        both in content and in a path component. Before the
+        ``_PIECE_RE`` alternative ordering fix, "ZEPHYR_QUANTA" was
+        shattered into single-character pieces and never matched."""
+        synthetic = self._synthetic_forbidden()
+        signatures = self._synthetic_signatures()
+
+        target = tmp_path / "planted_caps.py"
+        target.write_text(
+            "value = 'ZEPHYR_QUANTA'  # a synthetic, never-real identifier\n",
+            encoding="utf-8",
+        )
+        lines = _read_lines(target)
+        assert lines is not None
+        found_lines = {
+            lineno
+            for lineno, line in enumerate(lines, start=1)
+            if _hashes_in_text(line, signatures) & synthetic
+        }
+        assert found_lines == {1}
+
+        assert _hashes_in_text("ZEPHYRQUANTA", signatures) & synthetic
+
+        planted_dir = tmp_path / "ZEPHYR_QUANTA"
+        planted_dir.mkdir()
+        planted_file = planted_dir / "module.py"
+        planted_file.write_text("x = 1\n", encoding="utf-8")
         component_hits = {
             component: _hashes_in_text(component, signatures) & synthetic
             for component in planted_file.parts
