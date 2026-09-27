@@ -403,3 +403,80 @@ phase: moving it there needs the same tamper-evidence argument that log
 being a file (not a database row anyone with a connection could edit) was
 originally built on to be re-made and re-satisfied first, which is a
 larger change than a retention window.
+
+## 12. What this application sends to the warehouse, and how often
+
+A DBA watching `sys.dm_exec_sessions`/a trace sees this application as one
+of possibly many clients. Everything below is a real, periodic or
+per-request round trip to the configured `DB_CONNECTION_URL` — kept here in
+one place, with the setting that controls each, following the 2026
+warehouse-load audit that traced a steady `SELECT 1` stream (plus DDL
+attempts and catalogue scans) back to a few specific sources.
+
+| Source | What it sends | How often | Controlled by |
+|---|---|---|---|
+| Connection-pool checkout (`database/connection.py`, `pool_pre_ping`) | A lightweight liveness probe (an implicit `SELECT 1`-equivalent) before handing a pooled connection to any caller | Once per checkout of a connection already in the pool — i.e. roughly once per query, whenever an idle pooled connection is reused | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
+| `GET /health` (`api/health.py`) | One connection checkout (pre-ping) or one explicit `SELECT 1` if pre-ping is off — never both | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment._CHECKS` minus the two deep checks below) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt and `check_query_timeout`'s multi-second `WAITFOR DELAY` probe | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
+| Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column | On first use after startup if `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (default `false`); otherwise lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
+| Relationship-map schema inspection (`database/relationship_map.py`) | A one-time reflection of foreign-key relationships, only if no `project_config/relationships.yaml` is present | At most once per process lifetime (result is cached in memory for the life of the process; never repeats on a timer) | `AUTO_DISCOVER_SCHEMA` (default `false`) |
+| Every `/query` request that reaches SQL execution (`database/executor.py`) | The generated, guard-validated `SELECT` itself, inside a transaction | Once per end-user query — this is the real workload the application exists to serve, not overhead | `MAX_CONCURRENT_REQUESTS`, `RATE_LIMIT_*` bound how many of these can be in flight/arriving at once |
+
+## 13. `pool_pre_ping`: what it costs, and when turning it off is reasonable
+
+`DB_POOL_PRE_PING` (default `true`) is what makes checking a connection out
+of the pool run a liveness probe first — this is most of the steady
+`SELECT 1`-shaped traffic a DBA sees from this application in ordinary
+operation, and it scales with how often connections are checked out (i.e.
+roughly with query volume), not with anything unusual happening.
+
+**Leave it on (the default)** unless you have a specific reason not to: a
+connection that went stale while idle in the pool (the SQL Server side
+closed it, or a firewall/load balancer idle-timed it out) is silently
+discarded and replaced instead of failing a real query.
+
+**Turning it off** removes that per-checkout probe. A connection that went
+stale is then only discovered when a real query is sent through it, which
+fails once and is transparently retried on a fresh connection — a
+reasonable trade specifically when `DB_POOL_RECYCLE_SECONDS` is set
+comfortably below whatever idle timeout the network path to the warehouse
+(SQL Server itself, a firewall, a load balancer) actually enforces, so a
+connection is proactively recycled before it would go stale from sitting
+idle in the first place. Confirm that idle timeout with the DBA before
+turning this off; without a matching recycle margin, turning it off trades
+a quiet steady cost for occasional, noisier first-query-after-idle
+failures. Full detail: `config.Settings.db_pool_pre_ping`.
+
+## 14. Disk activity on trivial queries — what to ask the DBA about
+
+If the DBA reports meaningful disk I/O correlated with connections this
+application opens or with plain `SELECT` traffic, and the query volume
+above does not obviously account for it, these are database-side settings
+worth checking — facts about what they do, not a diagnosis of this
+specific deployment:
+
+- **`AUTO_CLOSE` on the database.** When on, SQL Server closes the database
+  completely (and releases its resources) once the last connection to it
+  ends, then reopens it — a cold-start cost — on the next connection. A
+  connection pool that lets its connections idle out and reconnect (or an
+  `AUTO_CLOSE` interval shorter than this application's real idle gaps)
+  can turn what looks like a trivial query into a full close/reopen cycle.
+  Checking and, if appropriate, disabling `AUTO_CLOSE` on the warehouse
+  database is a DBA-side change, not something this application can see or
+  control from a connection string.
+- **Login auditing or login triggers.** A `SERVER AUDIT`/login trigger that
+  runs its own logic (a lookup, a write, a check) on every new login event
+  adds real work per new connection, independent of what that connection
+  goes on to query. This compounds with a small `DB_POOL_RECYCLE_SECONDS`
+  or a low `pool_size`/high churn: more new connections means more login
+  events means more trigger executions. Whether one is configured, and
+  what it does, is visible from the SQL Server side, not from this
+  application.
+
+Neither of these is asserted to be present on any specific deployment —
+they are the two most common DBA-side explanations for "disk activity on
+a query that should be nearly free," offered so the DBA conversation
+starts with a concrete question instead of a guess.

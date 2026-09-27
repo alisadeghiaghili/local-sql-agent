@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 import api.maintenance as maintenance
 import config as cfg
+from api.admin_result_cache import admin_expensive_cache
 from api.auth import require_operations, require_operations_or_security
 from api.models import CacheInvalidateRequest
 from appdb.admin_audit import record_admin_action
@@ -118,23 +119,56 @@ def admin_maintenance_toggle(
 
 @router.get(
     "/schema-drift",
-    summary="Read-only comparison of schema.yaml against the live warehouse",
+    summary="Read-only comparison of schema.yaml against the live warehouse (cached)",
 )
 def admin_schema_drift(
+    refresh: bool = Query(
+        False,
+        description=(
+            "Bypass this route's own cached result and reflect the "
+            "warehouse catalogue now, regardless of "
+            "ADMIN_EXPENSIVE_CACHE_TTL_SECONDS."
+        ),
+    ),
     principal: Principal = Depends(require_operations_or_security),
 ) -> dict[str, Any]:
     """Never writes ``schema.yaml`` and never applies anything -- see
     :func:`schema_data.drift.check_schema_drift`'s own docstring. A
     warehouse this deployment's read-only login cannot currently reach is
-    reported as a clear 503, not a stack trace."""
+    reported as a clear 503, not a stack trace.
+
+    Required item 1, 2026 warehouse-load audit
+    ---------------------------------------------
+    ``check_schema_drift`` reflects EVERY table of EVERY schema
+    (``get_table_names``/``get_columns``) -- expensive enough that the
+    panel's own 30-second auto-refresh re-running it all day was a
+    material share of the reported warehouse load. The result is now
+    cached for :attr:`config.Settings.admin_expensive_cache_ttl_seconds`
+    (``refresh=1`` forces a fresh reflection); a failed reflection (this
+    503 path) is never itself cached, so a warehouse that comes back
+    reachable is reflected again on the very next call, cached or not --
+    see :mod:`api.admin_result_cache`'s "a failed computation is never
+    cached" note.
+    """
+    def _run() -> dict[str, Any]:
+        return check_schema_drift().as_dict()
+
     try:
-        report = check_schema_drift()
+        cached = admin_expensive_cache.get_or_compute(
+            "schema_drift", cfg.settings.admin_expensive_cache_ttl_seconds, _run, force=refresh,
+        )
     except Exception as exc:  # noqa: BLE001 - the warehouse being unreachable is an operational fact, not a bug
         raise HTTPException(
             status_code=503,
             detail=f"Could not read the live warehouse for a schema drift check: {exc}",
         )
-    return report.as_dict()
+    result = dict(cached.value)
+    result["cache"] = {
+        "cached": cached.cached,
+        "age_seconds": round(cached.age_seconds, 1),
+        "ttl_seconds": cached.ttl_seconds,
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------

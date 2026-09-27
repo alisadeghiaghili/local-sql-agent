@@ -94,14 +94,37 @@ class TestPingOpenAI:
 
 
 class TestPingDb:
-    def test_true_when_select_1_succeeds(self):
+    """Finding 1, 2026 warehouse-load audit: exactly one round trip per
+    probe. Which round trip proves liveness depends on
+    ``cfg.settings.db_pool_pre_ping`` -- see ``_ping_db``'s own docstring.
+    """
+
+    def test_pre_ping_on_checks_out_a_connection_but_does_not_query_it(self):
+        """``pool_pre_ping`` already verifies the connection transparently
+        on checkout -- an explicit ``SELECT 1`` on top of that would be a
+        second round trip proving the same fact twice."""
         fake_conn = MagicMock()
         fake_engine = MagicMock()
         fake_engine.connect.return_value.__enter__.return_value = fake_conn
-        with patch("database.connection.get_engine", return_value=fake_engine):
+        with cfg.override_settings(db_pool_pre_ping=True), \
+             patch("database.connection.get_engine", return_value=fake_engine):
+            ok, detail = _ping_db()
+        assert ok is True
+        fake_conn.execute.assert_not_called()
+
+    def test_pre_ping_off_runs_exactly_one_explicit_select_1(self):
+        """With ``pool_pre_ping`` off, checkout performs no liveness check
+        of its own, so this is the ONLY round trip that can prove the
+        database actually answers a query."""
+        fake_conn = MagicMock()
+        fake_engine = MagicMock()
+        fake_engine.connect.return_value.__enter__.return_value = fake_conn
+        with cfg.override_settings(db_pool_pre_ping=False), \
+             patch("database.connection.get_engine", return_value=fake_engine):
             ok, detail = _ping_db()
         assert ok is True
         assert "SELECT 1" in detail
+        fake_conn.execute.assert_called_once()
 
     def test_false_on_exception_names_the_exception(self):
         with patch("database.connection.get_engine", side_effect=RuntimeError("down")):

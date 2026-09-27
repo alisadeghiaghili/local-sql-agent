@@ -517,6 +517,14 @@
   padding: 10px 0;
 }
 
+/* 2026 warehouse-load audit: the age of a server-cached expensive-card
+   result (health checks, schema drift) -- see main.js's formatCacheAge. */
+.admin-cache-age {
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin: 0 0 8px;
+}
+
 .admin-section-title {
   font-size: 0.78rem;
   color: var(--muted);
