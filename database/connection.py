@@ -47,11 +47,15 @@ def get_engine() -> Engine:
         instead: a connection is only probed with ``SELECT 1`` on
         checkout once it has sat idle in the pool for at least
         :attr:`config.Settings.db_pool_ping_idle_seconds` (default 60;
-        ``0`` reproduces plain ``pool_pre_ping=True``'s ping-every-checkout
-        behaviour exactly). A failed probe raises
-        ``sqlalchemy.exc.DisconnectionError``, which makes the pool
-        discard and transparently replace the connection before the
-        caller's own statement runs. When :attr:`~config.Settings.db_pool_pre_ping`
+        ``0`` pings literally every checkout, matching plain
+        ``pool_pre_ping=True`` except for one narrow case documented on
+        :func:`~database.pool_ping.install_idle_aware_ping`). A failed
+        probe raises ``sqlalchemy.exc.InvalidatePoolError`` -- the same
+        exception plain ``pool_pre_ping=True``'s own dialect-level ping
+        raises on failure -- which makes the pool invalidate and
+        transparently replace every pooled connection, not just the one
+        that was probed, before the caller's own statement runs. When
+        :attr:`~config.Settings.db_pool_pre_ping`
         is ``False``, ``install_idle_aware_ping`` is never called and no
         connection is ever probed on checkout. The steady per-checkout
         probe cost this trades for that safety — and when turning it off

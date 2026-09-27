@@ -260,13 +260,23 @@ class Settings:
     query", while keeping exactly the same safety net for a connection
     that really has gone stale from sitting unused.
 
-    ``0`` means "ping on every checkout" — today's ``pool_pre_ping=True``
-    behaviour, unchanged, for an operator who wants the old, simpler
-    guarantee back rather than the idle-aware trade-off. A negative value
-    is not a supported input and is treated as ``0`` would only
-    coincidentally be handled the same way the idle comparison happens to
-    read it (every checkout looks "idle enough"); use ``0`` explicitly for
-    that behaviour rather than relying on a negative number.
+    ``0`` means "ping literally every checkout" — the old, simpler
+    guarantee, for an operator who wants that back rather than the
+    idle-aware trade-off, and its failure handling (invalidate the whole
+    pool, not just one connection) now matches plain ``pool_pre_ping=True``
+    exactly. It is not a byte-for-byte reproduction of old
+    ``pool_pre_ping=True`` in one narrow respect: SQLAlchemy's own
+    pre-ping never pings the very first checkout of a brand-new
+    connection (a per-connection "fresh" flag, independent of idle time);
+    ``0`` here pings even that one, since it honours "every checkout"
+    literally. See :func:`database.pool_ping.install_idle_aware_ping`'s
+    docstring for the full detail — the difference is observable only
+    once per physical connection, on its first use, never again after.
+    A negative value is not a supported input and is treated as ``0``
+    would only coincidentally be handled the same way the idle comparison
+    happens to read it (every checkout looks "idle enough"); use ``0``
+    explicitly for that behaviour rather than relying on a negative
+    number.
 
     Has no effect at all when :attr:`db_pool_pre_ping` is ``False`` — that
     setting means "never ping", and this one only ever narrows *when*

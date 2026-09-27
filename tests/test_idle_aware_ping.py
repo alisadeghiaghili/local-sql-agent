@@ -176,6 +176,49 @@ class TestIdleAwarePing:
         assert fp.executed[-1] == (1, "SELECT 42")
         conn.close()
 
+    def test_failed_ping_invalidates_the_whole_pool_not_just_one_connection(
+        self, fake_clock: FakeClock
+    ) -> None:
+        """The point of raising InvalidatePoolError (a DisconnectionError
+        subclass) instead of plain DisconnectionError: a failed ping
+        discards every pooled connection, not just the one that happened
+        to be pinged -- the real-world case this matters for is a server
+        restart or a firewall dropping every idle connection at once,
+        which is then one failure away from full recovery instead of one
+        failure per pooled connection, discovered one at a time as each is
+        separately checked out and found equally dead.
+        """
+        fp = FakePool(fail_first_n=1, pool_size=2, max_overflow=0)
+        install_idle_aware_ping(fp.pool, idle_seconds=60)
+
+        # Populate the pool with TWO distinct idle connections (#0, #1) --
+        # both checked out concurrently, then both checked back in.
+        c0 = fp.pool.connect()
+        c1 = fp.pool.connect()
+        c0.close()
+        c1.close()
+        assert len(fp.created) == 2
+
+        fake_clock.advance(120)  # both #0 and #1 are now idle past threshold
+
+        # The pool hands back #0 first (LIFO) -- its ping fails, so the
+        # pool invalidates itself and replaces #0 with a fresh connection
+        # (#2) for this caller.
+        conn_a = fp.pool.connect()
+        assert conn_a.dbapi_connection.id == 2
+        conn_a.close()
+
+        # The SECOND still-idle connection, #1, was never itself pinged in
+        # this event (elapsed time since ITS own checkin is a few
+        # microseconds -- nowhere near the 60s threshold, so this
+        # module's own idle check would ordinarily skip it entirely).
+        # Under whole-pool invalidation it is discarded anyway: the next
+        # checkout hands back a brand-new connection (#3), never #1.
+        conn_b = fp.pool.connect()
+        assert conn_b.dbapi_connection.id == 3
+        assert fp.created[1].closed is True  # #1 was discarded, unused
+        conn_b.close()
+
     def test_threshold_zero_pings_every_checkout(self, fake_clock: FakeClock) -> None:
         fp = FakePool()
         install_idle_aware_ping(fp.pool, idle_seconds=0)
