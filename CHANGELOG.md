@@ -5,6 +5,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [6.0.0] — 2026-09-27
+
+A release about trust in what the screen says, and about the load the
+application puts on the systems around it.
+
+A hall named in a question could be silently ignored, and a filter chip could
+show a value the SQL never applied. Both now either work or say plainly that
+they did not. Two concurrency defects are fixed: the request cap did not
+cover the analyst's main route, and the SQLite application database shared a
+single connection between every request thread. The admin panel stops
+re-running expensive warehouse checks every thirty seconds.
+
+The major version is for one operational change. The system prompt now lives
+in the deployment's own project-config directory, and the server will not
+start until it is there. See **Upgrading**.
+
+### Fixed
+
+- **A hall named in the question now filters the answer (PR #119).** The dimension vocabulary only matched a question that contained a stored value in full, so naming just a hall's distinguishing word matched nothing. A new token tier matches on a value's distinctive words when the question names the dimension; when two values tie, the analyst is asked which one, never guessed for. Also in this PR:
+  - The vocabulary is now warmed at startup by default, so the first question after a restart is no longer answered as if the value had not been named.
+  - A named dimension whose vocabulary could not be checked produces a Persian warning instead of silence.
+  - After generation, every text filter the turn presents as applied is checked against the SQL. A missing one triggers one regeneration and, if it is still missing, a Persian warning naming it.
+  - Editing an inherited filter on an "among those…" turn now rebuilds the query rather than changing only the chip.
+  - Choosing an answer in a "which one?" clarification is now sent to the server in live mode instead of changing only the local chip.
+- **Every pipeline route is under the concurrency cap, for the whole response (PR #117).** The cap covered only `POST /query`, and a streaming response released its slot as soon as its headers were sent. It is now pure ASGI middleware and covers `/query`, `/query/stream`, v2 turns (streaming or not) and the assumptions `PATCH`. The slot is held until the body is fully sent, and released on error or disconnect. All blocking pipeline work shares one worker-thread bound (`QUERY_THREAD_LIMIT`). The 503 `SERVER_OVERLOAD` response carries the request id again.
+- **The SQLite application database no longer shares one connection across threads (PR #120).** Concurrent requests could end each other's transactions. File-backed SQLite now gives each request its own connection, with WAL journal mode and a busy timeout, and its `-wal`/`-shm` files get the same restricted permissions as the database.
+- **Approving an access request is all-or-nothing (PR #115).** Approval runs in one transaction. A failure part-way leaves the request open with no key changed, so it can simply be retried. An approval and a denial of the same request can no longer both succeed.
+- **No more backend English in the failure banners (PR #118).** The generic database message is no longer shown under the Persian lead sentence. A database-specific message appears as a labelled technical detail («پیام پایگاه داده:»), and the guard's English rule text stays in the SQL panel rather than in the banner.
+- **Table names in the migration tool's reseed step are quoted (PR #114),** and the web UI tests' Node timeout is long enough for slow CI runners.
+
+### Changed
+
+- **Much less load on the warehouse (PR #121).** A DBA reported a steady stream of `SELECT 1` from the application. Most of it came from the admin panel, which re-ran the deployment checks and a full schema-drift scan of the warehouse catalogue every 30 seconds. The deployment checks include a rolled-back `CREATE TABLE` and a `WAITFOR` probe.
+  - Those cards now load when the page opens and on their own refresh button, with a server-side cache (`ADMIN_EXPENSIVE_CACHE_TTL_SECONDS`, default 300).
+  - The DDL and `WAITFOR` checks run from the panel only when explicitly requested.
+  - `/health` caches its database ping (`HEALTH_CACHE_TTL_SECONDS`, default 15).
+  - `pool_pre_ping` is configurable (`DB_POOL_PRE_PING`).
+  - SQL Server connections identify themselves as `local-sql-agent` (`DB_APPLICATION_NAME`).
+  - The deployment runbook lists everything the application sends to the warehouse, and how often.
+- **The public repository no longer names one deployment's schema (PR #122).** Its schema qualifiers and table names are replaced by the example schema's own names everywhere.
+  - The example configuration is now self-consistent: every relationship and every golden-set case refers to tables and columns the example schema defines, and the example `Order` has foreign keys to `Ring`, `Broker` and `Symbol`.
+  - `database/relationship_map.py` honours `PROJECT_CONFIG_DIR`.
+  - A test scans the contents and paths of every tracked file for the removed names; it holds them only as salted hashes.
+- **The system prompt moved to the project-config directory (PR #122).** It is now read from `<PROJECT_CONFIG_DIR>/system_prompt.md`, with a generic example in `project_config.example/`. `prompts/few_shots.md` and `prompts/business_glossary.md`, which nothing read at runtime, are removed.
+
+### Upgrading
+
+- **Required:** before upgrading, copy your current `prompts/system_prompt.md` to `<PROJECT_CONFIG_DIR>/system_prompt.md`. Without it:
+  - the API server refuses to start with `RuntimeError: System prompt not found: <path>`;
+  - `app.py` exits with status 1;
+  - the eval CLI raises `FileNotFoundError`;
+  - the webapp raises the same `RuntimeError`.
+- A **relative** `PROJECT_CONFIG_DIR` is now resolved against the repository root, not the working directory. A service started from another directory should check it, or use an absolute path.
+- Startup now reads the prefetched dimensions' values from the warehouse. Set `DIMENSION_VOCABULARY_WARM_ON_STARTUP=false` if startup must not touch the warehouse; set `DIMENSION_VOCABULARY_TOKEN_FALLBACK_ENABLED=false` to keep whole-value matching only.
+- New optional settings: `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS`, `HEALTH_CACHE_TTL_SECONDS`, `DB_POOL_PRE_PING`, `DB_APPLICATION_NAME` (see `.env.example`).
+- Tests that check a deployment's own values now read them from optional files under `<PROJECT_CONFIG_DIR>/_test_fixtures/` (see `project_config.example/_test_fixtures/README.md`) and skip without them.
+
 ## [5.2.0] — 2026-09-24
 
 A security fix and the first of the refusal actions the design has always

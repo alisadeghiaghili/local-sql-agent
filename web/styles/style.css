@@ -1,6 +1,6 @@
 /* Local SQL Agent — conversational web UI.
- * Palette and card language inherited from the single-shot demo
- * (scratchpad/demo/style.css); information architecture rebuilt as an
+ * Palette and card language inherited from the earlier single-shot demo;
+ * information architecture rebuilt as an
  * append-only transcript. RTL-first: the document sets dir="rtl", and every
  * spacing rule below uses logical properties so the layout mirrors correctly.
  * SQL, tables of numbers, and raw identifiers stay dir="ltr" inline — see the
