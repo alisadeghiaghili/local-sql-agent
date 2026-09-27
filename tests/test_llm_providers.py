@@ -259,7 +259,7 @@ class TestReasoningChannelDetection:
         assert text == "SELECT 1"
 
     def test_empty_content_with_reasoning_field_is_detected(self):
-        """The failure mode the task description calls out: the model put
+        """The failure mode this test guards against: the model put
         everything into the reasoning channel and left content empty."""
         backend = OpenAIBackend(model="m", api_key="k")
         body = {

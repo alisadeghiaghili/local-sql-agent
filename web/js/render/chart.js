@@ -158,7 +158,7 @@ function isSequenceLabel(labelKey, labelType) {
 /** Builds 1-4 named framings of the same (rows, labelKey, measureKey),
  * plus, once the category count makes it genuinely illegible, one
  * explicitly REJECTED framing (pie) with its reason — never silently
- * omitted, per the brief: an analyst looking for that option deserves an
+ * omitted, because an analyst looking for that option deserves an
  * answer. Pure: no DOM access.
  *
  * `options.labelType` carries the label column's declared type

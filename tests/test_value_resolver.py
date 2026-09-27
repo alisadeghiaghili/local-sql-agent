@@ -442,7 +442,7 @@ class TestResolveValueCacheInternals:
 
 
 # ---------------------------------------------------------------------------
-# Coordinator finding #2: LIKE metacharacters were not escaped. Not an
+# LIKE metacharacters were not escaped. Not an
 # injection (the value stays bound either way) but a correctness bug: an
 # un-escaped "%", "_", or "[" in the mention changes which rows match.
 # ---------------------------------------------------------------------------

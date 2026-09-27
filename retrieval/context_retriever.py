@@ -36,9 +36,9 @@ from retrieval.value_retriever import ValueRetriever
 from security.auth import ANONYMOUS, Principal
 
 # ── analyst-facing "this dimension could not be
-# checked" warnings -- exact Persian text, verified byte-identical to
-# the audit's own warning_texts.json (see the repository's change history
-# for that verification). {label} is the entity's configured display name
+# checked" warnings -- the Persian text is fixed and pinned by
+# tests/test_context_retriever_value_resolution.py::TestVocabularyUnavailableWarnings.
+# {label} is the entity's configured display name
 # (knowledge.entities.ENTITIES[table]["label"]) when project_config/entities.yaml
 # provides one for that table; otherwise the generic text is used instead.
 _VOCAB_UNAVAILABLE_WITH_LABEL = 'فهرست مقادیر «{label}» فعلاً در دسترس نیست؛ اگر در پرسش مقداری از آن را نام برده‌اید، ممکن است پاسخ بر اساس آن فیلتر نشده باشد.'

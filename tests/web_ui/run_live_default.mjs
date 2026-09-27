@@ -25,7 +25,7 @@
 //   loadPersisted() round-trip against a mocked localStorage, not just a
 //   hand-built string) is honoured untouched -- this is the exact
 //   "operator points a single browser somewhere else for debugging" path
-//   the brief requires to keep working once the visible top-bar control
+//   that must keep working once the visible top-bar control
 //   is gone.
 //
 // Usage: node run_live_default.mjs <path-to-copied-state.mjs> <path-to-copied-config.mjs>

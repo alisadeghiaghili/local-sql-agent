@@ -10,7 +10,7 @@
 // TurnResult objects (columns/rows/row_count/truncated, matching
 // session/models.py::TurnResult), that:
 //
-// * determineShape() picks the presentation the brief specifies for each
+// * determineShape() picks the correct presentation for each
 //   shape -- scalar (1x1 numeric), record (1 row, >1 col), chart (<=30
 //   rows, one label + one numeric measure), table (many numeric columns,
 //   many rows, or non-numeric-only), and empty (0 rows) -- driven only by
@@ -20,7 +20,7 @@
 //   chart;
 // * pickLikelyWrongAssumption() prefers a session-sourced assumption over
 //   a default/policy one, and a question-sourced one last -- the exact
-//   ordering the brief's motivating example depends on ("I am still
+//   ordering a real usage pattern depends on ("I am still
 //   filtering by the commodity you named two turns ago");
 // * a guard-REJECTED empty result never gets the "likely wrong
 //   assumption" framing (nothing executed, so that framing would be
@@ -242,7 +242,7 @@ assert.equal(
   "0 rows with real column metadata must still be `empty`, not `table`",
 );
 
-console.log("[ok] determineShape matches the brief's shape table for scalar/record/chart/table/empty");
+console.log("[ok] determineShape matches the intended shape mapping for scalar/record/chart/table/empty");
 
 /* ── Scenario 2: a `chart` shape actually renders a table (behind the
  * view switch) AND the chart apparatus; a `table` shape never fabricates
@@ -267,15 +267,15 @@ assert.ok(tableBlock.querySelector("table.result-table"), "table shape must rend
 
 const scalarBlock = renderResult(result([{ name: "Total", type: "number" }], [{ Total: 42 }]));
 assert.equal(scalarBlock.querySelector("table"), null, "scalar shape: no chart, no table");
-assert.equal(scalarBlock.querySelector(".figures-strip"), null, "scalar shape: figures strip is empty per the brief, not three empty tiles");
+assert.equal(scalarBlock.querySelector(".figures-strip"), null, "scalar shape: figures strip is empty, not three empty tiles");
 assert.ok(scalarBlock.querySelector(".scalar-figure"), "scalar shape must render one large figure");
 
 console.log("[ok] renderResult dispatches real DOM per shape (chart embeds a table; table never fakes a chart; scalar has neither)");
 
 /* ── Scenario 3: pickLikelyWrongAssumption prioritises session over
  * default/policy, and only falls back to a question-sourced assumption
- * when nothing else is available. This is the exact ordering the brief's
- * motivating example needs: "I am still filtering by the commodity you
+ * when nothing else is available. This is the exact ordering a real
+ * usage pattern needs: "I am still filtering by the commodity you
  * named two turns ago" must outrank a same-turn `question` assumption. */
 
 const culprit = pickLikelyWrongAssumption([
@@ -314,8 +314,8 @@ console.log("[ok] guard-rejected 0 rows never gets the assumption-likely-wrong f
 
 /* ── Scenario 5: chooseFramings offers the rejected pie option only once
  * illegible, and it is always explicitly rejected, never silently
- * omitted -- the brief: "an analyst looking for that option deserves an
- * answer". chooseFocus names a real rule for every framing kind. ────── */
+ * omitted -- an analyst looking for that option deserves an
+ * answer. chooseFocus names a real rule for every framing kind. ────── */
 
 const rows6 = Array.from({ length: 6 }, (_, i) => ({ L: `l${i}`, V: i }));
 assert.ok(!chooseFramings(rows6, "L", "V").some((f) => f.kind === "pie"), "pie is not offered at all under the illegibility threshold");

@@ -7,7 +7,7 @@
  * fields `session/models.py::TurnResult` actually carries — `columns[].type`
  * (one of "number" | "string" | "boolean" | "datetime", see
  * `session/engine.py::_infer_type`), `rows.length`, and `row_count` — never
- * by sniffing cell values. See the brief table this implements:
+ * by sniffing cell values. The shape mapping this implements:
  *
  *   1 row  x 1 numeric column        -> scalar   (one big figure)
  *   1 row  x several columns         -> record   (record card)
@@ -114,7 +114,7 @@ function renderMeta(result) {
 
 /** 0 rows: the query ran and the guard allowed it, so this is very rarely
  * "the warehouse has nothing" — it is almost always one inherited
- * assumption (most often session-scoped, per the brief) turning out
+ * assumption (most often session-scoped) turning out
  * wrong for this question. Says so explicitly and points at the most
  * likely culprit among `assumptions`, instead of a bare "no rows found"
  * that invites the wrong conclusion. Styled in the STATUS colour (warn),
@@ -362,7 +362,7 @@ export function renderResult(result, opts = {}) {
   if (shape === SHAPE.EMPTY) {
     // The "probably a wrong assumption, not missing data" framing only
     // applies when the query actually ran (guard allowed it) and matched
-    // nothing — see this module's docstring / the brief's §4. When the
+    // nothing — see this module's docstring above. When the
     // guard REJECTED the statement, nothing executed at all, so that
     // framing would be false; the SQL section already shows the guard's
     // rejection reason, so this stays a plain, honest note instead.

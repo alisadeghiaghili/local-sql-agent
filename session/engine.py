@@ -132,10 +132,9 @@ corrected SQL statement.
 SQL:
 """
 
-# Filter-enforcement check -- exact Persian text, verified byte-identical
-# to the audit's own warning_texts.json (see the repository's change history
-# for that verification). {value} is the filter's own resolved value,
-# unchanged.
+# Filter-enforcement check -- the Persian text is fixed and exercised by
+# tests/test_session_engine_error_paths.py::TestFilterEnforcementAfterGeneration.
+# {value} is the filter's own resolved value, unchanged.
 _FILTER_NOT_APPLIED_WARNING = 'فیلتر «{value}» در پرس‌وجوی نهایی اعمال نشد؛ ممکن است نتیجه شامل داده‌های بیرون از این فیلتر باشد.'
 
 
