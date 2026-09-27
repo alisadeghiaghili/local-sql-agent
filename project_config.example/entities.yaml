@@ -5,6 +5,12 @@
 #          (include both native language and English forms)
 # table:   exact database table name this entity maps to
 # schema:  optional — the schema name (e.g. "dim", "fact")
+# label:   optional — an analyst-facing display name for this entity (e.g.
+#          "تالار" for a Ring/trading-hall entity). Shown to an analyst in
+#          a message naming this dimension (e.g. "the <label> list is
+#          currently unavailable") when the vocabulary that would resolve
+#          it could not be checked this request. Leave unset for a generic
+#          phrasing instead.
 
 entities:
   # Example 1: a dimension entity

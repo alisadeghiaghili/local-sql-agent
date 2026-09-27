@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from core.models import RetrievalContext
 from core.persian import normalize_for_matching
+from knowledge.entities import ENTITIES
 from retrieval.dimension_vocabulary import match_question_against_vocabulary
 from retrieval.entity_retriever import EntityRetriever
 from retrieval.fact_retriever import FactRetriever
@@ -33,6 +34,15 @@ from retrieval.rule_retriever import RuleRetriever
 from retrieval.example_retriever import ExampleRetriever
 from retrieval.value_retriever import ValueRetriever
 from security.auth import ANONYMOUS, Principal
+
+# ── analyst-facing "this dimension could not be
+# checked" warnings -- exact Persian text, verified byte-identical to
+# the audit's own warning_texts.json (see the repository's change history
+# for that verification). {label} is the entity's configured display name
+# (knowledge.entities.ENTITIES[table]["label"]) when project_config/entities.yaml
+# provides one for that table; otherwise the generic text is used instead.
+_VOCAB_UNAVAILABLE_WITH_LABEL = 'فهرست مقادیر «{label}» فعلاً در دسترس نیست؛ اگر در پرسش مقداری از آن را نام برده‌اید، ممکن است پاسخ بر اساس آن فیلتر نشده باشد.'
+_VOCAB_UNAVAILABLE_GENERIC = 'فهرست مقادیر یکی از ابعاد این پرسش فعلاً در دسترس نیست؛ اگر در پرسش مقداری از آن را نام برده‌اید، ممکن است پاسخ بر اساس آن فیلتر نشده باشد.'
 
 
 class ContextRetriever:
@@ -80,7 +90,15 @@ class ContextRetriever:
            :mod:`retrieval.dimension_vocabulary` prefetched and cached out
            of band (see that module's docstring for the cold-start/TTL
            story). Covers ``Ring``, ``Currency``, ``Broker``,
-           ``DeliveryPlace``, ``Symbol``.
+           ``DeliveryPlace``, ``Symbol``. Since the hall-filter fix,
+           a match no longer requires the ENTIRE stored value as one
+           contiguous substring of the question — see that module's
+           "Matching rules" for the token-fallback tier this now falls
+           back to for a table the question names only *part* of (still
+           only ever a table entity detection already put in
+           ``db_candidate_tables``: the confirmed root cause for "the hall
+           named in the question is ignored" was the substring-only match
+           itself, not this tier's entity gate).
         3. ``Customer``/``Supplier`` are resolved by **neither** tier today.
            ``retrieval.value_resolver.resolve_value`` exists, is fully
            tested, and could resolve them — but is not called from here.
@@ -113,6 +131,8 @@ class ContextRetriever:
         # `filters` at this point) are config, not warehouse content, and
         # are deliberately never added here.
         resolved_values: dict[str, list[str]] = {}
+        warnings: list[str] = []
+        token_tier_filters: dict[str, tuple[str, ...]] = {}
         # Only entity tables the static pass left unresolved are worth
         # consulting the prefetched vocabulary for -- ValueRetriever already
         # won for anything already in `filters` (see the precedence note
@@ -131,7 +151,29 @@ class ContextRetriever:
                 resolved_values = {
                     table: [value] for table, value in match_result.filters.items()
                 }
+            token_tier_filters = dict(match_result.token_tier_filters)
             value_clarifications.extend(match_result.clarifications)
+            # "The analyst must never be silently misled" (2026 hall-filter
+            # audit): a table whose vocabulary was entirely unavailable
+            # this request (cold on every allowed column, or a background
+            # refresh stuck failing -- see
+            # VocabularyMatchResult.unavailable_tables) contributes nothing
+            # to `filters` and, without this, nothing anywhere else either
+            # -- the question can name a hall the system had no chance to
+            # recognise, and the analyst would see an answer with no
+            # indication it might not be filtered by it. Already narrowed
+            # to `entities` by `db_candidate_tables` above (a table never
+            # entity-detected was never a candidate to begin with, so it
+            # can never appear in `unavailable_tables` either) -- the
+            # explicit re-check below is defensive, not a second filter.
+            for table in match_result.unavailable_tables:
+                if table not in entities:
+                    continue
+                label = ENTITIES.get(table, {}).get("label")
+                if label:
+                    warnings.append(_VOCAB_UNAVAILABLE_WITH_LABEL.format(label=label))
+                else:
+                    warnings.append(_VOCAB_UNAVAILABLE_GENERIC)
 
         return RetrievalContext(
             entities=entities,
@@ -143,4 +185,6 @@ class ContextRetriever:
             filters=filters,
             value_clarifications=value_clarifications,
             resolved_values=resolved_values,
+            warnings=warnings,
+            token_tier_filters=token_tier_filters,
         )

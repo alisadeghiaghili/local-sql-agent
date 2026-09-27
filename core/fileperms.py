@@ -167,15 +167,23 @@ def restrict_sqlite_family(db_path: str | Path) -> None:
 
     Deliberately not ``-journal``: unlike ``-wal``, a rollback-journal
     sidecar exists only *during* an in-flight transaction and is removed
-    by SQLite itself the moment that transaction commits or rolls back
-    (``.gitignore`` still lists ``*.db-journal`` -- ``appdb``'s database
-    is opened at whatever SQLite's default journal mode is, since nothing
-    in ``appdb/engine.py`` sets ``PRAGMA journal_mode`` the way
-    ``session/persistence.py`` sets WAL -- but that mode's sidecar is
-    exactly the file a caller here would race to ``chmod`` between two
-    already-atomic operations it does not control the timing of, not a
-    file it could ever observe sitting at rest with unwanted permissions
-    the way an ``-wal`` file routinely does).
+    by SQLite itself the moment that transaction commits or rolls back.
+    ``.gitignore`` still lists ``*.db-journal`` for the era before every
+    SQLite database this project opens was WAL -- both
+    ``session/persistence.py`` and, since the concurrency fix that gave
+    every file-backed application-database connection ``PRAGMA
+    journal_mode=WAL`` (``appdb/engine.py``'s own ``"connect"`` listener),
+    ``appdb`` as well, now use WAL exclusively, so a rollback journal is
+    not a file either database's own connections would ordinarily create
+    at all. The exclusion is kept anyway, for the same two reasons it
+    would still apply even if some future caller opened a non-WAL
+    connection to one of these files: a ``-journal`` sidecar exists only
+    *during* an in-flight transaction and is removed by SQLite itself the
+    moment that transaction commits or rolls back, so it is exactly the
+    file a caller here would race to ``chmod`` between two already-atomic
+    operations it does not control the timing of, not a file it could
+    ever observe sitting at rest with unwanted permissions the way an
+    ``-wal`` file routinely does.
 
     Each of the three paths is restricted independently and only if it
     exists -- a database not yet under active write load may have no

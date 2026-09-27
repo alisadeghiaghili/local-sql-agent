@@ -138,3 +138,78 @@ class TestValueResolutionWiring:
             )
 
         assert ctx.filters == {}
+
+
+class TestVocabularyUnavailableWarnings:
+    """Unavailable-vocabulary warning: a table the question named (entity
+    detection matched it) whose vocabulary is entirely unavailable this
+    request -- never cached, or a background refresh stuck failing -- and
+    that got no filter from ANY source must add the exact
+    ``warning_texts.json`` Persian sentence to ``RetrievalContext.warnings``,
+    never just silently answer as if the question had named nothing."""
+
+    def test_never_cached_entity_table_adds_the_generic_warning(self):
+        # Never refreshed at all -- a genuinely cold entry, distinct from
+        # "searched and found nothing".
+        patches = _patch_retrievers(entities=["Ring"], static_filters={})
+        with patches[0], patches[1], patches[2]:
+            ctx = ContextRetriever.retrieve("تالار محصولات صنعتی")
+
+        assert ctx.filters == {}
+        assert len(ctx.warnings) == 1
+        assert "«" not in ctx.warnings[0]  # the generic text names no dimension
+
+    def test_labeled_entity_uses_the_with_label_text(self):
+        patches = _patch_retrievers(entities=["Ring"], static_filters={})
+        with patches[0], patches[1], patches[2]:
+            with patch(
+                "retrieval.context_retriever.ENTITIES",
+                {"Ring": {"aliases": [], "table": "Ring", "label": "تالار"}},
+            ):
+                ctx = ContextRetriever.retrieve("تالار محصولات صنعتی")
+
+        assert ctx.filters == {}
+        assert len(ctx.warnings) == 1
+        assert "تالار" in ctx.warnings[0]
+
+    def test_a_table_already_resolved_by_the_static_pass_gets_no_warning(self):
+        # ValueRetriever already resolved "Ring" -- it is never even a
+        # db_candidate_table, so a cold vocabulary cache for it is
+        # irrelevant and must not warn (a filter WAS resolved, from
+        # another source).
+        patches = _patch_retrievers(
+            entities=["Ring"], static_filters={"Ring": "تالار پتروشیمی"},
+        )
+        with patches[0], patches[1], patches[2]:
+            ctx = ContextRetriever.retrieve("تالار پتروشیمی")
+
+        assert ctx.filters == {"Ring": "تالار پتروشیمی"}
+        assert ctx.warnings == []
+
+    def test_a_warm_cache_that_resolves_produces_no_warning(self):
+        _warm("Ring", "Name", ["تالار محصولات صنعتی"])
+        patches = _patch_retrievers(entities=["Ring"], static_filters={})
+        with patches[0], patches[1], patches[2]:
+            ctx = ContextRetriever.retrieve("قیمت در تالار محصولات صنعتی چقدر بود")
+
+        assert ctx.filters == {"Ring": "تالار محصولات صنعتی"}
+        assert ctx.warnings == []
+
+    def test_a_warm_cache_that_searches_and_finds_nothing_is_not_unavailable(self):
+        """Cached-but-no-match is a different case than never-searched --
+        only the latter warns (see VocabularyMatchResult.unavailable_tables's
+        own docstring: "searched and not found" is unremarkable)."""
+        _warm("Ring", "Name", ["تالار محصولات صنعتی"])
+        patches = _patch_retrievers(entities=["Ring"], static_filters={})
+        with patches[0], patches[1], patches[2]:
+            ctx = ContextRetriever.retrieve("چیزی نامرتبط با هیچ تالاری")
+
+        assert ctx.filters == {}
+        assert ctx.warnings == []
+
+    def test_no_entities_at_all_produces_no_warning(self):
+        patches = _patch_retrievers(entities=[], static_filters={})
+        with patches[0], patches[1], patches[2]:
+            ctx = ContextRetriever.retrieve("سلام")
+
+        assert ctx.warnings == []

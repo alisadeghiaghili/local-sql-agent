@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 import config as cfg
 from api.auth import require_principal
+from api.concurrency import run_bounded
 from api.maintenance import require_not_in_maintenance
 from appdb.access_requests import (
     NotDeniedColumnError,
@@ -314,11 +315,11 @@ def delete_session(session_id: str, principal: Principal = Depends(require_princ
 async def _ask_turn_bounded(
     session_id: str, question: str, principal: Principal, *, interpret: bool = False,
 ) -> Turn:
-    """Run the (blocking) turn engine off the event loop.
+    """Run the (blocking) turn engine off the event loop under a concurrency bound.
 
-    Mirrors ``api/server.py``'s ``_run_query_bounded`` — ``TurnEngine.ask``
-    makes blocking HTTP/DB calls, so it must not run directly on the async
-    event loop.
+    The TurnEngine.ask makes blocking HTTP/DB calls, so it must not run
+    directly on the async event loop. The concurrency bound ensures the
+    worker thread pool does not exhaust under concurrent requests.
     """
     try:
         record = get_session_store().require(session_id)
@@ -327,7 +328,7 @@ async def _ask_turn_bounded(
     _require_owned_session(record, principal)
     system_prompt = _require_system_prompt()
     memory_entries = _load_memory_entries_for(principal)
-    turn = await asyncio.to_thread(
+    turn = await run_bounded(
         get_turn_engine().ask, record, question, system_prompt,
         denied_columns=principal.denied_columns, memory_entries=memory_entries,
         interpret=interpret,
@@ -443,7 +444,11 @@ async def _ask_turn_streaming_stages(
             # on a queue that nothing will ever put to again.
             events.put(_STAGES_DONE)
 
-    task = asyncio.create_task(asyncio.to_thread(run))
+    # Run the worker under the shared concurrency bound. The queue draining
+    # (events.get) does NOT hold a semaphore slot — only the pipeline worker
+    # thread does. This prevents deadlock when the queue is accessed from an
+    # asyncio context while the worker waits on the semaphore.
+    task = asyncio.create_task(run_bounded(run))
     while True:
         item = await asyncio.to_thread(events.get)
         if item is _STAGES_DONE:
@@ -580,7 +585,7 @@ async def patch_assumptions(
     system_prompt = _require_system_prompt()
     overrides = {e.field: e.value for e in req.assumptions}
     memory_entries = _load_memory_entries_for(principal)
-    turn = await asyncio.to_thread(
+    turn = await run_bounded(
         get_turn_engine().ask,
         record,
         target.question,

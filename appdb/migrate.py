@@ -631,19 +631,36 @@ def _reset_autoincrement(conn, engine: Engine, table: Table, pk_column: str) -> 
         # if a sqlite_sequence table exists anyway (a future schema change
         # opting into AUTOINCREMENT).
         #
-        # The inspector is built on *conn*, never on the engine. A SQLite
-        # engine here uses ``StaticPool`` (see
-        # ``appdb.engine.build_engine``), so every checkout shares one
-        # DBAPI connection: ``inspect(engine)`` opens a second Connection
-        # facade over the *same* underlying connection, and closing that
-        # facade returns it to the pool, which resets it with a ROLLBACK.
-        # That rollback lands on this transaction. Every row written so far
-        # is discarded -- silently, with no exception and no warning, so
-        # ``import_export`` returns normally having copied nothing.
+        # The inspector is built on *conn*, never on the engine. This was
+        # found the hard way against a target still on ``StaticPool``
+        # (``appdb.engine.build_engine`` gave every SQLite URL that pool
+        # before the concurrency fix that split its choice by SQLite
+        # shape): every checkout shared one DBAPI connection, so
+        # ``inspect(engine)`` opened a second Connection facade over the
+        # *same* underlying connection, and closing that facade returned
+        # it to the pool, which reset it with a ROLLBACK. That rollback
+        # landed on this transaction -- every row written so far was
+        # discarded silently, with no exception and no warning, so
+        # ``import_export`` returned normally having copied nothing.
+        # ``inspect(conn)`` never opens a second connection at all, so it
+        # never had this failure mode.
+        #
+        # A file-backed target (every ``target_url`` this function is
+        # ever called with in this codebase) now gets ``QueuePool``
+        # instead, under which ``inspect(engine)`` would open a genuinely
+        # separate physical connection rather than reusing this one, so
+        # the specific hazard above no longer applies to it -- but
+        # ``inspect(conn)`` is kept regardless, both because it is simply
+        # the correct tool (this function is already inside a transaction
+        # on *conn*; there is no reason to open a second connection to
+        # inspect the same database) and because an in-memory target
+        # still built through ``appdb.engine.build_engine`` keeps
+        # ``StaticPool`` (see that function's docstring) and would still
+        # hit this exact bug.
         #
         # The per-table verification in :func:`verify_migration` is what
-        # catches that, and is how it was found: every copy step reported
-        # success and the target was empty.
+        # caught this originally, and is how it was found: every copy step
+        # reported success and the target was empty.
         if inspect(conn).has_table("sqlite_sequence"):
             conn.execute(
                 text("INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES (:n, :v)"),
