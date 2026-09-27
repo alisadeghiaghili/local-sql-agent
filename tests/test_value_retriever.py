@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from retrieval.value_retriever import ValueRetriever
+from tests._domain_fixtures import load_json_fixture
 
 
 class TestExtractYear:
@@ -129,62 +130,56 @@ class TestExtractPersianDate:
         assert ValueRetriever.extract_persian_date("تماس 09121402158") is None
 
 
+@pytest.fixture(scope="module")
+def ring_alias_expectations():
+    return load_json_fixture("value_retriever_expectations.json")
+
+
 class TestRetrieve:
-    """"تالار پتروشیمی" only resolves to its full display name through the
-    REAL project_config/aliases.yaml's ring_aliases -- project_config.example/
-    ships different, generic ring names, so the four tests below that
-    reference it are marked domain_data and skip when it is in effect (see
-    the repo-root conftest.py). The other tests in this class use no real
-    alias data and are unaffected."""
+    """A short Persian ring phrase only resolves to its full display name
+    through the REAL project_config/aliases.yaml's ring_aliases --
+    project_config.example/ ships different, generic ring names, so the
+    five tests below that reference it are marked domain_data (skip when
+    the example config is in effect) and read the phrase/expectation pairs
+    from an optional, deployment-owned fixture file,
+    <PROJECT_CONFIG_DIR>/_test_fixtures/value_retriever_expectations.json
+    (see project_config.example/_test_fixtures/README.md for the format),
+    rather than hardcoding the real alias mapping here. The other tests in
+    this class use no real alias data and are unaffected."""
 
     @pytest.mark.domain_data
-    def test_extracts_ring_year_month_day(self):
-        filters = ValueRetriever.retrieve(
-            "خرید مشتریان در تالار پتروشیمی اردیبهشت 1402 پنجشنبه"
-        )
-        assert filters == {
-            "Ring": "تالار پتروشیمی و فرآورده های نفتی",
-            "PersianYear": 1402,
-            "PersianMonthName": "اردیبهشت",
-            "PersianDayOfWeek": 6,
-        }
+    def test_extracts_ring_year_month_day(self, ring_alias_expectations):
+        case = ring_alias_expectations["ring_year_month_day"]
+        filters = ValueRetriever.retrieve(case["query"])
+        assert filters == case["expected"]
 
     @pytest.mark.domain_data
-    def test_no_date_terms_returns_ring_only(self):
-        filters = ValueRetriever.retrieve("بیشترین خرید در تالار سیمان")
-        assert filters == {"Ring": "تالار سیمان"}
+    def test_no_date_terms_returns_ring_only(self, ring_alias_expectations):
+        case = ring_alias_expectations["ring_only"]
+        filters = ValueRetriever.retrieve(case["query"])
+        assert filters == case["expected"]
 
     @pytest.mark.domain_data
-    def test_extracts_ring_year_month_day_with_persian_digits(self):
-        filters = ValueRetriever.retrieve(
-            "خرید مشتریان در تالار پتروشیمی اردیبهشت ۱۴۰۲ پنجشنبه"
-        )
-        assert filters == {
-            "Ring": "تالار پتروشیمی و فرآورده های نفتی",
-            "PersianYear": 1402,
-            "PersianMonthName": "اردیبهشت",
-            "PersianDayOfWeek": 6,
-        }
+    def test_extracts_ring_year_month_day_with_persian_digits(self, ring_alias_expectations):
+        case = ring_alias_expectations["ring_year_month_day_persian_digits"]
+        filters = ValueRetriever.retrieve(case["query"])
+        assert filters == case["expected"]
 
     @pytest.mark.domain_data
-    def test_extracts_season_with_ring_and_year(self):
-        filters = ValueRetriever.retrieve(
-            "بیشترین حجم معامله در تالار پتروشیمی در فصل بهار ۱۴۰۲"
-        )
-        assert filters == {
-            "Ring": "تالار پتروشیمی و فرآورده های نفتی",
-            "PersianYear": 1402,
-            "PersianSeasonName": "بهار",
-        }
+    def test_extracts_season_with_ring_and_year(self, ring_alias_expectations):
+        case = ring_alias_expectations["ring_season_year"]
+        filters = ValueRetriever.retrieve(case["query"])
+        assert filters == case["expected"]
 
     def test_full_date_suppresses_year(self):
         filters = ValueRetriever.retrieve("معاملات 1402/05/15")
         assert filters == {"PersianDate": "1402/05/15"}
 
     @pytest.mark.domain_data
-    def test_full_date_with_ring(self):
-        filters = ValueRetriever.retrieve("معاملات در تالار پتروشیمی 1402/05/15")
-        assert filters == {"Ring": "تالار پتروشیمی و فرآورده های نفتی", "PersianDate": "1402/05/15"}
+    def test_full_date_with_ring(self, ring_alias_expectations):
+        case = ring_alias_expectations["ring_full_date"]
+        filters = ValueRetriever.retrieve(case["query"])
+        assert filters == case["expected"]
 
     def test_persian_digit_full_date(self):
         filters = ValueRetriever.retrieve("خرید مشتریان در ۱۴۰۲/۰۵/۱۵")

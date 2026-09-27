@@ -6,7 +6,7 @@ Pipeline
 --------
     question
         ├── EntityRetriever      → dimension tables (Ring, Customer, Symbol …)
-        ├── FactRetriever        → fact tables (Contract, CustomerContract …)
+        ├── FactRetriever        → fact tables (Order …)
         ├── RelationshipRetriever → JOIN clauses for selected tables
         ├── RuleRetriever        → business rules injected into the prompt
         ├── ExampleRetriever     → few-shot SQL examples ranked by tag overlap
@@ -90,7 +90,7 @@ class ContextRetriever:
            :mod:`retrieval.dimension_vocabulary` prefetched and cached out
            of band (see that module's docstring for the cold-start/TTL
            story). Covers ``Ring``, ``Currency``, ``Broker``,
-           ``DeliveryPlace``, ``Symbol``. Since the hall-filter fix,
+           ``Location``, ``Symbol``. Since the hall-filter fix,
            a match no longer requires the ENTIRE stored value as one
            contiguous substring of the question — see that module's
            "Matching rules" for the token-fallback tier this now falls

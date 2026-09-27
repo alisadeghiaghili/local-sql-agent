@@ -77,18 +77,16 @@ GO
 -- narrower than the trusted-connection default this app currently ships
 -- with. Tighten to per-table GRANT SELECT once the schema stabilises:
 --
---   GRANT SELECT ON [Auction_Fact].[Contract]         TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Fact].[CustomerContract] TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Fact].[Offer]             TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Fact].[Order]             TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Dim].[Customer]           TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Dim].[Supplier]           TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Dim].[Broker]             TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Dim].[Symbol]              TO [auction_nlq_reader];
---   GRANT SELECT ON [Auction_Dim].[Ring]                TO [auction_nlq_reader];
---   GRANT SELECT ON [General_Dim].[Date]                TO [auction_nlq_reader];
---   GRANT SELECT ON [General_Dim].[Currency]            TO [auction_nlq_reader];
---   GRANT SELECT ON [General_Dim].[DeliveryPlace]       TO [auction_nlq_reader];
+--   GRANT SELECT ON [sales].[Order]            TO [auction_nlq_reader];
+--   GRANT SELECT ON [sales].[OrderStatus]       TO [auction_nlq_reader];
+--   GRANT SELECT ON [sales].[Customer]          TO [auction_nlq_reader];
+--   GRANT SELECT ON [ref].[Supplier]            TO [auction_nlq_reader];
+--   GRANT SELECT ON [ref].[Broker]              TO [auction_nlq_reader];
+--   GRANT SELECT ON [ref].[Symbol]              TO [auction_nlq_reader];
+--   GRANT SELECT ON [ref].[Ring]                TO [auction_nlq_reader];
+--   GRANT SELECT ON [sales].[Date]              TO [auction_nlq_reader];
+--   GRANT SELECT ON [ref].[Currency]            TO [auction_nlq_reader];
+--   GRANT SELECT ON [ref].[Location]            TO [auction_nlq_reader];
 --
 -- (schema names above follow eval_data.example/golden.jsonl's bracketed
 -- references; confirm the real schema names against the live database

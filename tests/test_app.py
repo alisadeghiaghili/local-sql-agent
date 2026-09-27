@@ -220,7 +220,10 @@ class TestPromptPathIsCwdIndependent:
     to whatever the current working directory happened to be at read
     time, not to this module's own location. Running `python app.py`
     (or importing app.py) from any directory other than the repo root
-    silently broke it (item 14)."""
+    silently broke it (item 14). It is now resolved via
+    knowledge.config_loader.resolve_system_prompt_path() -- under
+    PROJECT_CONFIG_DIR, itself resolved against the repository root when
+    relative -- which keeps the same CWD-independence guarantee."""
 
     def test_prompt_path_is_absolute(self):
         assert app._PROMPT_PATH.is_absolute()
@@ -268,7 +271,7 @@ class TestMainRepl:
         self,
         input_lines: list[str],
         *,
-        sql_response: str = "SELECT TOP 5 * FROM [Auction_Dim].[Customer]",
+        sql_response: str = "SELECT TOP 5 * FROM [sales].[Customer]",
         df_rows: list[tuple] = None,
         df_columns: list[str] = None,
         generate_side_effect=None,
@@ -449,7 +452,7 @@ class TestMainRepl:
              patch.object(app, "_load_system_prompt", return_value="SYS"), \
              patch.object(app, "_enforce_rate_limit"), \
              patch("app.generate_sql",
-                   return_value="SELECT TOP 1 * FROM [Auction_Dim].[Customer]"), \
+                   return_value="SELECT TOP 1 * FROM [sales].[Customer]"), \
              patch("app.validate_sql"), \
              patch("app.execute_sql",
                    return_value=pd.DataFrame({"Name": ["X"]})), \

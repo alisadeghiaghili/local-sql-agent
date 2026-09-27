@@ -99,8 +99,8 @@ class TestPrettySql:
     def test_a_one_line_statement_becomes_readable(self):
         one_line = (
             "SELECT TOP 100 gd.PersianYear, SUM(cc.Quantity) AS TotalQuantity "
-            "FROM [Auction_Fact].[CustomerContract] cc "
-            "INNER JOIN [General_Dim].[Date] gd ON cc.Date_ID = gd.ID "
+            "FROM [sales].[Order] cc "
+            "INNER JOIN [sales].[Date] gd ON cc.Date_ID = gd.ID "
             "GROUP BY gd.PersianYear"
         )
         out = pretty_sql(one_line)
@@ -123,8 +123,8 @@ class TestPrettySql:
         from security.sql_guard import extract_touched_tables
 
         sql = (
-            "SELECT TOP 10 c.Name FROM [Auction_Fact].[CustomerContract] cc "
-            "INNER JOIN [Auction_Dim].[Customer] c ON cc.BuyerCustomer_ID = c.ID"
+            "SELECT TOP 10 c.Name FROM [sales].[Order] cc "
+            "INNER JOIN [sales].[Customer] c ON cc.BuyerCustomer_ID = c.ID"
         )
         assert sorted(extract_touched_tables(pretty_sql(sql))) == sorted(
             extract_touched_tables(sql)

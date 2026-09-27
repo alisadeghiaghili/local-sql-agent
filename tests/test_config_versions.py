@@ -491,14 +491,14 @@ class TestSchemaDiff:
 # ---------------------------------------------------------------------------
 
 class TestDryRunCatchesAGoldenSetRegression:
-    """``eval_data.example/golden.jsonl`` ships real-schema-shaped SQL
-    (against tables like ``Contract``/``Order``/``CustomerContract``) while
-    ``project_config.example/schema.yaml`` ships an unrelated, generic
-    placeholder schema -- the two example fixtures are not designed to be
-    mutually consistent, only each individually plausible. So these tests
+    """``eval_data.example/golden.jsonl`` ships SQL against tables
+    (``Order``/``Customer``/``Date``/``Ring``/``Broker``/``Symbol``) that
+    ``project_config.example/schema.yaml`` actually defines, so the two
+    example fixtures are mutually consistent today. These tests still
     compare the *baseline* missing-table set (whatever it already is
     against this pair of fixtures) before and after a table removal,
-    rather than asserting it is empty to start with.
+    rather than hardcoding "empty", so they keep working even if a future
+    edit to either fixture reintroduces a gap between them.
     """
 
     def test_removing_a_table_the_golden_set_needs_is_flagged(self, app_env):

@@ -22,7 +22,7 @@ doctests exercise ``run_case``/``run_golden_set``, which construct a real
 ``retrieval.context_retriever.ContextRetriever``: with the trigger enabled,
 every configured dimension spawned its own background-refresh thread (six
 real daemon threads named ``dim-vocab-bg-refresh-Broker.PersianName``,
-``…Currency.PersianName``, ``…DeliveryPlace.PersianName``, ``…Ring.Name``,
+``…Currency.PersianName``, ``…Location.PersianName``, ``…Ring.Name``,
 ``…Symbol.Commodity_PersianName`` and ``…Symbol.Commodity_Symbol``), each
 attempting a real ``pyodbc`` connection to the configured warehouse host.
 The doctest step still exited 0 -- nothing in it asserts on background

@@ -287,7 +287,7 @@ from session.models import Clarification
 
 logger = logging.getLogger(__name__)
 
-#: table -> its schema/db qualifier (e.g. "Auction_Dim"), loaded from
+#: table -> its schema/db qualifier (e.g. "ref"), loaded from
 #: schema.yaml -- see ``retrieval.value_resolver``'s identical-shaped
 #: constant; not shared with that module beyond both calling the same
 #: ``schema_data.registry`` accessor, since the two allowlists (prefetch

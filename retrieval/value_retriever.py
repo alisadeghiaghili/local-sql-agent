@@ -11,7 +11,7 @@ from knowledge.aliases import RING_ALIASES
 _PERSIAN_DATE_RE = re.compile(r"(?<!\d)(13\d{2}|14\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)")
 
 # Canonical Persian month names in Shamsi order (1-12), as stored in
-# General_Dim.Date.PersianMonthName.
+# sales.Date.PersianMonthName.
 PERSIAN_MONTHS = [
     "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
     "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
@@ -24,7 +24,7 @@ PERSIAN_DAYS_OF_WEEK = {
     "شنبه": 1, "جمعه": 7,
 }
 
-# Persian season names as stored in General_Dim.Date.PersianSeasonName.
+# Persian season names as stored in sales.Date.PersianSeasonName.
 PERSIAN_SEASONS = ["بهار", "تابستان", "پاییز", "زمستان"]
 
 

@@ -631,7 +631,7 @@ def make_live_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
         backend itself, so it never opens a network connection on its
         own.
     system_prompt:
-        The system prompt text (see ``prompts/system_prompt.md``).
+        The system prompt text (see ``<PROJECT_CONFIG_DIR>/system_prompt.md``).
 
     Returns
     -------

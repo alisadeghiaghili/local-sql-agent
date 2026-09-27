@@ -18,11 +18,11 @@ import math
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 
 import config as cfg
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
+from knowledge.config_loader import resolve_system_prompt_path
 from llm.wizard_llm import generate_sql
 from logs.logger import save_log
 from logs.query_log import QueryLog
@@ -42,10 +42,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # System prompt — loaded once at startup
 # ---------------------------------------------------------------------------
-# Resolved relative to this file, NOT the process's current working
-# directory — `python app.py` run from anywhere other than the repo root
-# used to silently fail to find the prompt.
-_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system_prompt.md"
+# Resolved under PROJECT_CONFIG_DIR (see knowledge/config_loader.py), NOT
+# the process's current working directory — `python app.py` run from
+# anywhere other than the repo root used to silently fail to find the
+# prompt.
+_PROMPT_PATH = resolve_system_prompt_path()
 
 
 def _load_system_prompt() -> str:

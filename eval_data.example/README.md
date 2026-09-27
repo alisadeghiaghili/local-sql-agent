@@ -50,7 +50,7 @@ actual evaluation set is built from.
   "id": "customer_count_basic",
   "question": "How many customers are there?",
   "tags": ["customer", "count", "english"],
-  "expected_sql": "SELECT COUNT(*) AS CustomerCount FROM [Auction_Dim].[Customer]",
+  "expected_sql": "SELECT COUNT(*) AS CustomerCount FROM [sales].[Customer]",
   "expected_rows": [{"CustomerCount": 12840}],
   "expected_fingerprint": "233648abb0dda38e478e9df65e616551e0343c49adcd203f27ea12f0fe7eeb1e",
   "expect": "success",

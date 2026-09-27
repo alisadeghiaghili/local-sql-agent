@@ -216,12 +216,12 @@ class SQLAgent:
 
     >>> import pandas as pd
     >>> agent2 = SQLAgent(
-    ...     backend=MockBackend(response="SELECT TOP 10 * FROM [Auction_Dim].[Customer]"),
+    ...     backend=MockBackend(response="SELECT TOP 10 * FROM [sales].[Customer]"),
     ...     execute_fn=lambda sql: pd.DataFrame({"Id": [1]}),
     ... )
     >>> df, result = agent2.run("q", system_prompt="")
     >>> result.sql
-    'SELECT TOP 10 * FROM [Auction_Dim].[Customer]'
+    'SELECT TOP 10 * FROM [sales].[Customer]'
     """
 
     def __init__(

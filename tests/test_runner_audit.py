@@ -35,7 +35,7 @@ from llm.base import LLMBackend
 from llm.sql_agent import SQLAgent
 from schema_data.columns import TABLE_COLUMNS
 
-SIMPLE_SQL = "SELECT TOP 5 * FROM [Auction_Dim].[Customer]"
+SIMPLE_SQL = "SELECT TOP 5 * FROM [sales].[Customer]"
 POISON_VALUE = "ACME-SECRET-ROW-VALUE-9c1f2a"
 
 #: A table name picked dynamically from whatever schema is loaded, rather

@@ -247,9 +247,9 @@ class Settings:
     runtime routing across several live databases.
 
     SQL generation itself is unaffected by this setting: the model always
-    generates ``tsql`` regardless (see ``prompts/system_prompt.md`` and the
-    multi-dialect phase report for why the static prompt prefix must stay
-    byte-identical across every deployment). When this resolves to
+    generates ``tsql`` regardless (see ``<PROJECT_CONFIG_DIR>/system_prompt.md``
+    and the multi-dialect phase report for why the static prompt prefix must
+    stay byte-identical across every deployment). When this resolves to
     anything other than ``"tsql"``, ``llm.sql_agent.SQLAgent`` transpiles
     the guard-approved ``tsql`` SQL to this dialect with sqlglot and
     re-validates the **transpiled** text with

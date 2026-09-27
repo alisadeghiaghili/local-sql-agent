@@ -31,7 +31,7 @@ was a guaranteed miss, paid for on every request. Correctness-safe,
 cost-unsafe.
 
 That call site has been **removed**. For the small-cardinality dimensions
-(``Ring``, ``Currency``, ``Broker``, ``DeliveryPlace``, ``Symbol``),
+(``Ring``, ``Currency``, ``Broker``, ``Location``, ``Symbol``),
 ``ContextRetriever`` now uses
 :mod:`retrieval.dimension_vocabulary` instead -- the inverted design: fetch
 each dimension's small, distinct value set *once* (cached, refreshed out of
@@ -178,7 +178,7 @@ ExecuteParamsFn = Callable[[str, Sequence[object]], "pd.DataFrame"]
 #: NOT covered" section.
 RESOLVABLE_COLUMNS: dict[str, tuple[str, ...]] = get_resolvable_columns()
 
-#: table -> its schema/db qualifier (e.g. "Auction_Dim"), same source --
+#: table -> its schema/db qualifier (e.g. "ref"), same source --
 #: schema_data.registry.get_table_schema_qualifiers. Per-table rather than
 #: one shared constant because a warehouse routinely spans more than one
 #: schema; every table named in RESOLVABLE_COLUMNS is guaranteed an entry
@@ -289,7 +289,7 @@ def _build_query(table: str, column: str, dialect: str = "tsql") -> str:
     :attr:`~security.dialects.DialectProfile.schema_qualification` is
     consulted: a dialect with no schema concept at all
     (``"none"`` -- SQLite) gets the *unqualified* table reference
-    (``[Customer]``, never ``[Auction_Dim].[Customer]``) built into the
+    (``[Customer]``, never ``[ref].[Customer]``) built into the
     tsql text **before** transpilation, not stripped out after -- SQLite
     would otherwise interpret the schema qualifier as an ``ATTACH``ed
     database name that does not exist, and fail at execution, exactly the

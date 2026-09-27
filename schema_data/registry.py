@@ -54,10 +54,10 @@ and two hand-maintained ``{table: (columns...)}`` dicts (``RESOLVABLE_COLUMNS``,
 Both are now per-table fields on :class:`TableDefinition`, read here instead:
 
 * ``db_schema`` -- the schema/database qualifier a query must use for this
-  table (e.g. ``"Auction_Dim"``), via :func:`get_table_schema_qualifiers`.
+  table (e.g. ``"ref"``), via :func:`get_table_schema_qualifiers`.
   A per-*table* field, not one global constant, because a real warehouse
-  routinely has more than one schema (this one has at least ``Auction_Dim``
-  and ``Auction_Fact``) -- a single shared literal would be the wrong shape
+  routinely has more than one schema (this one has at least ``sales``
+  and ``ref``) -- a single shared literal would be the wrong shape
   even before portability is considered.
 * ``resolvable_columns`` -- columns :func:`~retrieval.value_resolver.resolve_value`
   is allowed to query for this table, via :func:`get_resolvable_columns`.
@@ -198,18 +198,28 @@ class SchemaConfig(BaseModel):
 # Loading
 # ---------------------------------------------------------------------------
 
+#: Repository root, used to resolve a *relative* ``PROJECT_CONFIG_DIR``
+#: deterministically -- see :func:`_project_config_dir`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
 def _project_config_dir() -> Path:
     """Return the configured project-config directory, resolved at call time.
 
     Mirrors ``knowledge.config_loader._project_config_dir`` exactly (reads
     ``cfg.settings.project_config_dir`` fresh on every call rather than once
-    at import time), so :func:`config.override_settings` and a changed
-    ``PROJECT_CONFIG_DIR`` environment variable both take effect
-    immediately.
+    at import time, and resolves a *relative* value against the repository
+    root rather than the current working directory), so
+    :func:`config.override_settings` and a changed ``PROJECT_CONFIG_DIR``
+    environment variable both take effect immediately, and so a relative
+    setting means the same directory here as everywhere else it is read.
     """
     import config as cfg  # deferred: avoids a hard import-time dependency
 
-    return Path(cfg.settings.project_config_dir)
+    configured = Path(cfg.settings.project_config_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured
 
 
 def load_schema() -> SchemaConfig:
@@ -570,8 +580,8 @@ class SchemaRegistry:
         silently omitted.
 
         Relationship keys follow the format ``"LeftTable -> RightTable"``
-        (with optional schema prefix, e.g. ``"Contract.ContractID ->
-        CustomerContract.ContractID"``).
+        (with optional schema prefix, e.g. ``"Order.CustomerID ->
+        Customer.ID"``).
 
         Parameters
         ----------
@@ -585,9 +595,9 @@ class SchemaRegistry:
             SQL JOIN snippets (one per relevant FK edge), e.g.::
 
                 [
-                    "JOIN [Auction_Dim].[Customer] ON "
-                    "[Auction_Fact].[Contract].[CustomerID] = "
-                    "[Auction_Dim].[Customer].[CustomerID]",
+                    "JOIN [sales].[Customer] ON "
+                    "[sales].[Order].[CustomerID] = "
+                    "[sales].[Customer].[ID]",
                     ...
                 ]
 

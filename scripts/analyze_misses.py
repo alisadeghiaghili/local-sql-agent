@@ -80,8 +80,8 @@ def _split_tokens(text: str) -> list[str]:
     >>> _split_tokens("فروش ماهانه مشتریان")
     ['فروش', 'ماهانه', 'مشتریان']
 
-    >>> _split_tokens("Contract (Auction_Fact)")
-    ['Contract', 'Auction_Fact']
+    >>> _split_tokens("Order (sales)")
+    ['Order', 'sales']
 
     >>> _split_tokens("تاریخ: 1402/01/01")
     ['تاریخ', '1402', '01', '01']
@@ -175,12 +175,12 @@ def _tables_in_sql(sql: str) -> set[str]:
 
     Examples
     --------
-    >>> tables = _tables_in_sql("SELECT * FROM [Auction_Dim].[Bank]")
-    >>> "Bank" in tables
+    >>> tables = _tables_in_sql("SELECT * FROM [ref].[Broker]")
+    >>> "Broker" in tables
     True
 
-    >>> tables = _tables_in_sql("SELECT * FROM [Auction_Fact].[Contract] JOIN [Auction_Dim].[Customer]")
-    >>> tables == {"Contract", "Customer"}
+    >>> tables = _tables_in_sql("SELECT * FROM [sales].[Order] JOIN [sales].[Customer]")
+    >>> tables == {"Order", "Customer"}
     True
 
     >>> _tables_in_sql("")
@@ -295,12 +295,12 @@ def analyse(log_path: Path) -> list[Miss]:
     ...     json.dumps({
     ...         "status": "SUCCESS",
     ...         "question": "چیز بسیار نامشناس",
-    ...         "generated_sql": "SELECT * FROM [Auction_Dim].[Bank]",
+    ...         "generated_sql": "SELECT * FROM [ref].[Broker]",
     ...     }) + "\n",
     ...     encoding="utf-8",
     ... )
     >>> result = analyse(log)
-    >>> any("Bank" in m.missing for m in result)
+    >>> any("Broker" in m.missing for m in result)
     True
 
     >>> # Non-existent file → empty list
@@ -388,7 +388,7 @@ def _build_report(misses: list[Miss]) -> dict[str, Any]:
     ...     question="خرید ویژه",
     ...     missing=["Ring"],
     ...     candidates=["ویژه"],
-    ...     sql="SELECT * FROM [Auction_Dim].[Ring]",
+    ...     sql="SELECT * FROM [ref].[Ring]",
     ... )
     >>> report = _build_report([m])
     >>> report["total_miss_events"]

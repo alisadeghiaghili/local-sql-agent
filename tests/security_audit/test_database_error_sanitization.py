@@ -20,7 +20,7 @@ server host/instance, the port, the database, and the login, e.g.::
     (pyodbc.OperationalError) ('08001', '[08001] [Microsoft][ODBC Driver 17
     for SQL Server]TCP Provider: No such host is known. (11001)
     (SQLDriverConnect); Server: sql-prod-01.internal.corp,1433\\SQLPROD')
-    [SQL: SELECT TOP 10 [CustomerName], [Email] FROM [Auction_Dim].[Customer]
+    [SQL: SELECT TOP 10 [CustomerName], [Email] FROM [sales].[Customer]
     WHERE [Region] = ?]
     [parameters: ('Northwest-Region-Secret',)]
     (Background on this error at: https://sqlalche.me/e/20/e3q8)
@@ -69,7 +69,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 # never a real database connection.
 # ---------------------------------------------------------------------------
 
-_STATEMENT = "SELECT TOP 10 [CustomerName], [Email] FROM [Auction_Dim].[Customer] WHERE [Region] = ?"
+_STATEMENT = "SELECT TOP 10 [CustomerName], [Email] FROM [sales].[Customer] WHERE [Region] = ?"
 _PARAMS = ("Northwest-Region-Secret",)  # a bound value that must never echo back
 _HOST = "sql-prod-01.internal.corp"
 _PORT = "1433"
@@ -181,9 +181,9 @@ CASES: dict[str, tuple[object, str, str | None]] = {
         _sa_error(
             sa_exc.ProgrammingError, "42S02",
             "[42S02] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
-            "Invalid object name 'Auction_Dim.Customerz'. (208)",
+            "Invalid object name 'sales.Customerz'. (208)",
         ),
-        "QUERY_EXECUTION_ERROR", "Invalid object name 'Auction_Dim.Customerz'. (208)",
+        "QUERY_EXECUTION_ERROR", "Invalid object name 'sales.Customerz'. (208)",
     ),
     "stmt_22018_conversion": (
         _sa_error(
@@ -281,7 +281,7 @@ def _engine_mock_raising(sa_exception) -> MagicMock:
     return engine_mock
 
 
-_VALID_SQL = "SELECT TOP 10 [CustomerName] FROM [Auction_Dim].[Customer]"
+_VALID_SQL = "SELECT TOP 10 [CustomerName] FROM [sales].[Customer]"
 
 
 def _run_v2(sa_exception) -> tuple[str, str]:

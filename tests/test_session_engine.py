@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""End-to-end tests for ``session.engine.TurnEngine`` — the §2 correctness proof.
+"""End-to-end tests for ``session.engine.TurnEngine`` -- the §2 correctness proof.
 
 Runs the exit-criteria three-turn scenario (Q1 fresh, Q2 refines via CTE,
 malicious-previous-turn rejection, cap-truncation warning, PATCH re-run,
 no-row-data-in-prompt, single audit record) against a REAL, if tiny,
-SQLite database — not a hand-picked mock DataFrame — so that "Q2's answer
+SQLite database -- not a hand-picked mock DataFrame -- so that "Q2's answer
 is identical to the same query written out in full and explicitly" is
 proven by actually executing both and comparing rows, not by asserting
 against a hardcoded expectation that could hide a composition bug.
@@ -17,17 +17,26 @@ plumbing only, never something production code does.
 
 Every test in this module is marked ``domain_data`` (see module-level
 ``pytestmark`` below) and skips whenever ``PROJECT_CONFIG_DIR`` points at
-``project_config.example/`` (CI, a fresh clone). The ``sqlite_conn``
-fixture's own ``CREATE TABLE`` statements hardcode the real schema's
-table/column names (``Customer``, ``Ring``, ``CustomerContract`` with its
-real FK/wage columns) specifically so the generated SQL those tests run
-resolves against the real ``schema_data.columns.TABLE_COLUMNS`` allowlist
--- and the scenario's actual business assertions (buyer ranking by real
-Rial trade volume, a real trading-hall name filter) only mean something
-against that real shape. This is squarely "the real schema snapshot"
-category, not a test that merely reached for a real name as a stand-in --
-rewriting it against a generic 3-table example would mean inventing a
-different, no-longer-representative scenario, not fixing a coincidence.
+``project_config.example/`` (CI, a fresh clone). The scenario's SQL/DDL
+hardcodes the real schema's table/column names (``Customer``, ``Ring``,
+a real fact table with its real FK/wage columns) specifically so the
+generated SQL those tests run resolves against the real
+``schema_data.columns.TABLE_COLUMNS`` allowlist -- and the scenario's
+actual business assertions (buyer ranking by real Rial trade volume, a
+real trading-hall name filter) only mean something against that real
+shape. This is squarely "the real schema snapshot" category, not a test
+that merely reached for a real name as a stand-in -- rewriting it against
+a generic 3-table example would mean inventing a different,
+no-longer-representative scenario, not fixing a coincidence.
+
+The real table/column names and SQL text are therefore not hardcoded in
+this tracked module at all: they live in an optional, deployment-owned
+fixture file, ``<PROJECT_CONFIG_DIR>/_test_fixtures/session_engine_fixtures.json``
+(see ``project_config.example/_test_fixtures/README.md`` for the format),
+loaded once at import time via :mod:`tests._domain_fixtures`. If that
+fixture is missing -- including under CI's ``project_config.example/``,
+which never has one -- the whole module skips cleanly at collection time,
+before any of its classes are even defined.
 """
 
 from __future__ import annotations
@@ -46,38 +55,29 @@ from llm.router import LLMRouter
 from session.engine import TurnEngine, build_session_context_text
 from session.models import ResultColumn, Turn, TurnResult
 from session.store import SessionStore
+from tests._domain_fixtures import load_json_fixture
 
 pytestmark = pytest.mark.domain_data
 
-SYSTEM_PROMPT = "You are a T-SQL expert for the Auction domain."
+_FX = load_json_fixture("session_engine_fixtures.json", allow_module_level=True)
 
-Q1_QUESTION = "معاملات مشتری‌های تالار سیمان را نشان بده"
-Q2_QUESTION = "از بین آن‌ها ۱۰ مشتری برتر به لحاظ حجم معامله"
+SYSTEM_PROMPT = _FX["system_prompt"]
 
-Q1_SQL = (
-    "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.TotalPrice) AS TotalValue "
-    "FROM CustomerContract ct "
-    "JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
-    "JOIN Ring r ON ct.Ring_ID = r.ID "
-    "WHERE r.Name = N'تالار سیمان' "
-    "GROUP BY c.Name ORDER BY TotalValue DESC"
-)
+Q1_QUESTION = _FX["q1_question"]
+Q2_QUESTION = _FX["q2_question"]
 
-# The mocked model's outer query for Q2 — references _prev's projected
-# columns (c_Name, ct_Quantity), per session.composer.predicate_columns.
-Q2_OUTER_SQL = (
-    "SELECT TOP 2 c_Name, SUM(ct_Quantity) AS TotalVolume "
-    "FROM _prev GROUP BY c_Name ORDER BY TotalVolume DESC"
-)
+Q1_SQL = _FX["q1_sql"]
 
-EXPLICIT_EQUIVALENT_SQL = (
-    "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.Quantity) AS TotalVolume "
-    "FROM CustomerContract ct "
-    "JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
-    "JOIN Ring r ON ct.Ring_ID = r.ID "
-    "WHERE r.Name = N'تالار سیمان' "
-    "GROUP BY c.Name ORDER BY TotalVolume DESC"
-)
+# The mocked model's outer query for Q2 -- references _prev's projected
+# columns, per session.composer.predicate_columns.
+Q2_OUTER_SQL = _FX["q2_outer_sql"]
+
+EXPLICIT_EQUIVALENT_SQL = _FX["explicit_equivalent_sql"]
+
+# Identical fresh (non-refining) query used by three independent scenarios
+# below (TestAssumptionSourcing, TestPatchDoesNotMutate,
+# TestAuditRecordCarriesTheConversation).
+_FRESH_SQL = _FX["fresh_sql"]
 
 
 def _to_sqlite(sql: str) -> str:
@@ -88,30 +88,11 @@ def _to_sqlite(sql: str) -> str:
 @pytest.fixture()
 def sqlite_conn():
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE Customer (ID INTEGER PRIMARY KEY, Name TEXT, NationalID TEXT, IsActive INTEGER)")
-    conn.execute("CREATE TABLE Ring (ID INTEGER PRIMARY KEY, Name TEXT, Code TEXT)")
-    conn.execute(
-        "CREATE TABLE CustomerContract ("
-        "ID INTEGER PRIMARY KEY, Date_ID INTEGER, Ring_ID INTEGER, Symbol_ID INTEGER, "
-        "BuyerCustomer_ID INTEGER, BuyerBroker_ID INTEGER, SellerBroker_ID INTEGER, "
-        "TotalPrice REAL, Quantity REAL, BuyBrokerWage REAL, SellBrokerWage REAL, "
-        "BuyIMEWage REAL, SellIMEWage REAL, BuySEOWage REAL, SellSEOWage REAL)"
-    )
-    conn.executemany(
-        "INSERT INTO Customer (ID, Name, IsActive) VALUES (?, ?, 1)",
-        [(1, "A"), (2, "B"), (3, "C"), (4, "D")],
-    )
-    conn.executemany("INSERT INTO Ring (ID, Name) VALUES (?, ?)", [(1, "تالار سیمان"), (2, "تالار فلزات")])
-    conn.executemany(
-        "INSERT INTO CustomerContract (ID, BuyerCustomer_ID, Ring_ID, TotalPrice, Quantity) VALUES (?, ?, ?, ?, ?)",
-        [
-            (1, 1, 1, 1000.0, 5.0),   # A: highest value, low volume
-            (2, 2, 1, 900.0, 50.0),   # B: 2nd by value, 2nd by volume
-            (3, 3, 1, 800.0, 3.0),    # C: displayed-out by TOP 2 either way
-            (4, 4, 1, 10.0, 100.0),   # D: lowest value (NOT in Q1's TOP 2 display), highest volume
-            (5, 4, 2, 5000.0, 1.0),   # different ring -- must be excluded by the predicate
-        ],
-    )
+    for statement in _FX["create_table_sql"]:
+        conn.execute(statement)
+    conn.executemany(_FX["insert_customer_sql"], [tuple(row) for row in _FX["insert_customer_rows"]])
+    conn.executemany(_FX["insert_ring_sql"], [tuple(row) for row in _FX["insert_ring_rows"]])
+    conn.executemany(_FX["insert_contract_sql"], [tuple(row) for row in _FX["insert_contract_rows"]])
     conn.commit()
     yield conn
     conn.close()
@@ -129,7 +110,7 @@ def _engine(response_sql: str, execute_fn) -> TurnEngine:
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 1 — the §2 correctness proof
+# Exit criterion 1 -- the §2 correctness proof
 # ---------------------------------------------------------------------------
 
 class TestSection2CorrectnessProof:
@@ -216,7 +197,7 @@ class TestSection2CorrectnessProof:
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 2 — truncated-scan warning
+# Exit criterion 2 -- truncated-scan warning
 # ---------------------------------------------------------------------------
 
 class TestScanCapWarning:
@@ -248,7 +229,7 @@ class TestScanCapWarning:
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 4 — every assumption carries a source; policy is locked
+# Exit criterion 4 -- every assumption carries a source; policy is locked
 # ---------------------------------------------------------------------------
 
 class TestAssumptionSourcing:
@@ -259,13 +240,8 @@ class TestAssumptionSourcing:
         store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=50)
         record = store.create()
 
-        fresh_sql = (
-            "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.TotalPrice) AS TotalValue "
-            "FROM CustomerContract ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
-            "GROUP BY c.Name ORDER BY TotalValue DESC"
-        )
         with override_settings(default_top_n=1000):
-            turn = _engine(fresh_sql, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
+            turn = _engine(_FRESH_SQL, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
 
         assert turn.error is None
         assert turn.ambiguity.is_ambiguous is True
@@ -276,7 +252,7 @@ class TestAssumptionSourcing:
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 5 — PATCH re-run produces a new turn, never mutates the old
+# Exit criterion 5 -- PATCH re-run produces a new turn, never mutates the old
 # ---------------------------------------------------------------------------
 
 class TestPatchDoesNotMutate:
@@ -285,30 +261,25 @@ class TestPatchDoesNotMutate:
         store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=50)
         record = store.create()
 
-        fresh_sql = (
-            "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.TotalPrice) AS TotalValue "
-            "FROM CustomerContract ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
-            "GROUP BY c.Name ORDER BY TotalValue DESC"
-        )
         with override_settings(default_top_n=1000):
-            original = _engine(fresh_sql, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
+            original = _engine(_FRESH_SQL, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
             original_snapshot = original.model_copy(deep=True)
 
-            patched = _engine(fresh_sql, execute_fn).ask(
+            patched = _engine(_FRESH_SQL, execute_fn).ask(
                 record, original.question, SYSTEM_PROMPT,
-                assumption_overrides={"ring": "تالار فلزات"},
+                assumption_overrides={"ring": _FX["ring_alt_name"]},
             )
 
         assert original == original_snapshot  # untouched
         assert patched.turn_id != original.turn_id
         assert len(record.turns) == 2
         ring_assumption = next(a for a in patched.ambiguity.assumptions if a.field == "ring")
-        assert ring_assumption.value == "تالار فلزات"
+        assert ring_assumption.value == _FX["ring_alt_name"]
         assert ring_assumption.source == "question"  # user now explicitly said so
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 6 — no row data in the prompt's session-context block
+# Exit criterion 6 -- no row data in the prompt's session-context block
 # ---------------------------------------------------------------------------
 
 class TestNoRowDataInPrompt:
@@ -329,7 +300,7 @@ class TestNoRowDataInPrompt:
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 7 — exactly one audit record per turn, every path
+# Exit criterion 7 -- exactly one audit record per turn, every path
 # ---------------------------------------------------------------------------
 
 class TestSingleAuditRecord:
@@ -385,7 +356,7 @@ class TestSingleAuditRecord:
 
 
 # ---------------------------------------------------------------------------
-# Exit criterion 8 — static prefix byte-identical across turns of a session
+# Exit criterion 8 -- static prefix byte-identical across turns of a session
 # ---------------------------------------------------------------------------
 
 class TestStaticPrefixInvariance:
@@ -426,7 +397,7 @@ class TestStaticPrefixInvariance:
             )
             # A second FRESH turn (not a refinement) still carries session
             # context in its suffix (§8) -- the prefix must still match turn 1's.
-            engine2.ask(record, "معاملات مشتری‌های تالار فلزات را نشان بده", SYSTEM_PROMPT)
+            engine2.ask(record, "معاملات مشتری‌های " + _FX["ring_alt_name"] + " را نشان بده", SYSTEM_PROMPT)
 
         assert len(captured_prompts) == 2
         prefix = build_static_prefix(SYSTEM_PROMPT)
@@ -499,14 +470,9 @@ class TestAuditRecordCarriesTheConversation:
         execute_fn = _execute_fn(sqlite_conn)
         store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=50)
         record = store.create(owner_id="analyst-1")
-        fresh_sql = (
-            "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.TotalPrice) AS TotalValue "
-            "FROM CustomerContract ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
-            "GROUP BY c.Name ORDER BY TotalValue DESC"
-        )
 
         with override_settings(default_top_n=1000):
-            turn = _engine(fresh_sql, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
+            turn = _engine(_FRESH_SQL, execute_fn).ask(record, "۱۰ مشتری برتر را نشان بده", SYSTEM_PROMPT)
 
         assert turn.error is None
         assert turn.ambiguity.assumptions, "sanity: this scenario must produce real assumptions"

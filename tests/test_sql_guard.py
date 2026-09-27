@@ -106,7 +106,7 @@ class TestCleanSql:
 
 class TestValidateSql:
     def test_valid_simple_select(self):
-        validate_sql("SELECT TOP 10 Name FROM [Auction_Dim].[Customer]")  # no raise
+        validate_sql("SELECT TOP 10 Name FROM [sales].[Customer]")  # no raise
 
     def test_valid_cte_query(self):
         sql = (

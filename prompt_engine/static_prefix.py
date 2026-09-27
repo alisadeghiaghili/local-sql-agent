@@ -160,7 +160,7 @@ def build_static_prefix(system_prompt: str) -> str:
     Parameters
     ----------
     system_prompt:
-        The domain system prompt text (``prompts/system_prompt.md``).
+        The domain system prompt text (``<PROJECT_CONFIG_DIR>/system_prompt.md``).
 
     Returns
     -------

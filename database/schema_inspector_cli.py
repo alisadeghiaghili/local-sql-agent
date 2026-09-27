@@ -10,7 +10,7 @@ Usage
         --db-url "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\
         --output-dir project_config_draft/ \\
         --sample-rows 10 \\
-        --include-schemas Auction_Dim,Auction_Fact,General_Dim
+        --include-schemas sales,ref
 
 All progress messages are written to **stderr** so stdout can be piped or
 redirected without contamination.  With ``--dry-run`` the YAML is printed
@@ -51,7 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  python -m database.schema_inspector_cli \\\n"
             '      --db-url "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\\n'
             "      --output-dir project_config_draft/ \\\n"
-            "      --include-schemas Auction_Dim,Auction_Fact\n"
+            "      --include-schemas sales,ref\n"
         ),
     )
     p.add_argument(

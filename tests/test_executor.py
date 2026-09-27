@@ -187,7 +187,7 @@ class TestExecuteSqlParams:
         engine = _make_engine_mock([("شرکت فولاد مبارکه اصفهان",)], ["Name"])
         with patch("database.executor.get_engine", return_value=engine):
             df = execute_sql_params(
-                "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] WHERE [Name] LIKE ?",
+                "SELECT DISTINCT TOP (?) [Name] FROM [sales].[Customer] WHERE [Name] LIKE ?",
                 (10, "%مبارکه%"),
             )
         assert list(df["Name"]) == ["شرکت فولاد مبارکه اصفهان"]
@@ -199,7 +199,7 @@ class TestExecuteSqlParams:
             c for c in conn.exec_driver_sql.call_args_list if "LOCK_TIMEOUT" not in c.args[0]
         )
         assert query_call.args == (
-            "SELECT DISTINCT TOP (?) [Name] FROM [Auction_Dim].[Customer] WHERE [Name] LIKE ?",
+            "SELECT DISTINCT TOP (?) [Name] FROM [sales].[Customer] WHERE [Name] LIKE ?",
             (10, "%مبارکه%"),
         )
 

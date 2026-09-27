@@ -27,6 +27,10 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 logger = logging.getLogger(__name__)
 
+#: Repository root, used to resolve a *relative* ``PROJECT_CONFIG_DIR``
+#: deterministically -- see :func:`_project_config_dir`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _project_config_dir() -> Path:
     """Return the configured project-config directory, resolved at call time.
@@ -35,15 +39,33 @@ def _project_config_dir() -> Path:
     import time) so that :func:`config.override_settings` and a changed
     ``PROJECT_CONFIG_DIR`` environment variable both take effect
     immediately, per this codebase's read-through-``cfg.settings``
-    convention (see ``config.py``'s module docstring). A relative value
-    (the default, ``"project_config"``) is resolved against the current
-    working directory, matching how :attr:`config.Settings.log_dir` and
-    :attr:`config.Settings.export_dir` are already resolved elsewhere in
-    this codebase; an absolute path is used as-is.
+    convention (see ``config.py``'s module docstring).
+
+    A *relative* value (the default, ``"project_config"``) is resolved
+    against the repository root (``Path(__file__).resolve().parent.parent``
+    from this module) -- the same pattern ``conftest.py``'s own
+    ``_running_against_example_config()`` already uses for this exact
+    setting -- not against the process's current working directory. An
+    absolute path is used as-is.
+
+    Behaviour-change note
+    ----------------------
+    Earlier revisions of this function returned ``Path(cfg.settings.project_config_dir)``
+    unresolved, which was silently CWD-dependent (nothing exercised or
+    tested that dependency). For the universal case -- a relative
+    ``PROJECT_CONFIG_DIR`` (or the default) with the process started from
+    the repository root -- behaviour is unchanged. A deployment that sets a
+    *relative* ``PROJECT_CONFIG_DIR`` and starts the server from a
+    *different* directory will now resolve against the repository root
+    instead of that other directory; see the upgrade notes shipped with
+    this release and ``docs/deployment-runbook.md``.
     """
     import config as cfg  # deferred: avoids a hard import-time dependency
 
-    return Path(cfg.settings.project_config_dir)
+    configured = Path(cfg.settings.project_config_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +95,44 @@ def load_yaml(path: Path) -> dict:
         )
     with path.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
+
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+def resolve_system_prompt_path() -> Path:
+    """Return the path a deployment's system prompt must live at.
+
+    ``<PROJECT_CONFIG_DIR>/system_prompt.md`` -- the same directory (and the
+    same ``PROJECT_CONFIG_DIR`` env var / :attr:`config.Settings.project_config_dir`
+    field) that every other ``load_*`` in this module already reads from.
+    Path-only, no I/O -- callers that just need the path (to build their own
+    "refuse to start" message, or to keep an existing test seam like
+    ``patch.object(module, "_PROMPT_PATH", ...)`` working) can use this
+    without triggering :class:`ConfigNotFoundError`.
+    """
+    return _project_config_dir() / "system_prompt.md"
+
+
+def load_system_prompt() -> str:
+    """Read the deployment's system prompt from ``PROJECT_CONFIG_DIR``.
+
+    Raises
+    ------
+    ConfigNotFoundError
+        If ``system_prompt.md`` does not exist under the configured
+        directory -- the same exception every other ``load_*`` in this
+        module raises for a missing file, naming the exact expected path.
+    """
+    path = resolve_system_prompt_path()
+    if not path.exists():
+        raise ConfigNotFoundError(
+            f"{path} not found. The deployment's system prompt must be "
+            f"placed at this path (see project_config.example/system_prompt.md "
+            f"for the template) before starting."
+        )
+    return path.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

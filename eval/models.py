@@ -119,7 +119,7 @@ class GoldenCase:
     ...     id="customer_count_basic",
     ...     question="How many customers exist?",
     ...     tags=["customer", "count"],
-    ...     expected_sql="SELECT COUNT(*) AS CustomerCount FROM [Auction_Dim].[Customer]",
+    ...     expected_sql="SELECT COUNT(*) AS CustomerCount FROM [sales].[Customer]",
     ...     expected_fingerprint="deadbeef",
     ... )
     >>> case.expect

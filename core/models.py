@@ -13,7 +13,7 @@ Fields
 entities       : dimension table names matched to the question
                  (e.g. ["Ring", "Customer", "Symbol"])
 facts          : fact table names matched to the question
-                 (e.g. ["Contract", "CustomerContract"])
+                 (e.g. ["Order"])
 dimensions     : alias for *entities* — kept for PromptBuilder compatibility
 relationships  : JOIN SQL clauses relevant to the selected tables
 business_rules : domain rules injected into the prompt as plain text
@@ -40,7 +40,7 @@ class RetrievalContext:
     """Dimension tables (Ring, Customer, Symbol, …) relevant to the question."""
 
     facts: list[str] = field(default_factory=list)
-    """Fact tables (Contract, CustomerContract, Offer, …) relevant to the question."""
+    """Fact tables (Order, …) relevant to the question."""
 
     dimensions: list[str] = field(default_factory=list)
     """Alias of *entities*, populated by ``ContextRetriever`` for backward

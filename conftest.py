@@ -268,7 +268,7 @@ def _no_background_dimension_refresh() -> Iterator[None]:
     ``True`` default left in effect, every configured dimension triggered
     its own background refresh, spawning six real daemon threads (named
     ``dim-vocab-bg-refresh-Broker.PersianName``,
-    ``…Currency.PersianName``, ``…DeliveryPlace.PersianName``,
+    ``…Currency.PersianName``, ``…Location.PersianName``,
     ``…Ring.Name``, ``…Symbol.Commodity_PersianName`` and
     ``…Symbol.Commodity_Symbol``), each attempting a real ``pyodbc``
     connection to the configured warehouse host. The doctest step still

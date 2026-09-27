@@ -116,9 +116,9 @@ GENERATED SQL
 SELECT TOP 5
     c.Name,
     SUM(cc.TotalPrice) AS PurchaseValue
-FROM [Auction_Fact].[CustomerContract] cc
-JOIN [Auction_Dim].[Customer] c ON cc.BuyerCustomer_ID = c.ID
-JOIN [Auction_Dim].[Date]     d ON cc.Date_ID = d.ID
+FROM [sales].[Order] cc
+JOIN [sales].[Customer] c ON cc.BuyerCustomer_ID = c.ID
+JOIN [sales].[Date]     d ON cc.Date_ID = d.ID
 WHERE d.PersianYear = 1402
 GROUP BY c.Name
 ORDER BY PurchaseValue DESC
@@ -224,16 +224,16 @@ Question: "برترین مشتریان تالار پتروشیمی در 1402"
           │     "مشتری" is an alias in entities.py  →  ["Customer"]
           │
           ├─ FactRetriever
-          │     "خرید" / "مشتری" match FACT_PATTERNS  →  ["CustomerContract"]
+          │     "خرید" / "مشتری" match FACT_PATTERNS  →  ["Order"]
           │
           ├─ RelationshipRetriever
-          │     selected tables: {Customer, CustomerContract, Date}
-          │     → ["JOIN [Auction_Dim].[Customer] ON ..."]
-          │       ["JOIN [Auction_Dim].[Date]     ON ..."]
+          │     selected tables: {Customer, Order, Date}
+          │     → ["JOIN [sales].[Customer] ON ..."]
+          │       ["JOIN [sales].[Date]     ON ..."]
           │
           ├─ RuleRetriever
           │     "مشتری" / "خرید" match rule keys
-          │     → ["ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود."]
+          │     → ["ارزش خرید از Order.TotalAmount محاسبه می‌شود."]
           │
           ├─ ExampleRetriever
           │     inferred tags: {customer, top, value, purchase, ring}
@@ -259,7 +259,7 @@ You can call the TF-IDF engine directly to debug retrieval:
 from schema_data.retriever import retrieve_tables
 
 print(retrieve_tables("فروش ماهانه مشتریان"))
-# ['CustomerContract', 'Customer', 'Date']
+# ['Order', 'Customer', 'Date']
 
 # fallback=False → return [] when nothing scores above threshold
 print(retrieve_tables("xyzzy nonsense", fallback=False))
@@ -303,13 +303,13 @@ from prompt_engine.builder import PromptBuilder
 
 context = RetrievalContext(
     entities=["Customer"],
-    facts=["CustomerContract"],
+    facts=["Order"],
     dimensions=["Customer"],
     relationships=[
-        "JOIN [Auction_Dim].[Customer] "
-        "ON [Auction_Fact].[CustomerContract].[BuyerCustomer_ID] = [Auction_Dim].[Customer].[ID]"
+        "JOIN [sales].[Customer] "
+        "ON [sales].[Order].[BuyerCustomer_ID] = [sales].[Customer].[ID]"
     ],
-    business_rules=["ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود."],
+    business_rules=["ارزش خرید از Order.TotalAmount محاسبه می‌شود."],
     examples=[
         {
             "question": "برترین مشتریان",
@@ -334,15 +334,15 @@ The output is a structured string with clearly labelled sections:
 You are a T-SQL expert for SQL Server 2019.
 
 ## Business Rules
-ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود.
+ارزش خرید از Order.TotalAmount محاسبه می‌شود.
 
 ## Schema
-Table: CustomerContract
+Table: Order
   TotalPrice  Purchase total value
   ...
 
 ## Relationships
-JOIN [Auction_Dim].[Customer] ON ...
+JOIN [sales].[Customer] ON ...
 
 ## Filters
 PersianYear = 1402
@@ -371,19 +371,19 @@ from security.sql_guard import clean_sql, validate_sql, ensure_top
 raw = """
 Here is the SQL query you requested:
 ```sql
-SELECT * FROM [Auction_Fact].[Contract] LIMIT 10
+SELECT * FROM [sales].[Order] LIMIT 10
 ```
 """
 sql = clean_sql(raw)
 print(sql)
-# SELECT TOP 10 * FROM [Auction_Fact].[Contract]
+# SELECT TOP 10 * FROM [sales].[Order]
 
 # ── Step 2: validate ───────────────────────────────────────────────────────
 # Raises ValueError on any forbidden pattern
 validate_sql(sql)  # passes — it's a SELECT
 
 try:
-    validate_sql("DROP TABLE [Auction_Fact].[Contract]")
+    validate_sql("DROP TABLE [sales].[Order]")
 except ValueError as e:
     print(e)
     # Forbidden SQL keyword detected: DROP
@@ -419,7 +419,7 @@ The CLI saves every successful result to Excel automatically. For programmatic u
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
 
-df = execute_sql("SELECT TOP 100 * FROM [Auction_Fact].[Contract]")
+df = execute_sql("SELECT TOP 100 * FROM [sales].[Order]")
 print(f"{len(df)} rows, {len(df.columns)} columns")
 
 # Auto-fitted columns, timestamped filename
@@ -476,8 +476,8 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
 RELATIONSHIPS: dict[str, str] = {
     # ...
     "Contract -> Broker": (
-        "JOIN [Auction_Dim].[Broker] "
-        "ON [Auction_Fact].[Contract].[BuyBroker_ID] = [Auction_Dim].[Broker].[BrokerID]"
+        "JOIN [ref].[Broker] "
+        "ON [sales].[Order].[BuyBroker_ID] = [ref].[Broker].[BrokerID]"
     ),
 }
 ```
@@ -574,10 +574,10 @@ EXAMPLES: list[dict] = [
 SELECT TOP 5
     b.BrokerName,
     SUM(c.TotalPrice) AS TradeValue
-FROM [Auction_Fact].[Contract] c
-JOIN [Auction_Dim].[Broker] b
+FROM [sales].[Order] c
+JOIN [ref].[Broker] b
     ON c.BuyBroker_ID = b.BrokerID
-JOIN [Auction_Dim].[Date] d
+JOIN [sales].[Date] d
     ON c.Date_ID = d.ID
 WHERE d.PersianYear = 1402
 GROUP BY b.BrokerName
@@ -614,7 +614,7 @@ BUSINESS_RULES: dict[str, str] = {
     "broker": (
         "Broker commission (کارمزد کارگزاری) is stored in Contract.BrokerFee, "
         "not in a separate table. "
-        "Always join [Auction_Dim].[Broker] via Contract.BuyBroker_ID."
+        "Always join [ref].[Broker] via Contract.BuyBroker_ID."
     ),
     "electricity": (
         "Electricity trades in تالار انرژی only. "
@@ -771,7 +771,7 @@ Every query is appended to `logs/query_history.jsonl` as a single JSON line:
   "timestamp":              "2026-06-13T14:22:57",
   "question":               "برترین مشتریان در 1402",
   "generated_sql":          "SELECT TOP 10 c.Name ...",
-  "tables_retrieved":       ["CustomerContract", "Customer", "Date"],
+  "tables_retrieved":       ["Order", "Customer", "Date"],
   "model_name":             "openai:gpt-oss-20:F16",
   "row_count":              10,
   "execution_time_seconds": 1.38,
@@ -848,7 +848,7 @@ class TestValidateSql:
             validate_sql(bad)
 
     def test_valid_select_passes(self):
-        validate_sql("SELECT TOP 10 Name FROM [Auction_Dim].[Customer]")
+        validate_sql("SELECT TOP 10 Name FROM [sales].[Customer]")
 
 class TestEnsureTop:
     def test_injects_top_when_absent(self):
@@ -992,5 +992,5 @@ Fix: add a few-shot example that shows the correct SQL for that question type.
 The model returned prose instead of SQL. Common causes:
 
 - Model too small for the join complexity → use a larger model served by the endpoint
-- System prompt too restrictive → review `prompts/system_prompt.md`
+- System prompt too restrictive → review `<PROJECT_CONFIG_DIR>/system_prompt.md`
 - No relevant few-shot example → add one to `knowledge/examples.py`

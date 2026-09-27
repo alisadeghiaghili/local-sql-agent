@@ -260,7 +260,7 @@ function baseTurn(overrides) {
     question: "نمونه", resolved_question: null,
     basis: { kind: "fresh", refines_turn_id: null, composition: "none", inherited: [] },
     ambiguity: { is_ambiguous: false, assumptions: [], clarifications: [] },
-    guard: { verdict: "allowed", rule: null, injected_top: 100, tables_touched: ["CustomerContract"] },
+    guard: { verdict: "allowed", rule: null, injected_top: 100, tables_touched: ["Order"] },
     result: { columns: [{ name: "Total", type: "number" }], rows: [{ Total: 2015750 }], row_count: 1, truncated: false },
     interpretation: null, tier: "T1", warnings: [], llm: llm(), timings: {}, error: null,
     ...overrides,
@@ -271,7 +271,7 @@ function baseTurn(overrides) {
 // re-serializes the token stream) so decode round-tripping is actually
 // exercised, not just plain alphanumeric text that would pass even with
 // a broken entity decoder.
-const SQL = "SELECT TOP 100 c.Name\nFROM [Auction_Dim].[Customer] c\nWHERE ct.TotalPrice < 1000 -- demo comment\nORDER BY c.Name";
+const SQL = "SELECT TOP 100 c.Name\nFROM [sales].[Customer] c\nWHERE ct.TotalPrice < 1000 -- demo comment\nORDER BY c.Name";
 
 /* ── Scenario 1: Prism present and working -- highlighting actually
  * applies real .token elements, AND textContent (reading the highlighted

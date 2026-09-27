@@ -34,7 +34,7 @@ shape is identical in both the real, git-ignored ``project_config/`` this
 deployment actually runs on and the committed
 ``project_config.example/`` CI falls back to (see
 ``config.Settings.project_config_dir``). No test here hardcodes a schema
-qualifier (``Auction_Dim``/``sales``/...) -- ``security.sql_guard``'s
+qualifier (``sales``/``ref``/...) -- ``security.sql_guard``'s
 table allowlist resolves a bare table name regardless of qualifier, and
 SQLite has no schema concept to qualify with in the first place (see
 ``security.dialects.DialectProfile.schema_qualification`` for "sqlite" ->

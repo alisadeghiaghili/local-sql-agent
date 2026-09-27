@@ -4,7 +4,11 @@
 
 Load order
 ----------
-1. ``project_config/relationships.yaml`` (if it exists)
+1. ``<PROJECT_CONFIG_DIR>/relationships.yaml`` (if it exists) -- the same
+   directory (and the same ``PROJECT_CONFIG_DIR`` env var /
+   :attr:`config.Settings.project_config_dir` field) every other
+   ``project_config``-reading loader in this codebase uses; see
+   :mod:`knowledge.config_loader` and :mod:`schema_data.registry`.
 2. Live schema inspection via :class:`~database.schema_inspector.SchemaInspector`
    (only when ``AUTO_DISCOVER_SCHEMA=true`` in environment AND no YAML file
    is present)
@@ -42,9 +46,37 @@ from typing import MutableMapping
 
 logger = logging.getLogger(__name__)
 
-_RELATIONSHIPS_YAML = Path("project_config") / "relationships.yaml"
+#: Repository root, used to resolve a *relative* ``PROJECT_CONFIG_DIR``
+#: deterministically -- see :func:`_project_config_dir`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOCK   = threading.Lock()
 _CACHE: dict[tuple[str, str], list[str]] | None = None
+
+
+def _project_config_dir() -> Path:
+    """Return the configured project-config directory, resolved at call time.
+
+    Mirrors ``knowledge.config_loader._project_config_dir`` and
+    ``schema_data.registry._project_config_dir`` exactly: reads
+    ``cfg.settings.project_config_dir`` fresh on every call (not once at
+    import time), and resolves a *relative* value against the repository
+    root rather than the current working directory. This module used to
+    hardcode the literal path ``project_config/relationships.yaml``,
+    ignoring ``PROJECT_CONFIG_DIR`` entirely -- unlike every other loader in
+    this codebase, which meant a deployment that set ``PROJECT_CONFIG_DIR``
+    (or CI, which points it at ``project_config.example/``) silently never
+    reached this module's YAML path at all.
+    """
+    import config as cfg  # deferred: avoids a hard import-time dependency
+
+    configured = Path(cfg.settings.project_config_dir)
+    if configured.is_absolute():
+        return configured
+    return _REPO_ROOT / configured
+
+
+def _relationships_yaml_path() -> Path:
+    return _project_config_dir() / "relationships.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -115,9 +147,10 @@ def _load_from_inspection() -> dict[tuple[str, str], list[str]]:
 
 def _build_cache() -> dict[tuple[str, str], list[str]]:
     """Build the relationship cache using the configured load strategy."""
-    if _RELATIONSHIPS_YAML.exists():
-        logger.debug("Loading relationships from %s", _RELATIONSHIPS_YAML)
-        return _load_from_yaml(_RELATIONSHIPS_YAML)
+    relationships_yaml = _relationships_yaml_path()
+    if relationships_yaml.exists():
+        logger.debug("Loading relationships from %s", relationships_yaml)
+        return _load_from_yaml(relationships_yaml)
 
     auto_discover = os.getenv("AUTO_DISCOVER_SCHEMA", "false").strip().lower() == "true"
     if auto_discover:
@@ -177,8 +210,8 @@ def get_join_path(table_a: str, table_b: str) -> list[str]:
 def reset() -> None:
     """Clear the in-memory cache so the next call rebuilds it.
 
-    Useful in tests or after ``project_config/relationships.yaml`` has been
-    updated without restarting the process.
+    Useful in tests or after ``<PROJECT_CONFIG_DIR>/relationships.yaml`` has
+    been updated without restarting the process.
     """
     global _CACHE
     with _LOCK:

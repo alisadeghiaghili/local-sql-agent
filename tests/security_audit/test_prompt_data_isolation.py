@@ -10,7 +10,7 @@ treating as untrusted is the *data*.
 ``retrieval/dimension_vocabulary.py`` reads real values out of the
 warehouse::
 
-    SELECT DISTINCT TOP (?) [Customer_Name] FROM [Auction_Dim].[Supplier]
+    SELECT DISTINCT TOP (?) [Customer_Name] FROM [ref].[Supplier]
 
 (observed issuing exactly these during the live test), and
 ``prompt_engine/builder.py`` states plainly that the ones which match

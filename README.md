@@ -189,10 +189,11 @@ cp .env.example .env
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
-# Then fill in your own schema, aliases, metrics, business rules and
-# examples. project_config/ is gitignored on purpose: it is your data,
-# not the engine's. There is deliberately no silent fallback to the
-# example files.
+# Then fill in your own schema, aliases, metrics, business rules,
+# examples and system_prompt.md (the LLM's system instructions -- the
+# only non-YAML file in the directory). project_config/ is gitignored on
+# purpose: it is your data, not the engine's. There is deliberately no
+# silent fallback to the example files.
 
 # 4. Issue an API key (every route but /health requires one)
 python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
@@ -350,7 +351,9 @@ local-sql-agent/
 │   ├── metrics.yaml          #   metric definitions + aggregate expressions
 │   ├── retrieval_hints.yaml  #   fact tables + trigger phrases
 │   ├── session_policy.yaml   #   the default scope assumption
-│   └── memory_policy.yaml    #   the closed set of pinnable preferences
+│   ├── memory_policy.yaml    #   the closed set of pinnable preferences
+│   ├── relationships.yaml    #   explicit join paths, for database.relationship_map
+│   └── system_prompt.md      #   the LLM's system instructions (not YAML)
 ├── project_config.example/   # Same structure, placeholder data — what CI runs against
 ├── knowledge/                # Lazy loaders + validation for the YAML above
 │   ├── config_loader.py      #   Pydantic models, fail-closed on a missing file

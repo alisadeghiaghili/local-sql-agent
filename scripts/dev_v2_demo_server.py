@@ -67,7 +67,7 @@ _conn.execute("CREATE TABLE Customer (ID INTEGER PRIMARY KEY, Name TEXT, Nationa
 _conn.execute("CREATE TABLE Ring (ID INTEGER PRIMARY KEY, Name TEXT, Code TEXT)")
 _conn.execute("CREATE TABLE Date (ID INTEGER PRIMARY KEY, PersianYear INTEGER)")
 _conn.execute(
-    "CREATE TABLE CustomerContract (ID INTEGER PRIMARY KEY, Date_ID INTEGER, Ring_ID INTEGER, "
+    "CREATE TABLE [Order] (ID INTEGER PRIMARY KEY, Date_ID INTEGER, Ring_ID INTEGER, "
     "Symbol_ID INTEGER, BuyerCustomer_ID INTEGER, BuyerBroker_ID INTEGER, SellerBroker_ID INTEGER, "
     "TotalPrice REAL, Quantity REAL, BuyBrokerWage REAL, SellBrokerWage REAL, BuyIMEWage REAL, "
     "SellIMEWage REAL, BuySEOWage REAL, SellSEOWage REAL)"
@@ -79,7 +79,7 @@ _conn.executemany(
 _conn.executemany("INSERT INTO Ring (ID, Name) VALUES (?, ?)", [(1, "تالار سیمان"), (2, "تالار فلزات")])
 _conn.executemany("INSERT INTO Date (ID, PersianYear) VALUES (?, ?)", [(1, 1404), (2, 1403)])
 _conn.executemany(
-    "INSERT INTO CustomerContract (ID, Date_ID, BuyerCustomer_ID, Ring_ID, TotalPrice, Quantity) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO [Order] (ID, Date_ID, BuyerCustomer_ID, Ring_ID, TotalPrice, Quantity) VALUES (?, ?, ?, ?, ?, ?)",
     [
         (1, 1, 1, 1, 1000.0, 5.0),
         (2, 1, 2, 1, 900.0, 50.0),
@@ -110,14 +110,14 @@ def _demo_execute_query(sql: str) -> pd.DataFrame:
 
 _Q1_SQL = (
     "SELECT TOP 2 c.Name AS CustomerName, SUM(ct.TotalPrice) AS TotalValue "
-    "FROM CustomerContract ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
+    "FROM [Order] ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
     "JOIN Ring r ON ct.Ring_ID = r.ID WHERE r.Name = N'تالار سیمان' "
     "GROUP BY c.Name ORDER BY TotalValue DESC"
 )
 _Q2_OUTER_SQL = "SELECT TOP 10 c_Name, SUM(ct_Quantity) AS TotalVolume FROM _prev GROUP BY c_Name ORDER BY TotalVolume DESC"
 _Q3_SQL = (
     "SELECT TOP 10 c.Name AS CustomerName, SUM(ct.Quantity) AS TotalVolume "
-    "FROM CustomerContract ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
+    "FROM [Order] ct JOIN Customer c ON ct.BuyerCustomer_ID = c.ID "
     "JOIN Ring r ON ct.Ring_ID = r.ID JOIN [Date] d ON ct.Date_ID = d.ID "
     "WHERE r.Name = N'تالار سیمان' AND d.PersianYear = 1403 "
     "GROUP BY c.Name ORDER BY TotalVolume DESC"

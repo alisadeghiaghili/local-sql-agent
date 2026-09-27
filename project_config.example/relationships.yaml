@@ -19,28 +19,53 @@
 #     python -m database.schema_inspector_cli --dry-run
 # * Both directions (A->B and B->A) are registered automatically by the
 #   relationship_map module, so you only need to list each pair once.
+#
+# This file describes only tables that actually exist in
+# project_config.example/schema.yaml, using that file's own "sales"/"ref"
+# schema qualifiers -- it mirrors schema.yaml's own inline `relationships:`
+# block (Order->Customer, Order->Date) plus the three additional
+# dimension foreign keys schema.yaml's Order table carries (RingID,
+# BrokerID, SymbolID), so a deployment that runs
+# `python -m database.schema_inspector_cli` against a real warehouse sees
+# the same shape this template already demonstrates.
 
 relationships:
-  - from_table: "Contract"
-    from_schema: "Auction_Fact"
-    from_column: "Ring_ID"
+  - from_table: "Order"
+    from_schema: "sales"
+    from_column: "CustomerID"
+    to_table: "Customer"
+    to_schema: "sales"
+    to_column: "ID"
+    join_hint: "JOIN [sales].[Customer] ON [sales].[Order].[CustomerID] = [sales].[Customer].[ID]"
+
+  - from_table: "Order"
+    from_schema: "sales"
+    from_column: "OrderDate_ID"
+    to_table: "Date"
+    to_schema: "sales"
+    to_column: "ID"
+    join_hint: "JOIN [sales].[Date] ON [sales].[Order].[OrderDate_ID] = [sales].[Date].[ID]"
+
+  - from_table: "Order"
+    from_schema: "sales"
+    from_column: "RingID"
     to_table: "Ring"
-    to_schema: "Auction_Dim"
+    to_schema: "ref"
     to_column: "ID"
-    join_hint: "JOIN Auction_Dim.Ring ON Auction_Fact.Contract.Ring_ID = Auction_Dim.Ring.ID"
+    join_hint: "JOIN [ref].[Ring] ON [sales].[Order].[RingID] = [ref].[Ring].[ID]"
 
-  - from_table: "Contract"
-    from_schema: "Auction_Fact"
-    from_column: "Seller_ID"
-    to_table: "Person"
-    to_schema: "General_Dim"
+  - from_table: "Order"
+    from_schema: "sales"
+    from_column: "BrokerID"
+    to_table: "Broker"
+    to_schema: "ref"
     to_column: "ID"
-    join_hint: "JOIN General_Dim.Person ON Auction_Fact.Contract.Seller_ID = General_Dim.Person.ID"
+    join_hint: "JOIN [ref].[Broker] ON [sales].[Order].[BrokerID] = [ref].[Broker].[ID]"
 
-  - from_table: "Offer"
-    from_schema: "Auction_Fact"
-    from_column: "Contract_ID"
-    to_table: "Contract"
-    to_schema: "Auction_Fact"
+  - from_table: "Order"
+    from_schema: "sales"
+    from_column: "SymbolID"
+    to_table: "Symbol"
+    to_schema: "ref"
     to_column: "ID"
-    join_hint: "JOIN Auction_Fact.Contract ON Auction_Fact.Offer.Contract_ID = Auction_Fact.Contract.ID"
+    join_hint: "JOIN [ref].[Symbol] ON [sales].[Order].[SymbolID] = [ref].[Symbol].[ID]"

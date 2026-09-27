@@ -105,9 +105,9 @@ GENERATED SQL
 SELECT TOP 5
     c.Name,
     SUM(cc.TotalPrice) AS PurchaseValue
-FROM [Auction_Fact].[CustomerContract] cc
-JOIN [Auction_Dim].[Customer] c ON cc.BuyerCustomer_ID = c.ID
-JOIN [Auction_Dim].[Date] d ON cc.Date_ID = d.ID
+FROM [sales].[Order] cc
+JOIN [sales].[Customer] c ON cc.BuyerCustomer_ID = c.ID
+JOIN [sales].[Date] d ON cc.Date_ID = d.ID
 WHERE d.PersianYear = 1402
 GROUP BY c.Name
 ORDER BY PurchaseValue DESC
@@ -149,8 +149,8 @@ print(data["row_count"])  # 5
 Question: "برترین مشتریان تالار پتروشیمی در 1402"
           │
           ├─ EntityRetriever     → ["Customer"]       (alias: "مشتری")
-          ├─ FactRetriever       → ["CustomerContract"]  (keyword: "خرید")
-          ├─ RelationshipRetriever → ["JOIN [Auction_Dim].[Customer] ON ..."]
+          ├─ FactRetriever       → ["Order"]  (keyword: "خرید")
+          ├─ RelationshipRetriever → ["JOIN [sales].[Customer] ON ..."]
           ├─ RuleRetriever       → ["خرید: ..."]      (keyword: "مشتری")
           ├─ ExampleRetriever    → top-3 examples by tag overlap
           └─ ValueRetriever      → {"Ring": "تالار پتروشیمی", "PersianYear": 1402}
@@ -201,13 +201,13 @@ from prompt_engine.builder import PromptBuilder
 
 context = RetrievalContext(
     entities=["Customer"],
-    facts=["CustomerContract"],
+    facts=["Order"],
     dimensions=["Customer"],
     relationships=[
-        "JOIN [Auction_Dim].[Customer] ON "
-        "[Auction_Fact].[CustomerContract].[BuyerCustomer_ID] = [Auction_Dim].[Customer].[ID]"
+        "JOIN [sales].[Customer] ON "
+        "[sales].[Order].[BuyerCustomer_ID] = [sales].[Customer].[ID]"
     ],
-    business_rules=["خرید: ارزش خرید از CustomerContract.TotalPrice محاسبه می‌شود."],
+    business_rules=["خرید: ارزش خرید از Order.TotalAmount محاسبه می‌شود."],
     examples=[
         {
             "question": "برترین مشتریان",
@@ -241,12 +241,12 @@ from security.sql_guard import clean_sql, validate_sql, ensure_top
 raw = """
 Here is the SQL you requested:
 ```sql
-SELECT * FROM [Auction_Fact].[Contract] LIMIT 10
+SELECT * FROM [sales].[Order] LIMIT 10
 ```
 """
 sql = clean_sql(raw)
 print(sql)
-# SELECT TOP 10 * FROM [Auction_Fact].[Contract]
+# SELECT TOP 10 * FROM [sales].[Order]
 
 # Step 2: validate
 # Raises ValueError on any forbidden pattern
@@ -261,7 +261,7 @@ except ValueError as e:
 # Injects TOP n if absent, leaves it alone if already present
 sql = ensure_top(sql, n=500)
 print(sql)
-# SELECT TOP 10 * FROM [Auction_Fact].[Contract]  ← unchanged (already has TOP)
+# SELECT TOP 10 * FROM [sales].[Order]  ← unchanged (already has TOP)
 ```
 
 ### چه چیزهایی مسدود می‌شوند
@@ -284,7 +284,7 @@ CLI به‌صورت خودکار نتیجه هر کوئری موفق را در E
 from database.executor import execute_sql
 from exporters.excel_exporter import export_excel
 
-df = execute_sql("SELECT TOP 20 * FROM [Auction_Fact].[Contract]")
+df = execute_sql("SELECT TOP 20 * FROM [sales].[Order]")
 
 # Excel — auto-fits columns, timestamped filename
 path = export_excel(df)
@@ -340,8 +340,8 @@ TABLE_COLUMNS: dict[str, dict[str, str]] = {
 RELATIONSHIPS: dict[str, str] = {
     # ... existing relationships ...
     "Contract -> Broker": (
-        "JOIN [Auction_Dim].[Broker] "
-        "ON [Auction_Fact].[Contract].[BuyBroker_ID] = [Auction_Dim].[Broker].[BrokerID]"
+        "JOIN [ref].[Broker] "
+        "ON [sales].[Order].[BuyBroker_ID] = [ref].[Broker].[BrokerID]"
     ),
 }
 ```
@@ -420,8 +420,8 @@ EXAMPLES = [
             SELECT TOP 5
                 b.BrokerName,
                 SUM(c.TotalPrice) AS TradeValue
-            FROM [Auction_Fact].[Contract] c
-            JOIN [Auction_Dim].[Broker] b
+            FROM [sales].[Order] c
+            JOIN [ref].[Broker] b
                 ON c.BuyBroker_ID = b.BrokerID
             GROUP BY b.BrokerName
             ORDER BY TradeValue DESC
