@@ -27,6 +27,7 @@ from sqlalchemy.engine import Engine
 
 import config as cfg
 from database.connection_identity import with_application_name
+from database.pool_ping import install_idle_aware_ping
 
 
 @lru_cache(maxsize=1)
@@ -38,13 +39,25 @@ def get_engine() -> Engine:
 
     Pool configuration
     ------------------
-    ``pool_pre_ping=cfg.settings.db_pool_pre_ping`` (default ``True``)
-        Verifies connections before use.  Provides transparent recovery
-        after database restarts without manual pool recycling. The
-        steady per-checkout probe cost this trades for that safety —
-        and when turning it off is a reasonable choice instead — is
-        documented on :attr:`config.Settings.db_pool_pre_ping` (Finding
-        1, 2026 warehouse-load audit).
+    ``pool_pre_ping`` — idle-aware, via :func:`database.pool_ping.install_idle_aware_ping`
+        When :attr:`config.Settings.db_pool_pre_ping` is ``True`` (the
+        default), the engine is built with SQLAlchemy's own
+        ``pool_pre_ping`` argument left off and
+        :func:`~database.pool_ping.install_idle_aware_ping` is installed
+        instead: a connection is only probed with ``SELECT 1`` on
+        checkout once it has sat idle in the pool for at least
+        :attr:`config.Settings.db_pool_ping_idle_seconds` (default 60;
+        ``0`` reproduces plain ``pool_pre_ping=True``'s ping-every-checkout
+        behaviour exactly). A failed probe raises
+        ``sqlalchemy.exc.DisconnectionError``, which makes the pool
+        discard and transparently replace the connection before the
+        caller's own statement runs. When :attr:`~config.Settings.db_pool_pre_ping`
+        is ``False``, ``install_idle_aware_ping`` is never called and no
+        connection is ever probed on checkout. The steady per-checkout
+        probe cost this trades for that safety — and when turning it off
+        is a reasonable choice instead — is documented on
+        :attr:`config.Settings.db_pool_pre_ping` (Finding 1, 2026
+        warehouse-load audit, revised by the idle-aware-ping follow-up).
     ``pool_recycle=cfg.settings.db_pool_recycle_seconds`` (default 3600)
         Recycles connections older than 1 hour to prevent stale ODBC
         handles (common with SQL Server + pyodbc on Linux).
@@ -93,12 +106,13 @@ def get_engine() -> Engine:
     )
     engine = create_engine(
         connection_url,
-        pool_pre_ping=cfg.settings.db_pool_pre_ping,
         pool_recycle=cfg.settings.db_pool_recycle_seconds,
         pool_size=10,
         max_overflow=20,
         echo=False,
     )
+    if cfg.settings.db_pool_pre_ping:
+        install_idle_aware_ping(engine, cfg.settings.db_pool_ping_idle_seconds)
     return engine
 
 
