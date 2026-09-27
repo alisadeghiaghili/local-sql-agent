@@ -263,16 +263,30 @@ async def lifespan(app: FastAPI):
         logger.warning("admin-action log retention purge failed at startup: %s", exc)
 
     # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
-    # Opt-in (see Settings.dimension_vocabulary_warm_on_startup) so this
-    # codebase's DB-less test suite is unaffected by default. This call
-    # happens BEFORE `yield` -- under the ASGI lifespan protocol no request
-    # is served until this coroutine yields, so "the first request must not
+    # On by default (see
+    # Settings.dimension_vocabulary_warm_on_startup's own docstring for
+    # why); still an opt-out, not a hardcoded call, for a deployment whose
+    # startup path must not touch the database at all. This call happens
+    # BEFORE `yield` -- under the ASGI lifespan protocol no request is
+    # served until this coroutine yields, so "the first request must not
     # block on a database round trip" holds by construction: the round
     # trips happen here, on zero in-flight requests, not during a request.
     # A failure is a warning, not fatal -- an empty vocabulary cache
     # degrades every dimension it covers to "no match" (this phase's
     # universal safe-miss behaviour), which is not a reason to refuse to
-    # start the server at all.
+    # start the server at all. `warm_all` already catches and logs a
+    # failure per (table, column) internally rather than propagating it
+    # (one bad dimension must not cold-start every other one too), but the
+    # call is still wrapped here: `warm_all` itself failing outright (a
+    # bug in it, or a test/deployment that replaces it entirely) must
+    # degrade exactly the same way a per-column failure does -- a cold
+    # cache, not a server that refuses to start -- see
+    # tests/test_startup_vocabulary_warmup.py. This codebase's DB-less
+    # test suite is unaffected either way: the root conftest.py's autouse
+    # `_no_real_database` fixture makes `database.connection.create_engine`
+    # raise for the duration of every test, so an unmocked startup attempt
+    # against that refused connection degrades to the same "no match"
+    # cache state a disabled flag would leave it in.
     if cfg.settings.dimension_vocabulary_warm_on_startup:
         from retrieval.dimension_vocabulary import warm_all
 
