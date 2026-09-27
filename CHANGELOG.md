@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [6.0.1] — 2026-09-27
+
+The remaining `SELECT 1` traffic to the warehouse is gone. A diagnostic kit
+helps a DBA find what is really driving disk activity.
+
+### Changed
+
+- **Pooled connections are pinged only after they have been idle (PR #124).** With `pool_pre_ping`, every checkout of a warehouse connection sent a `SELECT 1` first, so the warehouse saw one ping per query.
+  - A connection is now pinged only if it has been idle for at least `DB_POOL_PING_IDLE_SECONDS` (default 60). `0` pings on every checkout, and `DB_POOL_PRE_PING=false` never pings.
+  - A failed ping refreshes the whole pool, and the checkout is retried on a fresh connection.
+  - Measured on 20 back-to-back questions: 20 pings in 5.2.0 and 6.0.0, none now. An idle application sends nothing.
+  - Trade-off: a connection the server drops before it reaches the idle threshold makes one query fail before the pool recovers.
+- **`/health` always sends its own `SELECT 1` (PR #124),** so it still verifies the database when the checkout was not pinged.
+- **Comments and test docstrings describe behaviour, not history (PR #125).**
+
+### Added
+
+- **A read-only diagnostic kit for the DBA (PR #124).** `docs/dba/warehouse-load-diagnostics.sql` and `docs/dba/README.md` show:
+  - whether `AUTO_CLOSE` is on;
+  - this application's sessions (`program_name = 'local-sql-agent'`);
+  - which database file (data, log or tempdb) is busy;
+  - the queries with the most physical reads;
+  - login audit and trigger checks.
+
+  `SELECT 1` reads no data pages, so disk activity that coincides with it usually comes from something else.
+
+### Upgrading
+
+- No action needed. The new `DB_POOL_PING_IDLE_SECONDS` defaults to 60; set it to `0` to keep pinging on every checkout.
+- Upgrading from 5.x: follow the **Upgrading** steps of 6.0.0 first (the system prompt must be at `<PROJECT_CONFIG_DIR>/system_prompt.md`).
+
 ## [6.0.0] — 2026-09-27
 
 A release about trust in what the screen says, and about the load the
