@@ -25,9 +25,11 @@ threshold -- live in ``tests/test_connection.py`` and
 
 from __future__ import annotations
 
+import itertools
 import types
 
 import pytest
+import sqlalchemy.pool.base
 from sqlalchemy.pool import QueuePool
 
 import database.pool_ping as pool_ping_mod
@@ -119,6 +121,26 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     return clock
 
 
+@pytest.fixture
+def advancing_pool_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give SQLAlchemy's pool a wall clock that advances on every read.
+
+    Whole-pool invalidation marks a pooled connection stale only when the
+    pool's invalidation time is strictly later than the connection's
+    ``time.time()`` start time. On Windows, ``time.time()`` can return the
+    same value for ~16 ms, so a connection opened microseconds before the
+    invalidation is not marked stale and the assertion depends on the
+    timer rather than on the code under test. A clock that ticks one
+    second per read keeps every stamp distinct on every platform.
+    """
+    ticks = itertools.count(start=1_000_000)
+    monkeypatch.setattr(
+        sqlalchemy.pool.base,
+        "time",
+        types.SimpleNamespace(time=lambda: float(next(ticks))),
+    )
+
+
 class TestIdleAwarePing:
     def test_reused_within_threshold_is_not_pinged(self, fake_clock: FakeClock) -> None:
         fp = FakePool()
@@ -176,6 +198,7 @@ class TestIdleAwarePing:
         assert fp.executed[-1] == (1, "SELECT 42")
         conn.close()
 
+    @pytest.mark.usefixtures("advancing_pool_wall_clock")
     def test_failed_ping_invalidates_the_whole_pool_not_just_one_connection(
         self, fake_clock: FakeClock
     ) -> None:
