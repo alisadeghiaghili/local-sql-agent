@@ -826,6 +826,8 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 }
 .failure-lead { font-weight: 800; font-size: 13.5px; margin: 0; }
 .failure-why { margin: 0; opacity: .92; }
+.failure-detail { margin: 0; opacity: .92; }
+.failure-detail-text { font-family: Consolas, "Cascadia Code", monospace; }
 /* ink-on-critical-bg: 13.03 (light) / 14.22 (dark); muted-on-critical-bg
  * (the code line below): 4.82 (light) / 6.75 (dark) — both new pairings,
  * both checked, both well clear of 4.5. */

@@ -869,7 +869,7 @@ class Settings:
 
     dimension_vocabulary_warm_on_startup: bool = field(
         default_factory=lambda: os.getenv(
-            "DIMENSION_VOCABULARY_WARM_ON_STARTUP", "false",
+            "DIMENSION_VOCABULARY_WARM_ON_STARTUP", "true",
         ).lower() in ("1", "true", "yes")
     )
     """When ``True``, ``api/server.py``'s ``lifespan`` calls
@@ -884,20 +884,56 @@ class Settings:
     now a pure **optimisation**: it pre-pays the very first cold-cache miss
     for each dimension at startup instead of leaving it to whichever
     request happens to ask about that dimension first. A deployment that
-    never sets this still gets working, self-healing dimension resolution
+    turns this off still gets working, self-healing dimension resolution
     — just with one extra miss per dimension after each restart, and (per
     the TTL note above) after each TTL expiry regardless.
 
-    Defaults to ``False`` so this codebase's test suite — which builds a
-    ``TestClient(app)`` against no live database in dozens of existing
-    tests, and whose ``lifespan`` has made zero database calls up to this
-    phase — is unaffected until an operator deliberately opts in for a
-    real deployment. A warm-up failure (e.g. the database is unreachable
-    at startup) is logged as a warning, never raised — unlike the
-    auth/config checks above this one, an empty vocabulary cache degrades
-    every dimension it would have covered to "no match" (this phase's
-    universal safe-miss behaviour), not a server that cannot start at
-    all."""
+    Defaults to ``True``: every restart without
+    it reproduces "the first question that mentions any prefetched
+    dimension after a cold start silently drops that filter" (self-healing
+    only for the *next* question, never the one that triggered the
+    refresh) — a real, reported production symptom, not a theoretical one.
+    This codebase's test suite is unaffected either way: it builds a
+    ``TestClient(app)`` against no live database, and ``warm_all`` catches
+    and logs a failure per column rather than raising (see below), so a
+    startup warm-up attempt against the tests' unmocked/refused connection
+    degrades to the same "no match" cache state a disabled flag would
+    leave it in, not a test failure. Set this back to ``false`` only to
+    restore the old opt-in behaviour (e.g. a deployment whose startup path
+    must not touch the database at all). A warm-up failure (e.g. the
+    database is unreachable at startup) is logged as a warning, never
+    raised — unlike the auth/config checks above this one, an empty
+    vocabulary cache degrades every dimension it would have covered to "no
+    match" (this phase's universal safe-miss behaviour), not a server that
+    cannot start at all."""
+
+    dimension_vocabulary_token_fallback_enabled: bool = field(
+        default_factory=lambda: os.getenv(
+            "DIMENSION_VOCABULARY_TOKEN_FALLBACK_ENABLED", "true",
+        ).lower() in ("1", "true", "yes")
+    )
+    """When ``True``, ``retrieval.dimension_vocabulary.match_question_against_vocabulary``
+    falls back to a distinctive-token score (see that module's docstring,
+    "Matching rules") for a table whose cached value never appears as one
+    exact contiguous substring of the question — a hall/currency/etc.
+    named by only part of its stored value (an inserted word, a different
+    modifier order) rather than the exact string.
+
+    Defaults to ``True`` (confirmed root cause:
+    "dimension_vocabulary matching requires the ENTIRE cached value to
+    appear as one contiguous substring... no token/partial matching" — the
+    concrete mechanism behind the reported "the hall named in the question
+    is ignored" complaint). The fix is additive and cannot regress an
+    already-working exact match (it only ever runs after that pass finds
+    nothing), and its scoring only ever counts a value's *distinctive*
+    tokens (excluding whatever token is common to most of that column's
+    values), with a tie between two distinct values going to the exact
+    same clarification path an ambiguous exact match already uses rather
+    than a silent guess. Set to ``false`` only if a real deployment's
+    dimension values are short/generic enough that this trades away too
+    many clean matches for clarifications, or — worst case — a match
+    against a value whose distinctive words are scattered through an
+    unrelated question."""
 
     # ── Evaluation harness: golden-set regression gate (see eval/baseline.py) ─
     eval_max_accuracy_drop_pct: float = field(
