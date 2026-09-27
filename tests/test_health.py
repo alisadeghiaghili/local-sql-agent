@@ -94,15 +94,19 @@ class TestPingOpenAI:
 
 
 class TestPingDb:
-    """Finding 1, 2026 warehouse-load audit: exactly one round trip per
-    probe. Which round trip proves liveness depends on
-    ``cfg.settings.db_pool_pre_ping`` -- see ``_ping_db``'s own docstring.
+    """Idle-aware-ping follow-up to Finding 1, 2026 warehouse-load audit:
+    checkout alone no longer proves liveness (a connection reused within
+    ``DB_POOL_PING_IDLE_SECONDS`` is handed back unprobed -- see
+    ``database.pool_ping``), so ``_ping_db`` always runs its own explicit
+    ``SELECT 1`` regardless of ``cfg.settings.db_pool_pre_ping``. See
+    ``_ping_db``'s own docstring for the one-round-trip-usually,
+    two-in-a-rare-case accounting.
     """
 
-    def test_pre_ping_on_checks_out_a_connection_but_does_not_query_it(self):
-        """``pool_pre_ping`` already verifies the connection transparently
-        on checkout -- an explicit ``SELECT 1`` on top of that would be a
-        second round trip proving the same fact twice."""
+    def test_pre_ping_on_still_runs_an_explicit_select_1(self):
+        """Checkout no longer guarantees a probe by itself once idle-aware
+        ping is in play, so this function must not skip its own check just
+        because ``db_pool_pre_ping`` is on."""
         fake_conn = MagicMock()
         fake_engine = MagicMock()
         fake_engine.connect.return_value.__enter__.return_value = fake_conn
@@ -110,7 +114,8 @@ class TestPingDb:
              patch("database.connection.get_engine", return_value=fake_engine):
             ok, detail = _ping_db()
         assert ok is True
-        fake_conn.execute.assert_not_called()
+        assert "SELECT 1" in detail
+        fake_conn.execute.assert_called_once()
 
     def test_pre_ping_off_runs_exactly_one_explicit_select_1(self):
         """With ``pool_pre_ping`` off, checkout performs no liveness check
