@@ -228,6 +228,116 @@ class TestMatchingRules:
 
 
 # ---------------------------------------------------------------------------
+# Token-fallback tier: a question naming only
+# the DISTINCTIVE word of a multi-word value -- not the whole value as one
+# contiguous substring -- still resolves, via
+# Settings.dimension_vocabulary_token_fallback_enabled (on by default).
+# Every value below is synthetic (built from \u escapes), never a real
+# deployment's hall name.
+# ---------------------------------------------------------------------------
+
+# "تالار" (generic "hall" word shared by every value below) + a distinctive
+# suffix unique to each: اول="اول" (one), دوم=
+# "دوم" (two), سوم="سوم" (three), چهارم
+# ="چهارم" (four).
+_GENERIC_WORD = "تالار"
+_HALL_ONE = _GENERIC_WORD + " اول"
+_HALL_TWO = _GENERIC_WORD + " دوم"
+_HALL_THREE = _GENERIC_WORD + " سوم"
+_HALL_FOUR = _GENERIC_WORD + " چهارم"
+# Two more values sharing ONE distinctive token ("خاص" --
+# "خاص"/"special") but differing in a second token only one of them has --
+# used to force a genuine token-tier tie below.
+_HALL_SPECIAL = _GENERIC_WORD + " خاص"
+_HALL_SPECIAL_SOUTH = _HALL_SPECIAL + " جنوبی"
+
+_SIX_HALLS = [_HALL_ONE, _HALL_TWO, _HALL_THREE, _HALL_FOUR, _HALL_SPECIAL, _HALL_SPECIAL_SOUTH]
+
+
+class TestTokenFallbackTier:
+    def test_matches_when_words_are_reordered_with_extra_words_between(self):
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(_SIX_HALLS))
+        # Distinctive word BEFORE the generic word, with an extra word
+        # ("توی") in between -- "تالار اول" never appears as one contiguous
+        # substring, so the full-value pass must find nothing here.
+        q = normalize_for_matching(
+            "امروز قیمت اول توی " + _GENERIC_WORD + " چقدر شد"
+        )
+        result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {"Ring": _HALL_ONE}
+        assert result.token_tier_filters == {"Ring": ("اول",)}
+
+    def test_matches_with_the_generic_word_first_and_extra_words_between(self):
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(_SIX_HALLS))
+        # Generic word first, distinctive word after, with an extra word
+        # ("بزرگ") between them -- again never one contiguous substring.
+        q = normalize_for_matching(
+            "قیمت " + _GENERIC_WORD + " بزرگ اول در بازار"
+        )
+        result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {"Ring": _HALL_ONE}
+
+    def test_matches_an_arabic_letter_variant_of_the_distinctive_token(self):
+        # "یکم" (Persian ی/ک) vs "يكم" (Arabic
+        # ي/ك) -- same word, different script variant of two letters.
+        persian_value = _GENERIC_WORD + " یکم"
+        refresh_vocabulary(
+            "Ring", "Name",
+            execute_fn=_fake_execute([persian_value, _HALL_TWO, _HALL_THREE]),
+        )
+        q = normalize_for_matching("قیمت در " + _GENERIC_WORD + " يكم")
+        result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {"Ring": persian_value}
+
+    def test_tied_token_scores_go_to_clarification_not_a_silent_pick(self):
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(_SIX_HALLS))
+        # Reordered so the full-value pass matches NEITHER "تالار خاص" nor
+        # "تالار خاص جنوبی" as one contiguous substring, but both score 1
+        # in the token tier (their shared distinctive token "خاص" is
+        # present; "جنوبی" is not) -- a genuine tie.
+        q = normalize_for_matching("قیمت خاص در " + _GENERIC_WORD + " چند بود")
+        result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {}
+        assert len(result.clarifications) == 1
+        assert set(result.clarifications[0].options) == {_HALL_SPECIAL, _HALL_SPECIAL_SOUTH}
+        assert result.clarifications[0].field == "Ring"
+
+    def test_no_distinctive_token_present_matches_nothing(self):
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(_SIX_HALLS))
+        # Only the generic word is present -- no value's distinctive
+        # token(s) appear anywhere in the question.
+        q = normalize_for_matching(_GENERIC_WORD + " کجاست")
+        result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {}
+        assert result.clarifications == []
+
+    def test_disabled_flag_restores_the_old_full_value_only_behaviour(self):
+        import config as cfg
+
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(_SIX_HALLS))
+        q = normalize_for_matching(
+            "امروز قیمت اول توی " + _GENERIC_WORD + " چقدر شد"
+        )
+        with cfg.override_settings(dimension_vocabulary_token_fallback_enabled=False):
+            result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {}
+        assert result.clarifications == []
+        assert result.token_tier_filters == {}
+
+    def test_a_full_value_match_still_never_reports_token_tier_filters(self):
+        """A value matched through the ORIGINAL full-value pass must never
+        be reported in token_tier_filters -- that dict is only for a match
+        that actually went through the fallback tier (see
+        session.engine._missing_dimension_filters's own use of it: a
+        full-value match is checked by value, not by distinctive tokens)."""
+        refresh_vocabulary("Ring", "Name", execute_fn=_fake_execute(_SIX_HALLS))
+        q = normalize_for_matching("قیمت " + _HALL_ONE + " چند بود")
+        result = match_question_against_vocabulary(q, ["Ring"])
+        assert result.filters == {"Ring": _HALL_ONE}
+        assert result.token_tier_filters == {}
+
+
+# ---------------------------------------------------------------------------
 # ACL -- a denied column excludes its vocabulary from the match, same as
 # the forward path (resolve_value).
 # ---------------------------------------------------------------------------

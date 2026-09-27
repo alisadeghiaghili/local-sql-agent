@@ -45,6 +45,31 @@ class TestSettings:
         with pytest.raises((AttributeError, TypeError)):
             Settings().openai_model = "x"  # type: ignore[misc]
 
+    def test_dimension_vocabulary_warm_on_startup_defaults_to_true(self):
+        """Startup warm-up: a deployment that never sets this
+        still gets the startup warm-up -- see that field's own docstring
+        for why a cold cache on the very first post-restart question is a
+        real, reported symptom, not a theoretical one."""
+        with patch.dict(os.environ):
+            os.environ.pop("DIMENSION_VOCABULARY_WARM_ON_STARTUP", None)
+            assert Settings().dimension_vocabulary_warm_on_startup is True
+
+    def test_dimension_vocabulary_warm_on_startup_env_override(self):
+        with patch.dict(os.environ, {"DIMENSION_VOCABULARY_WARM_ON_STARTUP": "false"}):
+            assert Settings().dimension_vocabulary_warm_on_startup is False
+
+    def test_dimension_vocabulary_token_fallback_enabled_defaults_to_true(self):
+        """Token-fallback tier: on by default -- the owner's
+        reported complaint ("the hall named in the question is ignored")
+        needs the token-fallback tier active out of the box."""
+        with patch.dict(os.environ):
+            os.environ.pop("DIMENSION_VOCABULARY_TOKEN_FALLBACK_ENABLED", None)
+            assert Settings().dimension_vocabulary_token_fallback_enabled is True
+
+    def test_dimension_vocabulary_token_fallback_enabled_env_override(self):
+        with patch.dict(os.environ, {"DIMENSION_VOCABULARY_TOKEN_FALLBACK_ENABLED": "false"}):
+            assert Settings().dimension_vocabulary_token_fallback_enabled is False
+
     def test_validate_passes(self):
         Settings(
             openai_model="gpt-oss-20b",
