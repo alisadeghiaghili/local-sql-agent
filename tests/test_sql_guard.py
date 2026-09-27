@@ -260,7 +260,8 @@ class TestDisposeEngine:
         from database.connection import dispose_engine, get_engine
 
         mock_engine = MagicMock()
-        with patch("database.connection.create_engine", return_value=mock_engine):
+        with patch("database.connection.create_engine", return_value=mock_engine), \
+             patch("database.connection.install_idle_aware_ping"):
             get_engine.cache_clear()
             get_engine()                          # populate cache
             assert get_engine.cache_info().currsize == 1

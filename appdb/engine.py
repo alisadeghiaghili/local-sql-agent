@@ -34,6 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 import config as cfg
 from core.fileperms import restrict_sqlite_family
+from database.pool_ping import install_idle_aware_ping
 
 #: How long a writer waits for SQLite's single write lock to clear before
 #: raising ``OperationalError("database is locked")``, in milliseconds --
@@ -360,6 +361,17 @@ def build_engine(url: str) -> Engine:
     path, a caller building a second, ad hoc engine (a migration source or
     target that may not be ready for tables yet) decides for itself
     whether and when to create them.
+
+    **Any other (non-SQLite) backend** -- a managed application database
+    such as PostgreSQL or SQL Server -- gets an ordinary pooled engine
+    with no explicit ``poolclass``. Liveness checking on checkout follows
+    :attr:`config.Settings.db_pool_pre_ping` /
+    :attr:`config.Settings.db_pool_ping_idle_seconds` exactly the way the
+    warehouse engine does (see :func:`database.connection.get_engine`):
+    when pre-ping is on, :func:`database.pool_ping.install_idle_aware_ping`
+    is installed so only a connection idle for at least the configured
+    threshold is probed on checkout, instead of every checkout paying a
+    ``SELECT 1`` unconditionally.
     """
     made = make_url(url)
     if made.get_backend_name() == "sqlite":
@@ -372,7 +384,10 @@ def build_engine(url: str) -> Engine:
         engine = create_engine(url)
         event.listen(engine, "connect", _set_file_sqlite_pragmas)
         return engine
-    return create_engine(url, pool_pre_ping=True)
+    engine = create_engine(url)
+    if cfg.settings.db_pool_pre_ping:
+        install_idle_aware_ping(engine, cfg.settings.db_pool_ping_idle_seconds)
+    return engine
 
 
 @lru_cache(maxsize=1)

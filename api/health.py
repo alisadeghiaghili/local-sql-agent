@@ -251,33 +251,44 @@ def _ping_db() -> tuple[bool, str]:
     """Return ``(ok, detail)`` for a liveness check on the configured database.
 
     Uses the shared :func:`~database.connection.get_engine` singleton so no
-    extra connection pool is created. The connection is checked out from the
-    pool and immediately returned.
+    extra connection pool is created. Always runs its own explicit
+    ``SELECT 1`` on the checked-out connection -- this function no longer
+    trusts checkout alone to prove liveness (see "Why checkout alone is no
+    longer enough" below), so it costs exactly one round trip in the common
+    case, same as before, just an explicit one instead of an implicit one.
 
-    Finding 1, 2026 warehouse-load audit -- a single round trip per probe
-    -------------------------------------------------------------------------
-    This used to unconditionally run its own ``SELECT 1`` after checking a
-    connection out, on top of whatever ``pool_pre_ping`` already does on
-    that same checkout -- two round trips charged to one health probe, and
-    the DBA-visible symptom (steady low-level ``SELECT 1`` traffic) this
-    audit's Finding 1 named explicitly. Which round trip is redundant
-    depends on :attr:`config.Settings.db_pool_pre_ping`:
+    Why checkout alone is no longer enough
+    ---------------------------------------
+    Before the idle-aware-ping change (:mod:`database.pool_ping`), checking
+    a pooled connection out of :func:`~database.connection.get_engine` with
+    :attr:`config.Settings.db_pool_pre_ping` on *always* ran a liveness
+    probe transparently first -- so this function could skip its own probe
+    and treat a successful checkout as proof by itself. That is no longer
+    true: checkout now only probes a connection that has sat idle for at
+    least :attr:`config.Settings.db_pool_ping_idle_seconds`, so a connection
+    reused sooner than that is handed back **unprobed**. A bare checkout
+    would then let ``/health`` report the database healthy on nothing more
+    than "the pool object exists," with no round trip to the database at
+    all -- exactly the false confidence this function exists to prevent.
+    Running an explicit ``SELECT 1`` here, unconditionally, is what keeps
+    every ``/health`` call an actual, real proof of liveness regardless of
+    how recently the connection was last used.
 
-    * **Pre-ping on (default)** -- checking a pooled connection out of
-      :func:`~database.connection.get_engine` *already* runs SQLAlchemy's
-      own lightweight liveness probe transparently, before handing the
-      connection back. Running ``SELECT 1`` again here would prove the
-      exact same fact a second time. Just checking a connection out (and
-      immediately returning it) is this probe's one round trip.
-    * **Pre-ping off** -- checkout performs no liveness check of its own,
-      so nothing here would ever prove the database actually answers a
-      query without running one explicitly. ``SELECT 1`` stays the probe
-      in this mode -- still exactly one round trip, just an explicit one
-      instead of an implicit one.
-
-    Either way this function costs at most one real round trip per call
-    (:func:`check_health`'s own TTL cache above bounds how often it is
-    called at all).
+    One round trip in the common case; two in a rare one
+    -------------------------------------------------------
+    * **The checked-out connection was used recently enough that the pool
+      did not re-probe it on checkout (the common case).** This function's
+      own ``SELECT 1`` is the only round trip. Same cost as before.
+    * **The checked-out connection had gone idle long enough that the pool
+      probed it on checkout too (rare -- only when ``/health`` itself is
+      the first caller in a while, since :func:`check_health`'s own TTL
+      cache below bounds how often this runs at all).** That checkout-time
+      probe and this function's own ``SELECT 1`` are two separate round
+      trips. Not engineered around: doing so would mean this module
+      reaching into :mod:`database.pool_ping`'s per-connection bookkeeping
+      to detect "was this connection just pinged a moment ago," for a case
+      that is both rare and already cheap (one extra trivial query, once,
+      only when the pool would have paid for a probe anyway).
 
     The detail carries the exception *type* and message rather than a bare
     ``False``, for the same reason as :func:`_ping_openai`: "wrong host",
@@ -285,16 +296,11 @@ def _ping_db() -> tuple[bool, str]:
     problems with three different fixes and one indistinguishable symptom.
     """
     try:
+        from sqlalchemy import text
+
         from database.connection import get_engine
 
         engine = get_engine()
-        if cfg.settings.db_pool_pre_ping:
-            with engine.connect():
-                pass
-            return True, "connection checkout succeeded (pool_pre_ping verified it live)"
-
-        from sqlalchemy import text
-
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True, "SELECT 1 succeeded"
