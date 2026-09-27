@@ -27,9 +27,7 @@ GET  /admin/summary, /admin/health/checks, /admin/cache, /admin/config
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -44,6 +42,7 @@ import api.admin_feedback_routes as admin_feedback_routes
 import api.admin_ops_routes as admin_ops_routes
 import api.admin_routes as admin_routes
 import api.admin_write_routes as admin_write_routes
+import api.concurrency as concurrency
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
 import api.v2_routes as v2_routes
 # Only register_handlers is needed here: the typed exceptions are raised in
@@ -80,24 +79,35 @@ _PROMPT_PATH = resolve_system_prompt_path()
 _system_prompt: str = ""
 
 # ---------------------------------------------------------------------------
-# Bounded threadpool for blocking pipeline work (Phase 2 task 4)
+# Bounded threadpool for blocking pipeline work
 # ---------------------------------------------------------------------------
-# runner.run_query() is fully synchronous (blocking requests to the LLM endpoint,
-# blocking pyodbc calls to SQL Server). Since api/server.py's handlers are
-# now `async def`, calling it directly would block the whole event loop --
-# every other in-flight request (including /health) would stall for the
-# duration. asyncio.to_thread() moves it to a worker thread instead, and
-# this semaphore bounds how many such threads may run at once, independent
-# of ConcurrencyMiddleware's own admission-control counter (api/middleware.py)
-# — that middleware decides whether a request is accepted into the server at
-# all (503 when over capacity); this semaphore decides how many accepted
-# requests may occupy a blocking worker thread simultaneously. Sized
-# generously above ConcurrencyMiddleware's default cap (10) so it is not the
-# binding constraint under normal load, while still being a real, explicit
-# bound rather than "however many threads asyncio.to_thread's default
-# executor happens to allow".
-_QUERY_THREAD_LIMIT: int = int(os.getenv("QUERY_THREAD_LIMIT", "16"))
-_query_semaphore: asyncio.Semaphore = asyncio.Semaphore(_QUERY_THREAD_LIMIT)
+# All blocking pipeline operations (runner.run_query, TurnEngine.ask,
+# etc.) run off the event loop through asyncio.to_thread under the shared
+# semaphore in api/concurrency.py. This semaphore bounds how many such
+# threads may run at once.
+#
+# The ConcurrencyMiddleware (api/middleware.py) controls admission: it
+# decides whether to accept a request at all (503 when over capacity).
+# The concurrency semaphore then decides how many accepted requests may
+# occupy a worker thread simultaneously.
+#
+# They are separate to allow:
+# - Admission control to be tight (reject excess requests fast)
+# - Worker pool to be generous (accommodate accepted requests that might
+#   queue briefly on the semaphore)
+#
+# _query_semaphore / _QUERY_THREAD_LIMIT below are aliases of the SAME
+# objects api/concurrency.py owns (module-level names, not copies), kept
+# for backward compatibility with tests written against this module
+# directly. Every actual acquire goes through api.concurrency.run_bounded
+# (via _run_query_bounded just below), which looks the semaphore up fresh
+# on each call (api.concurrency._get_semaphore()) rather than capturing
+# either of these aliases -- so a test that swaps out
+# api.concurrency._semaphore for a new object (to exercise a tight bound)
+# is honoured by every caller, while these two names keep pointing at
+# whatever object existed at this module's own import time.
+_query_semaphore = concurrency._semaphore
+_QUERY_THREAD_LIMIT = concurrency._QUERY_THREAD_LIMIT
 
 
 async def _run_query_bounded(**kwargs) -> QueryResponse:
@@ -120,8 +130,7 @@ async def _run_query_bounded(**kwargs) -> QueryResponse:
         the calling coroutine, so the existing exception-handler
         registration (``register_handlers``) still works unmodified.
     """
-    async with _query_semaphore:
-        return await asyncio.to_thread(runner.run_query, **kwargs)
+    return await concurrency.run_bounded(runner.run_query, **kwargs)
 
 
 @asynccontextmanager
