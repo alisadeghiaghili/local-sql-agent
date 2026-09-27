@@ -254,7 +254,7 @@ async def lifespan(app: FastAPI):
         logger.warning("admin-action log retention purge failed at startup: %s", exc)
 
     # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
-    # On by default since the 2026 hall-filter audit (see
+    # On by default (see
     # Settings.dimension_vocabulary_warm_on_startup's own docstring for
     # why); still an opt-out, not a hardcoded call, for a deployment whose
     # startup path must not touch the database at all. This call happens

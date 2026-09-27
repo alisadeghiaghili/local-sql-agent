@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""D3 (2026 hall-filter audit) -- a failed startup vocabulary warm-up must
+"""Startup warm-up -- a failed startup vocabulary warm-up must
 never stop the server from starting.
 
 ``config.Settings.dimension_vocabulary_warm_on_startup`` defaults to

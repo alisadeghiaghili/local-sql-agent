@@ -35,8 +35,8 @@ from retrieval.example_retriever import ExampleRetriever
 from retrieval.value_retriever import ValueRetriever
 from security.auth import ANONYMOUS, Principal
 
-# ── 2026 hall-filter audit: analyst-facing "this dimension could not be
-# checked" warnings (D4) -- exact Persian text, verified byte-identical to
+# ── analyst-facing "this dimension could not be
+# checked" warnings -- exact Persian text, verified byte-identical to
 # the audit's own warning_texts.json (see the repository's change history
 # for that verification). {label} is the entity's configured display name
 # (knowledge.entities.ENTITIES[table]["label"]) when project_config/entities.yaml
@@ -90,7 +90,7 @@ class ContextRetriever:
            :mod:`retrieval.dimension_vocabulary` prefetched and cached out
            of band (see that module's docstring for the cold-start/TTL
            story). Covers ``Ring``, ``Currency``, ``Broker``,
-           ``DeliveryPlace``, ``Symbol``. Since the 2026 hall-filter audit,
+           ``DeliveryPlace``, ``Symbol``. Since the hall-filter fix,
            a match no longer requires the ENTIRE stored value as one
            contiguous substring of the question — see that module's
            "Matching rules" for the token-fallback tier this now falls

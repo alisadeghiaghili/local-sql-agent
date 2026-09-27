@@ -141,7 +141,7 @@ class TestValueResolutionWiring:
 
 
 class TestVocabularyUnavailableWarnings:
-    """D4 (2026 hall-filter audit): a table the question named (entity
+    """Unavailable-vocabulary warning: a table the question named (entity
     detection matched it) whose vocabulary is entirely unavailable this
     request -- never cached, or a background refresh stuck failing -- and
     that got no filter from ANY source must add the exact

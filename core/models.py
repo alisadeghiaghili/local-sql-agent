@@ -112,7 +112,7 @@ class RetrievalContext:
     treat it as data."
     """
 
-    # ── 2026 hall-filter audit: "the analyst must never be silently misled" ────
+    # ── "the analyst must never be silently misled" ────
     warnings: list[str] = field(default_factory=list)
     """Persian, analyst-facing sentences for a dimension that the question
     plausibly named but that :func:`retrieval.dimension_vocabulary.match_question_against_vocabulary`
@@ -140,7 +140,7 @@ class RetrievalContext:
     tier rather than an exact full-value match — see
     ``retrieval.dimension_vocabulary.VocabularyMatchResult.token_tier_filters``
     for what "distinctive" means here. ``session.engine.TurnEngine``'s
-    post-generation filter-enforcement check (2026 hall-filter audit)
+    post-generation filter-enforcement check
     reads this to confirm the generated SQL actually references such a
     filter by its distinctive tokens rather than by the full stored value,
     which — by the very nature of a token-tier match — may never appear as

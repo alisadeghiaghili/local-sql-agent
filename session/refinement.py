@@ -119,7 +119,7 @@ def display_field_name(key: str) -> str:
     """Public wrapper on :func:`_display_field` -- the same
     filter-key -> ``Assumption.field`` mapping :mod:`session.ambiguity`
     duplicates for its own assumption builders. ``session.engine`` (2026
-    hall-filter audit, D2/D6) uses this to recognise, from a filter's raw
+    overridden refinement filters and the filter-enforcement check) uses this to recognise, from a filter's raw
     key (e.g. ``"Ring"``), which displayed assumption field an override
     naming it would come in under (e.g. ``"ring"``), without reaching into
     either module's private name."""

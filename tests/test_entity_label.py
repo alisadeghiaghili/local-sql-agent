@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""D4 (2026 hall-filter audit): ``entities.yaml``'s optional ``label`` field
+"""Unavailable-vocabulary warning: ``entities.yaml``'s optional ``label`` field
 -- the analyst-facing display name a "vocabulary unavailable" warning
 (``retrieval.context_retriever.ContextRetriever.retrieve``) uses in place
 of the generic phrasing, when a deployment's config sets one.

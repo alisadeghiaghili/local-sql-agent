@@ -69,7 +69,7 @@ Two hard requirements:
    knows about beats a wrong number they don't.
 
 **An `assumption_overrides` PATCH that changes an inherited filter (2026
-hall-filter audit, D2) forces composition `"none"`, not `"cte"`.** `_prev`
+overridden refinement filters) forces composition `"none"`, not `"cte"`.** `_prev`
 above is `previous turn's SQL`, verbatim — the previous turn's inherited
 filter (e.g. `ring=تالار سیمان`) is already baked into that SQL text, so
 composing over it unchanged while the chip shows a *different*, overridden

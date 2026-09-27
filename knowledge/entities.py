@@ -22,7 +22,7 @@ def __getattr__(name: str) -> Any:
             cfg = load_entities()
             # Expose as plain dict matching original structure:
             # {EntityName: {"aliases": [...], "table": "...", "label": ...}}
-            # "label" (2026 hall-filter audit) is optional in entities.yaml
+            # "label" is optional in entities.yaml
             # and None whenever a deployment's config does not set it --
             # see EntityDefinition.label's own docstring.
             _cache["ENTITIES"] = {

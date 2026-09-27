@@ -111,7 +111,7 @@ Fix ONLY the error above. Return only the corrected SQL statement.
 SQL:
 """
 
-# 2026 hall-filter audit (D6): a filter the turn presents as applied (from
+# Filter-enforcement check: a filter the turn presents as applied (from
 # the question, the vocabulary, or an override) must actually be referenced
 # by the generated SQL -- see _missing_dimension_filters. Reuses the SAME
 # correction budget as _CORRECTION_SUFFIX_TEMPLATE above, once, before
@@ -132,7 +132,7 @@ corrected SQL statement.
 SQL:
 """
 
-# 2026 hall-filter audit (D6) -- exact Persian text, verified byte-identical
+# Filter-enforcement check -- exact Persian text, verified byte-identical
 # to the audit's own warning_texts.json (see the repository's change history
 # for that verification). {value} is the filter's own resolved value,
 # unchanged.
@@ -418,7 +418,7 @@ class TurnEngine:
             basis_decision = classify_basis(question, previous_turn, previous_memory)
             context = ContextRetriever.retrieve(question)
 
-        # D2 (2026 hall-filter audit, confirmed root cause): an assumption
+        # Overridden filter on a refinement (confirmed root cause): an assumption
         # override that changes a filter this §2 CTE refinement inherited
         # can never reach the composed SQL -- `_handle_cte_refinement`
         # composes over `previous_turn.sql`, which already has the OLD
@@ -800,7 +800,7 @@ class TurnEngine:
         if is_carry_forward:
             ambiguity_block = Ambiguity(is_ambiguous=bool(assumptions), assumptions=assumptions, clarifications=[])
             if demoted_from_cte_override:
-                # D2: this turn was headed for §2 CTE composition until an
+                # Overridden filter on a refinement: this turn was headed for §2 CTE composition until an
                 # override changed a filter already baked into the
                 # previous turn's SQL (see TurnEngine.ask). The generic
                 # carry-forward phrasing below only ever names the period
@@ -833,7 +833,7 @@ class TurnEngine:
             elif a.field == "period" and a.value.strip().isdigit():
                 merged_filters["PersianYear"] = int(a.value.strip())
 
-        # D6 (2026 hall-filter audit): every STRING-valued dimension filter
+        # Filter-enforcement check: every STRING-valued dimension filter
         # this turn presents to the analyst as applied -- resolved from the
         # question or the vocabulary this turn (context.filters), or an
         # override that changed the ring/scope assumption above -- must be
@@ -860,7 +860,7 @@ class TurnEngine:
             entities=context.entities, facts=context.facts, dimensions=context.dimensions,
             relationships=context.relationships, business_rules=context.business_rules,
             examples=context.examples, filters=merged_filters,
-            # 2026 hall-filter audit: without this, `resolved_values`
+            # Without this, `resolved_values`
             # defaults to `{}` on every fresh-turn request regardless of
             # whether dimension_vocabulary actually matched something, so
             # the prompt's fenced "RESOLVED WAREHOUSE VALUES" section
@@ -893,7 +893,7 @@ class TurnEngine:
         raw = ""
         filters_to_enforce = filters_to_enforce or {}
         token_tier_filters = token_tier_filters or {}
-        # D6: set once the first (and only) time a filter-enforcement
+        # Filter-enforcement check: set once the first (and only) time a filter-enforcement
         # regeneration is attempted -- this reuses the SAME correction
         # budget as an ordinary guard-rejection retry (below), never a
         # second, unbounded one, and never fires twice for one turn.
@@ -1045,7 +1045,7 @@ class TurnEngine:
 
             last_sql = capped
 
-            # D6 (2026 hall-filter audit): a filter this turn presents as
+            # Filter-enforcement check: a filter this turn presents as
             # applied must actually be referenced by the SQL the guard just
             # passed. Checked here, after the guard, before execution --
             # regenerating once with the missing value(s) named explicitly
@@ -1095,7 +1095,7 @@ class TurnEngine:
             columns = [str(c) for c in df.columns]
             rows = df.to_dict(orient="records")
             truncated = injected_top is not None and len(rows) >= injected_top
-            # D6: the regeneration above (if it ran) is over budget or the
+            # Filter-enforcement check: the regeneration above (if it ran) is over budget or the
             # rewritten SQL still misses one or more filters -- the answer
             # is still returned (never blocked), but with one warning per
             # filter the analyst was told applied and the SQL does not
@@ -1230,7 +1230,7 @@ def _resolved_question_for_fresh(question: str, assumptions, filters: dict[str, 
 def _cte_override_conflict(
     inherited_filters: dict[str, object], overrides: dict[str, str] | None,
 ) -> dict[str, object] | None:
-    """D2 (2026 hall-filter audit) — does *overrides* change a filter this
+    """Overridden filter on a refinement — does *overrides* change a filter this
     §2 CTE refinement has already inherited (and would otherwise compose
     over unchanged)?
 
@@ -1267,8 +1267,7 @@ def _string_literal_texts(sql: str, dialect: str) -> list[str]:
     """Every string literal's text value in *sql* — a T-SQL national
     literal (``N'...'``) or a plain ``'...'`` string — best-effort.
 
-    Used only by :func:`_missing_dimension_filters` (D6, 2026 hall-filter
-    audit) below. Never raises: returns ``[]`` if *sql* cannot be parsed
+    Used only by :func:`_missing_dimension_filters` (filter-enforcement check) below. Never raises: returns ``[]`` if *sql* cannot be parsed
     under *dialect* — this check must never itself break a turn whose SQL
     already passed the guard.
     """
@@ -1294,7 +1293,7 @@ def _missing_dimension_filters(
     token_tier_filters: dict[str, tuple[str, ...]],
     dialect: str,
 ) -> dict[str, str]:
-    """D6 (2026 hall-filter audit) — the subset of *filters* *sql* does not
+    """Filter-enforcement check — the subset of *filters* *sql* does not
     actually reference.
 
     A filter is "referenced" when some string literal in *sql*, normalised

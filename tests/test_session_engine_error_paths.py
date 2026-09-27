@@ -229,14 +229,14 @@ class TestCarryForwardPeriodDelta:
         assert period.value == "1403"
 
 
-# Synthetic (never a real deployment's) hall names for D2/D6 below --
+# Synthetic (never a real deployment's) hall names for the overridden-refinement and filter-enforcement tests below --
 # "تالار" ("تالار"/"hall") + a distinctive suffix.
 _HALL_A = "تالار اول"
 _HALL_B = "تالار دوم"
 
 
 class TestCteRefinementOverrideDemotion:
-    """D2 (2026 hall-filter audit): an ``assumption_overrides`` PATCH that
+    """Overridden filter on a refinement: an ``assumption_overrides`` PATCH that
     changes a filter a §2 CTE refinement would otherwise inherit unchanged
     must never be silently composed over ``_prev`` (the old value is baked
     into the previous turn's own SQL) -- it must route through fresh
@@ -328,7 +328,7 @@ class TestCteRefinementOverrideDemotion:
 
     def test_no_override_at_all_still_composes_as_cte(self):
         """Sanity check on the gate itself: an ordinary CTE refinement with
-        no assumption_overrides is completely unaffected by D2."""
+        no assumption_overrides is completely unaffected by the overridden-refinement handling."""
         store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
         record = store.create()
         _seed_previous_turn(
@@ -347,7 +347,7 @@ class TestCteRefinementOverrideDemotion:
 
 class _CountingRecordingBackend:
     """Like ``_CountingBackend`` above, but also records every
-    ``PromptSegments`` it is asked to generate from -- used by the D6
+    ``PromptSegments`` it is asked to generate from -- used by the filter-enforcement
     tests below to assert exactly how many generation attempts a missing
     filter costs."""
 
@@ -371,7 +371,7 @@ def _ask_with_context(engine: TurnEngine, record, question: str, context: Retrie
 
 
 class TestFilterEnforcementAfterGeneration:
-    """D6 (2026 hall-filter audit): a string-valued dimension filter this
+    """Filter-enforcement check: a string-valued dimension filter this
     turn presents as applied must actually be referenced by the generated
     SQL -- checked once, after the guard, with one bounded regeneration
     attempt before falling back to a Persian warning."""
@@ -475,7 +475,7 @@ class TestFilterEnforcementAfterGeneration:
         assert any(_HALL_A in w for w in turn.warnings)
 
     def test_numeric_filters_are_never_enforced(self):
-        """PersianYear (or any non-string filter) is out of D6's scope --
+        """PersianYear (or any non-string filter) is out of the filter-enforcement check's scope --
         a fixed SQL naming no year at all must never trigger a
         regeneration or a warning over it."""
         store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
@@ -495,7 +495,7 @@ class TestFilterEnforcementAfterGeneration:
 
 
 class TestResolvedValuesReachThePrompt:
-    """D7 (2026 hall-filter audit): ``_handle_generative`` must pass
+    """Resolved-values pass-through: ``_handle_generative`` must pass
     ``context.resolved_values`` through when it builds the fresh-path
     ``RetrievalContext`` for the prompt, so the "RESOLVED WAREHOUSE
     VALUES" section is no longer always empty."""
@@ -526,14 +526,14 @@ class TestResolvedValuesReachThePrompt:
         _ask_with_context(engine, record, "قیمت " + _HALL_A + " چند بود", context)
 
         assert len(captured) == 1
-        # Without D7, RetrievalContext.resolved_values never reaches the
+        # Without the resolved-values pass-through, RetrievalContext.resolved_values never reaches the
         # prompt builder on this path, so this section (and its own
         # untrusted-data instruction) would never render at all.
         assert UNTRUSTED_INSTRUCTION in captured[0]
         assert _HALL_A in captured[0]
 
     def test_no_resolved_values_leaves_the_section_empty(self):
-        """Sanity check on the other side of D7's contract: a question with
+        """Sanity check on the other side of the resolved-values pass-through contract: a question with
         nothing warehouse-resolved must not fabricate a fenced section."""
         store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
         record = store.create()

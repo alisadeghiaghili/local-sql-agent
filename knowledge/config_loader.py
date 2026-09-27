@@ -99,7 +99,7 @@ class EntityDefinition(BaseModel):
     aliases: list[str]
     table: str
     schema_name: str | None = None  # optional: e.g. "dim" or "fact"
-    # Optional analyst-facing display name (2026 hall-filter audit), e.g.
+    # Optional analyst-facing display name, e.g.
     # "تالار" for a Ring/trading-hall entity -- None (most deployments)
     # means no configured display name; a caller naming this dimension in
     # a message shown to an analyst (see ContextRetriever.retrieve's

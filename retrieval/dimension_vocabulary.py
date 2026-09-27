@@ -199,7 +199,7 @@ Matching rules
   whose words are not exactly adjacent in the question's own phrasing (an
   inserted word, a different modifier order) never matches under that rule
   alone, even though every word of it is genuinely present -- this is the
-  2026 hall-filter audit's confirmed root cause for "the hall named in the
+  The confirmed root cause for "the hall named in the
   question is ignored" whenever the question names only part of it.
 
   When a table's full-value pass above finds nothing, this tier splits
@@ -231,9 +231,8 @@ Matching rules
   ``session.engine.TurnEngine``'s post-generation filter-enforcement check)
   that needs to confirm the generated SQL actually references this match,
   since the full value itself may never appear as one contiguous span
-  anywhere, including in the SQL. Ships **on** by default (2026
-  hall-filter audit: this is the fix the reported "the hall named in the
-  question is ignored" complaint needed); turn off with
+  anywhere, including in the SQL. Ships **on** by default (this is the fix the reported "the hall named
+  in the question is ignored" complaint needed); turn off with
   :attr:`~config.Settings.dimension_vocabulary_token_fallback_enabled` if a
   real deployment's dimension values are short/generic enough that this
   trades too many clarifications (or, worst case, a match against a value

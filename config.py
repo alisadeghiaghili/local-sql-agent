@@ -888,7 +888,7 @@ class Settings:
     — just with one extra miss per dimension after each restart, and (per
     the TTL note above) after each TTL expiry regardless.
 
-    Defaults to ``True`` (2026 hall-filter audit): every restart without
+    Defaults to ``True``: every restart without
     it reproduces "the first question that mentions any prefetched
     dimension after a cold start silently drops that filter" (self-healing
     only for the *next* question, never the one that triggered the
@@ -919,7 +919,7 @@ class Settings:
     named by only part of its stored value (an inserted word, a different
     modifier order) rather than the exact string.
 
-    Defaults to ``True`` (2026 hall-filter audit, confirmed root cause:
+    Defaults to ``True`` (confirmed root cause:
     "dimension_vocabulary matching requires the ENTIRE cached value to
     appear as one contiguous substring... no token/partial matching" — the
     concrete mechanism behind the reported "the hall named in the question

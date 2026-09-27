@@ -228,7 +228,7 @@ class TestMatchingRules:
 
 
 # ---------------------------------------------------------------------------
-# Token-fallback tier (D5, 2026 hall-filter audit): a question naming only
+# Token-fallback tier: a question naming only
 # the DISTINCTIVE word of a multi-word value -- not the whole value as one
 # contiguous substring -- still resolves, via
 # Settings.dimension_vocabulary_token_fallback_enabled (on by default).

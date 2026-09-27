@@ -46,7 +46,7 @@ class TestSettings:
             Settings().openai_model = "x"  # type: ignore[misc]
 
     def test_dimension_vocabulary_warm_on_startup_defaults_to_true(self):
-        """D3 (2026 hall-filter audit): a deployment that never sets this
+        """Startup warm-up: a deployment that never sets this
         still gets the startup warm-up -- see that field's own docstring
         for why a cold cache on the very first post-restart question is a
         real, reported symptom, not a theoretical one."""
@@ -59,7 +59,7 @@ class TestSettings:
             assert Settings().dimension_vocabulary_warm_on_startup is False
 
     def test_dimension_vocabulary_token_fallback_enabled_defaults_to_true(self):
-        """D5 (2026 hall-filter audit): on by default -- the owner's
+        """Token-fallback tier: on by default -- the owner's
         reported complaint ("the hall named in the question is ignored")
         needs the token-fallback tier active out of the box."""
         with patch.dict(os.environ):
