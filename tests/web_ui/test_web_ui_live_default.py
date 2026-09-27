@@ -31,7 +31,7 @@ full scenario list) and asserts, at the actual boundary that changed:
   hand-built string): a value already persisted to this browser survives
   into the resolved boot base URL when no ``?base=`` is given, and
   ``?base=`` still overrides it when one is -- the exact two guarantees
-  the brief requires to keep working once the visible base-URL row is
+  that must keep working once the visible base-URL row is
   removed from the top bar (see ``web/index.html`` / ``web/js/main.js``).
 """
 

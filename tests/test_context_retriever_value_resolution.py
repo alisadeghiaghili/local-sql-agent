@@ -144,8 +144,8 @@ class TestVocabularyUnavailableWarnings:
     """Unavailable-vocabulary warning: a table the question named (entity
     detection matched it) whose vocabulary is entirely unavailable this
     request -- never cached, or a background refresh stuck failing -- and
-    that got no filter from ANY source must add the exact
-    ``warning_texts.json`` Persian sentence to ``RetrievalContext.warnings``,
+    that got no filter from ANY source must add the fixed
+    Persian warning sentence to ``RetrievalContext.warnings``,
     never just silently answer as if the question had named nothing."""
 
     def test_never_cached_entity_table_adds_the_generic_warning(self):

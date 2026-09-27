@@ -11,7 +11,7 @@
 // only the internal import specifiers rewritten to their sibling `.mjs`
 // copies, same pattern as run_result_shapes.mjs) under a mocked
 // `window.Prism` / `navigator.clipboard` and a minimal DOM shim, and
-// asserts, at the actual boundary the brief calls out:
+// asserts, at the actual boundary that matters:
 //
 // * highlighting actually runs: the rendered <code> ends up with real
 //   `.token.*` child elements, not just plain text;

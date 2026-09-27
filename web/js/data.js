@@ -7,7 +7,7 @@
  * docs/api-contract-v2.md).
  *
  * The exported SCENARIO is one continuous conversation (one session) built
- * to exercise every UI state called for in the brief:
+ * to exercise every UI state the demo needs to cover:
  *   t1  fresh, unambiguous, 100-of-342 rows displayed (truncated)
  *   t2  refines t1 — session-inherited ring, §2 "policy" scope assumption,
  *       and a refinement_scan_cap warning (must be impossible to miss)
