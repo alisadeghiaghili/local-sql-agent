@@ -256,6 +256,25 @@ class TestIdleAwarePing:
         conn.close()
         assert fp.ping_calls() == 2
 
+    def test_connection_pooled_before_install_is_pinged_on_next_checkout(
+        self, fake_clock: FakeClock
+    ) -> None:
+        """A connection already idle in the pool when the listeners are
+        installed carries no last-used stamp, so its idle time is unknown.
+        It is probed on its next checkout, and a dead one is replaced
+        instead of reaching the caller."""
+        fp = FakePool(fail_first_n=1)
+        conn = fp.pool.connect()
+        conn.close()  # #0 now sits in the pool with no stamp
+        install_idle_aware_ping(fp.pool, idle_seconds=60)
+
+        conn = fp.pool.connect()  # no clock advance at all
+
+        assert fp.ping_calls() == 1
+        assert conn.dbapi_connection.id == 1
+        assert fp.created[0].closed is True
+        conn.close()
+
     def test_never_used_connection_is_not_pinged_on_its_first_checkout(
         self, fake_clock: FakeClock
     ) -> None:

@@ -135,12 +135,11 @@ def install_idle_aware_ping(engine: Engine, idle_seconds: int) -> None:
     def _ping_if_idle(dbapi_connection, connection_record, connection_proxy) -> None:
         if idle_seconds != 0:
             last_used = connection_record.info.get(_LAST_USED_KEY)
-            if last_used is None:
-                # Freshly created by "connect" a moment ago in this same
-                # checkout -- known-live, nothing to verify yet.
-                return
-            idle_for = time.monotonic() - last_used
-            if idle_for < idle_seconds:
+            # No stamp means the connection was pooled before these
+            # listeners were installed, so its idle time is unknown and it
+            # is probed. A brand-new connection always carries the stamp
+            # "connect" wrote, so it is never probed on its first checkout.
+            if last_used is not None and time.monotonic() - last_used < idle_seconds:
                 # Reused recently enough -- hand it over unprobed.
                 return
         # idle_seconds == 0 ("ping on every checkout", matching plain
