@@ -16,10 +16,13 @@
 //   is present);
 // * MODEL_UNAVAILABLE keeps its existing Persian lead but no longer shows
 //   the English "why" line;
-// * QUERY_EXECUTION_ERROR, LLM_OUTPUT_TRUNCATED and FORBIDDEN_SQL are
-//   UNCHANGED -- they still show `turn.error.message` as their "why" line
-//   (the first is being reworked in a parallel change; this suite only
-//   proves this task did not disturb the other two);
+// * LLM_OUTPUT_TRUNCATED and FORBIDDEN_SQL are UNCHANGED -- they still show
+//   `turn.error.message` as their "why" line (this suite only proves this
+//   task did not disturb either one). QUERY_EXECUTION_ERROR is NOT covered
+//   here -- see tests/web_ui/run_execution_error_copy.mjs, which drives its
+//   own dedicated scenarios (a labelled, dir="ltr" technical-detail line
+//   instead of a "why" line, and suppressed entirely for the backend's
+//   generic fallback message);
 // * a code this UI has never seen before renders the INTERNAL_ERROR
 //   sentence, not the raw code and not the (fabricated) English message;
 // * each closed-set `GuardVerdict.reason` renders its own sentence, with
@@ -298,13 +301,12 @@ console.log("[ok] all table-driven error codes render their Persian sentence wit
   console.log("[ok] MODEL_UNAVAILABLE: unchanged Persian lead, English why line removed");
 }
 
-/* ── Scenario C: QUERY_EXECUTION_ERROR, LLM_OUTPUT_TRUNCATED and
- * FORBIDDEN_SQL are UNCHANGED -- they still show turn.error.message as
- * their "why" line (the first is being reworked in a parallel change to
- * this same file; this only proves this task did not touch the other
- * two). ─────────────────────────────────────────────────────────────── */
+/* ── Scenario C: LLM_OUTPUT_TRUNCATED and FORBIDDEN_SQL are UNCHANGED --
+ * they still show turn.error.message as their "why" line. (QUERY_EXECUTION_
+ * ERROR is deliberately not in this list -- it no longer shows a "why" line
+ * at all; see run_execution_error_copy.mjs.) ──────────────────────────── */
 
-for (const code of ["QUERY_EXECUTION_ERROR", "LLM_OUTPUT_TRUNCATED", "FORBIDDEN_SQL"]) {
+for (const code of ["LLM_OUTPUT_TRUNCATED", "FORBIDDEN_SQL"]) {
   const { ctx } = fullCtx();
   const turn = baseErrorTurn({ error: { code, message: ENGLISH_MARKER, request_id: "req_3" } });
   const card = createTurnCard(turn, ctx);
@@ -406,6 +408,66 @@ for (const [reason, expectedLead] of GUARD_REASON_TABLE) {
   btn.click();
   assert.equal(calls.askWithoutColumn, 1, "the targeted action must still be wired to onAskWithoutColumn");
   console.log("[ok] guard reason \"denied_column\": unchanged sentence, targeted action still wired");
+}
+
+/* ── Scenario G: the guard-rejection banner no longer shows the guard's
+ * free-text English rule as a "why" line -- it stays visible only in the
+ * SQL panel's .guard-rule element, now marked dir="ltr" so the embedded
+ * English does not scramble inside the right-to-left page. denied_column's
+ * two actions ("Ask without that column" and "Request access") are
+ * unaffected by this change. ───────────────────────────────────────────── */
+
+{
+  const englishRule = "Forbidden keyword detected: denied column 'synthetic_secret_column'";
+  const turn = baseGuardTurn({
+    sql: "SELECT synthetic_secret_column FROM synthetic_table", // synthetic, never a real schema identifier
+    guard: {
+      verdict: "rejected", rule: englishRule, reason: "forbidden_statement",
+      subject: null, rejected_sql: null, injected_top: null, tables_touched: [],
+    },
+  });
+  const { ctx } = fullCtx();
+  const card = createTurnCard(turn, ctx);
+
+  const banner = card.el.querySelector(".failure-state");
+  assert.ok(banner, "guard rejection: expected a .failure-state banner");
+  assert.equal(
+    banner.querySelector(".failure-why"),
+    null,
+    "guard rejection: the banner must not render a .failure-why element",
+  );
+  assert.ok(
+    !banner.textContent.includes(englishRule),
+    "guard rejection: the banner's own text must not contain the guard's English rule",
+  );
+
+  const guardRuleEl = card.el.querySelector(".guard-rule");
+  assert.ok(guardRuleEl, "guard rejection: the SQL panel must still show .guard-rule");
+  assert.equal(guardRuleEl.textContent, englishRule, "guard rejection: .guard-rule must still hold the rule text");
+  assert.equal(guardRuleEl.dir, "ltr", 'guard rejection: .guard-rule must be marked dir="ltr"');
+
+  console.log('[ok] guard rejection: English rule dropped from the banner, kept (dir="ltr") in the SQL panel');
+}
+
+{
+  // denied_column's two actions stay wired exactly as before -- this
+  // change only touched the banner's "why" line and the SQL panel, never
+  // the guard's action buttons.
+  const { ctx, calls } = fullCtx();
+  ctx.onRequestAccess = async () => ({ already_pending: false });
+  const turn = baseGuardTurn({
+    guard: {
+      verdict: "rejected", rule: "Forbidden keyword detected: denied column 'synthetic_secret_column'",
+      reason: "denied_column", subject: "synthetic_secret_column",
+      rejected_sql: null, injected_top: null, tables_touched: [],
+    },
+  });
+  const card = createTurnCard(turn, ctx);
+  const labels = actionLabels(card);
+  assert.ok(labels.includes("پرسش بدون «synthetic_secret_column»"), "denied_column: targeted column action must still render");
+  assert.ok(labels.includes("درخواست دسترسی"), "denied_column: request-access action must still render");
+  assert.ok(labels.includes("ویرایش پرسش"), "denied_column: generic rephrase action must still render");
+  console.log("[ok] guard rejection: denied_column's actions (ask without / request access) unaffected");
 }
 
 console.log("ALL_FAILURE_SENTENCES_PASSED");
