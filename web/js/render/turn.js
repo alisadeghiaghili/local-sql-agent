@@ -186,7 +186,15 @@ export function createTurnCard(turn, ctx) {
     sqlSection.appendChild(meta);
 
     if (turn.guard && turn.guard.verdict === "rejected" && turn.guard.rule) {
-      sqlSection.appendChild(el("div", "guard-rule", turn.guard.rule));
+      // `dir="ltr"` -- the rule is the guard's own free-text English
+      // (kept verbatim for the audit trail), and this is now its only
+      // home in the UI (the failure banner above no longer shows it, see
+      // `renderFailureState`'s guard branch): without an explicit
+      // direction it would scramble inside the surrounding
+      // right-to-left page.
+      const guardRule = el("div", "guard-rule", turn.guard.rule);
+      guardRule.dir = "ltr";
+      sqlSection.appendChild(guardRule);
     }
 
     // Collapse after a successful result is already on screen (DESIGN §5.2).
@@ -401,6 +409,19 @@ const GUARD_REASON_LEADS = Object.freeze({
 const GENERIC_GUARD_LEAD = "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.";
 
 /**
+ * The exact client-facing text `database/errors.py`'s
+ * `_GENERIC_STATEMENT_MESSAGE` sends when a statement failure could not be
+ * positively recognised (that module's "fail closed" note). It must stay
+ * byte-for-byte identical to the backend constant -- `tests/
+ * test_failure_copy_parity.py` imports `database.errors` at test time and
+ * asserts the two match, so a change on either side that drifts is caught
+ * there, not discovered as a rendering bug. `QUERY_EXECUTION_ERROR` below
+ * compares `turn.error.message` against this constant to decide whether
+ * there is anything database-specific worth showing as technical detail.
+ */
+const DB_GENERIC_REJECTION = "The database rejected the query.";
+
+/**
  * Frozen `TurnErrorInfo.code` → `{lead, actions}` table -- the ONE place
  * that maps a backend error code to the Persian, analyst-facing sentence
  * DESIGN-INVARIANTS.md §8 requires ("what happened, in the analyst's
@@ -422,12 +443,15 @@ const GENERIC_GUARD_LEAD = "این پرسش اصلاً اجرا نشد — لا�
  *
  * `MODEL_UNAVAILABLE` keeps its own `case` below (a different severity,
  * "warn" not "crit") but reads its lead from here too, so there is still
- * exactly one place per code. `QUERY_EXECUTION_ERROR`, `LLM_OUTPUT_TRUNCATED`
- * and `FORBIDDEN_SQL` are deliberately NOT here: each keeps its own
- * `case`, unchanged, below (`QUERY_EXECUTION_ERROR` is being reworked in a
- * parallel change to this same file; touching any of the three now would
- * either collide with that work or need a design decision nobody made for
- * this task).
+ * exactly one place per code. `LLM_OUTPUT_TRUNCATED` and `FORBIDDEN_SQL`
+ * are deliberately NOT here: each keeps its own `case`, unchanged, below.
+ * `QUERY_EXECUTION_ERROR` also keeps its own `case` -- its lead is fixed,
+ * like every code here, but `turn.error.message` (the database's own
+ * sentence for the rejected statement) is worth showing as technical
+ * detail when the database gave a specific reason, so that `case` renders
+ * it as a labelled, `dir="ltr"` detail line instead of reading a lead from
+ * this table (see `DB_GENERIC_REJECTION` above and `buildFailureBanner`'s
+ * `detail` parameter below).
  *
  * Any code NOT listed here (including `INTERNAL_ERROR` itself) falls back
  * to the `INTERNAL_ERROR` entry -- see the `default:` case below.
@@ -612,10 +636,18 @@ function renderFailureState(turn, ctx) {
       actions.push(["ویرایش پرسش", () => ctx.onRephrase(turn.turn_id)]);
     }
 
+    // `turn.guard.rule` is NOT passed as `why` here. It is the guard's
+    // own free-text English rule, kept verbatim for the audit trail (see
+    // `security.sql_guard`'s docstring) -- exactly the kind of raw,
+    // system-side English DESIGN-INVARIANTS.md §8 keeps out of the
+    // analyst-facing banner, and `lead`/`GUARD_REASON_LEADS` above already
+    // give the Persian sentence for every reason. The rule stays visible
+    // where technical detail belongs instead: the SQL panel's
+    // `.guard-rule` element below, marked `dir="ltr"` so the embedded
+    // English does not scramble inside the right-to-left page.
     return buildFailureBanner({
       severity: "crit",
       lead,
-      why: turn.guard.rule,
       code: "FORBIDDEN_SQL",
       // A guard rejection never populates `turn.error` on this (SSE) path
       // (see `isGuardRejected`'s own docstring) -- `request_id` lives on
@@ -677,15 +709,30 @@ function renderFailureState(turn, ctx) {
           : [],
       });
 
-    case "QUERY_EXECUTION_ERROR":
+    case "QUERY_EXECUTION_ERROR": {
+      // `turn.error.message` is either the database's own sentence for a
+      // bad statement (identifying, but not a secret -- worth showing) or
+      // `DB_GENERIC_REJECTION`, the backend's fallback for a statement
+      // failure it could not positively recognise (which says nothing the
+      // lead sentence above has not already said). A generic or empty
+      // message renders no detail line at all; a specific one renders as a
+      // labelled technical detail, kept out of the "why" line so an
+      // English sentence never sits directly under the Persian lead
+      // without at least the `dir="ltr"` isolation `buildFailureBanner`
+      // gives it below.
+      const message = turn.error.message;
+      const detail = message && message !== DB_GENERIC_REJECTION
+        ? { label: "پیام پایگاه داده:", text: message }
+        : null;
       return buildFailureBanner({
         severity: "crit",
         lead: "پرس‌وجو اجرا شد، اما پایگاه داده آن را با خطا رد کرد.",
-        why: turn.error.message,
         code: turn.error.code,
         requestId,
+        detail,
         actions: retry ? [["تلاش دوباره", retry]] : [],
       });
+    }
 
     default: {
       // Every other code (MODEL_TIMEOUT, OUT_OF_SCOPE, DATABASE_UNAVAILABLE,
@@ -782,16 +829,29 @@ function handleRequestAccessClick(evt, turnId, column, onRequestAccess) {
  * rather than objects, matching this file's `el(tag, className, text)`
  * helper's own positional style.
  *
+ * `detail` is an optional `{label, text}` pair for a labelled technical
+ * detail line -- currently only `QUERY_EXECUTION_ERROR` uses it, for the
+ * database's own message about a rejected statement. Rendered as a `<p
+ * class="failure-detail">` holding the Persian label, a single space, then
+ * `text` inside a `<bdi dir="ltr" class="failure-detail-text">` -- `<bdi>`
+ * plus an explicit `dir` isolates the embedded English/mixed-direction
+ * text from the surrounding right-to-left Persian, the same reason
+ * `sql-display.js`'s SQL box and this file's own `.guard-rule` element get
+ * `dir="ltr"`. Built only with `createElement`/`textContent` (via `el()`
+ * and direct DOM calls below) -- `text` is an untrusted, server-supplied
+ * string (the database's own error text) and must never reach `innerHTML`.
+ *
  * @param {{
  *   severity: "crit"|"warn",
  *   lead: string,
  *   why?: string|null,
  *   code?: string|null,
  *   requestId?: string|null,
+ *   detail?: {label: string, text: string}|null,
  *   actions: [string, () => void][],
  * }} spec
  */
-function buildFailureBanner({ severity, lead, why, code, requestId, actions }) {
+function buildFailureBanner({ severity, lead, why, code, requestId, detail, actions }) {
   const banner = el("div", `failure-state failure-${severity}`);
   banner.setAttribute("role", "alert");
 
@@ -799,6 +859,22 @@ function buildFailureBanner({ severity, lead, why, code, requestId, actions }) {
 
   if (why && why !== lead) {
     banner.appendChild(el("p", "failure-why", why));
+  }
+
+  if (detail && detail.label && detail.text) {
+    const detailLine = document.createElement("p");
+    detailLine.className = "failure-detail";
+    const label = document.createElement("span");
+    label.className = "failure-detail-label";
+    label.textContent = detail.label;
+    detailLine.appendChild(label);
+    detailLine.appendChild(document.createTextNode(" "));
+    const text = document.createElement("bdi");
+    text.dir = "ltr";
+    text.className = "failure-detail-text";
+    text.textContent = detail.text;
+    detailLine.appendChild(text);
+    banner.appendChild(detailLine);
   }
 
   if (code || requestId) {
