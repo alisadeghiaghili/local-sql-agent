@@ -69,9 +69,18 @@ export class AdminApi {
     return this._get(`/admin/summary${qs}`);
   }
 
-  /** GET /admin/health/checks -- scripts.verify_deployment's checks, run now. */
-  async healthChecks() {
-    return this._get("/admin/health/checks");
+  /** GET /admin/health/checks -- scripts.verify_deployment's checks, run
+   * now (server-cached; see api/admin_result_cache.py). `refresh` bypasses
+   * that cache for this one call; `deep` also runs check_login_is_read_only
+   * (a rolled-back CREATE TABLE attempt) and check_query_timeout (a
+   * WAITFOR probe) -- both skipped by default (2026 warehouse-load audit,
+   * Required item 2). Neither is ever set by the 30s auto-refresh. */
+  async healthChecks({ refresh = false, deep = false } = {}) {
+    const qs = new URLSearchParams();
+    if (refresh) qs.set("refresh", "1");
+    if (deep) qs.set("deep", "1");
+    const query = qs.toString();
+    return this._get(`/admin/health/checks${query ? `?${query}` : ""}`);
   }
 
   /** GET /admin/cache -- the existing query-result cache statistics. */
@@ -166,9 +175,13 @@ export class AdminApi {
     return this._post("/admin/maintenance", { active, note: note || null });
   }
 
-  /** GET /admin/schema-drift -- read-only; never applies anything. */
-  async schemaDrift() {
-    return this._get("/admin/schema-drift");
+  /** GET /admin/schema-drift -- read-only; never applies anything.
+   * Server-cached (see api/admin_result_cache.py); `refresh` bypasses that
+   * cache for this one call -- the panel's own refresh button, never the
+   * 30s auto-refresh (2026 warehouse-load audit, Required item 1). */
+  async schemaDrift({ refresh = false } = {}) {
+    const qs = refresh ? "?refresh=1" : "";
+    return this._get(`/admin/schema-drift${qs}`);
   }
 
   /** GET /admin/vocabulary -- per prefetched column freshness/failure state. */

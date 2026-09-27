@@ -401,3 +401,197 @@ class TestEveryMutatingAdminRouteDeclaresARoleDependency:
             "route discovery found no mutating /admin route to check -- phase 2's "
             "write routes (api/admin_write_routes.py) should have added some"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. GET /admin/health/checks -- cached result, and deep checks opt-in only
+#    (Required items 1/2, 2026 warehouse-load audit)
+# ---------------------------------------------------------------------------
+
+class TestHealthChecksCaching:
+    """``_fast_deployment_checks`` (module-level fixture above) stubs
+    ``scripts.verify_deployment._CHECKS`` down to one deterministic,
+    instrumented check so these tests are about the CACHE, not about
+    verify_deployment's own checks (covered by tests/test_verify_deployment.py)."""
+
+    def test_second_call_inside_the_ttl_does_not_rerun_the_checks(
+        self, app_and_client, monkeypatch,
+    ):
+        import scripts.verify_deployment as verify_deployment_module
+        from scripts.verify_deployment import CheckResult
+
+        calls = {"n": 0}
+
+        def _counting_check() -> CheckResult:
+            calls["n"] += 1
+            return CheckResult("counting check", "PASS", f"run #{calls['n']}")
+
+        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_counting_check])
+
+        _, client = app_and_client
+        with override_settings(
+            auth_required=True, api_keys_json=_KEYS_JSON, admin_expensive_cache_ttl_seconds=300,
+        ):
+            headers = {"Authorization": f"Bearer {RAW_ADMIN_KEY}"}
+            first = client.get("/admin/health/checks", headers=headers)
+            second = client.get("/admin/health/checks", headers=headers)
+
+        assert first.status_code == 200 and second.status_code == 200
+        assert calls["n"] == 1, (
+            f"the deployment checks ran {calls['n']} times for 2 calls inside the TTL"
+        )
+        assert first.json()["cache"]["cached"] is False
+        assert second.json()["cache"]["cached"] is True
+
+    def test_refresh_bypasses_the_cache(self, app_and_client, monkeypatch):
+        import scripts.verify_deployment as verify_deployment_module
+        from scripts.verify_deployment import CheckResult
+
+        calls = {"n": 0}
+
+        def _counting_check() -> CheckResult:
+            calls["n"] += 1
+            return CheckResult("counting check", "PASS", f"run #{calls['n']}")
+
+        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_counting_check])
+
+        _, client = app_and_client
+        with override_settings(
+            auth_required=True, api_keys_json=_KEYS_JSON, admin_expensive_cache_ttl_seconds=300,
+        ):
+            headers = {"Authorization": f"Bearer {RAW_ADMIN_KEY}"}
+            client.get("/admin/health/checks", headers=headers)
+            refreshed = client.get("/admin/health/checks?refresh=1", headers=headers)
+
+        assert calls["n"] == 2, "?refresh=1 must force the checks to run again"
+        assert refreshed.json()["cache"]["cached"] is False
+
+    def test_cache_expires_after_the_ttl(self, monkeypatch):
+        """Calls ``admin_health_checks`` directly (not through
+        ``TestClient``) rather than monkeypatching the process-wide
+        ``time.monotonic`` -- the rate limiter and everything else in the
+        request path reads that same clock, and jerking it around under a
+        real HTTP round trip previously produced a spurious 429 having
+        nothing to do with this cache. This is exactly the kind of route
+        the module docstring for ``_no_real_database`` warns a shared
+        global has: patch the seam under test, not the clock everyone
+        shares."""
+        import api.admin_result_cache as admin_result_cache_module
+        import scripts.verify_deployment as verify_deployment_module
+        from api.admin_routes import admin_health_checks
+        from scripts.verify_deployment import CheckResult
+        from security.auth import ADMIN_CAPABILITY, Principal
+
+        calls = {"n": 0}
+
+        def _counting_check() -> CheckResult:
+            calls["n"] += 1
+            return CheckResult("counting check", "PASS", f"run #{calls['n']}")
+
+        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_counting_check])
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(admin_result_cache_module.time, "monotonic", lambda: clock["t"])
+
+        admin_principal = Principal(id="admin-1", name="Admin", capabilities=frozenset({ADMIN_CAPABILITY}))
+
+        with override_settings(admin_expensive_cache_ttl_seconds=5):
+            admin_health_checks(refresh=False, deep=False, principal=admin_principal)
+            clock["t"] += 6
+            expired = admin_health_checks(refresh=False, deep=False, principal=admin_principal)
+
+        assert calls["n"] == 2, "the cached result must expire once the TTL elapses"
+        assert expired["cache"]["cached"] is False
+
+
+class TestDeepChecksAreOptIn:
+    def test_deep_checks_are_skipped_by_default(self, app_and_client, monkeypatch):
+        import scripts.verify_deployment as verify_deployment_module
+
+        ran = []
+
+        def _login_is_read_only():
+            ran.append("check_login_is_read_only")
+            from scripts.verify_deployment import CheckResult
+            return CheckResult("Login is read-only", "PASS", "stub")
+
+        def _query_timeout():
+            ran.append("check_query_timeout")
+            from scripts.verify_deployment import CheckResult
+            return CheckResult("Query timeout", "PASS", "stub")
+
+        def _harmless():
+            from scripts.verify_deployment import CheckResult
+            return CheckResult("harmless check", "PASS", "stub")
+
+        _login_is_read_only.__name__ = "check_login_is_read_only"
+        _query_timeout.__name__ = "check_query_timeout"
+
+        monkeypatch.setattr(
+            verify_deployment_module, "_CHECKS",
+            [_harmless, _login_is_read_only, _query_timeout],
+        )
+
+        _, client = app_and_client
+        with override_settings(auth_required=True, api_keys_json=_KEYS_JSON):
+            headers = {"Authorization": f"Bearer {RAW_ADMIN_KEY}"}
+            resp = client.get("/admin/health/checks", headers=headers)
+
+        assert resp.status_code == 200
+        assert ran == [], (
+            f"deep checks ran without ?deep=1: {ran} -- a DDL attempt and a "
+            "WAITFOR probe must never run automatically from this route"
+        )
+        names = {c["name"] for c in resp.json()["checks"]}
+        assert "harmless check" in names
+        assert "Login is read-only" not in names
+        assert "Query timeout" not in names
+
+    def test_deep_true_runs_every_check(self, app_and_client, monkeypatch):
+        import scripts.verify_deployment as verify_deployment_module
+
+        ran = []
+
+        def _login_is_read_only():
+            ran.append("check_login_is_read_only")
+            from scripts.verify_deployment import CheckResult
+            return CheckResult("Login is read-only", "PASS", "stub")
+
+        _login_is_read_only.__name__ = "check_login_is_read_only"
+
+        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_login_is_read_only])
+
+        _, client = app_and_client
+        with override_settings(auth_required=True, api_keys_json=_KEYS_JSON):
+            headers = {"Authorization": f"Bearer {RAW_ADMIN_KEY}"}
+            resp = client.get("/admin/health/checks?deep=1", headers=headers)
+
+        assert ran == ["check_login_is_read_only"]
+        assert resp.json()["deep"] is True
+
+    def test_deep_and_non_deep_results_are_cached_separately(self, app_and_client, monkeypatch):
+        import scripts.verify_deployment as verify_deployment_module
+        from scripts.verify_deployment import CheckResult
+
+        def _login_is_read_only():
+            return CheckResult("Login is read-only", "PASS", "deep result")
+
+        _login_is_read_only.__name__ = "check_login_is_read_only"
+
+        def _harmless():
+            return CheckResult("harmless check", "PASS", "light result")
+
+        monkeypatch.setattr(
+            verify_deployment_module, "_CHECKS", [_harmless, _login_is_read_only],
+        )
+
+        _, client = app_and_client
+        with override_settings(auth_required=True, api_keys_json=_KEYS_JSON):
+            headers = {"Authorization": f"Bearer {RAW_ADMIN_KEY}"}
+            light = client.get("/admin/health/checks", headers=headers)
+            deep = client.get("/admin/health/checks?deep=1", headers=headers)
+
+        light_names = {c["name"] for c in light.json()["checks"]}
+        deep_names = {c["name"] for c in deep.json()["checks"]}
+        assert "Login is read-only" not in light_names
+        assert "Login is read-only" in deep_names

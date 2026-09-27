@@ -37,6 +37,20 @@ const CARDS = [
   "maintenance", "keys", "schemaDrift", "vocabulary", "usage", "authFailures",
 ];
 
+/* Cards whose data comes from a real warehouse round trip beyond a
+ * trivial read -- "health" (scripts.verify_deployment's checks: several
+ * SELECT 1s, a catalogue scan, and -- only with the deep button below --
+ * a rolled-back CREATE TABLE DDL attempt and a WAITFOR probe) and
+ * "schemaDrift" (a full get_table_names/get_columns reflection of every
+ * table in every schema). 2026 warehouse-load audit, Required item 1:
+ * these are excluded from the 30-second auto-refresh below -- they load
+ * once when the page opens and again only when the operator presses that
+ * card's own refresh button (which forces a fresh run past the server's
+ * own cache, see refreshOne's `force` handling). Every other card reads
+ * only the audit log, the application database, or in-process
+ * bookkeeping -- cheap enough to keep on the ordinary cadence. */
+const EXPENSIVE_CARDS = new Set(["health", "schemaDrift"]);
+
 /* Cards whose 403 is an ordinary, expected outcome rather than a wrong
  * credential, and so must render inside the card instead of raising the
  * page-level "this key is not an admin key" banner.
@@ -112,9 +126,26 @@ function wireTopbar() {
   updateKeyStatus();
 
   $("admin-refresh-all").addEventListener("click", refreshAll);
+  // A card's OWN refresh button is a deliberate "run this now" from the
+  // operator -- for the two expensive cards this forces a fresh run past
+  // the server's own cache (?refresh=1); refreshOne ignores `force` for
+  // every other card, which has no such cache to bypass.
   document.querySelectorAll("[data-refresh]").forEach((btn) => {
-    btn.addEventListener("click", () => refreshOne(btn.dataset.refresh));
+    btn.addEventListener("click", () => refreshOne(btn.dataset.refresh, { force: true }));
   });
+
+  const deepBtn = $("health-deep-btn");
+  if (deepBtn) {
+    deepBtn.addEventListener("click", () => {
+      const proceed = window.confirm(
+        "این کار دو بررسیِ اضافی را روی انبار داده اجرا می‌کند: یک تلاش " +
+        "CREATE TABLE (که همیشه Rollback می‌شود) برای اطمینان از دسترسی " +
+        "فقط‌خواندنی، و یک پروب WAITFOR که چند ثانیه طول می‌کشد. ادامه می‌دهید؟",
+      );
+      if (!proceed) return;
+      refreshOne("health", { force: true, deep: true });
+    });
+  }
 }
 
 function updateThemeLabel() {
@@ -192,7 +223,14 @@ function clearNotice() {
 async function refreshAll() {
   hideForbiddenBanner();
   clearNotice();
-  await Promise.all(CARDS.map(refreshOne));
+  await refreshMany(CARDS);
+}
+
+/** Refresh exactly the named cards (a subset of CARDS), then update the
+ * shared rail/timestamp. Used both by refreshAll (every card) and by the
+ * 30s auto-refresh timer below (every card EXCEPT EXPENSIVE_CARDS). */
+async function refreshMany(names) {
+  await Promise.all(names.map((name) => refreshOne(name)));
   updateSummaryRail();
   markLastUpdated();
 }
@@ -251,11 +289,20 @@ function markLastUpdated() {
 }
 
 /* Auto-refresh every 30s — one cadence instead of ↻ on every section.
-   Manual buttons remain for a single card after a write action. */
+   Manual buttons remain for a single card after a write action.
+
+   2026 warehouse-load audit, Required item 1: EXPENSIVE_CARDS ("health",
+   "schemaDrift") are excluded here -- with an admin tab left open all
+   day, re-running scripts.verify_deployment's checks and a full schema
+   reflection every 30 seconds was a material, avoidable share of the
+   warehouse load a DBA reported. Those two cards still load once at
+   bootstrap (refreshAll() above, called at module load) and again on
+   their own refresh button; they simply do not repeat on a timer. */
 const AUTO_REFRESH_MS = 30_000;
+const AUTO_REFRESH_CARDS = CARDS.filter((name) => !EXPENSIVE_CARDS.has(name));
 setInterval(() => {
   if (document.hidden) return;
-  refreshAll();
+  refreshMany(AUTO_REFRESH_CARDS);
 }, AUTO_REFRESH_MS);
 
 /* Scroll-spy for the sticky jump nav so the active section is obvious
@@ -285,7 +332,7 @@ setInterval(() => {
   map.forEach((_a, sec) => obs.observe(sec));
 })();
 
-async function refreshOne(name) {
+async function refreshOne(name, { force = false, deep = false } = {}) {
   const body = $(`${name}-body`);
   const btn = document.querySelector(`[data-refresh="${name}"]`);
   if (btn) btn.disabled = true;
@@ -295,7 +342,7 @@ async function refreshOne(name) {
       const includeExamples = $("include-examples-toggle").checked;
       renderSummary(await api.summary(includeExamples));
     } else if (name === "health") {
-      const payload = await api.healthChecks();
+      const payload = await api.healthChecks({ refresh: force, deep });
       _rail.health = payload;
       renderHealth(payload);
     } else if (name === "cache") {
@@ -319,7 +366,7 @@ async function refreshOne(name) {
     } else if (name === "keys") {
       renderKeys(await loadKeysCard());
     } else if (name === "schemaDrift") {
-      renderSchemaDrift(await api.schemaDrift());
+      renderSchemaDrift(await api.schemaDrift({ refresh: force }));
     } else if (name === "vocabulary") {
       renderVocabulary(await api.vocabularyStatus());
     } else if (name === "usage") {
@@ -525,6 +572,23 @@ function kv(label, value) {
   return `<dt>${escapeHtml(label)}</dt><dd dir="ltr">${escapeHtml(value)}</dd>`;
 }
 
+/** A small "این نتیجه از کش است / همین الان اجرا شد" line for the two
+ * server-cached expensive cards (health, schemaDrift) -- api/admin_result_cache.py's
+ * `cache` block on each response. 2026 warehouse-load audit, Required
+ * item 1: showing the age is how an operator tells a genuinely fresh
+ * result from one that is up to ADMIN_EXPENSIVE_CACHE_TTL_SECONDS old. */
+function formatCacheAge(cache) {
+  if (!cache) return "";
+  if (!cache.cached) {
+    return '<p class="admin-cache-age">همین الان اجرا شد</p>';
+  }
+  const age = Math.round(cache.age_seconds ?? 0);
+  return (
+    `<p class="admin-cache-age">نتیجهٔ کش‌شده — ${fmtNum(age)} ثانیه پیش ` +
+    `(حداکثر ${fmtNum(cache.ttl_seconds ?? 0)} ثانیه)</p>`
+  );
+}
+
 function renderHealth(payload) {
   const body = $("health-body");
   const checks = payload.checks || [];
@@ -565,7 +629,11 @@ function renderHealth(payload) {
     );
   });
 
-  body.innerHTML = summary + cards.join("");
+  const deepNote = payload.deep
+    ? '<p class="admin-cache-age">شامل بررسی‌های عمیق (DDL/WAITFOR)</p>'
+    : "";
+
+  body.innerHTML = summary + formatCacheAge(payload.cache) + deepNote + cards.join("");
   void passed;
 }
 
@@ -834,7 +902,7 @@ function renderSchemaDrift(report) {
     (!report.schema_only || !report.schema_only.length) &&
     (!report.type_changed || !report.type_changed.length);
 
-  const out = [];
+  const out = [formatCacheAge(report.cache)];
   if (noDrift) {
     out.push('<p class="admin-rail-summary"><strong>انحرافی یافت نشد</strong></p>');
   } else {

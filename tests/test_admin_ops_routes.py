@@ -99,6 +99,122 @@ class TestSchemaDriftRoute:
         assert resp.status_code == 403
 
 
+def _fake_drift_report(detail: str = "ok"):
+    class _FakeReport:
+        def as_dict(self):
+            return {
+                "checked_at": detail, "schemas_scanned": [], "warehouse_only": [],
+                "schema_only": [], "type_changed": [], "unverifiable_tables": [],
+                "baseline_available": True,
+            }
+
+    return _FakeReport()
+
+
+# ---------------------------------------------------------------------------
+# Schema drift -- result caching (Required item 1, 2026 warehouse-load
+# audit). ``check_schema_drift`` reflects the entire warehouse catalogue;
+# these tests fake THAT call (via api.admin_ops_routes' own imported
+# name, never the route/auth machinery) so they are about the cache, not
+# about schema_data.drift itself (covered by tests/test_schema_drift.py).
+# ---------------------------------------------------------------------------
+
+class TestSchemaDriftCaching:
+    def test_second_call_inside_the_ttl_does_not_reflect_again(self, client, monkeypatch):
+        import api.admin_ops_routes as admin_ops_routes_module
+
+        calls = {"n": 0}
+
+        def fake_check_schema_drift():
+            calls["n"] += 1
+            return _fake_drift_report()
+
+        monkeypatch.setattr(admin_ops_routes_module, "check_schema_drift", fake_check_schema_drift)
+
+        with cfg.override_settings(admin_expensive_cache_ttl_seconds=300):
+            first = client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+            second = client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+
+        assert first.status_code == 200 and second.status_code == 200
+        assert calls["n"] == 1, (
+            f"check_schema_drift ran {calls['n']} times for 2 calls inside the TTL"
+        )
+        assert first.json()["cache"]["cached"] is False
+        assert second.json()["cache"]["cached"] is True
+
+    def test_refresh_bypasses_the_cache(self, client, monkeypatch):
+        import api.admin_ops_routes as admin_ops_routes_module
+
+        calls = {"n": 0}
+
+        def fake_check_schema_drift():
+            calls["n"] += 1
+            return _fake_drift_report()
+
+        monkeypatch.setattr(admin_ops_routes_module, "check_schema_drift", fake_check_schema_drift)
+
+        with cfg.override_settings(admin_expensive_cache_ttl_seconds=300):
+            client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+            refreshed = client.get(
+                "/admin/schema-drift?refresh=1", headers=_auth(RAW_SECURITY_KEY),
+            )
+
+        assert calls["n"] == 2, "?refresh=1 must force a fresh reflection"
+        assert refreshed.json()["cache"]["cached"] is False
+
+    def test_cache_expires_after_the_ttl(self, monkeypatch):
+        """Direct function call, not through TestClient -- see
+        ``tests/test_admin.py::TestHealthChecksCaching.test_cache_expires_after_the_ttl``
+        for why patching the process-wide ``time.monotonic`` under a real
+        HTTP round trip (which also drives the rate limiter) is avoided."""
+        import api.admin_ops_routes as admin_ops_routes_module
+        import api.admin_result_cache as admin_result_cache_module
+        from api.admin_ops_routes import admin_schema_drift
+        from security.auth import OPERATIONS_CAPABILITY, Principal
+
+        calls = {"n": 0}
+
+        def fake_check_schema_drift():
+            calls["n"] += 1
+            return _fake_drift_report()
+
+        monkeypatch.setattr(admin_ops_routes_module, "check_schema_drift", fake_check_schema_drift)
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(admin_result_cache_module.time, "monotonic", lambda: clock["t"])
+
+        ops_principal = Principal(id="ops-1", name="Ops", capabilities=frozenset({OPERATIONS_CAPABILITY}))
+
+        with cfg.override_settings(admin_expensive_cache_ttl_seconds=5):
+            admin_schema_drift(refresh=False, principal=ops_principal)
+            clock["t"] += 6
+            expired = admin_schema_drift(refresh=False, principal=ops_principal)
+
+        assert calls["n"] == 2, "the cached result must expire once the TTL elapses"
+        assert expired["cache"]["cached"] is False
+
+    def test_a_failed_reflection_is_never_cached(self, client, monkeypatch):
+        import api.admin_ops_routes as admin_ops_routes_module
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("warehouse briefly unreachable")
+            return _fake_drift_report()
+
+        monkeypatch.setattr(admin_ops_routes_module, "check_schema_drift", flaky)
+
+        with cfg.override_settings(admin_expensive_cache_ttl_seconds=300):
+            first = client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+            second = client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+
+        assert first.status_code == 503
+        assert second.status_code == 200
+        assert calls["n"] == 2, "a failed reflection must not be cached as a false success"
+
+
 # ---------------------------------------------------------------------------
 # Vocabulary freshness + manual refresh
 # ---------------------------------------------------------------------------

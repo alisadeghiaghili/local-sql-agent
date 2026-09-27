@@ -34,10 +34,23 @@ from typing import Any, Callable
 from fastapi import APIRouter, Depends, Query
 
 import config as cfg
+from api.admin_result_cache import admin_expensive_cache
 from api.auth import require_admin
 from security.auth import Principal
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+#: scripts.verify_deployment checks this admin-panel route never runs
+#: automatically -- Required item 2, 2026 warehouse-load audit.
+#: ``check_login_is_read_only`` attempts a real (always-rolled-back)
+#: ``CREATE TABLE`` against the warehouse; ``check_query_timeout`` runs a
+#: ``WAITFOR DELAY`` probe that deliberately blocks for several seconds.
+#: Both are safe to run deliberately (that is exactly what
+#: ``python -m scripts.verify_deployment`` -- the CLI, unaffected by this
+#: set -- is for) but neither belongs in a check this panel would ever
+#: run on a timer or on every page load; see ``admin_health_checks``'s
+#: own ``deep`` parameter below.
+_DEEP_CHECK_NAMES = frozenset({"check_login_is_read_only", "check_query_timeout"})
 
 
 # ---------------------------------------------------------------------------
@@ -100,31 +113,82 @@ def admin_summary(
 
 @router.get(
     "/health/checks",
-    summary="Run scripts.verify_deployment's checks now",
+    summary="Run scripts.verify_deployment's checks now (cached)",
 )
-def admin_health_checks(principal: Principal = Depends(require_admin)) -> dict[str, Any]:
+def admin_health_checks(
+    refresh: bool = Query(
+        False,
+        description=(
+            "Bypass this route's own cached result and run the checks now, "
+            "regardless of ADMIN_EXPENSIVE_CACHE_TTL_SECONDS."
+        ),
+    ),
+    deep: bool = Query(
+        False,
+        description=(
+            "Also run check_login_is_read_only (a rolled-back CREATE TABLE "
+            "DDL attempt) and check_query_timeout (a WAITFOR DELAY probe). "
+            "Both are skipped by default from this panel route -- see the "
+            "route's own docstring -- and always run from the CLI "
+            "(python -m scripts.verify_deployment) regardless of this flag."
+        ),
+    ),
+    principal: Principal = Depends(require_admin),
+) -> dict[str, Any]:
     """Every check ``python scripts/verify_deployment.py`` runs, executed now
     against this running deployment — no analysis is reimplemented here.
     Every one of those checks is already safe to run against a live system
     (see that module's own "Safety" docstring section: read-only, with the
     one deliberate write attempt always rolled back) — this route adds no
     new risk by calling them from a request instead of a shell.
+
+    Required item 1/2, 2026 warehouse-load audit
+    ---------------------------------------------
+    Two changes on top of "just run every check": the result is cached for
+    :attr:`config.Settings.admin_expensive_cache_ttl_seconds` (``refresh=1``
+    forces a fresh run; the panel's own auto-refresh no longer calls this
+    route at all -- see ``web/admin/main.js``), and ``check_login_is_read_only``
+    /``check_query_timeout`` (see :data:`_DEEP_CHECK_NAMES`) are skipped
+    unless ``deep=1`` is explicitly passed -- a DDL attempt and a multi-
+    second WAITFOR probe have no business running on a timer or on every
+    page load, only when an operator deliberately asks for them.
     """
     from scripts.verify_deployment import _CHECKS, CheckResult
 
-    results: list[CheckResult] = []
-    for check in _CHECKS:
-        try:
-            results.append(check())
-        except Exception as exc:  # noqa: BLE001 - a check must never crash this route
-            results.append(
-                CheckResult(check.__name__, "FAIL", f"check raised unexpectedly: {exc}")
-            )
+    checks_to_run = (
+        _CHECKS if deep else [c for c in _CHECKS if c.__name__ not in _DEEP_CHECK_NAMES]
+    )
+
+    def _run_checks() -> list[CheckResult]:
+        results: list[CheckResult] = []
+        for check in checks_to_run:
+            try:
+                results.append(check())
+            except Exception as exc:  # noqa: BLE001 - a check must never crash this route
+                results.append(
+                    CheckResult(check.__name__, "FAIL", f"check raised unexpectedly: {exc}")
+                )
+        return results
+
+    # Deep and non-deep results are cached separately -- a plain refresh
+    # must never serve a stale answer that happens to have come from a
+    # deep run, or vice versa.
+    cache_key = "health_checks_deep" if deep else "health_checks"
+    cached = admin_expensive_cache.get_or_compute(
+        cache_key, cfg.settings.admin_expensive_cache_ttl_seconds, _run_checks, force=refresh,
+    )
+    results: list[CheckResult] = cached.value
 
     return {
         "checks": [
             {"name": r.name, "status": r.status, "detail": r.detail} for r in results
         ],
+        "deep": deep,
+        "cache": {
+            "cached": cached.cached,
+            "age_seconds": round(cached.age_seconds, 1),
+            "ttl_seconds": cached.ttl_seconds,
+        },
     }
 
 
