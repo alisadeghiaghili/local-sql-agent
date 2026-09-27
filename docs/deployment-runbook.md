@@ -416,7 +416,7 @@ attempts and catalogue scans) back to a few specific sources.
 | Source | What it sends | How often | Controlled by |
 |---|---|---|---|
 | Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
-| `GET /health` (`api/health.py`) | One connection checkout (pre-ping) or one explicit `SELECT 1` if pre-ping is off — never both | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
+| `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment._CHECKS` minus the two deep checks below) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt and `check_query_timeout`'s multi-second `WAITFOR DELAY` probe | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
@@ -443,16 +443,30 @@ trade-off, on both.
 Before this change, the probe ran on *every* checkout regardless of idle
 time — a DBA-visible `SELECT 1` scaling with checkout rate (i.e. with query
 volume) rather than with how often a connection actually needed
-re-verifying. Setting `DB_POOL_PING_IDLE_SECONDS=0` restores exactly that
-old behaviour, for an operator who wants the simpler guarantee back.
+re-verifying. Setting `DB_POOL_PING_IDLE_SECONDS=0` restores that old,
+simpler guarantee for an operator who wants it back — pinging literally
+every checkout — with one narrow, rarely-observable exception: SQLAlchemy's
+own `pool_pre_ping=True` never pings the very first checkout of a
+brand-new physical connection (a one-time internal "fresh" flag,
+independent of idle time), while `DB_POOL_PING_IDLE_SECONDS=0` here pings
+even that one, since it honours "every checkout" literally. See
+`database.pool_ping.install_idle_aware_ping`'s docstring for the full
+detail; the difference shows up at most once per physical connection, on
+its very first use, never again after.
 
 **Leave `DB_POOL_PRE_PING` on (the default)** unless you have a specific
 reason not to: a connection that went stale while idle in the pool (the
 SQL Server side closed it, or a firewall/load balancer idle-timed it out)
 is silently discarded and replaced instead of failing a real query. A
-failed idle-aware probe raises SQLAlchemy's own `DisconnectionError`, which
-makes the pool discard and transparently replace the connection *before*
-the caller's own statement runs — the caller never sees the failure.
+failed idle-aware probe raises SQLAlchemy's own `InvalidatePoolError` --
+the same exception plain `pool_pre_ping=True`'s own dialect-level ping
+raises on failure -- which makes the pool invalidate and transparently
+replace *every* pooled connection, not just the one that was probed,
+before the caller's own statement runs. That matters for the common real
+cause of a failed ping: a server restart or a firewall/load-balancer
+dropping every idle connection at once is one failure away from full
+recovery, not one failure per pooled connection discovered one-by-one on
+its own next checkout — the caller never sees any of it either way.
 
 **Turning `DB_POOL_PRE_PING` off** removes the probe entirely, at every
 idle threshold. A connection that went stale is then only discovered when
