@@ -23,16 +23,30 @@ same mistake spelled differently, and a string comparison would miss it.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import StaticPool
 
 import config as cfg
 from core.fileperms import restrict_sqlite_family
+
+#: How long a writer waits for SQLite's single write lock to clear before
+#: raising ``OperationalError("database is locked")``, in milliseconds --
+#: applied via ``PRAGMA busy_timeout`` on every physical connection a
+#: file-backed engine opens (see :func:`_set_file_sqlite_pragmas`). Two
+#: admin routes writing the application database at the same time (the
+#: concurrency bug this module now guards against) is a lock held for a
+#: few milliseconds, not seconds -- 30 seconds is not tuned to that case,
+#: it is tuned to survive a slow disk or a much larger burst of concurrent
+#: admin requests than this deployment's scale ever expects, while still
+#: failing loudly well within any HTTP client's own timeout if the lock
+#: genuinely never clears (e.g. a stuck transaction).
+_SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 #: Host spellings that all name "this machine" for the purpose of deciding
 #: whether two connection URLs point at the same server. Not an exhaustive
@@ -164,6 +178,131 @@ def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:
         )
 
 
+def _is_memory_sqlite_url(made) -> bool:
+    """True for ``sqlite://`` and ``sqlite:///:memory:`` -- no on-disk file
+    at all, the same predicate :func:`_canonical_endpoint` already applies
+    for the identical reason (that URL names no file a second connection
+    could ever open and see the same data through)."""
+    return not made.database or made.database == ":memory:"
+
+
+def _set_file_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """SQLAlchemy ``"connect"`` listener: put every new physical connection
+    a file-backed engine's pool opens into WAL journal mode with a busy
+    timeout, before this codebase ever runs a statement on it.
+
+    Both are set here, on the raw DBAPI connection, rather than once via
+    ``engine.begin()`` right after ``create_engine`` -- a pooled engine
+    opens more than one physical connection over its lifetime (this is
+    the whole point of moving off ``StaticPool``, see :func:`build_engine`),
+    and ``PRAGMA busy_timeout`` is a per-*connection* setting that a
+    fresh connection does not inherit from an earlier one. ``journal_mode``
+    itself IS persisted in the database file's header and would already
+    read back as ``wal`` on a later connection without this -- it is
+    re-issued anyway for the ordinary reason every ``PRAGMA journal_mode``
+    caller re-issues it (cheap, a no-op once the file is already in WAL
+    mode, and correct on the very first connection that creates the file,
+    which is the one connection where it is not yet a no-op).
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
+
+
+def _serialize_memory_engine(engine: Engine) -> None:
+    """Make *engine* (a ``:memory:``/``sqlite://`` engine on ``StaticPool``)
+    safe for concurrent callers by serialising every checkout.
+
+    ``StaticPool`` hands every caller the exact same ``sqlite3.Connection``
+    object -- required for an in-memory database (see :func:`build_engine`),
+    but that object is not safe for two threads to drive at once even with
+    ``check_same_thread=False``: that flag only lifts pysqlite's own
+    same-thread guard, it adds no locking of its own, and two threads
+    calling ``execute``/``commit``/``rollback`` on the one shared
+    connection at literally the same moment is exactly what produced this
+    module's original bug report (``sqlite3.InterfaceError``,
+    ``OperationalError: cannot commit -- no transaction is active``, and
+    rows left inconsistent).
+
+    Not implemented with SQLAlchemy's pool ``checkout``/``checkin``
+    events -- that was the first attempt, and it deadlocks. ``StaticPool``
+    does not itself limit how many ``_ConnectionFairy`` wrappers can be
+    checked out against its one connection at a time (unlike ``QueuePool``,
+    which blocks a second checkout with a real semaphore); under genuine
+    concurrent overlap, one checkout's matching ``checkin`` event was
+    observed to simply never fire (reproduced directly while building this
+    fix: instrumented logging showed a ``checkout`` with no following
+    ``checkin`` before the next statement ran). A lock acquired on
+    ``checkout`` and released on ``checkin`` then never gets released by
+    the thread that "lost" that checkin, and every other thread blocks on
+    it forever -- the exact hang this module must not reintroduce.
+
+    Instead, this wraps *engine*'s own ``connect`` method (an ordinary
+    instance-attribute override -- ``Engine.begin()`` itself calls
+    ``self.connect()`` internally, and both an :class:`~sqlalchemy.engine.
+    Connection`` and an :class:`~sqlalchemy.engine.Engine` carry a real
+    ``__dict__`` despite declaring ``__slots__ = ()``, inherited from a
+    non-slotted base, so both directions of this patch are ordinary
+    attribute assignment, not something ``__slots__`` blocks): acquire the
+    lock, obtain the real connection, then patch *that connection's* own
+    ``close`` to release the lock exactly once (guarded against a second,
+    redundant ``close()`` call, which :class:`~sqlalchemy.engine.Connection`
+    itself allows) before delegating to the original ``close``. Every
+    caller in this codebase only ever uses ``with engine.begin() as conn:``
+    or ``with engine.connect() as conn:`` (a context manager calls
+    ``__exit__`` -> ``close()`` unconditionally, success or exception), so
+    this reliably brackets exactly one checkout's full lifetime, however it
+    ends. It is also robust to code that does not use ``with`` at all --
+    ``sqlalchemy.inspect(engine)`` calls plain ``engine.connect().close()``
+    internally, and was exercised directly while building this fix.
+
+    This is a deliberate throughput-for-safety trade unique to the
+    in-memory path: every operation against this engine now queues behind
+    every other, on every connection, even two reads that would otherwise
+    never conflict. ``tests/conftest.py`` is the only place this
+    codebase configures ``APP_DB_URL=sqlite://`` (see that file's own
+    comment on why: an isolated, disk-free default for the whole test
+    suite) -- a real deployment's zero-configuration fallback is the file
+    at :attr:`config.Settings.app_db_sqlite_path`, which takes the
+    per-connection, per-checkout pool below instead, precisely so
+    production traffic is never serialised this way. A deployment that
+    explicitly sets ``APP_DB_URL`` to an in-memory SQLite URL inherits the
+    same trade-off, which is the correct, safe default for that choice
+    rather than the corruption the unserialised version of this function
+    had.
+    """
+    lock = threading.RLock()
+    real_connect = engine.connect
+
+    def _locking_connect(*args, **kwargs):
+        lock.acquire()
+        try:
+            conn = real_connect(*args, **kwargs)
+        except BaseException:
+            lock.release()
+            raise
+
+        real_close = conn.close
+        released = False
+
+        def _locking_close(*a, **kw):
+            nonlocal released
+            try:
+                return real_close(*a, **kw)
+            finally:
+                if not released:
+                    released = True
+                    lock.release()
+
+        conn.close = _locking_close
+        return conn
+
+    engine.connect = _locking_connect
+
+
 def build_engine(url: str) -> Engine:
     """Build a fresh SQLAlchemy engine for *url*, with no table creation and
     no caching -- the shared per-backend pool logic :func:`get_app_engine`
@@ -173,12 +312,48 @@ def build_engine(url: str) -> Engine:
     ``lru_cache(maxsize=1)`` singleton, which only ever holds one engine
     for whatever ``APP_DB_URL`` currently resolves to.
 
-    A SQLite URL is given ``poolclass=StaticPool`` plus
-    ``check_same_thread=False`` for the same reason :func:`get_app_engine`
-    always has: SQLite's file locking is unreliable under SQLAlchemy's
-    default pool across threads, and an in-memory URL (``sqlite://``)
-    specifically requires a single shared connection or every checkout
-    would see an empty, independent database.
+    Pool choice, by SQLite shape (corrected from an earlier, wrong claim
+    that shipped here: this function used to give *every* SQLite URL
+    ``poolclass=StaticPool``, on the reasoning that "SQLite's file locking
+    is unreliable under SQLAlchemy's default pool across threads". That
+    is backwards -- a file-backed database is exactly where the *default*
+    pool is the safe choice, and ``StaticPool`` was the actual source of a
+    real, reproduced bug: FastAPI runs this codebase's synchronous admin
+    and analyst routes in a thread pool, so ``StaticPool``'s one shared
+    ``sqlite3.Connection`` was being driven by two threads at once, and
+    one thread's commit or rollback ended the other's, mid-transaction --
+    ``sqlite3.InterfaceError``, ``OperationalError: cannot commit -- no
+    transaction is active``, and rows left inconsistent, all reproduced
+    against ``appdb.access_requests``/``appdb.key_store`` racing from real
+    threads. ``check_same_thread=False`` never made this safe; it only
+    disables pysqlite's guard *against* exactly this):
+
+    * **A named file** gets no explicit ``poolclass`` at all, i.e.
+      SQLAlchemy's own default for a file-based pysqlite URL --
+      ``QueuePool``. Every checkout that cannot be served by an idle,
+      already-open connection opens its own new ``sqlite3.Connection``,
+      so two callers on two threads never share one connection and never
+      race each other's commits or rollbacks; SQLite's own file locking
+      (a writer lock the whole database, not per-row) is what serialises
+      their *writes* correctly, exactly as it does for any other
+      multi-connection SQLite user. A ``"connect"`` listener
+      (:func:`_set_file_sqlite_pragmas`) puts every one of those
+      connections into WAL journal mode (so a reader never blocks the
+      writer, and vice versa) with a busy timeout (so a writer that finds
+      the database locked by another writer waits for it to finish
+      instead of failing immediately with ``OperationalError``).
+    * **``:memory:``/``sqlite://``** keeps ``poolclass=StaticPool`` plus
+      ``check_same_thread=False`` -- not for file-locking reasons at all,
+      but because an in-memory database only exists inside one
+      ``sqlite3.Connection``'s process memory: SQLAlchemy's default pool
+      would hand each checkout an independent, empty database, and every
+      write would vanish outside the transaction that made it. Since that
+      still means every caller shares the one connection the bug above
+      was found on, :func:`_serialize_memory_engine` wraps it in a
+      process-wide lock so this path is safe under concurrency too, at
+      the cost of serialising every transaction against it (see that
+      function's docstring for why that trade-off is confined to this
+      path).
 
     Deliberately does NOT call :func:`appdb.models.create_all` -- unlike
     :func:`get_app_engine`, whose whole point is the zero-configuration
@@ -188,9 +363,15 @@ def build_engine(url: str) -> Engine:
     """
     made = make_url(url)
     if made.get_backend_name() == "sqlite":
-        return create_engine(
-            url, poolclass=StaticPool, connect_args={"check_same_thread": False},
-        )
+        if _is_memory_sqlite_url(made):
+            engine = create_engine(
+                url, poolclass=StaticPool, connect_args={"check_same_thread": False},
+            )
+            _serialize_memory_engine(engine)
+            return engine
+        engine = create_engine(url)
+        event.listen(engine, "connect", _set_file_sqlite_pragmas)
+        return engine
     return create_engine(url, pool_pre_ping=True)
 
 
@@ -203,6 +384,13 @@ def get_app_engine() -> Engine:
     built once, on first call, and reused thereafter. Call
     :func:`dispose_app_engine` to force a fresh engine (test teardown, or a
     changed ``APP_DB_URL`` picked up via ``config.override_settings``).
+    Caching the *engine*, not a connection, is what makes this safe under
+    concurrent callers regardless of backend: :func:`build_engine` (which
+    this delegates to for the actual construction -- see its docstring for
+    the pool this singleton gets per SQLite shape) hands out an engine
+    whose own pool is what mediates concurrent checkouts, so two threads
+    calling this function at once always get the *same* engine object and
+    each still gets its own safe connection from it.
 
     Every table in :data:`appdb.models.metadata` is created
     (``checkfirst=True``, a no-op if they already exist) the moment the
