@@ -186,6 +186,15 @@ class TestSettings:
                 openai_model="gpt-oss-20b", db_connection_url=url, sql_dialect=dialect,
             ).validate()
 
+    def test_validate_skips_the_dialect_check_for_an_unmapped_backend(self, tmp_path):
+        """A backend with no sqlglot-dialect mapping is a different concern;
+        the consistency check has nothing to compare and must not refuse it."""
+        Settings(
+            openai_model="gpt-oss-20b",
+            db_connection_url="firebird://prod-db-host/realdb",
+            project_config_dir=str(tmp_path),
+        ).validate()
+
     def test_validate_rejects_sql_dialect_mismatched_with_connection_url(self):
         """SQL_DIALECT=postgres against a still-mssql DB_CONNECTION_URL is
         a real misconfiguration -- every query would fail at execution

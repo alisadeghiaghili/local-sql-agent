@@ -108,3 +108,25 @@ class TestSchemaContextDataSources:
             ctx = SchemaRegistry.build_context(("Customer", "Ring"))
         assert "Data source: main" in ctx
         assert "must come from the same data source" not in ctx
+
+
+class TestSchemaContextMultiPartQualifier:
+    """A table in another database on the same server (multi-part
+    ``db_schema``) gets a ``Reference as:`` line so the model writes the
+    three-part name; a one-part ``db_schema`` renders nothing new."""
+
+    def test_multi_part_db_schema_adds_a_reference_line(self):
+        with patch(
+            "schema_data.registry.get_table_schema_qualifiers",
+            return_value={"Customer": "OtherDb.dbo"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer",))
+        assert "Reference as: [OtherDb].[dbo].[Customer]" in ctx
+
+    def test_single_part_db_schema_adds_no_reference_line(self):
+        with patch(
+            "schema_data.registry.get_table_schema_qualifiers",
+            return_value={"Customer": "sales"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer",))
+        assert "Reference as:" not in ctx

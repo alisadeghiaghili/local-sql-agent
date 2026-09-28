@@ -342,3 +342,46 @@ class TestMultipleDataSources:
 
         assert "Gadget" in report.unverifiable_tables
         assert "Widget" not in report.unverifiable_tables
+
+
+class TestSourceWithNoTables:
+    def test_a_source_that_owns_no_table_is_never_connected_to(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        """A configured source no ``schema.yaml`` table belongs to has
+        nothing to compare, so its engine is never built."""
+        import database.datasources as datasources_module
+
+        (schema_dir / "datasources.yaml").write_text(
+            "default: main\n"
+            "datasources:\n"
+            "  main:\n    url_env: DB_URL_MAIN\n"
+            "  archive:\n    url_env: DB_URL_ARCHIVE\n",
+            encoding="utf-8",
+        )
+        _write_schema(schema_dir, {
+            "Widget": {"description": "t", "columns": {"ID": "primary key"}},
+        })
+        main_engine = create_engine(f"sqlite:///{tmp_path / 'main.db'}")
+        with main_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE Widget (ID INTEGER)"))
+        requested: list[str | None] = []
+
+        def _get_engine(name=None):
+            requested.append(name)
+            return main_engine
+
+        try:
+            with override_settings(project_config_dir=str(schema_dir)):
+                registry_module._cache.clear()
+                datasources_module.reset_datasources_cache()
+                with pytest.MonkeyPatch.context() as mp:
+                    mp.setattr("database.connection.get_engine", _get_engine)
+                    report = check_schema_drift()
+        finally:
+            main_engine.dispose()
+            registry_module._cache.clear()
+            datasources_module.reset_datasources_cache()
+
+        assert requested == ["main"]
+        assert report.schema_only == ()
