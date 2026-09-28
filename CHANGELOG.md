@@ -5,40 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [6.1.0] — 2026-09-28
 
-A deployment can now query more than one warehouse database, possibly on
-different servers.
+A deployment can query more than one warehouse database, including
+databases on different servers. Existing setups keep working unchanged.
 
 ### Added
 
-- **Multiple warehouse data sources.** `project_config/datasources.yaml`
-  (optional) lists named sources, each giving only the *name* of an
-  environment variable holding its connection string — never the
-  connection string itself, since the file is versioned like
-  `schema.yaml`. Its absence keeps every earlier release's behaviour
-  exactly as it was: one source, `"default"`, using `DB_CONNECTION_URL`.
-  See `docs/design/DATASOURCES.md` for the full design and
-  `docs/deployment-runbook.md` §16 for configuring and verifying it.
-- **Per-table `datasource:` in `schema.yaml`.** A table names the source
-  it lives in; a table without one belongs to the default source. Table
-  names stay globally unique across every source. Several databases on
-  one SQL Server instance are one data source — a table in a second
-  database on that instance sets a multi-part `db_schema: "OtherDb.dbo"`
-  instead, rendered `[OtherDb].[dbo].[Table]`.
-- **Automatic, guard-enforced query routing.** The data source a query
-  runs on is derived from the tables it references, never chosen by the
-  model. A query whose tables span two sources is refused (guard reason
-  `cross_datasource`), with a Persian sentence in the web UI explaining
-  why.
-- **`/health` and `scripts/verify_deployment.py` cover every source.**
-  `/health`'s `database_detail` names each source once more than one is
-  configured; the deployment-verification checks (connectivity,
-  read-only login, row cap, query timeout) run once per source.
-- **The audit trail records each query's data source.** The new
-  `datasource` field names the source the SQL targeted, including SQL the
-  guard refused; it is empty when no SQL was generated or its tables span
-  two sources. Older records simply lack the field.
+- **Multiple warehouse data sources (PR #131).** `project_config/datasources.yaml` is optional and lists named sources. Each source names only the environment variable holding its connection string, for example `url_env: DB_URL_MAIN`. The connection string itself stays in `.env`, because `project_config/` is versioned and reviewed.
+  - Without the file there is one source, `default`, using `DB_CONNECTION_URL`, exactly as before.
+  - A template is in `project_config.example/datasources.example.yaml`; the design and roadmap are in `docs/design/DATASOURCES.md`.
+- **Each table names its source (PR #131).** A `schema.yaml` table may set `datasource:`; a table without it belongs to the default source. Several databases on one server are one source: a table in another database on that server sets a multi-part `db_schema: "OtherDb.dbo"`, rendered `[OtherDb].[dbo].[Table]`.
+- **Queries are routed by their tables (PR #131).** The source is derived from the tables a query reads, never chosen by the model. One query runs on one source. A query whose tables span two sources is refused with the new guard reason `cross_datasource`, and the web UI explains why in Persian.
+- **Every source is checked (PR #131).**
+  - Startup refuses an application database that matches any source, and a table assigned to a source that is not configured. Admin-panel `schema.yaml` drafts are checked the same way.
+  - `/health` pings every source; `database_detail` names each one when there are several.
+  - `scripts/verify_deployment.py` and the admin panel run the connectivity, read-only login, row cap and query timeout checks once per source.
+  - Schema drift compares each source's tables against that source's own server.
+- **The audit record names the data source (PR #131).** The new `datasource` field is the source the query's SQL targeted. Older records simply lack it.
+
+### Upgrading
+
+- No action needed for a single-database setup.
+- **To add a second database on the same server,** keep one source and give the table a multi-part `db_schema`, such as `OtherDb.dbo`.
+- **To add a database on another server,** copy `datasources.example.yaml` to `project_config/datasources.yaml`, set one `DB_URL_*` variable per source in `.env`, add `datasource:` to that server's tables in `schema.yaml`, and restart. Create the read-only login on every source's server (`docs/db-hardening.md`), then run `python scripts/verify_deployment.py`.
+- Changing `datasources.yaml` needs a restart.
 
 ## [6.0.2] — 2026-09-28
 
