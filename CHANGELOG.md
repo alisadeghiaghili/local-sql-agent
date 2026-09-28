@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+A warehouse with the same table name in more than one schema can now be
+described in `schema.yaml`, and a query's schema qualifier is actually
+checked against the allowlist instead of being ignored.
+
+### Fixed
+
+- **`schema.yaml` table keys may be qualified.** A key may carry 1–3 leading qualifier parts (`sales.Customer`, `OtherDb.dbo.Customer`), parsed the same way a real query would be (brackets, `]]` escapes). This is what lets a warehouse with the same table name in two schemas (`sales.Customer`/`ref.Customer`) describe both, instead of the second one colliding with or silently shadowing the first. The key as written stays that table's identity everywhere — the prompt's schema block, the audit trail, `relationships`.
+- **A duplicated bare name in the prompt is disambiguated.** The schema block prints a `Reference as: [q1].[q2].[Name]` line whenever a table's qualifier is multi-part or its bare name is shared by another key, not only for the multi-part case as before.
+- **An unqualified reference to an ambiguous table is refused, with the fix named.** `SELECT ... FROM Customer` when `schema.yaml` has both `sales.Customer` and `ref.Customer` is refused with a new guard reason, `ambiguous_table`, naming both qualified references to write instead — rather than silently picking one or erroring unhelpfully.
+
+### Security
+
+- **A query's schema/database qualifier is now checked, not ignored — this closes a real allowlist-bypass hole.** Previously, a table's qualifier (`[hr].[Customer]` vs. an allowlisted `sales.Customer`) was never examined: the guard matched by bare name only, so a query could reach a table **not** in the allowlist just by writing a different schema in front of an allowlisted bare name. An explicitly qualified reference must now match a known qualifier exactly, or the query is refused (`unknown_table`, naming the correct reference). A table with **no** qualifier configured at all (bare key, no `db_schema`) is a documented, residual exception — its qualifier cannot be checked, so any qualifier (or none) is still accepted for it; see `docs/design/TABLE-NAMES.md`.
+
+### Upgrading
+
+- No action needed for a `schema.yaml` with unique bare table names and single-part (or no) `db_schema` — prompts and guard behaviour are unchanged, except for the security tightening above.
+- **If a deployment has the same table name in more than one schema,** split it into qualified keys (`sales.Customer:`, `ref.Customer:`) instead of one bare `Customer:` key — the old shape could only ever describe one of them correctly.
+- **Setting `db_schema` on every table, including a bare-keyed one, is now recommended** — it is what lets the guard check that table's qualifier at all. A deployment that leaves `db_schema` unset for a bare-keyed table keeps today's behaviour for it (any qualifier, or none, still resolves) rather than gaining the new check.
+
 ## [6.1.0] — 2026-09-28
 
 A deployment can query more than one warehouse database, including

@@ -629,6 +629,16 @@ this way.
    database on the **same** server as an existing source is not a new
    source at all — give it a multi-part `db_schema: "OtherDb.dbo"`
    instead and leave `datasource` unset.
+
+   **If your warehouse has the same table name in more than one schema**
+   (e.g. `sales.Customer` and `ref.Customer`), give each one its own
+   qualified `schema.yaml` key (`sales.Customer:`, `ref.Customer:`)
+   instead of colliding on `Customer:` — see `docs/design/TABLE-NAMES.md`.
+   This applies whether or not you use `datasources.yaml` at all; it is
+   worth doing even for a single-source deployment. Give **every** table a
+   `db_schema`, even a bare-keyed one, while you're there — a table with
+   no qualifier configured at all cannot have its schema checked by the
+   guard, so a query naming the wrong schema for it still resolves.
 4. Restart the server. Like `.env` itself, `datasources.yaml` is
    deployment config edited on disk, not one of the nine files the admin
    panel's versioned config bundle covers — a change to it needs a

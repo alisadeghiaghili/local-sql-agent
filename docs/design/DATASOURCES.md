@@ -49,6 +49,14 @@ question that might touch either one.
   `[OtherDb].[dbo].[Table]` (`security.dialects.quote_tsql_qualifier`).
   Nothing about routing changes — it is still one connection, one pool,
   one login.
+- Table names are globally unique **as `schema.yaml` keys**, not
+  necessarily as bare names: a warehouse with the same table name in two
+  schemas (`sales.Customer`, `ref.Customer`) gives each one its own
+  qualified key rather than colliding on `Customer` — see
+  `docs/design/TABLE-NAMES.md`. This is orthogonal to data sources: two
+  same-bare-name tables can be on the same source or on two different
+  ones, and `database.routing`/`extract_touched_tables` key everything off
+  the full `schema.yaml` key either way.
 - The data source a query runs on is **derived from the tables it
   references**, never chosen by the model
   (`database.routing.resolve_datasource`, fed by

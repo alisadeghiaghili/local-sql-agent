@@ -9,8 +9,28 @@
 #     below WITH a `columns` key, or it is rejected outright.
 #
 # tables:
-#   Each top-level key is a table name (as it appears in FROM/JOIN clauses,
-#   without a schema qualifier).
+#   Each top-level key is a table KEY: bare (as it appears in FROM/JOIN
+#   clauses with no qualifier, e.g. "Customer") or QUALIFIED with 1-3
+#   leading parts ("sales.Customer", "OtherDb.dbo.Customer") when your
+#   warehouse has the SAME table name in more than one schema -- see
+#   docs/design/TABLE-NAMES.md. Brackets and a doubled `]]` escape are
+#   understood the same way they would be in a real query. Whichever form
+#   you use, the key AS WRITTEN is that table's identity everywhere --
+#   in the prompt's schema block, the guard's audit trail, and this
+#   file's own `relationships` list.
+#
+#   A table's EFFECTIVE qualifier (what the guard actually checks a query's
+#   own qualifier against) is the key's own leading parts when it has any,
+#   else `db_schema` below. Recommended: give EVERY table a `db_schema`,
+#   even a bare-keyed one in a single-schema deployment -- a table with NO
+#   qualifier at all (neither in its key nor in `db_schema`) cannot have
+#   its qualifier checked by the guard, so a query naming any schema (or
+#   none) for it still resolves; setting `db_schema` is what turns that
+#   check on. If a key IS qualified and `db_schema` is also given, the two
+#   must agree, case-insensitively -- `schema.yaml` validation fails
+#   otherwise. Two keys that resolve to the same (qualifier, bare name)
+#   also fail validation; two DIFFERENT qualifiers sharing a bare name
+#   (this file's own `sales.*`/`ref.*` pattern) do not.
 #     description : human-readable summary shown in the prompt's schema
 #                   block. Include the fully-qualified name (schema.table)
 #                   and any native-language synonyms your users might type.
@@ -22,19 +42,27 @@
 #                   a partial one, once you want that table queryable.
 #     db_schema   : (optional) this table's schema/database qualifier, e.g.
 #                   "sales" -- used to build a `[db_schema].[table]`
-#                   reference in retrieval.value_resolver / retrieval.dimension_vocabulary.
-#                   Required whenever resolvable_columns or prefetchable_columns
-#                   is non-empty. A warehouse with more than one schema (this
-#                   example has two: "sales" and "ref") just gives each
-#                   table its own value -- there is no single global schema
-#                   constant anywhere in the code. May be MULTI-PART
-#                   ("OtherDb.dbo") for a table in a second database on the
-#                   SAME SQL Server instance -- renders the three-part
-#                   `[OtherDb].[dbo].[Table]` reference SQL Server expects
+#                   reference in retrieval.value_resolver / retrieval.dimension_vocabulary
+#                   (via schema_data.registry.table_reference_sql, using
+#                   the table's BARE name regardless of whether its key is
+#                   qualified). Required whenever resolvable_columns or
+#                   prefetchable_columns is non-empty AND the key itself is
+#                   bare (a qualified key's own qualifier already satisfies
+#                   that requirement without db_schema). A warehouse with
+#                   more than one schema (this example has two: "sales" and
+#                   "ref") just gives each table its own value -- there is
+#                   no single global schema constant anywhere in the code.
+#                   May be MULTI-PART ("OtherDb.dbo") for a table in a
+#                   second database on the SAME SQL Server instance --
+#                   renders the three-part `[OtherDb].[dbo].[Table]`
+#                   reference SQL Server expects
 #                   (security.dialects.quote_tsql_qualifier). Up to three
 #                   parts (server.database.schema). A table on a genuinely
 #                   different SERVER is not a db_schema at all -- see
-#                   `datasource` below.
+#                   `datasource` below. An UNQUALIFIED reference to a
+#                   table whose only known qualifier is multi-part is
+#                   refused, not guessed -- see docs/design/TABLE-NAMES.md
+#                   for why.
 #     datasource  : (optional) which entry of `datasources.yaml` this table
 #                   lives in (see datasources.example.yaml and
 #                   docs/design/DATASOURCES.md). Absent (the default) means
