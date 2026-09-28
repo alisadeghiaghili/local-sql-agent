@@ -51,6 +51,7 @@ import api.v2_routes as v2_routes
 from api.auth import AuthMiddleware, get_principal_if_any, require_principal
 from api.errors import register_handlers
 from api.maintenance import require_not_in_maintenance
+from core.logging_setup import configure_stdlib_logging
 from core.provenance import log_startup_notice
 from core.version import __version__
 from api.middleware import (
@@ -137,10 +138,22 @@ async def _run_query_bounded(**kwargs) -> QueryResponse:
 async def lifespan(app: FastAPI):
     global _system_prompt
 
-    # Stated before anything can fail: an operator who never reaches a
-    # working config should still have seen whose work this is and on what
-    # terms. See core/provenance.py for why this is a log line and not a
-    # licence check that could refuse to start.
+    # Neither documented way of starting this API (a plain `uvicorn
+    # api.server:app ...`, or `python -m api`) otherwise makes a single
+    # INFO line -- this function's own provenance banner and CORS line
+    # among them -- reach anywhere: uvicorn's default logging config never
+    # touches the ROOT logger, which Python itself starts at WARNING with
+    # no handler. A no-op once an operator (or this same call, on a
+    # second lifespan start in one process, e.g. under a test) has
+    # already configured logging -- see core.logging_setup's module
+    # docstring for the full mechanism. Must run before the first log
+    # call below, or that call is the one that gets silently dropped.
+    configure_stdlib_logging(cfg.settings.log_level)
+
+    # Stated before anything else can fail: an operator who never reaches
+    # a working config should still have seen whose work this is and on
+    # what terms. See core/provenance.py for why this is a log line and
+    # not a licence check that could refuse to start.
     log_startup_notice(logger)
 
     try:

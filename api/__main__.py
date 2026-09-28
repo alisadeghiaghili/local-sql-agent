@@ -33,6 +33,7 @@ from __future__ import annotations
 import uvicorn
 
 import config as cfg
+from core.logging_setup import configure_stdlib_logging
 
 
 def main() -> None:
@@ -47,7 +48,16 @@ def main() -> None:
     (the programmatic equivalent of the CLI flag, see uvicorn's own
     ``Config`` docs) is the only place that banner is actually suppressed
     on the wire.
+
+    Also configures stdlib logging (see ``core.logging_setup``) before
+    handing off to uvicorn -- defence in depth alongside the identical
+    call in ``api/server.py``'s ``lifespan`` (idempotent, so whichever
+    runs first is the one that actually attaches the handler; this call
+    is what makes ``python -m api``'s own first log lines land even if
+    something one day reaches this process's logger before the ASGI
+    lifespan starts).
     """
+    configure_stdlib_logging(cfg.settings.log_level)
     uvicorn.run(
         "api.server:app",
         host=cfg.settings.api_host,

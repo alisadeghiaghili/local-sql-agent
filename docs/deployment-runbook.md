@@ -230,6 +230,20 @@ If the UI's own origin is not in that list (and the UI is not
 same-origin with the API), that is the fix — see the CORS callout in
 step 4 above before assuming anything else is wrong.
 
+If neither line appears at all, nothing is wrong with this deployment's
+`.env` — it means logging itself never reached a handler. Both
+documented start commands leave the ROOT logger exactly as Python starts
+it (level `WARNING`, no handler): uvicorn's own default logging config
+only covers its own `uvicorn`/`uvicorn.access` loggers, never the root
+one. `api/server.py`'s `lifespan` now fixes this itself, once, on every
+startup (`core/logging_setup.py`) — so on a current checkout this should
+never actually happen; if it does, an unusual logging setup elsewhere in
+the process (an operator's own `logging.basicConfig()` or `dictConfig`
+that attached a handler at a level above `INFO` before startup reached
+this point) is the most likely cause. `LOG_LEVEL` (default `INFO`, see
+`.env.example`) is what that same fix applies to the root logger's level
+when nothing else has configured logging first.
+
 If startup instead exits immediately with `RuntimeError: ...`, the
 preflight in step 3 should have already caught the same problem — go back
 and re-run it. The two most common fail-closed exits, both intentional:
