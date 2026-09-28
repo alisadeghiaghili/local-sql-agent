@@ -907,6 +907,38 @@ def _resolve_table_name(table: exp.Table, cte_names: frozenset[str]) -> str | No
     return _match_table_ref(name, qualifier).canonical
 
 
+def resolve_table_key(table: exp.Table, tree: exp.Expression) -> str | None:
+    """Return the ``schema.yaml`` key *table* refers to within *tree*, or ``None``.
+
+    The public form of the resolution :func:`validate_sql` applies, for a
+    caller that rebuilds SQL from an already-validated statement (e.g.
+    ``session.composer``) and must pick the same table the guard did --
+    with two keys sharing a bare name (``sales.Customer`` and
+    ``ref.Customer``) any other lookup could pick the wrong one.
+
+    Parameters
+    ----------
+    table:
+        A table reference inside *tree*.
+    tree:
+        The statement containing *table*; its CTE names are excluded.
+
+    Returns
+    -------
+    str | None
+        The canonical key, or ``None`` when *table* is a CTE, names no
+        allowlisted table, or is ambiguous.
+
+    Examples
+    --------
+    >>> import sqlglot
+    >>> tree = sqlglot.parse_one("WITH c AS (SELECT 1 AS x) SELECT * FROM c", read="tsql")
+    >>> resolve_table_key(next(tree.find_all(exp.Table)), tree) is None
+    True
+    """
+    return _resolve_table_name(table, _cte_names(tree))
+
+
 def _collect_table_alias_map(
     tree: exp.Expression, cte_names: frozenset[str]
 ) -> dict[str, str]:
