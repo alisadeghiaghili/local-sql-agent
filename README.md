@@ -186,6 +186,8 @@ cp .env.example .env
 #   OPENAI_BASE_URL=http://your-llm-host:8000/v1
 #   OPENAI_MODEL=gpt-oss-20:F16
 #   OPENAI_API_KEY=your-key
+# Querying more than one database? Add project_config/datasources.yaml
+# instead of a single DB_CONNECTION_URL — see docs/design/DATASOURCES.md.
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
@@ -231,7 +233,7 @@ python -m scripts.verify_deployment
 | `API_HOST` | `127.0.0.1` | Interface `python -m api` binds to (loopback until widened on purpose) |
 | `API_PORT` | `8000` | Port `python -m api` binds to |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:8080`, `http://127.0.0.1:8080` | Comma-separated browser origins allowed to call this API cross-origin — set this to the UI's own origin whenever the API and the static UI are on different ports/hosts, or every call looks like a dead backend instead of a CORS rejection (see `docs/deployment-runbook.md`) |
-| `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
+| `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string — the one warehouse connection, unless `project_config/datasources.yaml` names several (see [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md)), in which case it is unused |
 | `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time (seconds) |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
 | `CACHE_TTL_SECONDS` | `300` | Query cache TTL in seconds (`0` = disabled) |
@@ -414,7 +416,9 @@ local-sql-agent/
 │   ├── determinism.py        #   repeat-and-compare against a live endpoint
 │   └── baseline.py           #   regression gate with a CI exit code
 ├── database/
-│   ├── connection.py         #   SQLAlchemy engine singleton
+│   ├── connection.py         #   cached SQLAlchemy engine per data source
+│   ├── datasources.py        #   datasources.yaml — named sources, DB_CONNECTION_URL fallback
+│   ├── routing.py            #   which data source a query's tables belong to
 │   └── executor.py           #   timeout + row cap + always-rolled-back transaction
 ├── web/                      # Static Persian/RTL client (no build step)
 ├── webapp/                   # Flask web application (bilingual FA/EN)
@@ -582,7 +586,7 @@ an infringer.
 | **Validation & security** | `security/` — sqlglot-AST guard (single statement, SELECT-only, table/column allowlist, column ACL), per-dialect profiles, transpile-and-re-verify, API keys |
 | **Conversational sessions** | `session/` — `Turn` contract, CTE-composed refinement, declared assumptions |
 | **Evaluation & observability** | `eval/`, `observability/` — golden set, execution accuracy, result fingerprinting, determinism, baseline gate; audit records, stage timings, LLM status block |
-| **Database** | `database/` — SQLAlchemy engine singleton, query timeout, hard row cap, always-rolled-back transaction |
+| **Database** | `database/` — one cached SQLAlchemy engine per data source (`datasources.yaml`, `DB_CONNECTION_URL` when absent), tables routed to their source automatically, query timeout, hard row cap, always-rolled-back transaction |
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |

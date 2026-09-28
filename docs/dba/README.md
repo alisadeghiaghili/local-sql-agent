@@ -17,6 +17,16 @@ The file is a reference to copy individual statements out of, not a script
 meant to run top to bottom in one batch -- some sections (§3) are
 deliberately meant to be run twice, minutes apart.
 
+**A deployment that queries more than one warehouse** (an archive on a
+second SQL Server instance, for example -- see
+`docs/design/DATASOURCES.md`) has one of these diagnostic sessions per
+server, each its own DBA's concern: run this file against *that* server
+only, for the questions/tables/sessions that live there. `program_name =
+'local-sql-agent'` (below) identifies this application's sessions the
+same way on every server it connects to; it is not, by itself, evidence
+of which data source a given session belongs to if more than one of them
+happens to point at the same server.
+
 ## The one fact that motivates this whole document
 
 **`SELECT 1` reads no data pages.** It touches no table, no index, no file.

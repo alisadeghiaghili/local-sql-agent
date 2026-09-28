@@ -80,7 +80,9 @@ flow (§2.3).
 
 Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
 
-- `DB_CONNECTION_URL` — the real warehouse connection string.
+- `DB_CONNECTION_URL` — the real warehouse connection string. Querying
+  more than one database instead of one? See §16 below and use
+  `DB_URL_*` variables named by `datasources.yaml` instead.
 - `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_KEY` — the real LLM
   endpoint.
 - `API_KEYS_JSON` — the array from step 1 (every issued key's entry).
@@ -484,7 +486,7 @@ attempts and catalogue scans) back to a few specific sources.
 |---|---|---|---|
 | Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
 | `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
-| Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment._CHECKS` minus the two deep checks below) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the two deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt and `check_query_timeout`'s multi-second `WAITFOR DELAY` probe | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
@@ -600,4 +602,64 @@ physical reads, and login-trigger/audit checks, plus
 [`docs/dba/README.md`](dba/README.md) explaining when to run each section
 and how to read the result — including the same point §14 makes above:
 `SELECT 1` reads no data pages, so disk activity that coincides with it
-usually comes from something else.
+usually comes from something else. Hand every configured source's
+server, in turn, to its own DBA if they differ — see §16 below.
+
+## 16. Configuring several warehouse data sources (optional)
+
+Every step above assumes the default, single-source shape: one
+`DB_CONNECTION_URL`. Skip this section entirely unless this deployment
+genuinely needs to query more than one database — a second SQL Server
+instance holding an archive, a partner's warehouse on its own box. See
+`docs/design/DATASOURCES.md` for the full design and why it is shaped
+this way.
+
+**Configuring it.**
+
+1. Copy `project_config.example/datasources.example.yaml` to
+   `project_config/datasources.yaml` and name each real source. This file
+   is versioned like `schema.yaml` and must **never** hold a connection
+   string — only `url_env`, the name of an environment variable.
+2. Set each source's actual connection string in `.env`, under the
+   variable name `url_env` points at (e.g. `DB_URL_MAIN`,
+   `DB_URL_ARCHIVE`). `DB_CONNECTION_URL` itself is then unused, and no
+   longer required.
+3. In `project_config/schema.yaml`, give every table that is not on the
+   default source a `datasource: <name>` key. A table in a second
+   database on the **same** server as an existing source is not a new
+   source at all — give it a multi-part `db_schema: "OtherDb.dbo"`
+   instead and leave `datasource` unset.
+4. Restart the server. Like `.env` itself, `datasources.yaml` is
+   deployment config edited on disk, not one of the nine files the admin
+   panel's versioned config bundle covers — a change to it needs a
+   restart, the same as changing `DB_CONNECTION_URL` always did.
+
+**Verifying it.** `python -m scripts.verify_deployment` (step 3 above)
+runs every database check once per configured source automatically —
+`Database connectivity [main]`, `Database connectivity [archive]`, and so
+on for the read-only-login, row-cap and query-timeout checks — plus one
+new check, `Tables map to data sources`, confirming every `schema.yaml`
+table's `datasource:` (if any) actually names a configured source. The
+admin panel's non-deep deployment checks (`GET /admin/health/checks`, and
+its "deep checks" button) expand the same way.
+
+**What `/health` shows.** With one source, `/health`'s `database_detail`
+field is exactly what it always was (e.g. `"SELECT 1 succeeded"`). With
+more than one, it names each source in turn:
+
+```
+main: SELECT 1 succeeded; archive: SELECT 1 succeeded
+```
+
+and `database` (the boolean) is `true` only when **every** configured
+source answered — one source being down is enough to flip the whole
+field to `false`, with the detail string still naming exactly which one.
+
+**A query spanning two sources.** A generated query whose tables belong
+to two different sources is refused before it ever opens a connection —
+the guard rejects it with reason `cross_datasource`, and the web UI shows
+an analyst-facing Persian sentence explaining that the question needs
+data from two separate servers and asking for it to be split. This is
+expected, not a bug to investigate: see `docs/design/DATASOURCES.md`'s
+roadmap section for why combining sources in one answer is deliberately
+not supported yet.

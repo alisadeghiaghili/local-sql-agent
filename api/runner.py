@@ -96,6 +96,7 @@ from api.errors import (
 from api.models import QueryResponse
 from api.query_cache import query_cache
 from database.errors import classify_database_error
+from database.routing import target_datasource_or_none
 from llm.base import LLMBackend
 from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
 from llm.sql_agent import SQLAgent
@@ -471,6 +472,7 @@ def run_query(
             llm=audit_llm,
             columns=audit_columns,
             principal_id=principal.id if principal is not None else None,
+            datasource=target_datasource_or_none(audit_sql, cfg.settings.sql_dialect),
         )
 
 
@@ -664,6 +666,7 @@ def _write_audit(
     llm: dict[str, Any] | None,
     columns: list[str] | None,
     principal_id: str | None = None,
+    datasource: str | None = None,
 ) -> None:
     """Build and persist one :class:`~observability.audit.AuditRecord`.
 
@@ -698,6 +701,7 @@ def _write_audit(
             llm=llm,
             columns=columns,
             principal_id=principal_id,
+            datasource=datasource,
         )
         save_audit_record(record)
     except Exception:  # noqa: BLE001 — auditing must never fail a user's query

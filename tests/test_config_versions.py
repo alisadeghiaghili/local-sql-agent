@@ -334,6 +334,27 @@ class TestValidationThroughRealLoaders:
                 actor_capabilities=_OPS,
             )
 
+    def test_schema_table_naming_an_unconfigured_datasource_is_rejected(self, app_env):
+        """No ``datasources.yaml`` exists in this fixture's ``project_dir``
+        (multi-source deployment is opt-in), so the only configured source
+        is ``"default"`` -- a table naming any other source must be
+        rejected before it can ever be applied, not discovered later at
+        start-up (:func:`database.datasources.check_table_datasources`,
+        called from :func:`appdb.config_versions._validate_candidate_schema`)."""
+        active = get_active_version()
+        doc = yaml.safe_load(active["files"]["schema.yaml"])
+        doc["tables"]["Customer"]["datasource"] = "archive"
+        invalid = yaml.dump(doc, allow_unicode=True, sort_keys=False)
+        with pytest.raises(ConfigVersionValidationError) as exc_info:
+            propose_or_apply(
+                {"schema.yaml": invalid},
+                based_on_version=active["version_id"],
+                actor_principal_id="sec-1",
+                actor_capabilities=_SECURITY,
+            )
+        assert "archive" in str(exc_info.value)
+        assert get_active_version()["version_id"] == active["version_id"]
+
 
 # ---------------------------------------------------------------------------
 # §8: optimistic locking, not merging

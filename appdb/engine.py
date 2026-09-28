@@ -152,8 +152,9 @@ def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:
         The resolved application-database URL (see
         :func:`resolve_app_db_url`).
     warehouse_url:
-        ``cfg.settings.db_connection_url`` -- the read-only warehouse
-        connection.
+        One warehouse data source's connection string (read-only).
+        Callers check every source in turn -- see
+        :func:`database.datasources.get_datasources`.
 
     Raises
     ------
@@ -166,8 +167,9 @@ def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:
     """
     if _canonical_endpoint(app_db_url) == _canonical_endpoint(warehouse_url):
         raise RuntimeError(
-            "APP_DB_URL resolves to the same server and database as "
-            "DB_CONNECTION_URL (the read-only warehouse connection) -- "
+            "APP_DB_URL resolves to the same server and database as a "
+            "configured warehouse data source (read-only; see "
+            "database.datasources for a deployment with more than one) -- "
             f"refusing to start. Application database: {app_db_url!r}; "
             f"warehouse: {warehouse_url!r}. The application database needs "
             "write access (docs/db-hardening.md specifies the warehouse "

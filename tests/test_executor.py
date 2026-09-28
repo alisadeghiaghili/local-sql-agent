@@ -241,6 +241,52 @@ class TestExecuteSqlParams:
         assert execute_sql_params is not execute_sql
 
 
+class TestDatasourceRouting:
+    """Multiple warehouse data sources (``database.datasources``): the
+    engine a query runs against is derived from its own tables unless the
+    caller names one explicitly -- see ``database.executor._route``.
+    ``database.routing.resolve_datasource`` itself is unit-tested in
+    ``tests/test_routing.py``; this class is only about the wiring between
+    it and ``get_engine``.
+    """
+
+    def test_derives_the_datasource_from_sql_when_none_is_given(self):
+        engine = _make_engine_mock([], ["x"])
+        with patch("database.executor.get_engine", return_value=engine) as mock_get_engine, \
+             patch("database.executor.resolve_datasource", return_value="archive") as mock_resolve:
+            execute_sql("SELECT 1 FROM [sales].[Order]")
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.args[0] == "SELECT 1 FROM [sales].[Order]"
+        mock_get_engine.assert_called_once_with("archive")
+
+    def test_explicit_datasource_wins_and_skips_derivation(self):
+        engine = _make_engine_mock([], ["x"])
+        with patch("database.executor.get_engine", return_value=engine) as mock_get_engine, \
+             patch("database.executor.resolve_datasource") as mock_resolve:
+            execute_sql("SELECT 1", datasource="archive")
+        mock_resolve.assert_not_called()
+        mock_get_engine.assert_called_once_with("archive")
+
+    def test_execute_sql_params_routes_the_same_way(self):
+        engine = _make_engine_mock([], ["x"])
+        with patch("database.executor.get_engine", return_value=engine) as mock_get_engine, \
+             patch("database.executor.resolve_datasource", return_value="archive"):
+            execute_sql_params("SELECT ?", (1,))
+        mock_get_engine.assert_called_once_with("archive")
+
+    def test_cross_datasource_sql_is_refused_as_a_runtime_error(self):
+        """The guard (``security.sql_guard.validate_sql``) refuses this
+        earlier, with a user-facing message -- reaching this branch means
+        a caller skipped it, and this is still refused, not silently run
+        against whichever source happens to come first."""
+        from database.routing import CrossDatasourceError
+
+        cross_exc = CrossDatasourceError({"main": ["Order"], "archive": ["Ring"]})
+        with patch("database.executor.resolve_datasource", side_effect=cross_exc):
+            with pytest.raises(RuntimeError, match="more than one data source"):
+                execute_sql("SELECT 1 FROM [sales].[Order] JOIN [ref].[Ring] ON 1=1")
+
+
 class TestRealConnectionTransaction:
     """Drive a REAL SQLAlchemy connection, not a substituted one.
 

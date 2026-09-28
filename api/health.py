@@ -113,7 +113,8 @@ def check_health() -> HealthResponse:
 
     1. :func:`_ping_openai` — HTTP GET to the configured OpenAI-compatible
        endpoint's ``/models`` (5 s timeout).
-    2. :func:`_ping_db` — ``SELECT 1`` via the shared SQLAlchemy engine.
+    2. :func:`_ping_db` — ``SELECT 1`` on every data source, via each
+       source's shared SQLAlchemy engine.
 
     Combined worst-case latency is ~10 seconds (two back-to-back 5 s
     timeouts in the fully-down case).
@@ -130,7 +131,8 @@ def check_health() -> HealthResponse:
           * ``"down"``     — neither dependency is reachable.
 
         * ``openai``   (``bool``) — ``True`` if the endpoint responded with HTTP 200.
-        * ``database`` (``bool``) — ``True`` if ``SELECT 1`` executed without error.
+        * ``database`` (``bool``) — ``True`` if ``SELECT 1`` executed without
+          error on every data source.
         * ``model``    (``str``)  — ``cfg.settings.openai_model`` at call time.
 
     Examples
@@ -248,10 +250,37 @@ def _ping_openai() -> tuple[bool, str]:
 
 
 def _ping_db() -> tuple[bool, str]:
-    """Return ``(ok, detail)`` for a liveness check on the configured database.
+    """Return ``(ok, detail)`` for a liveness check on every data source.
 
-    Uses the shared :func:`~database.connection.get_engine` singleton so no
-    extra connection pool is created. Always runs its own explicit
+    ``ok`` is ``True`` only when every configured data source (see
+    :mod:`database.datasources`) answers. With one source -- every
+    deployment without ``datasources.yaml`` -- ``detail`` is that source's
+    detail, exactly as before. With several, ``detail`` names each one::
+
+        main: SELECT 1 succeeded; archive: OperationalError: ...
+
+    so an operator reading ``/health`` sees which server is down without a
+    second tool. Each source is probed by :func:`_ping_datasource`.
+    """
+    from database.datasources import datasource_names
+
+    try:
+        names = datasource_names()
+    except Exception as exc:  # noqa: BLE001 - an invalid datasources.yaml is a health failure, not a crash
+        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+
+    results = [(name, *_ping_datasource(name)) for name in names]
+    ok = all(source_ok for _, source_ok, _ in results)
+    if len(results) == 1:
+        return ok, results[0][2]
+    return ok, "; ".join(f"{name}: {detail}" for name, _, detail in results)
+
+
+def _ping_datasource(datasource: str) -> tuple[bool, str]:
+    """Return ``(ok, detail)`` for a liveness check on one data source.
+
+    Uses the shared :func:`~database.connection.get_engine` engine for
+    *datasource* so no extra connection pool is created. Always runs its own explicit
     ``SELECT 1`` on the checked-out connection -- this function no longer
     trusts checkout alone to prove liveness (see "Why checkout alone is no
     longer enough" below), so it costs exactly one round trip in the common
@@ -300,7 +329,7 @@ def _ping_db() -> tuple[bool, str]:
 
         from database.connection import get_engine
 
-        engine = get_engine()
+        engine = get_engine(datasource)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True, "SELECT 1 succeeded"

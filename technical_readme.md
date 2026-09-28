@@ -1210,6 +1210,13 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   └─────────────────────────────────────────────────────────────────┘
 ```
 
+One SQLAlchemy engine per configured data source, cached for the life of
+the process (`database.connection.get_engine(datasource=...)`) — a single
+engine, exactly as pictured above, for a deployment with no
+`datasources.yaml`. Which engine a query above actually runs on is
+derived from its own tables, never chosen by the model — see
+`docs/design/DATASOURCES.md`.
+
 ---
 
 ### Step 11: Result Processing and Output
@@ -1649,6 +1656,16 @@ All configuration is read from **environment variables** (or a `.env` file):
   │                                                                 │
   └─────────────────────────────────────────────────────────────────┘
 ```
+
+`DB_CONNECTION_URL` above is what a deployment with exactly **one**
+warehouse connection sets — the default, and still the whole story for
+most deployments. A deployment that needs to query more than one database
+(a second SQL Server instance, an archive on its own box) instead adds
+`project_config/datasources.yaml`, which names each source and the
+environment variable holding *its* connection string (`DB_URL_MAIN`,
+`DB_URL_ARCHIVE`, …) — `DB_CONNECTION_URL` is then unused. See
+`docs/design/DATASOURCES.md` for the full design and
+`docs/deployment-runbook.md` §16 for configuring and verifying it.
 
 ---
 

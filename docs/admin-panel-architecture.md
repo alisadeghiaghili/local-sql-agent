@@ -264,6 +264,21 @@ how to reach the database is circular, and storing one database's
 credential inside another database is not an improvement. It stays in
 the environment and accepts a restart.
 
+A deployment with more than one warehouse data source
+(`project_config/datasources.yaml`, see `docs/design/DATASOURCES.md`)
+gets the identical treatment, generalised: the file names sources and
+which environment variable holds each one's connection string, never a
+connection string itself, and it is deliberately **not** one of the nine
+files `appdb.config_versions.CONFIG_FILENAMES` versions — it is
+deployment topology edited on disk, like `.env`, and a change to it
+accepts the same restart `DB_CONNECTION_URL` always has. Each table's
+`schema.yaml` `datasource:` assignment, by contrast, IS part of the
+versioned bundle (`schema.yaml` already was), so which source a table
+belongs to goes through the same validate/diff/dry-run path as any other
+`schema.yaml` change — and a candidate that names an unconfigured source
+is refused before it can be approved
+(`database.datasources.check_table_datasources`).
+
 The panel must be served over TLS or bound to loopback. A secret-setting
 form over plain HTTP on an internal network is a secret on the wire.
 
@@ -421,7 +436,11 @@ degrades is a decision to make explicitly, not to discover.
 `database/executor.py` rolls back every transaction. The application
 database needs writes. Separate connection, separate credentials, and a
 start-up check that refuses to run if the two are the same — otherwise
-the read-only posture is undone by configuration.
+the read-only posture is undone by configuration. With more than one
+warehouse data source configured, this check runs once per source: the
+application database must not collide with *any* of them, not merely the
+default one (`api/server.py`'s `lifespan`, looping over
+`database.datasources.get_datasources()`).
 
 **Migrations become a permanent cost.** `session/persistence.py` uses raw
 `sqlite3` with `CREATE TABLE IF NOT EXISTS`. Multi-backend support means

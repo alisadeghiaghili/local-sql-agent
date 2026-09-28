@@ -31,6 +31,21 @@ Design
   for the same reason: a change to the Persian-folding rules must not
   let an old entry collide with a new one that now normalises
   differently.
+* **No data-source component in the key** (multiple warehouse sources,
+  see ``database.datasources``): a cache entry stores the *result rows*
+  a query already ran and returned, not a pending routing decision — a
+  hit never calls ``database.routing.resolve_datasource`` or
+  ``database.executor.execute_sql`` again, so which source a hit's SQL
+  *would* route to today cannot change what it serves. And which source
+  it routed to when the entry was written cannot itself change out from
+  under a live entry: a table's source (``schema.yaml``'s ``datasource:``)
+  needs a restart to change (``schema_data.registry``'s allowlist is
+  frozen for the process's life — see ``appdb/config_versions.py``'s
+  module docstring), and ``datasources.yaml`` is documented as
+  restart-required too — and this module-level ``query_cache`` singleton
+  starts empty on every restart regardless. See
+  ``docs/design/DATASOURCES.md``'s "Result cache" section for the full
+  argument.
 
 Usage::
 

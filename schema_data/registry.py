@@ -98,6 +98,7 @@ __all__ = [
     "get_table_columns",
     "get_relationships_map",
     "get_table_schema_qualifiers",
+    "get_table_datasource_names",
     "get_resolvable_columns",
     "get_prefetchable_columns",
     "check_allowlist_structural_invariants",
@@ -120,7 +121,12 @@ class TableDefinition(BaseModel):
     ``db_schema``, ``resolvable_columns``, and ``prefetchable_columns`` are
     all optional and default to "not used by that feature" (``""`` / empty
     tuple) -- a table needs none of them merely to be described or
-    queryable. See the module docstring's "Per-table schema qualifier and
+    queryable. ``db_schema`` may have several parts (``"OtherDb.dbo"``) for
+    a table in another database on the same server.
+
+    ``datasource`` names the data source (``datasources.yaml``) the table
+    lives in; empty means the default source. See
+    :mod:`database.datasources`. See the module docstring's "Per-table schema qualifier and
     resolver/prefetch flags" section, and :class:`SchemaConfig`'s validator
     for the consistency rule tying them to ``columns``.
     """
@@ -128,6 +134,7 @@ class TableDefinition(BaseModel):
     description: str = ""
     columns: dict[str, str] | None = None
     db_schema: str = ""
+    datasource: str = ""
     resolvable_columns: tuple[str, ...] = Field(default_factory=tuple)
     prefetchable_columns: tuple[str, ...] = Field(default_factory=tuple)
 
@@ -172,8 +179,21 @@ class SchemaConfig(BaseModel):
         catches and reformats as ``"[schema.yaml] validation error at ...: ..."``,
         so a schema.yaml author sees exactly the same error shape for this
         mistake as for any other validation failure in this file.
+
+        A third rule applies to every table: a ``db_schema`` of more than
+        one part (``"OtherDb.dbo"``, a table in another database on the
+        same server) must have no empty part and at most three parts --
+        see :func:`security.dialects.quote_tsql_qualifier`, which renders it.
         """
         for name, table in self.tables.items():
+            if table.db_schema:
+                parts = table.db_schema.split(".")
+                if any(not part.strip() for part in parts) or len(parts) > 3:
+                    raise ValueError(
+                        f"table '{name}': db_schema {table.db_schema!r} must be "
+                        f"one to three non-empty parts separated by '.', e.g. "
+                        f"'sales' or 'OtherDb.dbo'"
+                    )
             flagged = set(table.resolvable_columns) | set(table.prefetchable_columns)
             if not flagged:
                 continue
@@ -315,6 +335,9 @@ def _schema_cache() -> dict[str, Any]:
         _cache["table_schemas"] = {
             name: table.db_schema for name, table in cfg.tables.items() if table.db_schema
         }
+        _cache["table_datasources"] = {
+            name: table.datasource for name, table in cfg.tables.items()
+        }
         _cache["resolvable_columns"] = {
             name: table.resolvable_columns
             for name, table in cfg.tables.items()
@@ -346,6 +369,18 @@ def get_table_schema_qualifiers() -> dict[str, str]:
     guarantee have one (see :class:`SchemaConfig`'s validator).
     """
     return _schema_cache()["table_schemas"]
+
+
+def get_table_datasource_names() -> dict[str, str]:
+    """Return ``{table_name: datasource}`` for every table in ``schema.yaml``.
+
+    The value is exactly what the file says, ``""`` for a table with no
+    ``datasource`` key. :func:`database.datasources.table_datasources`
+    resolves ``""`` to the default source and is what callers should use;
+    this function exists so :mod:`schema_data` stays free of any
+    dependency on :mod:`database`.
+    """
+    return _schema_cache()["table_datasources"]
 
 
 def get_resolvable_columns() -> dict[str, tuple[str, ...]]:
@@ -470,6 +505,23 @@ def check_allowlist_structural_invariants(
     return violations
 
 
+
+def _table_sources_if_several() -> dict[str, str]:
+    """``{table: source}`` when more than one data source is configured,
+    else ``{}``.
+
+    The single-source case returns nothing so a deployment without
+    ``datasources.yaml`` renders exactly the schema block it always has.
+    Deferred import: :mod:`schema_data` otherwise has no dependency on
+    :mod:`database`.
+    """
+    from database.datasources import datasource_names, table_datasources
+
+    if len(datasource_names()) < 2:
+        return {}
+    return table_datasources()
+
+
 class SchemaRegistry:
     """Stateless registry that renders schema and relationship data.
 
@@ -538,12 +590,15 @@ class SchemaRegistry:
         """
         table_columns = get_table_columns()
         table_descriptions = get_table_descriptions()
+        table_schemas = get_table_schema_qualifiers()
+        table_sources = _table_sources_if_several()
 
         # None or empty sequence → include everything
         if not selected_tables:
             selected_tables = list(table_columns.keys())
 
         lines = []
+        shown_sources: set[str] = set()
 
         for table_name in selected_tables:
             if table_name not in table_columns:
@@ -555,6 +610,22 @@ class SchemaRegistry:
 
             lines.append(f"Table: {table_name}")
 
+            if table_sources:
+                source = table_sources[table_name]
+                shown_sources.add(source)
+                lines.append(f"Data source: {source}")
+
+            qualifier = table_schemas.get(table_name, "")
+            if "." in qualifier:
+                # Another database on the same server: the model has to
+                # write the three-part name for the query to resolve.
+                from security.dialects import quote_tsql_identifier, quote_tsql_qualifier
+
+                lines.append(
+                    f"Reference as: {quote_tsql_qualifier(qualifier)}."
+                    f"{quote_tsql_identifier(table_name)}"
+                )
+
             if description:
                 lines.append(f"Description: {description}")
 
@@ -563,6 +634,14 @@ class SchemaRegistry:
                 for col_name, col_desc in columns.items():
                     lines.append(f"  - {col_name}: {col_desc}")
 
+            lines.append("")
+
+        if len(shown_sources) > 1:
+            lines.append(
+                "Rule: every table in one query must come from the same "
+                "data source. Tables in different data sources cannot be "
+                "joined or combined in one query."
+            )
             lines.append("")
 
         return "\n".join(lines)

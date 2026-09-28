@@ -153,10 +153,11 @@ def admin_health_checks(
     second WAITFOR probe have no business running on a timer or on every
     page load, only when an operator deliberately asks for them.
     """
-    from scripts.verify_deployment import _CHECKS, CheckResult
+    from scripts.verify_deployment import CheckResult, build_checks
 
+    all_checks = build_checks()
     checks_to_run = (
-        _CHECKS if deep else [c for c in _CHECKS if c.__name__ not in _DEEP_CHECK_NAMES]
+        all_checks if deep else [c for c in all_checks if c.__name__ not in _DEEP_CHECK_NAMES]
     )
 
     def _run_checks() -> list[CheckResult]:

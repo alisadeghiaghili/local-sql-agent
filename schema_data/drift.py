@@ -141,34 +141,33 @@ def _save_baseline(types: dict[str, str]) -> None:
         logger.warning("schema_data.drift: could not write baseline at %s: %s", path, exc)
 
 
-def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool = True) -> SchemaDriftReport:
-    """Compare ``schema.yaml``'s queryable tables/columns against the live
-    warehouse. Read-only in every direction: never writes ``schema.yaml``,
-    and reads the warehouse purely through SQLAlchemy's catalogue
-    reflection (``inspect(engine).get_table_names()``/``get_columns()``),
-    the same metadata-only queries a read-only login already supports.
+
+def _scan(
+    engine: Engine,
+    table_columns: dict[str, dict[str, str]],
+    table_schemas: dict[str, str],
+) -> tuple[list[str], dict[str, dict[str, str]], set[str]]:
+    """Reflect the live tables *engine* can see for the given ``schema.yaml`` tables.
 
     Parameters
     ----------
     engine:
-        Defaults to :func:`database.connection.get_engine` -- the SAME
-        read-only warehouse connection every query already runs through.
-        Inject a fixture engine to test against a throwaway database with
-        no elevated credentials of any kind (there is no parameter here
-        through which one could even be supplied).
-    persist_baseline:
-        Whether to overwrite this tool's own type baseline with what was
-        just observed. ``True`` by default; a caller that wants to run
-        the check without moving the baseline forward (this module's own
-        tests exercising a live-then-live comparison) passes ``False``.
+        Read-only warehouse engine.
+    table_columns:
+        ``{table: columns}`` for the queryable tables to verify.
+    table_schemas:
+        ``{table: db_schema}``; a multi-part value (``"OtherDb.dbo"``) is
+        passed to SQLAlchemy as-is, which reflects another database on
+        the same SQL Server instance.
 
     Returns
     -------
-    SchemaDriftReport
+    tuple
+        ``(schemas_scanned, live, verifiable_tables)`` where *live* is
+        ``{table_name: {column: normalised type}}`` for every table found
+        in the scanned schemas, and *verifiable_tables* is the subset of
+        *table_columns* whose schema was scanned.
     """
-    table_columns = get_table_columns()
-    table_schemas = get_table_schema_qualifiers()
-
     schemas_scanned = sorted({s for t, s in table_schemas.items() if t in table_columns and s})
     # Tables SQLAlchemy sees with no schema qualifier at all (SQLite, or
     # any dialect whose default search path this deployment relies on) --
@@ -177,11 +176,6 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
     # deployment (schema.yaml's own convention for one) is not silently
     # skipped entirely.
     scan_default_schema = any(t in table_columns and not table_schemas.get(t) for t in table_columns)
-
-    if engine is None:
-        from database.connection import get_engine
-
-        engine = get_engine()
 
     inspector = sa_inspect(engine)
 
@@ -217,6 +211,86 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
             scan_default_schema and not table_schemas.get(t)
         )
     }
+    return schemas_scanned, live, verifiable_tables
+
+
+def _scan_every_datasource(
+    table_columns: dict[str, dict[str, str]],
+    table_schemas: dict[str, str],
+) -> tuple[list[str], dict[str, dict[str, str]], set[str]]:
+    """Run :func:`_scan` once per data source, on that source's own tables.
+
+    With one data source this is exactly one :func:`_scan` over every
+    table. With several, each source's tables are checked against that
+    source's own server, and ``schemas_scanned`` entries are prefixed
+    ``source/`` so a reader can tell the servers apart. A source whose
+    engine cannot be built is logged and its tables are reported as
+    unverifiable rather than failing the whole report.
+    """
+    from database.connection import get_engine
+    from database.datasources import datasource_names, table_datasources
+
+    names = datasource_names()
+    if len(names) == 1:
+        return _scan(get_engine(names[0]), table_columns, table_schemas)
+
+    assignments = table_datasources()
+    schemas_scanned: list[str] = []
+    live: dict[str, dict[str, str]] = {}
+    verifiable: set[str] = set()
+    for name in names:
+        subset = {t: c for t, c in table_columns.items() if assignments.get(t) == name}
+        if not subset:
+            continue
+        try:
+            engine = get_engine(name)
+        except Exception as exc:  # noqa: BLE001 - one unreachable source must not hide the others
+            logger.warning("schema_data.drift: data source %r unavailable: %s", name, exc)
+            continue
+        scanned, source_live, source_verifiable = _scan(engine, subset, table_schemas)
+        schemas_scanned.extend(f"{name}/{schema}" for schema in scanned)
+        for table, columns in source_live.items():
+            live.setdefault(table, {}).update(columns)
+        verifiable |= source_verifiable
+    return sorted(schemas_scanned), live, verifiable
+
+
+def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool = True) -> SchemaDriftReport:
+    """Compare ``schema.yaml``'s queryable tables/columns against the live
+    warehouse. Read-only in every direction: never writes ``schema.yaml``,
+    and reads the warehouse purely through SQLAlchemy's catalogue
+    reflection (``inspect(engine).get_table_names()``/``get_columns()``),
+    the same metadata-only queries a read-only login already supports.
+
+    Parameters
+    ----------
+    engine:
+        Defaults to each data source's :func:`database.connection.get_engine`
+        engine -- the SAME read-only connections every query already runs
+        through -- with each source's tables checked on that source.
+        An injected engine is used for every table.
+        Inject a fixture engine to test against a throwaway database with
+        no elevated credentials of any kind (there is no parameter here
+        through which one could even be supplied).
+    persist_baseline:
+        Whether to overwrite this tool's own type baseline with what was
+        just observed. ``True`` by default; a caller that wants to run
+        the check without moving the baseline forward (this module's own
+        tests exercising a live-then-live comparison) passes ``False``.
+
+    Returns
+    -------
+    SchemaDriftReport
+    """
+    table_columns = get_table_columns()
+    table_schemas = get_table_schema_qualifiers()
+
+    if engine is not None:
+        schemas_scanned, live, verifiable_tables = _scan(engine, table_columns, table_schemas)
+    else:
+        schemas_scanned, live, verifiable_tables = _scan_every_datasource(
+            table_columns, table_schemas,
+        )
     unverifiable_tables = sorted(set(table_columns) - verifiable_tables)
 
     schema_col_ids: dict[str, str] = {}  # "Table.Column" -> (no type; presence only)

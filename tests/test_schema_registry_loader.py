@@ -26,6 +26,7 @@ from schema_data.registry import (
     TableDefinition,
     get_relationships_map,
     get_table_columns,
+    get_table_datasource_names,
     get_table_descriptions,
     load_schema,
 )
@@ -190,12 +191,70 @@ class TestValidationErrors:
             with pytest.raises(ValueError, match="db_schema"):
                 load_schema()
 
+    def test_multi_part_db_schema_is_accepted(self, tmp_path):
+        """A table in another database on the same server -- see
+        security.dialects.quote_tsql_qualifier, which renders this."""
+        _write_schema(
+            tmp_path,
+            {
+                "tables": {
+                    "Widget": {
+                        "description": "a test table",
+                        "db_schema": "OtherDb.dbo",
+                        "columns": {"ID": "primary key"},
+                    }
+                },
+            },
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            cfg = load_schema()
+        assert cfg.tables["Widget"].db_schema == "OtherDb.dbo"
+
+    def test_four_part_db_schema_is_rejected(self, tmp_path):
+        _write_schema(
+            tmp_path,
+            {
+                "tables": {
+                    "Widget": {
+                        "description": "a test table",
+                        "db_schema": "a.b.c.d",
+                        "columns": {"ID": "primary key"},
+                    }
+                },
+            },
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            with pytest.raises(ValueError, match="one to three non-empty parts"):
+                load_schema()
+
+    def test_db_schema_with_an_empty_part_is_rejected(self, tmp_path):
+        _write_schema(
+            tmp_path,
+            {
+                "tables": {
+                    "Widget": {
+                        "description": "a test table",
+                        "db_schema": "OtherDb..dbo",
+                        "columns": {"ID": "primary key"},
+                    }
+                },
+            },
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            with pytest.raises(ValueError, match="one to three non-empty parts"):
+                load_schema()
+
 
 class TestPydanticModels:
     def test_table_definition_defaults(self):
         t = TableDefinition()
         assert t.description == ""
         assert t.columns is None
+        assert t.datasource == ""
+
+    def test_table_definition_datasource_round_trips(self):
+        t = TableDefinition(datasource="archive")
+        assert t.datasource == "archive"
 
     def test_relationship_definition_requires_all_three_fields(self):
         with pytest.raises(Exception):
@@ -228,3 +287,11 @@ class TestCachedAccessorsAgreeWithRealConfig:
             for rel in cfg.relationships
         }
         assert get_relationships_map() == fresh
+
+    def test_get_table_datasource_names_matches_a_fresh_load(self):
+        cfg = load_schema()
+        fresh = {name: table.datasource for name, table in cfg.tables.items()}
+        assert get_table_datasource_names() == fresh
+        # No datasource: key anywhere in the real/example schema -- every
+        # value is the empty string (means "the default source").
+        assert set(fresh.values()) <= {""}

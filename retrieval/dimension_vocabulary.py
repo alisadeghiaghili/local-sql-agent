@@ -281,7 +281,7 @@ from core.persian import normalize_for_matching
 from retrieval.value_resolver import ExecuteParamsFn
 from schema_data.registry import get_prefetchable_columns, get_table_schema_qualifiers
 from security.auth import ANONYMOUS, Principal
-from security.dialects import get_dialect_profile, quote_tsql_identifier
+from security.dialects import get_dialect_profile, quote_tsql_identifier, quote_tsql_qualifier
 from security.sql_guard import transpile_sql
 from session.models import Clarification
 
@@ -350,7 +350,7 @@ def _prefetch_query(table: str, column: str, dialect: str = "tsql") -> str:
         table_ref = quote_tsql_identifier(table)
     else:
         schema = _TABLE_SCHEMAS[table]
-        table_ref = f"{quote_tsql_identifier(schema)}.{quote_tsql_identifier(table)}"
+        table_ref = f"{quote_tsql_qualifier(schema)}.{quote_tsql_identifier(table)}"
     tsql = f"SELECT DISTINCT TOP (?) {quote_tsql_identifier(column)} FROM {table_ref}"
     if dialect == "tsql":
         return tsql

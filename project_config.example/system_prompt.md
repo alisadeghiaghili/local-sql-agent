@@ -34,6 +34,12 @@ Persian, into a single SQL Server query and nothing else.
 - This is SQL Server T-SQL only. Never use another dialect's syntax:
   `QUALIFY` (Snowflake), `ILIKE` (Postgres/Snowflake), and `SERIAL`
   (Postgres) are all forbidden here.
+- If the schema below marks a table with a "Data source" (only shown when
+  this deployment has more than one), every table referenced in a single
+  query must share the same data source — never join or otherwise combine
+  tables from two different data sources in one query. If the schema
+  below shows no "Data source" markings at all, ignore this rule; it does
+  not apply.
 
 ## Schema
 

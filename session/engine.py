@@ -45,6 +45,7 @@ import config as cfg
 from core.models import RetrievalContext
 from core.persian import normalize_for_matching
 from database.errors import classify_database_error
+from database.routing import target_datasource_or_none
 from knowledge.session_policy import DEFAULT_SCOPE_FIELD_NAME, DEFAULT_SCOPE_FILTER_KEY
 from llm.router import (
     LLMRouter,
@@ -1180,6 +1181,7 @@ class TurnEngine:
                 turn_id=turn.turn_id,
                 config_version_id=self._active_config_version_id_or_none(),
                 assumptions=assumptions,
+                datasource=target_datasource_or_none(turn.sql, cfg.settings.sql_dialect),
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn

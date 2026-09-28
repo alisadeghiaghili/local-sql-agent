@@ -220,8 +220,18 @@ async def lifespan(app: FastAPI):
         get_active_principals,
     )
 
+    from database.datasources import check_table_datasources, get_datasources
+
     app_db_url = resolve_app_db_url()
-    raise_if_same_database(app_db_url, cfg.settings.db_connection_url)
+    for source in get_datasources():
+        raise_if_same_database(app_db_url, source.url)
+
+    # Every schema.yaml table must name a configured data source; an
+    # unknown one would only surface as a failed query later.
+    try:
+        check_table_datasources()
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid configuration: {exc}") from exc
 
     try:
         get_app_engine()  # builds the engine and creates its tables (checkfirst)

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from schema_data.registry import SchemaRegistry
 from schema_data.columns import TABLE_COLUMNS
 from schema_data.tables import TABLE_DESCRIPTIONS
@@ -52,3 +54,79 @@ class TestSchemaRegistry:
 
     def test_relationships_not_empty(self):
         assert len(RELATIONSHIPS) > 0
+
+
+class TestSchemaContextDataSources:
+    """Multiple warehouse data sources: ``build_schema_context`` adds a
+    ``Data source:`` line per table, and a closing rule, ONLY when more
+    than one source is configured -- see
+    ``schema_data.registry._table_sources_if_several``. With no
+    ``datasources.yaml`` (the default, and every other test in this file),
+    the rendered block must stay byte-identical to before this feature.
+    """
+
+    def test_single_source_deployment_renders_no_data_source_lines(self):
+        """The default shape (no ``datasources.yaml``): the schema block
+        must be UNCHANGED by this feature -- no ``Data source:`` line, no
+        closing rule, for any table."""
+        ctx = SchemaRegistry.build_context(("Customer", "Ring"))
+        assert "Data source:" not in ctx
+        assert "must come from the same data source" not in ctx
+
+    def test_several_sources_adds_a_data_source_line_per_table(self):
+        with patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ), patch(
+            "database.datasources.table_datasources",
+            return_value={"Customer": "main", "Ring": "archive"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer", "Ring"))
+        assert "Data source: main" in ctx
+        assert "Data source: archive" in ctx
+
+    def test_several_sources_adds_the_closing_rule_once(self):
+        with patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ), patch(
+            "database.datasources.table_datasources",
+            return_value={"Customer": "main", "Ring": "archive"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer", "Ring"))
+        assert ctx.count("must come from the same data source") == 1
+
+    def test_several_sources_but_every_selected_table_shares_one_still_omits_the_rule(self):
+        """The rule is about what THIS rendered block actually shows, not
+        about the deployment as a whole -- two configured sources with
+        only one of them represented among the selected tables must not
+        print a rule about a distinction the model can't even see here."""
+        with patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ), patch(
+            "database.datasources.table_datasources",
+            return_value={"Customer": "main", "Ring": "main"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer", "Ring"))
+        assert "Data source: main" in ctx
+        assert "must come from the same data source" not in ctx
+
+
+class TestSchemaContextMultiPartQualifier:
+    """A table in another database on the same server (multi-part
+    ``db_schema``) gets a ``Reference as:`` line so the model writes the
+    three-part name; a one-part ``db_schema`` renders nothing new."""
+
+    def test_multi_part_db_schema_adds_a_reference_line(self):
+        with patch(
+            "schema_data.registry.get_table_schema_qualifiers",
+            return_value={"Customer": "OtherDb.dbo"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer",))
+        assert "Reference as: [OtherDb].[dbo].[Customer]" in ctx
+
+    def test_single_part_db_schema_adds_no_reference_line(self):
+        with patch(
+            "schema_data.registry.get_table_schema_qualifiers",
+            return_value={"Customer": "sales"},
+        ):
+            ctx = SchemaRegistry.build_context(("Customer",))
+        assert "Reference as:" not in ctx

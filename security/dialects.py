@@ -423,3 +423,56 @@ def quote_tsql_identifier(name: str) -> str:
     '[Na]]me]'
     """
     return exp.to_identifier(name, quoted=True).sql(dialect="tsql")
+
+
+def quote_tsql_qualifier(qualifier: str) -> str:
+    """Render a ``schema.yaml`` ``db_schema`` value as a quoted T-SQL qualifier.
+
+    ``db_schema`` is usually one part (``"sales"`` -> ``[sales]``). A table
+    in another database on the same server gives two parts,
+    ``"OtherDb.dbo"`` -> ``[OtherDb].[dbo]``, so the reference built from
+    it is the three-part ``[OtherDb].[dbo].[Table]`` SQL Server expects.
+    Each part is quoted with :func:`quote_tsql_identifier`; ``.`` is the
+    separator, so a single schema name containing a literal ``.`` cannot
+    be expressed (SQL Server permits one, but no warehouse this serves
+    uses one).
+
+    Parameters
+    ----------
+    qualifier:
+        The ``db_schema`` value, from ``schema.yaml`` only.
+
+    Returns
+    -------
+    str
+        The quoted qualifier, without a trailing ``.``.
+
+    Raises
+    ------
+    ValueError
+        If any part is empty (``"a..b"``, a leading or trailing ``.``) or
+        there are more than three parts (server.database.schema is the
+        most SQL Server accepts before the table name).
+
+    Examples
+    --------
+    >>> quote_tsql_qualifier("sales")
+    '[sales]'
+    >>> quote_tsql_qualifier("OtherDb.dbo")
+    '[OtherDb].[dbo]'
+    >>> quote_tsql_qualifier("Linked.OtherDb.dbo")
+    '[Linked].[OtherDb].[dbo]'
+    >>> quote_tsql_qualifier("OtherDb..dbo")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid db_schema 'OtherDb..dbo': empty part
+    """
+    parts = qualifier.split(".")
+    if any(not part.strip() for part in parts):
+        raise ValueError(f"invalid db_schema {qualifier!r}: empty part")
+    if len(parts) > 3:
+        raise ValueError(
+            f"invalid db_schema {qualifier!r}: at most three parts "
+            "(server.database.schema) may precede the table name"
+        )
+    return ".".join(quote_tsql_identifier(part.strip()) for part in parts)

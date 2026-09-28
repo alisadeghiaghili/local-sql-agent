@@ -99,10 +99,14 @@ class TestSettings:
         with pytest.raises(ValueError, match="OPENAI_MODEL"):
             s.validate()
 
-    def test_validate_raises_for_empty_url(self):
-        s = Settings.__new__(Settings)
-        object.__setattr__(s, "openai_model", "gpt-oss:20b")
-        object.__setattr__(s, "db_connection_url", "")
+    def test_validate_raises_for_empty_url(self, tmp_path):
+        # No datasources.yaml in the config dir: DB_CONNECTION_URL is the
+        # single source and must be set.
+        s = Settings(
+            openai_model="gpt-oss:20b",
+            db_connection_url="",
+            project_config_dir=str(tmp_path),
+        )
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
 
@@ -181,6 +185,15 @@ class TestSettings:
             Settings(
                 openai_model="gpt-oss-20b", db_connection_url=url, sql_dialect=dialect,
             ).validate()
+
+    def test_validate_skips_the_dialect_check_for_an_unmapped_backend(self, tmp_path):
+        """A backend with no sqlglot-dialect mapping is a different concern;
+        the consistency check has nothing to compare and must not refuse it."""
+        Settings(
+            openai_model="gpt-oss-20b",
+            db_connection_url="firebird://prod-db-host/realdb",
+            project_config_dir=str(tmp_path),
+        ).validate()
 
     def test_validate_rejects_sql_dialect_mismatched_with_connection_url(self):
         """SQL_DIALECT=postgres against a still-mssql DB_CONNECTION_URL is

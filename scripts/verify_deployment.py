@@ -33,6 +33,14 @@ rate limit being sane for this deployment's actual shape
 (``check_rate_limit_sane_for_deployment`` -- one shared service key can put
 many analysts in one bucket; see ``config.Settings.rate_limit_requests``).
 
+With more than one warehouse data source configured
+(``project_config/datasources.yaml``, see ``docs/design/DATASOURCES.md``),
+every database check below (connectivity, read-only login, row cap, query
+timeout) runs once per source -- see :func:`build_checks` -- plus one more
+check, ``check_table_datasources``, confirming every ``schema.yaml``
+table's ``datasource:`` (if any) actually names a configured source. With
+the default single source this script's output is unchanged.
+
 Safety
 ------
 Every database probe here is read-only, with ONE deliberate exception:
@@ -58,6 +66,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from functools import partial, update_wrapper
 from typing import Callable
 
 import requests
@@ -110,27 +119,36 @@ def check_settings_valid() -> CheckResult:
     return CheckResult("Settings.validate()", "PASS")
 
 
-def check_db_connectivity() -> CheckResult:
-    """A trivial ``SELECT 1`` must succeed against the configured database."""
+def _label(name: str, datasource: str | None) -> str:
+    """Check name, suffixed with the data source when there are several."""
+    return name if datasource is None else f"{name} [{datasource}]"
+
+
+def _source_url(datasource: str | None) -> str:
+    from database.datasources import get_datasource
+
+    return get_datasource(datasource).url
+
+
+def check_db_connectivity(datasource: str | None = None) -> CheckResult:
+    """A trivial ``SELECT 1`` must succeed against the data source."""
+    name = _label("Database connectivity", datasource)
     try:
         from database.connection import get_engine
-        engine = get_engine()
+        engine = get_engine(datasource)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except SQLAlchemyError as exc:
         return CheckResult(
-            "Database connectivity", "FAIL",
-            f"could not connect to {_redact(cfg.settings.db_connection_url)}: {exc}",
+            name, "FAIL",
+            f"could not connect to {_redact(_source_url(datasource))}: {exc}",
         )
     except Exception as exc:  # noqa: BLE001
-        return CheckResult("Database connectivity", "FAIL", str(exc))
-    return CheckResult(
-        "Database connectivity", "PASS",
-        f"connected to {_redact(cfg.settings.db_connection_url)}",
-    )
+        return CheckResult(name, "FAIL", str(exc))
+    return CheckResult(name, "PASS", f"connected to {_redact(_source_url(datasource))}")
 
 
-def check_login_is_read_only() -> CheckResult:
+def check_login_is_read_only(datasource: str | None = None) -> CheckResult:
     """The configured login must be refused (or rolled back) on a write.
 
     Mirrors ``docs/db-hardening.md``'s verification checklist item: "Confirm
@@ -139,13 +157,14 @@ def check_login_is_read_only() -> CheckResult:
     table name unlikely to collide with anything real, and cleans up
     defensively in a ``finally`` regardless of outcome.
     """
+    name = _label("Login is read-only", datasource)
     try:
         from database.connection import get_engine
-        engine = get_engine()
+        engine = get_engine(datasource)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
-        return CheckResult("Login is read-only", "SKIP", f"no database connection: {exc}")
+        return CheckResult(name, "SKIP", f"no database connection: {exc}")
 
     try:
         with engine.connect() as conn:
@@ -182,7 +201,7 @@ def check_login_is_read_only() -> CheckResult:
                 text(f"SELECT OBJECT_ID('{_SCRATCH_TABLE}') AS oid")
             ).scalar()
     except SQLAlchemyError as exc:
-        return CheckResult("Login is read-only", "FAIL", f"could not verify: {exc}")
+        return CheckResult(name, "FAIL", f"could not verify: {exc}")
     finally:
         try:
             with engine.connect() as conn:
@@ -196,22 +215,22 @@ def check_login_is_read_only() -> CheckResult:
 
     if persisted is not None:
         return CheckResult(
-            "Login is read-only", "FAIL",
+            name, "FAIL",
             f"{_SCRATCH_TABLE} PERSISTED -- the login can write and/or the "
             "always-rolled-back transaction did not hold",
         )
     if write_refused:
         return CheckResult(
-            "Login is read-only", "PASS",
+            name, "PASS",
             f"CREATE TABLE was refused ({write_error[:120]}) and nothing persisted",
         )
     return CheckResult(
-        "Login is read-only", "PASS",
+        name, "PASS",
         "CREATE TABLE did not raise, but the transaction rollback held: nothing persisted",
     )
 
 
-def _db_reachable() -> str | None:
+def _db_reachable(datasource: str | None = None) -> str | None:
     """Return ``None`` if a trivial query succeeds, else a reason string.
 
     Shared pre-check for the probes below: without it, a database that is
@@ -222,70 +241,77 @@ def _db_reachable() -> str | None:
     """
     try:
         from database.connection import get_engine
-        with get_engine().connect() as conn:
+        with get_engine(datasource).connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
         return str(exc)
     return None
 
 
-def check_row_cap() -> CheckResult:
+def check_row_cap(datasource: str | None = None) -> CheckResult:
     """``execute_sql`` must never return more than ``max_rows_returned`` rows."""
-    unreachable = _db_reachable()
+    name = _label("Row cap", datasource)
+    unreachable = _db_reachable(datasource)
     if unreachable is not None:
-        return CheckResult("Row cap", "SKIP", f"database unreachable: {unreachable}")
+        return CheckResult(name, "SKIP", f"database unreachable: {unreachable}")
 
     try:
         from database.executor import execute_sql
         cap = cfg.settings.max_rows_returned
-        df = execute_sql(f"SELECT TOP {cap * 10 + 10} name FROM sys.all_objects")
+        df = execute_sql(
+            f"SELECT TOP {cap * 10 + 10} name FROM sys.all_objects", datasource=datasource,
+        )
     except Exception as exc:  # noqa: BLE001
-        return CheckResult("Row cap", "SKIP", f"could not run probe query: {exc}")
+        return CheckResult(name, "SKIP", f"could not run probe query: {exc}")
     if len(df) > cfg.settings.max_rows_returned:
         return CheckResult(
-            "Row cap", "FAIL",
+            name, "FAIL",
             f"returned {len(df)} rows, expected <= {cfg.settings.max_rows_returned}",
         )
     return CheckResult(
-        "Row cap", "PASS",
+        name, "PASS",
         f"returned {len(df)} rows (cap {cfg.settings.max_rows_returned})",
     )
 
 
-def check_query_timeout() -> CheckResult:
+def check_query_timeout(datasource: str | None = None) -> CheckResult:
     """A deliberately slow query must abort near the configured timeout."""
-    unreachable = _db_reachable()
+    name = _label("Query timeout", datasource)
+    unreachable = _db_reachable(datasource)
     if unreachable is not None:
-        return CheckResult("Query timeout", "SKIP", f"database unreachable: {unreachable}")
+        return CheckResult(name, "SKIP", f"database unreachable: {unreachable}")
 
     try:
         from database.executor import execute_sql
         from config import override_settings
     except Exception as exc:  # noqa: BLE001
-        return CheckResult("Query timeout", "SKIP", str(exc))
+        return CheckResult(name, "SKIP", str(exc))
 
     probe_timeout = min(cfg.settings.query_timeout_seconds, 5) or 5
     start = time.perf_counter()
     try:
         with override_settings(query_timeout_seconds=probe_timeout):
-            execute_sql(f"WAITFOR DELAY '00:00:{probe_timeout + 10:02d}'; SELECT 1 AS x")
+            execute_sql(
+                f"WAITFOR DELAY '00:00:{probe_timeout + 10:02d}'; SELECT 1 AS x",
+                datasource=datasource,
+            )
     except RuntimeError:
         elapsed = time.perf_counter() - start
         if elapsed < probe_timeout + 8:
             return CheckResult(
-                "Query timeout", "PASS",
+                name, "PASS",
                 f"aborted after {elapsed:.1f}s (configured timeout {probe_timeout}s)",
             )
         return CheckResult(
-            "Query timeout", "FAIL",
+            name, "FAIL",
             f"took {elapsed:.1f}s -- longer than the {probe_timeout}s timeout should allow",
         )
     except Exception as exc:  # noqa: BLE001
-        return CheckResult("Query timeout", "SKIP", f"could not run probe query: {exc}")
+        return CheckResult(name, "SKIP", f"could not run probe query: {exc}")
     else:
         elapsed = time.perf_counter() - start
         return CheckResult(
-            "Query timeout", "FAIL",
+            name, "FAIL",
             f"WAITFOR DELAY completed in {elapsed:.1f}s without the timeout firing "
             "(is WAITFOR unsupported, e.g. Azure SQL DB serverless tiers, or is the "
             "timeout not actually applied?)",
@@ -605,13 +631,32 @@ def check_rate_limit_sane_for_deployment() -> CheckResult:
     return CheckResult("Rate limit sane for deployment", "PASS", detail)
 
 
-# Order matters for readability, not correctness: each check is independent.
-_CHECKS: list[Callable[[], CheckResult]] = [
-    check_settings_valid,
+def check_table_datasources() -> CheckResult:
+    """Every ``schema.yaml`` table must name a configured data source."""
+    try:
+        from database.datasources import check_table_datasources as _check, datasource_names
+
+        _check()
+        names = datasource_names()
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult("Tables map to data sources", "FAIL", str(exc))
+    return CheckResult(
+        "Tables map to data sources", "PASS",
+        f"{len(names)} data source(s): {', '.join(names)}",
+    )
+
+
+#: Checks run once per data source, in this order, after the global ones
+#: that precede them in :func:`_checks`.
+_PER_SOURCE_CHECKS: list[Callable[..., CheckResult]] = [
     check_db_connectivity,
     check_login_is_read_only,
     check_row_cap,
     check_query_timeout,
+]
+
+#: Checks that run once for the whole deployment.
+_GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_openai_model_exists,
     check_api_key_authenticates,
     check_audit_log_writable,
@@ -621,12 +666,49 @@ _CHECKS: list[Callable[[], CheckResult]] = [
 ]
 
 
+def build_checks() -> list[Callable[[], CheckResult]]:
+    """Return the full, ordered check list for the current configuration.
+
+    Settings first, then the table-to-source mapping, then every database
+    check for each data source in turn, then the rest. With one data
+    source the database checks keep their plain names; with several each
+    result is suffixed with ``[source]``. Order matters for readability,
+    not correctness: each check is independent.
+
+    Every entry keeps its underlying check function's ``__name__`` (a
+    per-source entry is a :func:`functools.partial` wrapped with
+    :func:`functools.update_wrapper`), so ``api/admin_routes.py`` can still
+    leave out the slow checks by name.
+
+    Returns
+    -------
+    list[Callable[[], CheckResult]]
+        Zero-argument callables, run in order by :func:`main` and by
+        ``GET /admin/health/checks``.
+    """
+    try:
+        from database.datasources import datasource_names
+
+        names: tuple[str, ...] = datasource_names()
+    except Exception:  # noqa: BLE001 - reported by check_table_datasources
+        names = ()
+    per_source: list[Callable[[], CheckResult]] = []
+    if len(names) <= 1:
+        per_source = list(_PER_SOURCE_CHECKS)
+    else:
+        for name in names:
+            per_source.extend(
+                update_wrapper(partial(check, name), check) for check in _PER_SOURCE_CHECKS
+            )
+    return [check_settings_valid, check_table_datasources, *per_source, *_GLOBAL_CHECKS]
+
+
 def main() -> int:
     print("Deployment verification")
     print("=" * 60)
 
     results: list[CheckResult] = []
-    for check in _CHECKS:
+    for check in build_checks():
         try:
             result = check()
         except Exception as exc:  # noqa: BLE001 — a check must never crash the script
