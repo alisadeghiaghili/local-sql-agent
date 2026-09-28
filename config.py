@@ -172,6 +172,36 @@ class Settings:
     """Bearer token for :attr:`openai_base_url`. Empty is valid — many
     self-hosted OpenAI-compatible servers don't check it."""
 
+    # ── HTTP server binding (``python -m api`` launcher) ────────────────
+    # The API port has always been settable on the `uvicorn` command line
+    # (`--port`) but never in `.env` -- an operator who only ever edits
+    # `.env` (the documented workflow for every other setting on this
+    # page) had no way to change it there, and started the server on the
+    # default port while the rest of their `.env` assumed a different one.
+    # These two exist so `.env` is a complete description of where the
+    # server binds, and `python -m api` (this module's own `__main__.py`)
+    # is a launcher that actually reads them -- the plain `uvicorn ...`
+    # command in the runbook/README keeps working unmodified either way,
+    # since uvicorn itself never reads these variables.
+    api_host: str = field(default_factory=lambda: os.getenv("API_HOST", "127.0.0.1"))
+    """Interface ``python -m api`` binds to. Defaults to the loopback-only
+    ``127.0.0.1`` -- a freshly-cloned checkout should not be reachable
+    from the network until an operator deliberately widens it. The
+    documented deployment command binds ``0.0.0.0`` (every interface, see
+    ``docs/deployment-runbook.md`` step 4) explicitly, on the command
+    line, precisely because that choice should be visible at the call
+    site rather than silently inherited from a default an operator never
+    looked at."""
+
+    api_port: int = field(default_factory=lambda: int(os.getenv("API_PORT", "8000")))
+    """Port ``python -m api`` binds to. ``8000`` matches every other
+    default in this codebase that assumes the API is reachable at
+    ``http://localhost:8000`` (``web/js/config.js``'s ``DEFAULT_API_PORT``,
+    ``DEFAULT_CORS_ALLOWED_ORIGINS`` above's counterpart on the UI side,
+    the runbook, the README). Changing it here changes what ``python -m
+    api`` binds to; a plain ``uvicorn ...`` invocation is unaffected --
+    its port comes only from its own ``--port`` flag."""
+
     db_connection_url: str = field(
         default_factory=lambda: os.getenv(
             "DB_CONNECTION_URL",
