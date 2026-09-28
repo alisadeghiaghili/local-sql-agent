@@ -37,37 +37,65 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _ADMIN_JS = _REPO_ROOT / "web" / "admin" / "admin.js"
 _APIKEY_JS = _REPO_ROOT / "web" / "js" / "apikey.js"
+_API_JS = _REPO_ROOT / "web" / "js" / "api.js"
 _HARNESS = Path(__file__).resolve().parent / "run_admin_auth_boundary.mjs"
 
 _NODE = shutil.which("node")
 
-# The only change made to admin.js's real source before handing it to
-# Node: apikey.js is copied alongside it as apikey.mjs (Node's ESM loader
-# needs an .mjs extension or a controlling package.json -- web/ ships
-# neither, see web/README.md), so the one import statement naming it has
-# to point at the renamed file too. Anything else in admin.js reaching
-# this test is byte-identical to the real source.
-_IMPORT_LINE = re.compile(r'^import \{ getApiKey \} from "\.\./js/apikey\.js";$', re.MULTILINE)
+# The changes made to admin.js's real source before handing it to Node:
+# apikey.js and api.js (admin.js imports describeTransportFailure from
+# the latter, for the shared "unreachable host or CORS" hint -- see
+# web/admin/admin.js's own import comment) are each copied alongside it
+# under an .mjs extension (Node's ESM loader needs one, or a controlling
+# package.json -- web/ ships neither, see web/README.md), so the import
+# statements naming them have to point at the renamed files too. api.js
+# itself imports apikey.js the same way, so that one needs the identical
+# rewrite. Anything else in admin.js/api.js reaching this test is
+# byte-identical to the real source.
+_ADMIN_IMPORT_LINES = [
+    (
+        re.compile(r'^import \{ getApiKey \} from "\.\./js/apikey\.js";$', re.MULTILINE),
+        'import { getApiKey } from "./apikey.mjs";',
+    ),
+    (
+        re.compile(r'^import \{ describeTransportFailure \} from "\.\./js/api\.js";$', re.MULTILINE),
+        'import { describeTransportFailure } from "./api.mjs";',
+    ),
+]
+_API_IMPORT_LINE = re.compile(r'^import \{ getApiKey \} from "\./apikey\.js";$', re.MULTILINE)
 
 
 def _prepare_copy(tmp_path: Path) -> Path:
-    """Copy admin.js/apikey.js into *tmp_path* as ESM (.mjs), import-path
-    fixed up. Returns the path to the copied ``admin.mjs``."""
+    """Copy admin.js/apikey.js/api.js into *tmp_path* as ESM (.mjs),
+    import-paths fixed up. Returns the path to the copied ``admin.mjs``."""
     admin_src = _ADMIN_JS.read_text(encoding="utf-8")
     apikey_src = _APIKEY_JS.read_text(encoding="utf-8")
+    api_src = _API_JS.read_text(encoding="utf-8")
 
-    fixed_admin_src, n = _IMPORT_LINE.subn('import { getApiKey } from "./apikey.mjs";', admin_src)
+    fixed_admin_src = admin_src
+    for pattern, replacement in _ADMIN_IMPORT_LINES:
+        fixed_admin_src, n = pattern.subn(replacement, fixed_admin_src)
+        assert n == 1, (
+            "web/admin/admin.js no longer imports its dependencies the way "
+            f"this test expects (pattern {pattern.pattern!r}) -- update "
+            "_ADMIN_IMPORT_LINES to match the real source instead of "
+            "silently testing stale code."
+        )
+
+    fixed_api_src, n = _API_IMPORT_LINE.subn('import { getApiKey } from "./apikey.mjs";', api_src)
     assert n == 1, (
-        "web/admin/admin.js no longer imports apikey.js the way this test "
-        "expects (`import { getApiKey } from \"../js/apikey.js\";`) -- "
-        "update _IMPORT_LINE to match the real source instead of silently "
+        "web/js/api.js no longer imports apikey.js the way this test "
+        "expects (`import { getApiKey } from \"./apikey.js\";`) -- update "
+        "_API_IMPORT_LINE to match the real source instead of silently "
         "testing stale code."
     )
 
     admin_mjs = tmp_path / "admin.mjs"
     apikey_mjs = tmp_path / "apikey.mjs"
+    api_mjs = tmp_path / "api.mjs"
     admin_mjs.write_text(fixed_admin_src, encoding="utf-8")
     apikey_mjs.write_text(apikey_src, encoding="utf-8")
+    api_mjs.write_text(fixed_api_src, encoding="utf-8")
     return admin_mjs
 
 
@@ -75,6 +103,7 @@ def _prepare_copy(tmp_path: Path) -> Path:
 def test_admin_panel_attaches_bearer_token_on_every_call() -> None:
     assert _ADMIN_JS.exists(), f"expected {_ADMIN_JS} to exist"
     assert _APIKEY_JS.exists(), f"expected {_APIKEY_JS} to exist"
+    assert _API_JS.exists(), f"expected {_API_JS} to exist"
 
     with tempfile.TemporaryDirectory() as tmp:
         admin_mjs = _prepare_copy(Path(tmp))

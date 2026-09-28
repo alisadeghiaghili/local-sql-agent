@@ -81,6 +81,15 @@ globalThis.localStorage = (() => {
   };
 })();
 
+// main.js's boot now resolves its backend-address default (config.js's
+// DEFAULT_BASE_URL/DEFAULT_API_PORT) via resolveDefaultBaseUrl, and reads
+// `?base=` off `location.search` -- neither existed as a module-scope
+// reference before. No `?base=` param for this harness (boot order/timer
+// behaviour is what is under test here, not address resolution -- see
+// test_web_ui_topbar_config.py / the address-normalisation tests for
+// that), so an empty search string is enough.
+globalThis.location = { protocol: "http:", hostname: "localhost", search: "", href: "http://localhost/admin/" };
+
 globalThis.document = {
   hidden: false,
   documentElement: { removeAttribute() {}, setAttribute() {} },

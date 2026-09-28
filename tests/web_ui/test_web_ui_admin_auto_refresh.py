@@ -56,6 +56,14 @@ _GRAPH = {
     "admin/access-requests.mjs": _ADMIN_DIR / "access-requests.js",
     "js/apikey.mjs": _JS_DIR / "apikey.js",
     "js/state.mjs": _JS_DIR / "state.js",
+    # main.js now also resolves its backend-address default from
+    # config.js (DEFAULT_BASE_URL/DEFAULT_API_PORT), same as web/'s own
+    # main.js; admin.js imports describeTransportFailure from api.js for
+    # the shared "unreachable host or CORS" hint (web/admin/admin.js's
+    # own import comment) -- api.js in turn imports apikey.js, already
+    # above, so no further additions are needed once it is here.
+    "js/config.mjs": _JS_DIR / "config.js",
+    "js/api.mjs": _JS_DIR / "api.js",
 }
 
 # Matches a relative import/export specifier ending in .js, e.g.
