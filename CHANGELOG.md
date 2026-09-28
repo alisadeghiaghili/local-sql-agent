@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [6.0.2] — 2026-09-28
+
+Running the API and the web UI on different ports or hosts no longer needs
+guesswork.
+
+### Added
+
+- **`python -m api` starts the server from settings (PR #127).** It uses `API_HOST` (default `127.0.0.1`) and `API_PORT` (default `8000`) and sends no `Server` header. An invalid `API_PORT` fails with a message naming it. The documented `uvicorn api.server:app ...` command still works unchanged.
+- **The server logs its allowed CORS origins at startup (PR #127).** It also shows a hint in both pages when the backend cannot be reached. The hint names the two likely causes (the backend is not running, or this page's origin is missing from `CORS_ALLOWED_ORIGINS`) and prints the origin to add.
+
+### Fixed
+
+- **The admin panel uses the same API address as the main UI (PR #127).** Both pages read it from `web/js/config.js`, with the same precedence: `?base=`, then a saved value, then the file. If `DEFAULT_BASE_URL` is empty, both derive the address from the page's own host and `DEFAULT_API_PORT`. Before this, the admin panel ignored the file and started from `http://localhost:8000`.
+- **API addresses are normalised and validated (PR #127).** An address typed without `http://` is no longer treated as a relative path. Previously that sent requests such as `/admin/<host>:<port>/admin/...` to the static server. Now:
+  - a missing scheme is added;
+  - whitespace, paths and credentials are dropped;
+  - IPv6 addresses work;
+  - anything else is rejected with a message, and the previous address stays in use.
+- **The application's own log lines are shown (PR #127).** INFO-level lines, such as the startup banner and the CORS line, were silently dropped under both documented start commands. When nothing else has configured logging, they now go to stderr at `LOG_LEVEL` (default `INFO`).
+
+### Upgrading
+
+- No action needed for an existing setup.
+- **To use `python -m api` on a server reached from other machines,** set `API_HOST=0.0.0.0`; its default listens on the local machine only.
+- **If the UI is served from anywhere other than `localhost:8080`,** set `CORS_ALLOWED_ORIGINS` to that origin, for example `http://172.16.101.42:8077`.
+
 ## [6.0.1] — 2026-09-27
 
 The remaining `SELECT 1` traffic to the warehouse is gone. A diagnostic kit
