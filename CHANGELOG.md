@@ -35,9 +35,10 @@ different servers.
   `/health`'s `database_detail` names each source once more than one is
   configured; the deployment-verification checks (connectivity,
   read-only login, row cap, query timeout) run once per source.
-- **The audit trail additively records which source a query ran on.**
-  Old audit records remain readable — the new `datasource` field is
-  simply absent from them.
+- **The audit trail records each query's data source.** The new
+  `datasource` field names the source the SQL targeted, including SQL the
+  guard refused; it is empty when no SQL was generated or its tables span
+  two sources. Older records simply lack the field.
 
 ## [6.0.2] — 2026-09-28
 
