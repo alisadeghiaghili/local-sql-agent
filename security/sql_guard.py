@@ -84,15 +84,25 @@ checks the resulting **AST**, not the source text:
   affecting execution, so the presence of *any* comment — not its
   content — is the refusal condition.
 * Every table reference is checked against
-  ``schema_data.columns.TABLE_COLUMNS`` (case-insensitively, schema/db
-  qualifiers ignored) and **rejected if it does not resolve to a known
-  table** — except a reference to a CTE defined earlier in the same query,
-  which is not a reference to a real table at all. This is enforced even
-  though the application's DB login is not yet scoped to just these
-  tables (see ``docs/db-hardening.md``): the guard should not depend on
-  that hardening having been applied to do its job, and a hallucinated or
+  ``schema_data.columns.TABLE_COLUMNS`` (case-insensitively, brackets
+  ignored) and **rejected if it does not resolve to a known table** —
+  except a reference to a CTE defined earlier in the same query, which is
+  not a reference to a real table at all. This is enforced even though
+  the application's DB login is not yet scoped to just these tables (see
+  ``docs/db-hardening.md``): the guard should not depend on that
+  hardening having been applied to do its job, and a hallucinated or
   out-of-domain table name (``HR_Payroll``, ``[Evil].[Secrets]``, ...) is
-  exactly the kind of reference this allowlist exists to catch.
+  exactly the kind of reference this allowlist exists to catch. A
+  reference's schema/database QUALIFIER is checked too, not ignored (see
+  ``docs/design/TABLE-NAMES.md`` and :func:`_match_table_ref`): a
+  ``schema.yaml`` table key may itself be qualified (``sales.Customer``)
+  for a warehouse with the same bare table name in more than one schema,
+  and a reference that names some OTHER schema for an allowlisted bare
+  name (``[hr].[Customer]`` when only ``sales.Customer`` is allowlisted)
+  is refused rather than silently resolved — closing what used to be a
+  real allowlist-bypass hole. An unqualified reference to a bare name
+  more than one key shares is refused as ``ambiguous_table`` instead,
+  naming every qualified reference to disambiguate with.
 * Every *column* reference that can be unambiguously resolved to a known
   table is checked against that table's known columns; this part remains
   deliberately conservative — an unqualified column, a column qualified by
@@ -243,12 +253,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from schema_data.columns import TABLE_COLUMNS
+from schema_data.registry import get_table_schema_qualifiers, table_ref_parts, table_reference_sql
 from security.dialects import get_dialect_profile
 
 # ---------------------------------------------------------------------------
@@ -283,7 +295,8 @@ from security.dialects import get_dialect_profile
 #: (``reason is None``, which no raise site below actually produces).
 _REASONS = frozenset({
     "denied_column", "forbidden_statement", "unknown_table",
-    "system_catalogue", "no_table_reference", "cross_datasource", "other",
+    "system_catalogue", "no_table_reference", "cross_datasource",
+    "ambiguous_table", "other",
 })
 
 
@@ -674,26 +687,105 @@ def _forbidden_label(node: exp.Expression) -> str | None:
     return None
 
 
-def _build_schema_lookup() -> tuple[dict[str, str], dict[str, frozenset[str]]]:
-    """Build case-insensitive lookup tables from ``TABLE_COLUMNS``.
+def _build_schema_lookup() -> tuple[
+    dict[str, str], dict[str, frozenset[str]], dict[str, tuple[str, ...]],
+    dict[str, str], dict[str, tuple[str, ...]],
+]:
+    """Build this module's table/column/qualifier lookup structures from
+    ``TABLE_COLUMNS`` (and the same registry's effective-qualifier map).
 
     Returns
     -------
-    tuple[dict[str, str], dict[str, frozenset[str]]]
-        ``(table_lookup, columns_by_table)`` where *table_lookup* maps a
-        lower-cased table name to its canonical (correctly-cased) name, and
-        *columns_by_table* maps that canonical name to the frozenset of its
-        lower-cased column names.
+    tuple
+        ``(table_lookup, columns_by_table, qualifier_parts, qualifier_str, bare_name_index)``:
+
+        * *table_lookup* -- lower-cased full table KEY -> its canonical
+          (correctly-cased) key, e.g. ``"sales.customer" -> "sales.Customer"``.
+          Not used to resolve a real SQL table reference (its qualifier and
+          bare name are separate AST slots, never one dotted string) --
+          kept for any caller that already has a literal key string in
+          hand and just needs its canonical case.
+        * *columns_by_table* -- canonical key -> frozenset of its
+          lower-cased column names.
+        * *qualifier_parts* -- canonical key -> its EFFECTIVE qualifier
+          (:func:`schema_data.registry.get_table_schema_qualifiers`),
+          lower-cased parts, ``()`` for a table with none -- what
+          :func:`_match_table_ref` compares a SQL reference's own qualifier
+          against.
+        * *qualifier_str* -- the same qualifier, ORIGINAL case, dot-joined
+          exactly as :func:`schema_data.registry.get_table_schema_qualifiers`
+          returns it (``""`` when absent) -- for building a human-readable
+          ``[q].[Name]`` reference in a rejection message
+          (:func:`~schema_data.registry.table_reference_sql`), never for
+          matching.
+        * *bare_name_index* -- lower-cased BARE table name -> every
+          canonical key that shares it, in ``schema.yaml`` order. More than
+          one entry means two or more schema.yaml keys name the same table
+          under different qualifiers (``sales.Customer``/``ref.Customer``)
+          -- exactly the case :func:`_match_table_ref` disambiguates.
     """
     table_lookup = {name.lower(): name for name in TABLE_COLUMNS}
     columns_by_table = {
         name: frozenset(col.lower() for col in cols)
         for name, cols in TABLE_COLUMNS.items()
     }
-    return table_lookup, columns_by_table
+    qualifiers = get_table_schema_qualifiers()
+    qualifier_parts: dict[str, tuple[str, ...]] = {}
+    qualifier_str: dict[str, str] = {}
+    bare_name_index: dict[str, list[str]] = {}
+    for name in TABLE_COLUMNS:
+        bare = table_ref_parts(exp.to_table(name, dialect="tsql"))[-1]
+        bare_name_index.setdefault(bare.lower(), []).append(name)
+        qualifier = qualifiers.get(name, "")
+        qualifier_str[name] = qualifier
+        qualifier_parts[name] = tuple(p.lower() for p in qualifier.split(".")) if qualifier else ()
+    return (
+        table_lookup, columns_by_table, qualifier_parts, qualifier_str,
+        {bare: tuple(keys) for bare, keys in bare_name_index.items()},
+    )
 
 
-_TABLE_LOOKUP, _COLUMNS_BY_TABLE = _build_schema_lookup()
+(
+    _TABLE_LOOKUP, _COLUMNS_BY_TABLE, _QUALIFIER_PARTS, _QUALIFIER_STR, _BARE_NAME_INDEX,
+) = _build_schema_lookup()
+
+
+def refresh_schema_lookup() -> None:
+    """Rebuild this module's table/column/qualifier lookup from whatever
+    ``schema.yaml`` :data:`config.Settings.project_config_dir` currently
+    names.
+
+    ``TABLE_COLUMNS`` (:mod:`schema_data.columns`) and the registry's own
+    process-lifetime cache (:mod:`schema_data.registry`) are both lazy
+    singletons, populated once on first access and never re-read on their
+    own -- by design, for production (see ``schema_data.registry``'s module
+    docstring: a ``schema.yaml`` edit takes effect on process restart, the
+    same as the rest of this guard's allowlist). Worse, this module's own
+    ``TABLE_COLUMNS`` name is a plain ``from schema_data.columns import
+    TABLE_COLUMNS`` snapshot taken once at import time -- clearing
+    ``schema_data.columns``' cache alone would not change what THIS name
+    already points to. A test that swaps ``schema.yaml`` mid-process
+    (:func:`config.override_settings` plus a ``tmp_path`` config directory)
+    needs every one of these re-read -- this module's own ``TABLE_COLUMNS``
+    binding, and the derived structures built from it
+    (:data:`_TABLE_LOOKUP`, :data:`_COLUMNS_BY_TABLE`, :data:`_QUALIFIER_PARTS`,
+    :data:`_QUALIFIER_STR`, :data:`_BARE_NAME_INDEX`) -- or the guard keeps
+    validating against whatever schema was loaded first. This function is
+    that explicit, test-only escape hatch: it clears both lazy caches,
+    re-fetches ``TABLE_COLUMNS`` fresh, and recomputes this module's
+    derived state from it, rather than leaving a test to reach into three
+    modules' private caches by hand. Not called anywhere in production code.
+    """
+    import schema_data.columns as columns_module
+    import schema_data.registry as registry_module
+
+    global TABLE_COLUMNS, _TABLE_LOOKUP, _COLUMNS_BY_TABLE, _QUALIFIER_PARTS, _QUALIFIER_STR, _BARE_NAME_INDEX
+    registry_module._cache.clear()
+    columns_module._cache.clear()
+    TABLE_COLUMNS = registry_module.get_table_columns()
+    (
+        _TABLE_LOOKUP, _COLUMNS_BY_TABLE, _QUALIFIER_PARTS, _QUALIFIER_STR, _BARE_NAME_INDEX,
+    ) = _build_schema_lookup()
 
 
 def _cte_names(tree: exp.Expression) -> frozenset[str]:
@@ -707,18 +799,112 @@ def _cte_names(tree: exp.Expression) -> frozenset[str]:
     return frozenset(cte.alias.lower() for cte in tree.find_all(exp.CTE) if cte.alias)
 
 
-def _resolve_table_name(raw_name: str | None, cte_names: frozenset[str]) -> str | None:
-    """Return the canonical ``TABLE_COLUMNS`` name for *raw_name*, or ``None``.
+@dataclass(frozen=True)
+class _TableMatch:
+    """The outcome of matching one SQL table reference against the schema
+    allowlist -- see :func:`_match_table_ref`.
 
-    ``None`` covers three distinct cases callers deliberately do not
-    distinguish here: *raw_name* is empty (e.g. a table-valued function
-    call, whose ``exp.Table.this`` is an ``exp.Anonymous`` rather than an
-    ``exp.Identifier``), it names a CTE, or it simply is not in
-    ``TABLE_COLUMNS``.
+    ``status`` is one of:
+
+    * ``"resolved"`` -- exactly one table matches; ``canonical`` is its key.
+    * ``"unknown"`` -- no ``schema.yaml`` key shares this bare name at all.
+    * ``"ambiguous"`` -- more than one candidate matches (an unqualified
+      reference to a bare name more than one key shares, with no single
+      qualifier-less or exact-qualifier candidate to prefer).
+    * ``"qualifier_mismatch"`` -- the reference IS qualified, and candidates
+      share its bare name, but none has a matching (or absent) qualifier --
+      the ``[hr].[Customer]`` hole this feature closes.
+    * ``"multi_part_only"`` -- the reference is unqualified, exactly one
+      candidate shares its bare name, but that candidate's own qualifier is
+      multi-part (another database) -- an unqualified reference would read
+      the wrong database, so this is refused like an unknown table.
+
+    ``candidates`` -- every same-bare-name key considered, for a
+    caller-built "did you mean" message; empty only for ``"unknown"``.
     """
-    if not raw_name or raw_name.lower() in cte_names:
+
+    canonical: str | None
+    candidates: tuple[str, ...]
+    status: str
+
+
+def _match_table_ref(name: str, qualifier: tuple[str, ...]) -> _TableMatch:
+    """Resolve one SQL table reference's bare *name* + *qualifier* against
+    the schema allowlist. See :class:`_TableMatch` for the possible outcomes.
+
+    Parameters
+    ----------
+    name:
+        The reference's bare table name, as written in the query.
+    qualifier:
+        The reference's own qualifier parts, already lower-cased, leftmost
+        first -- ``()`` for an unqualified reference.
+    """
+    candidates = _BARE_NAME_INDEX.get(name.lower(), ())
+    if not candidates:
+        return _TableMatch(None, (), "unknown")
+
+    if qualifier:
+        exact = [key for key in candidates if _QUALIFIER_PARTS[key] == qualifier]
+        if len(exact) == 1:
+            return _TableMatch(exact[0], candidates, "resolved")
+        if len(exact) > 1:  # pragma: no cover - schema.yaml validation forbids this
+            return _TableMatch(None, tuple(exact), "ambiguous")
+        # No exact match -- a candidate with NO known qualifier accepts any
+        # qualifier (documented residual gap: it cannot actually be
+        # checked; schema.yaml authors are advised to set db_schema).
+        loose = [key for key in candidates if not _QUALIFIER_PARTS[key]]
+        if len(loose) == 1:
+            return _TableMatch(loose[0], candidates, "resolved")
+        if len(loose) > 1:  # pragma: no cover - schema.yaml validation forbids this
+            return _TableMatch(None, tuple(loose), "ambiguous")
+        return _TableMatch(None, candidates, "qualifier_mismatch")
+
+    if len(candidates) == 1:
+        key = candidates[0]
+        if len(_QUALIFIER_PARTS[key]) <= 1:
+            return _TableMatch(key, candidates, "resolved")
+        return _TableMatch(None, candidates, "multi_part_only")
+    return _TableMatch(None, candidates, "ambiguous")
+
+
+def _table_ref_name_and_qualifier(table: exp.Table) -> tuple[str, tuple[str, ...]]:
+    """The bare name and lower-cased qualifier parts of SQL node *table*.
+
+    A thin adapter over :func:`schema_data.registry.table_ref_parts` (the
+    one place this codebase flattens a dotted/bracketed T-SQL identifier,
+    schema.yaml key or real query reference alike), so every caller in this
+    module reaches the schema allowlist through the same two pieces of
+    information -- never re-deriving them from ``table.db``/``table.catalog``
+    by hand at a second call site.
+    """
+    parts = table_ref_parts(table)
+    if not parts:  # pragma: no cover - defensive; a real exp.Table always names something
+        return "", ()
+    return parts[-1], tuple(p.lower() for p in parts[:-1])
+
+
+def _resolve_table_name(table: exp.Table, cte_names: frozenset[str]) -> str | None:
+    """Best-effort canonical key for *table*, or ``None``.
+
+    A thin, non-raising wrapper around :func:`_match_table_ref` for every
+    caller that only wants "the" table when the reference is unambiguous
+    and does not itself raise or otherwise report the difference between
+    "unknown", "ambiguous", and "qualifier mismatch" -- alias maps, ``*``
+    expansion, cross-datasource grouping, and
+    :func:`extract_touched_tables`. Collapses every non-``"resolved"``
+    :class:`_TableMatch` to ``None`` alike. Only :func:`validate_sql`'s own
+    table-allowlist walk (rule 8) calls :func:`_match_table_ref` directly,
+    for the specific diagnostic it needs to raise the right rejection.
+
+    ``None`` also covers *table* naming a CTE, or an empty name (e.g. a
+    table-valued function call, whose ``exp.Table.this`` is an
+    ``exp.Anonymous`` rather than an ``exp.Identifier``).
+    """
+    name, qualifier = _table_ref_name_and_qualifier(table)
+    if not name or name.lower() in cte_names:
         return None
-    return _TABLE_LOOKUP.get(raw_name.lower())
+    return _match_table_ref(name, qualifier).canonical
 
 
 def _collect_table_alias_map(
@@ -733,15 +919,32 @@ def _collect_table_alias_map(
     resolve. It re-resolves defensively via :func:`_resolve_table_name`
     rather than assuming that, so it stays correct on its own if ever
     called before that check.
+
+    An alias always maps to its table. A bare, unqualified table name maps
+    to its table only when exactly one ``FROM``/``JOIN`` source in *tree*
+    writes that bare name -- a self-join of two same-bare-name, different-
+    qualifier tables (``[sales].[Customer] c1 JOIN [ref].[Customer] c2``)
+    writes ``Customer`` twice, so neither is entered under the bare name
+    here; a later qualified column reference (``Customer.Name``, with no
+    alias) is then genuinely ambiguous and is left for the lenient
+    unresolved-qualifier path in :func:`validate_sql`'s column check to
+    allow rather than mis-attribute to one side of the join.
     """
     alias_map: dict[str, str] = {}
+    entries: list[tuple[str, str]] = []
+    bare_name_counts: dict[str, int] = {}
     for table in tree.find_all(exp.Table):
-        canonical = _resolve_table_name(table.name, cte_names)
+        canonical = _resolve_table_name(table, cte_names)
         if canonical is None:
             continue
-        alias_map[table.name.lower()] = canonical
+        name_lower = table.name.lower()
+        entries.append((name_lower, canonical))
+        bare_name_counts[name_lower] = bare_name_counts.get(name_lower, 0) + 1
         if table.alias:
             alias_map[table.alias.lower()] = canonical
+    for name_lower, canonical in entries:
+        if bare_name_counts[name_lower] == 1:
+            alias_map[name_lower] = canonical
     return alias_map
 
 
@@ -792,7 +995,7 @@ def _resolve_star_tables(
     for source in _direct_from_sources(select):
         if not isinstance(source, exp.Table):
             return None
-        canonical = _resolve_table_name(source.name, cte_names)
+        canonical = _resolve_table_name(source, cte_names)
         if canonical is None:
             return None
         resolved.append(canonical)
@@ -820,7 +1023,7 @@ def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) 
     tables = {
         canonical
         for table in tree.find_all(exp.Table)
-        if (canonical := _resolve_table_name(table.name, cte_names)) is not None
+        if (canonical := _resolve_table_name(table, cte_names)) is not None
     }
     if len(tables) < 2:
         return
@@ -1403,8 +1606,26 @@ def validate_sql(
             # -- it is already refused above, either by the dangerous
             # function-name checks or because it can never match
             # TABLE_COLUMNS anyway once it does something real.
+            #
+            # A table's SCHEMA/DATABASE QUALIFIER, when the reference gives
+            # one, is now part of this check too (see docs/design/TABLE-NAMES.md
+            # and _match_table_ref's own docstring for the full rule):
+            # a query that writes some OTHER schema in front of an
+            # allowlisted table's bare name (``[hr].[Customer]`` when only
+            # ``sales.Customer`` is allowlisted) used to sail through this
+            # check unexamined -- the qualifier was simply never looked at
+            # -- which let a query reach a table NOT in the allowlist merely
+            # by naming a different schema. :func:`_match_table_ref` closes
+            # that hole: a qualified reference must match a known qualifier
+            # exactly (a candidate with no db_schema set at all still
+            # accepts any qualifier -- a documented, residual gap; see that
+            # function's docstring).
             if raw_name and raw_name.lower() not in cte_names:
-                if _TABLE_LOOKUP.get(raw_name.lower()) is None:
+                _, sql_qualifier = _table_ref_name_and_qualifier(node)
+                match = _match_table_ref(raw_name, sql_qualifier)
+                if match.status == "resolved":
+                    pass
+                elif match.status == "unknown":
                     # CorrectableRejection: a hallucinated or misspelled
                     # table name is exactly the kind of small-model mistake
                     # a retry can plausibly fix by naming a real table --
@@ -1418,6 +1639,52 @@ def validate_sql(
                         f"Forbidden keyword detected: unknown table "
                         f"'{raw_name}' is not in the schema allowlist",
                         reason="unknown_table", subject=raw_name,
+                    )
+                    exc.is_refusal = True
+                    raise exc
+                elif match.status in ("qualifier_mismatch", "multi_part_only"):
+                    # The bare name IS a real table (or more than one), but
+                    # none of them is reachable the way this reference wrote
+                    # it -- either the given qualifier names no known
+                    # candidate, or the one candidate that exists lives in
+                    # another database and an unqualified reference would
+                    # read the wrong one. Reported as unknown_table (a
+                    # retry can plausibly fix it by writing the right
+                    # qualifier) with a "did you mean" naming every
+                    # candidate's actual reference.
+                    suggestions = ", ".join(
+                        table_reference_sql(key, _QUALIFIER_STR.get(key, ""))
+                        for key in match.candidates
+                    )
+                    written = (
+                        f"{'.'.join(sql_qualifier)}.{raw_name}" if sql_qualifier else raw_name
+                    )
+                    exc = CorrectableRejection(
+                        f"Forbidden keyword detected: table '{written}' is "
+                        f"not in the schema allowlist; did you mean "
+                        f"{suggestions}?",
+                        reason="unknown_table", subject=raw_name,
+                    )
+                    exc.is_refusal = True
+                    raise exc
+                elif match.status == "ambiguous":
+                    # More than one candidate and no way to tell which one
+                    # this reference means -- an unqualified mention of a
+                    # bare name more than one schema.yaml key shares. A
+                    # retry can plausibly fix this by writing one of the
+                    # qualified references named in the message, so this is
+                    # correctable, not a PolicyRejection (the question
+                    # itself is answerable, just not phrased unambiguously
+                    # yet).
+                    suggestions = ", ".join(
+                        table_reference_sql(key, _QUALIFIER_STR.get(key, ""))
+                        for key in match.candidates
+                    )
+                    exc = CorrectableRejection(
+                        f"Forbidden keyword detected: table '{raw_name}' "
+                        f"exists in more than one schema; write one of "
+                        f"{suggestions} to say which",
+                        reason="ambiguous_table", subject=raw_name,
                     )
                     exc.is_refusal = True
                     raise exc
@@ -1684,7 +1951,7 @@ def extract_touched_tables(sql: str, dialect: str = _DIALECT) -> list[str]:
     for tree in statements:
         cte_names = _cte_names(tree)
         for node in tree.find_all(exp.Table):
-            canonical = _resolve_table_name(node.name, cte_names)
+            canonical = _resolve_table_name(node, cte_names)
             if canonical:
                 touched.add(canonical)
     return sorted(touched)
