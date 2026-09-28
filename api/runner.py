@@ -471,6 +471,7 @@ def run_query(
             llm=audit_llm,
             columns=audit_columns,
             principal_id=principal.id if principal is not None else None,
+            datasource=_datasource_for_audit(audit_sql),
         )
 
 
@@ -489,6 +490,27 @@ def _columns_from_rows(rows: list[dict] | None) -> list[str] | None:
     if not rows:
         return None
     return [str(c) for c in rows[0].keys()]
+
+
+def _datasource_for_audit(sql: str) -> str | None:
+    """Best-effort data source name for the audit record.
+
+    Re-derives it from *sql*'s own tables (:func:`database.routing.resolve_datasource`)
+    rather than threading a value down through every success/error branch
+    above -- the same "the tables decide the source" rule the query itself
+    ran under. Returns ``None`` when *sql* is empty (nothing was generated
+    or executed) or when the SQL cannot be resolved to one source (already
+    refused by the guard as ``cross_datasource`` before it could run) --
+    the audit record should not claim a single source that isn't true.
+    """
+    if not sql:
+        return None
+    try:
+        from database.routing import resolve_datasource
+
+        return resolve_datasource(sql, cfg.settings.sql_dialect)
+    except Exception:  # noqa: BLE001 - best-effort only, never breaks the audit write
+        return None
 
 
 def _touched_or_none(sql: str) -> list[str] | None:
@@ -664,6 +686,7 @@ def _write_audit(
     llm: dict[str, Any] | None,
     columns: list[str] | None,
     principal_id: str | None = None,
+    datasource: str | None = None,
 ) -> None:
     """Build and persist one :class:`~observability.audit.AuditRecord`.
 
@@ -698,6 +721,7 @@ def _write_audit(
             llm=llm,
             columns=columns,
             principal_id=principal_id,
+            datasource=datasource,
         )
         save_audit_record(record)
     except Exception:  # noqa: BLE001 — auditing must never fail a user's query

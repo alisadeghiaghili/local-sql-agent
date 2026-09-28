@@ -248,6 +248,14 @@ class AuditRecord:
         scope), the same category of thing ``guard.tables_touched`` and
         ``guard.injected_top`` already record here, never a raw warehouse
         value.
+    datasource:
+        Name of the :mod:`database.datasources` source ``generated_sql``
+        ran on (see :mod:`database.routing`), or ``None`` when no SQL ran
+        (a rejection before generation, a transport failure) or the source
+        could not be re-derived. A deployment with no ``datasources.yaml``
+        always writes ``"default"`` here once a query runs -- an additive
+        field: a record written before it existed simply has no key for
+        it, and every reader here treats that exactly like ``None``.
 
     Raises
     ------
@@ -308,6 +316,7 @@ class AuditRecord:
     turn_id: str | None = None
     config_version_id: int | None = None
     assumptions: list[dict[str, Any]] | None = None
+    datasource: str | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -348,6 +357,7 @@ class AuditRecord:
             "turn_id":        self.turn_id,
             "config_version_id": self.config_version_id,
             "assumptions":    self.assumptions,
+            "datasource":     self.datasource,
         }
 
 
