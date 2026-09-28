@@ -32,6 +32,7 @@ __all__ = [
     "CrossDatasourceError",
     "group_tables_by_datasource",
     "resolve_datasource",
+    "target_datasource_or_none",
 ]
 
 
@@ -121,3 +122,40 @@ def resolve_datasource(sql: str, dialect: str | None = None) -> str:
     if groups:
         return next(iter(groups))
     return default_datasource_name()
+
+
+def target_datasource_or_none(sql: str | None, dialect: str | None = None) -> str | None:
+    """The data source *sql* targets, or ``None`` when there is no single one.
+
+    For the audit trail: the source a statement routes to, whether or not
+    it went on to run (a guard rejection still names the source the
+    statement was aimed at, which is what an investigation needs).
+    ``None`` for empty *sql* (nothing was generated) and for a statement
+    whose tables span two sources, so a record never claims a single
+    source that is not true. Never raises.
+
+    Parameters
+    ----------
+    sql:
+        The statement, or ``None``.
+    dialect:
+        As for :func:`resolve_datasource`.
+
+    Returns
+    -------
+    str | None
+        The source name, or ``None``.
+
+    Examples
+    --------
+    >>> target_datasource_or_none(None) is None
+    True
+    >>> target_datasource_or_none("SELECT 1") == default_datasource_name()
+    True
+    """
+    if not sql:
+        return None
+    try:
+        return resolve_datasource(sql, dialect)
+    except Exception:  # noqa: BLE001 - audit enrichment must never raise
+        return None

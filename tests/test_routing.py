@@ -27,6 +27,7 @@ from database.routing import (
     CrossDatasourceError,
     group_tables_by_datasource,
     resolve_datasource,
+    target_datasource_or_none,
 )
 
 
@@ -114,3 +115,18 @@ class TestResolveDatasource:
             ) as mock_extract:
                 resolve_datasource("SELECT 1 FROM [sales].[Order]", dialect="postgres")
         assert mock_extract.call_args.kwargs["dialect"] == "postgres"
+
+
+class TestTargetDatasourceOrNone:
+    def test_no_sql_means_no_source(self):
+        assert target_datasource_or_none(None) is None
+        assert target_datasource_or_none("") is None
+
+    def test_single_source_statement_names_its_source(self):
+        with _patched({"Order": "archive"}, default="main"):
+            assert target_datasource_or_none("SELECT * FROM [Order]") == "archive"
+
+    def test_cross_source_statement_records_no_single_source(self):
+        with _patched({"Order": "main", "Ring": "archive"}):
+            sql = "SELECT * FROM [Order] o JOIN Ring r ON 1 = 1"
+            assert target_datasource_or_none(sql) is None

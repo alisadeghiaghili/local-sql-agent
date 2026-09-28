@@ -45,6 +45,7 @@ import config as cfg
 from core.models import RetrievalContext
 from core.persian import normalize_for_matching
 from database.errors import classify_database_error
+from database.routing import target_datasource_or_none
 from knowledge.session_policy import DEFAULT_SCOPE_FIELD_NAME, DEFAULT_SCOPE_FILTER_KEY
 from llm.router import (
     LLMRouter,
@@ -1148,23 +1149,6 @@ class TurnEngine:
         except Exception:  # noqa: BLE001 - see docstring
             return None
 
-    @staticmethod
-    def _datasource_for_audit(sql: str | None) -> str | None:
-        """The data source *sql* ran on, or ``None`` -- mirrors
-        ``api.runner._datasource_for_audit`` exactly: re-derived from
-        *sql*'s own tables (:func:`database.routing.resolve_datasource`),
-        never threaded through the turn pipeline, so a rejection before
-        generation or a statement the guard already refused as spanning
-        two sources both correctly record no single source here."""
-        if not sql:
-            return None
-        try:
-            from database.routing import resolve_datasource
-
-            return resolve_datasource(sql, cfg.settings.sql_dialect)
-        except Exception:  # noqa: BLE001 - best-effort only, see docstring
-            return None
-
     def _write_audit(self, request_id: str, turn: Turn) -> None:
         """Build and persist exactly one :class:`AuditRecord` for *turn*.
 
@@ -1197,7 +1181,7 @@ class TurnEngine:
                 turn_id=turn.turn_id,
                 config_version_id=self._active_config_version_id_or_none(),
                 assumptions=assumptions,
-                datasource=self._datasource_for_audit(turn.sql),
+                datasource=target_datasource_or_none(turn.sql, cfg.settings.sql_dialect),
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn

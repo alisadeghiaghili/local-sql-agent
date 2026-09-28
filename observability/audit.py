@@ -250,9 +250,10 @@ class AuditRecord:
         value.
     datasource:
         Name of the :mod:`database.datasources` source ``generated_sql``
-        ran on (see :mod:`database.routing`), or ``None`` when no SQL ran
-        (a rejection before generation, a transport failure) or the source
-        could not be re-derived. A deployment with no ``datasources.yaml``
+        targets (see :func:`database.routing.target_datasource_or_none`):
+        the source it ran on, or would have run on had the guard not
+        refused it. ``None`` when no SQL was generated, or when its tables
+        span two sources. A deployment with no ``datasources.yaml``
         always writes ``"default"`` here once a query runs -- an additive
         field: a record written before it existed simply has no key for
         it, and every reader here treats that exactly like ``None``.
