@@ -78,7 +78,11 @@ class HealthResponse(BaseModel):
 
     database_detail: str | None = None
     """Why ``database`` is what it is. Same reasoning as
-    :attr:`openai_detail`."""
+    :attr:`openai_detail`. With one warehouse data source (the default --
+    see :mod:`database.datasources`) this is that one source's own
+    detail, unchanged; with more than one, each source's name and detail
+    are listed, e.g. ``"main: SELECT 1 succeeded; archive: OperationalError:
+    ..."`` -- see :func:`api.health._ping_db`."""
 
 
 # ---------------------------------------------------------------------------

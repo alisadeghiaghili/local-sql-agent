@@ -15,8 +15,8 @@ Two ways to run this
 ``alembic upgrade head``
     Applies pending migrations directly against the resolved application
     database. Refuses via :func:`appdb.engine.raise_if_same_database` if
-    that resolves to the same server+database as the read-only warehouse
-    connection (``DB_CONNECTION_URL``) — the same check
+    that resolves to the same server+database as any read-only warehouse
+    data source (see :mod:`database.datasources`) — the same check
     ``api/server.py``'s ``lifespan`` runs at every start-up.
 ``alembic upgrade head --sql``
     Alembic's own "offline" mode: emits the DDL to stdout without
@@ -40,7 +40,6 @@ from sqlalchemy import create_engine, pool
 from alembic import context
 
 import appdb.models as appdb_models
-import config as cfg
 from appdb.engine import raise_if_same_database, resolve_app_db_url
 
 config = context.config
@@ -67,8 +66,11 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Apply migrations directly against the resolved application database."""
+    from database.datasources import get_datasources
+
     url = resolve_app_db_url()
-    raise_if_same_database(url, cfg.settings.db_connection_url)
+    for source in get_datasources():
+        raise_if_same_database(url, source.url)
 
     connectable = create_engine(url, poolclass=pool.NullPool)
 
