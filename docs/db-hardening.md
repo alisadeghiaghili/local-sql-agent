@@ -44,6 +44,17 @@ always-rolled-back transaction — but none of that substitutes for the
 database-side controls below; it only reduces how bad a mistake can be
 *before* the DBA has applied them.
 
+**A deployment with more than one warehouse data source**
+(`project_config/datasources.yaml` — see `docs/design/DATASOURCES.md`)
+must apply everything in this document **on every configured source's
+server**, not just one. `security/sql_guard.py`'s AST guard is one
+application-layer control shared across every source; there is exactly
+one server-side login, `DENY` set, and Resource Governor workload group
+per *server*, so a second data source on a second server is a second,
+independent instance of steps 1–3 below for its own DBA to apply — the
+application never assumes a login or a grant on one source's server says
+anything about another's.
+
 ---
 
 ## 1. Dedicated read-only login
@@ -101,6 +112,12 @@ from the trusted-connection default to this login explicitly, e.g.:
 ```
 DB_CONNECTION_URL=mssql+pyodbc://auction_nlq_reader:<password>@<host>:1433/Auction_DM?driver=ODBC+Driver+17+for+SQL+Server
 ```
+
+With `project_config/datasources.yaml` configured, there is no single
+`DB_CONNECTION_URL` — set the equivalent `DB_URL_<NAME>` variable for
+*this* source instead (see `docs/design/DATASOURCES.md`); repeat steps
+1–3 of this document for each other source's own server and its own
+`DB_URL_<NAME>`.
 
 ## 2. Explicit `DENY` grants
 
@@ -234,5 +251,10 @@ After applying the above:
       `AuctionNlqGroup` receiving connections from `auction_nlq_reader`
       (i.e. the classifier function is actually being applied) once the
       application's `.env` is switched over to the new login.
-- [ ] Update `.env`'s `DB_CONNECTION_URL` to the new login and remove
-      `trusted_connection=yes` from the connection string.
+- [ ] Update `.env`'s `DB_CONNECTION_URL` (or, with more than one data
+      source configured, this source's own `DB_URL_<NAME>`) to the new
+      login and remove `trusted_connection=yes` from the connection
+      string.
+- [ ] With more than one data source: confirm this checklist has been
+      run once per source, against that source's own server — a login
+      hardened on one server says nothing about another.

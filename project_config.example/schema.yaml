@@ -27,7 +27,24 @@
 #                   is non-empty. A warehouse with more than one schema (this
 #                   example has two: "sales" and "ref") just gives each
 #                   table its own value -- there is no single global schema
-#                   constant anywhere in the code.
+#                   constant anywhere in the code. May be MULTI-PART
+#                   ("OtherDb.dbo") for a table in a second database on the
+#                   SAME SQL Server instance -- renders the three-part
+#                   `[OtherDb].[dbo].[Table]` reference SQL Server expects
+#                   (security.dialects.quote_tsql_qualifier). Up to three
+#                   parts (server.database.schema). A table on a genuinely
+#                   different SERVER is not a db_schema at all -- see
+#                   `datasource` below.
+#     datasource  : (optional) which entry of `datasources.yaml` this table
+#                   lives in (see datasources.example.yaml and
+#                   docs/design/DATASOURCES.md). Absent (the default) means
+#                   the deployment's default source -- harmless, and the
+#                   only meaningful value, for a deployment with no
+#                   datasources.yaml at all. Table names stay globally
+#                   unique across every source; this key is what tells
+#                   `database.routing` which server a query touching this
+#                   table must run against, and a query that references
+#                   tables from two different sources is refused.
 #     resolvable_columns  : (optional) subset of `columns`' keys that
 #                   retrieval.value_resolver.resolve_value is allowed to
 #                   query -- name-bearing dimension columns a free-text

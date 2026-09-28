@@ -1,0 +1,69 @@
+# datasources.example.yaml — TEMPLATE (copy to project_config/datasources.yaml
+# and fill in real source names; do NOT rename this file to datasources.yaml
+# inside project_config.example/ itself — CI runs against
+# PROJECT_CONFIG_DIR=project_config.example and must stay single-source)
+#
+# Optional file. When project_config/datasources.yaml does not exist, this
+# deployment has exactly one warehouse connection, named "default", using
+# DB_CONNECTION_URL -- the single-source behaviour every earlier release
+# had, unchanged. Add this file only once a deployment genuinely needs to
+# query more than one database, possibly on different servers.
+#
+# See docs/design/DATASOURCES.md for the full decision record (why the
+# file is shaped this way, what was rejected, and the roadmap for what it
+# deliberately does not support yet: combining data from different
+# servers in one answer, and mixing database types).
+#
+# default:
+#   Which source a schema.yaml table belongs to when it sets no
+#   `datasource:` key of its own. Required once more than one source is
+#   listed below; inferred automatically when there is exactly one.
+#
+# datasources:
+#   Source name -> definition. Each top-level key here is the name a
+#   schema.yaml table's `datasource:` field refers to, and the name shown
+#   in /health, the audit trail, and error messages -- keep it short and
+#   stable. Fields per source:
+#     url_env           : (required) the NAME of an environment variable
+#                          holding this source's SQLAlchemy connection
+#                          string -- e.g. DB_URL_MAIN. NEVER the
+#                          connection string itself: this file is
+#                          versioned and reviewed like schema.yaml, and
+#                          must never be able to carry a password. Set the
+#                          actual URL in .env (or a secret store) under
+#                          that variable name, the same way
+#                          DB_CONNECTION_URL already works today.
+#     description       : (optional) free text shown to operators.
+#     dialect           : (optional) must equal this deployment's
+#                          SQL_DIALECT if set at all -- mixed dialects
+#                          across sources are not supported yet (see the
+#                          design doc's roadmap). Leave it out; it exists
+#                          so a file written today does not need editing
+#                          once that lands.
+#     application_name  : (optional) overrides DB_APPLICATION_NAME for
+#                          just this source's connections, so a DBA can
+#                          tell which source's sessions are which in
+#                          their own server-side traces.
+#
+# Several databases on ONE server (one login, one connection pool) are
+# ONE data source, not two: give a table in the second database a
+# multi-part db_schema in schema.yaml instead, e.g.
+# `db_schema: "OtherDb.dbo"`, which renders the three-part
+# `[OtherDb].[dbo].[Table]` reference SQL Server expects. A second
+# `datasources.yaml` entry is for a genuinely different server (a
+# different host, a different login, a different connection pool).
+#
+# Every source's connection string is validated the same way
+# DB_CONNECTION_URL always was (Settings.validate(), checked at
+# start-up): the environment variable must be set, must not be a
+# leftover placeholder, and its URL's backend must match SQL_DIALECT.
+
+default: main
+
+datasources:
+  main:
+    url_env: DB_URL_MAIN
+    description: "Main warehouse server"
+  # archive:
+  #   url_env: DB_URL_ARCHIVE
+  #   description: "Read-only replica of last year's closed trading data"

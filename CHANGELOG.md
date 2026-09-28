@@ -5,6 +5,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+A deployment can now query more than one warehouse database, possibly on
+different servers.
+
+### Added
+
+- **Multiple warehouse data sources.** `project_config/datasources.yaml`
+  (optional) lists named sources, each giving only the *name* of an
+  environment variable holding its connection string — never the
+  connection string itself, since the file is versioned like
+  `schema.yaml`. Its absence keeps every earlier release's behaviour
+  exactly as it was: one source, `"default"`, using `DB_CONNECTION_URL`.
+  See `docs/design/DATASOURCES.md` for the full design and
+  `docs/deployment-runbook.md` §16 for configuring and verifying it.
+- **Per-table `datasource:` in `schema.yaml`.** A table names the source
+  it lives in; a table without one belongs to the default source. Table
+  names stay globally unique across every source. Several databases on
+  one SQL Server instance are one data source — a table in a second
+  database on that instance sets a multi-part `db_schema: "OtherDb.dbo"`
+  instead, rendered `[OtherDb].[dbo].[Table]`.
+- **Automatic, guard-enforced query routing.** The data source a query
+  runs on is derived from the tables it references, never chosen by the
+  model. A query whose tables span two sources is refused (guard reason
+  `cross_datasource`), with a Persian sentence in the web UI explaining
+  why.
+- **`/health` and `scripts/verify_deployment.py` cover every source.**
+  `/health`'s `database_detail` names each source once more than one is
+  configured; the deployment-verification checks (connectivity,
+  read-only login, row cap, query timeout) run once per source.
+- **The audit trail additively records which source a query ran on.**
+  Old audit records remain readable — the new `datasource` field is
+  simply absent from them.
+
 ## [6.0.2] — 2026-09-28
 
 Running the API and the web UI on different ports or hosts no longer needs

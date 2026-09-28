@@ -74,6 +74,8 @@ CACHE_TTL_SECONDS=300
 
 `OPENAI_BASE_URL` باید به سروری اشاره کند که API گفتگو سازگار با OpenAI (`/chat/completions`) را ارائه می‌دهد — برای مثال vLLM، LM Studio یا اولاما (`/v1`). مدلی که در `OPENAI_MODEL` نام می‌برید باید توسط همان endpoint سرو شود.
 
+`DB_CONNECTION_URL` بالا برای وقتی است که فقط یک انبار داده دارید — که برای اکثر استقرارها همین کافی است. اگر باید به بیش از یک پایگاه داده پرسش بدهید (مثلاً یک سرور SQL Server دوم برای داده‌های آرشیو)، به‌جای آن فایل `project_config/datasources.yaml` را اضافه کنید (از روی `project_config.example/datasources.example.yaml` کپی بگیرید) و هر منبع را با نام متغیر محیطی‌ای که رشتهٔ اتصال آن را نگه می‌دارد معرفی کنید. برای جزئیات کامل به `docs/design/DATASOURCES.md` و بخش ۱۶ از `docs/deployment-runbook.md` مراجعه کنید.
+
 ---
 
 ## 2. اولین کوئری شما

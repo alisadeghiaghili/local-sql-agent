@@ -23,6 +23,7 @@ and comments explaining every field.
 | `examples.yaml` | Few-shot NLQ → SQL examples | `EXAMPLES` |
 | `metrics.yaml` | Metric name → SQL expression mapping | `METRICS` |
 | `schema.yaml` | Warehouse tables/columns/relationships — also the SQL guard's table/column allowlist | `TABLE_DESCRIPTIONS`, `TABLE_COLUMNS`, `RELATIONSHIPS` |
+| `datasources.example.yaml` | **Optional**, and *not* loaded under this name — template for `project_config/datasources.yaml`, which lists more than one warehouse data source (different servers). Absent entirely (the default): one source, `DB_CONNECTION_URL`, unchanged from every earlier release. See `docs/design/DATASOURCES.md` | `database.datasources` |
 | `relationships.yaml` | Explicit join paths between tables, for `database.relationship_map` | (loaded directly, not through `knowledge.config_loader`) |
 | `retrieval_hints.yaml` | Retrieval-ranking overrides (always-include terms, boosts) | consumed by `schema_data.retriever` |
 | `memory_policy.yaml` | Session-memory retention policy | consumed by `session.*` |
@@ -39,6 +40,20 @@ to this directory: pointing at it only ever happens by explicitly setting
 the variable. A **relative** `PROJECT_CONFIG_DIR` is resolved against the
 repository root, not against the current working directory the process
 happens to be started from.
+
+## Querying more than one database
+
+Every file above describes one warehouse connection's worth of domain
+knowledge; that single connection (`DB_CONNECTION_URL`) is all most
+deployments ever need. A deployment that must query more than one
+database — a second SQL Server instance, an archive on its own box — adds
+`project_config/datasources.yaml`, copied from
+`datasources.example.yaml` in this directory and filled in with real
+source names. It is optional, and it is **not** one of the nine files
+covered by the admin panel's versioned config bundle: it is deployment
+topology (which servers exist), edited on disk like `.env`, and a change
+to it needs a restart. See `docs/design/DATASOURCES.md` for the full
+design, and `docs/deployment-runbook.md` for configuring and verifying it.
 
 ## What happens if project_config/ is missing?
 
