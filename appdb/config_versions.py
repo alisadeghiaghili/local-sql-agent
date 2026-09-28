@@ -273,8 +273,26 @@ def _text_validators() -> dict[str, Any]:
         "memory_policy.yaml": lambda text: validate_yaml_text(
             "memory_policy.yaml", text, MemoryPolicyConfig
         ),
-        "schema.yaml": lambda text: validate_schema_yaml_text(text),
+        "schema.yaml": _validate_candidate_schema,
     }
+
+
+def _validate_candidate_schema(text: str) -> Any:
+    """Validate a candidate ``schema.yaml``, including its data sources.
+
+    Beyond :func:`schema_data.registry.validate_schema_yaml_text`, every
+    table's ``datasource`` must name a source in this deployment's
+    ``datasources.yaml`` (or be empty); otherwise the draft would be
+    approved and then fail at start-up.
+    """
+    from database.datasources import check_table_datasources
+    from schema_data.registry import validate_schema_yaml_text
+
+    parsed = validate_schema_yaml_text(text)
+    check_table_datasources(
+        {name: table.datasource for name, table in parsed.tables.items()}
+    )
+    return parsed
 
 
 def _public(row: dict[str, Any], *, include_content: bool = False) -> dict[str, Any]:
