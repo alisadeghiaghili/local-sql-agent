@@ -11,10 +11,12 @@ Run::
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from schema_data.columns import TABLE_COLUMNS
-from security.sql_guard import clean_sql, ensure_top, validate_sql
+from security.sql_guard import CorrectableRejection, clean_sql, ensure_top, validate_sql
 
 #: A table (and one of its columns) picked dynamically from whatever
 #: schema is loaded (real or project_config.example/), rather than a
@@ -24,6 +26,11 @@ from security.sql_guard import clean_sql, ensure_top, validate_sql
 #: does not define.
 _ANY_TABLE = next(iter(TABLE_COLUMNS))
 _ANY_COLUMN = next(iter(TABLE_COLUMNS[_ANY_TABLE]))
+
+#: A SECOND known table, picked the same dynamic way, for the
+#: cross-data-source rejection tests below (they need two distinct known
+#: tables, not just one).
+_ANOTHER_TABLE = next((t for t in TABLE_COLUMNS if t != _ANY_TABLE), _ANY_TABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +252,58 @@ class TestEnsureTop:
 
 
 # ---------------------------------------------------------------------------
+# Multiple data sources -- reason="cross_datasource" (database.routing)
+# ---------------------------------------------------------------------------
+
+class TestCrossDatasourceRejection:
+    """``_require_single_datasource`` -- see ``database.routing`` for the
+    single-source-of-truth mapping this delegates to. With no
+    ``datasources.yaml`` configured (every test elsewhere in this file),
+    every table maps to the one default source and this rule never fires
+    -- these tests patch ``database.routing.group_tables_by_datasource``
+    directly to exercise the multi-source shape without needing a real
+    ``datasources.yaml`` fixture."""
+
+    def test_single_source_deployment_is_unaffected(self):
+        """The default (single-source) shape: two known tables in one
+        query, no ``datasources.yaml`` at all -- must not be refused."""
+        validate_sql(
+            f"SELECT a.{_ANY_COLUMN} FROM [{_ANY_TABLE}] a, [{_ANOTHER_TABLE}] b"
+        )  # no raise
+
+    def test_a_single_table_query_never_even_checks(self):
+        """``len(tables) < 2`` short-circuits before
+        ``group_tables_by_datasource`` is even imported -- a one-table
+        query can never span two sources."""
+        with patch("database.routing.group_tables_by_datasource") as mock_group:
+            validate_sql(f"SELECT {_ANY_COLUMN} FROM [{_ANY_TABLE}]")
+        mock_group.assert_not_called()
+
+    def test_tables_in_two_sources_are_refused_as_cross_datasource(self):
+        with patch(
+            "database.routing.group_tables_by_datasource",
+            return_value={"main": [_ANY_TABLE], "archive": [_ANOTHER_TABLE]},
+        ):
+            with pytest.raises(CorrectableRejection) as exc_info:
+                validate_sql(
+                    f"SELECT a.{_ANY_COLUMN} FROM [{_ANY_TABLE}] a, [{_ANOTHER_TABLE}] b"
+                )
+        assert exc_info.value.reason == "cross_datasource"
+        assert exc_info.value.is_refusal is True
+        assert _ANY_TABLE in str(exc_info.value)
+        assert _ANOTHER_TABLE in str(exc_info.value)
+
+    def test_two_known_tables_in_the_same_source_are_unaffected(self):
+        with patch(
+            "database.routing.group_tables_by_datasource",
+            return_value={"main": [_ANY_TABLE, _ANOTHER_TABLE]},
+        ):
+            validate_sql(
+                f"SELECT a.{_ANY_COLUMN} FROM [{_ANY_TABLE}] a, [{_ANOTHER_TABLE}] b"
+            )  # no raise
+
+
+# ---------------------------------------------------------------------------
 # dispose_engine
 # ---------------------------------------------------------------------------
 
@@ -260,11 +319,14 @@ class TestDisposeEngine:
         from database.connection import dispose_engine, get_engine
 
         mock_engine = MagicMock()
-        with patch("database.connection.create_engine", return_value=mock_engine), \
+        with patch("database.connection.create_engine", return_value=mock_engine) as create, \
              patch("database.connection.install_idle_aware_ping"):
             get_engine.cache_clear()
             get_engine()                          # populate cache
-            assert get_engine.cache_info().currsize == 1
+            get_engine()                          # served from the cache
+            assert create.call_count == 1
             dispose_engine()
-            assert get_engine.cache_info().currsize == 0
             mock_engine.dispose.assert_called_once()
+            get_engine()                          # cache was cleared: rebuilt
+            assert create.call_count == 2
+            get_engine.cache_clear()

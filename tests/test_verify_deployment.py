@@ -17,20 +17,24 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import override_settings
+from database.datasources import reset_datasources_cache
 from scripts.issue_api_key import build_entry, issue_key
 from scripts.verify_deployment import (
+    build_checks,
     check_api_key_authenticates,
     check_audit_log_writable,
     check_project_config_loads,
     check_rate_limit_sane_for_deployment,
     check_session_store_writable,
 )
+from scripts.verify_deployment import check_table_datasources as verify_check_table_datasources
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _EXAMPLE_CONFIG_DIR = _REPO_ROOT / "project_config.example"
@@ -249,3 +253,101 @@ class TestCheckRateLimitSane:
         # the 0.1 req/sec/analyst floor.
         assert result.status == "PASS"
         assert "1 concurrent analysts" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# check_table_datasources (the verify_deployment.py wrapper, not
+# database.datasources's own function of the same name -- imported above
+# under an alias to keep the two apart)
+# ---------------------------------------------------------------------------
+
+class TestCheckTableDatasourcesCheck:
+    def test_passes_for_the_example_schema(self):
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            reset_datasources_cache()
+            result = verify_check_table_datasources()
+        assert result.status == "PASS"
+        assert "1 data source" in result.detail
+
+    def test_fails_naming_the_offending_table(self, tmp_path):
+        dest = tmp_path / "project_config"
+        shutil.copytree(_EXAMPLE_CONFIG_DIR, dest)
+        doc = (dest / "schema.yaml").read_text(encoding="utf-8")
+        doc = doc.replace(
+            "Customer:\n    description:",
+            "Customer:\n    datasource: does-not-exist\n    description:",
+            1,
+        )
+        (dest / "schema.yaml").write_text(doc, encoding="utf-8")
+        import schema_data.registry as registry_module
+        registry_module._cache.clear()
+        try:
+            with override_settings(project_config_dir=str(dest)):
+                reset_datasources_cache()
+                result = verify_check_table_datasources()
+        finally:
+            registry_module._cache.clear()
+        assert result.status == "FAIL"
+        assert "does-not-exist" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# build_checks() -- per-source expansion
+# ---------------------------------------------------------------------------
+
+class TestBuildChecks:
+    def test_single_source_keeps_plain_check_names(self):
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            reset_datasources_cache()
+            checks = build_checks()
+        names = [c.__name__ for c in checks]
+        assert "check_db_connectivity" in names
+        # No "[source]" suffix anywhere -- these are the plain functions.
+        assert names.count("check_db_connectivity") == 1
+
+    def test_several_sources_expand_the_per_source_checks(self, tmp_path):
+        (tmp_path / "datasources.yaml").write_text(
+            "default: main\n"
+            "datasources:\n"
+            "  main:\n    url_env: DB_URL_MAIN\n"
+            "  archive:\n    url_env: DB_URL_ARCHIVE\n",
+            encoding="utf-8",
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            reset_datasources_cache()
+            checks = build_checks()
+        names = [c.__name__ for c in checks]
+        # Four per-source checks, each run once per source -> 8 entries,
+        # every one still named after its underlying function (__name__
+        # is what api/admin_routes.py filters _DEEP_CHECK_NAMES by).
+        assert names.count("check_db_connectivity") == 2
+        assert names.count("check_login_is_read_only") == 2
+        assert names.count("check_row_cap") == 2
+        assert names.count("check_query_timeout") == 2
+
+    def test_per_source_check_runs_against_the_right_source(self, tmp_path):
+        (tmp_path / "datasources.yaml").write_text(
+            "default: main\n"
+            "datasources:\n"
+            "  main:\n    url_env: DB_URL_MAIN\n"
+            "  archive:\n    url_env: DB_URL_ARCHIVE\n",
+            encoding="utf-8",
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            reset_datasources_cache()
+            checks = build_checks()
+        db_checks = [c for c in checks if c.__name__ == "check_db_connectivity"]
+        assert len(db_checks) == 2
+        with patch("database.connection.get_engine", side_effect=RuntimeError("down")):
+            results = [c() for c in db_checks]
+        assert {r.name for r in results} == {
+            "Database connectivity [main]", "Database connectivity [archive]",
+        }
+
+    def test_table_datasources_check_runs_before_the_per_source_checks(self):
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            reset_datasources_cache()
+            checks = build_checks()
+        names = [c.__name__ for c in checks]
+        assert names[0] == "check_settings_valid"
+        assert names[1] == "check_table_datasources"

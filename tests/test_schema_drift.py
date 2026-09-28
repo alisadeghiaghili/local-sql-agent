@@ -232,3 +232,113 @@ class TestReadOnlyConnection:
 
         params = inspect.signature(check_schema_drift).parameters
         assert set(params) == {"engine", "persist_baseline"}
+
+
+class TestMultipleDataSources:
+    """Multiple warehouse data sources (``database.datasources``): each
+    source's tables are scanned against that source's own engine -- see
+    :func:`schema_data.drift._scan_every_datasource`. Real SQLite fixture
+    warehouses throughout, one per source, exactly like the rest of this
+    file; only ``database.connection.get_engine`` is patched, to route
+    each source name to its own fixture engine without a real connection
+    string anywhere."""
+
+    def _sources_project_dir(self, schema_dir) -> None:
+        (schema_dir / "datasources.yaml").write_text(
+            "default: main\n"
+            "datasources:\n"
+            "  main:\n    url_env: DB_URL_MAIN\n"
+            "  archive:\n    url_env: DB_URL_ARCHIVE\n",
+            encoding="utf-8",
+        )
+
+    def test_each_sources_tables_are_scanned_against_its_own_warehouse(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        import database.datasources as datasources_module
+
+        self._sources_project_dir(schema_dir)
+        _write_schema(schema_dir, {
+            "Widget": {
+                "description": "t", "datasource": "main",
+                "columns": {"ID": "primary key"},
+            },
+            "Gadget": {
+                "description": "t", "datasource": "archive",
+                "columns": {"ID": "primary key"},
+            },
+        })
+
+        main_db = tmp_path / "main.db"
+        archive_db = tmp_path / "archive.db"
+        main_engine = create_engine(f"sqlite:///{main_db}")
+        with main_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE Widget (ID INTEGER, Extra TEXT)"))
+        archive_engine = create_engine(f"sqlite:///{archive_db}")
+        with archive_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE Gadget (ID INTEGER)"))
+
+        engines_by_name = {"main": main_engine, "archive": archive_engine}
+        try:
+            with override_settings(project_config_dir=str(schema_dir)):
+                registry_module._cache.clear()
+                datasources_module.reset_datasources_cache()
+                with pytest.MonkeyPatch.context() as mp:
+                    mp.setattr(
+                        "database.connection.get_engine",
+                        lambda name=None: engines_by_name[name or "main"],
+                    )
+                    report = check_schema_drift()
+        finally:
+            main_engine.dispose()
+            archive_engine.dispose()
+            registry_module._cache.clear()
+            datasources_module.reset_datasources_cache()
+
+        # Widget's extra column was found on "main"; Gadget matched
+        # "archive" exactly -- proof each table was checked against its
+        # OWN source, not against whichever engine happened to run first.
+        assert "Widget.Extra" in report.warehouse_only
+        assert report.schema_only == ()
+
+    def test_an_unreachable_source_does_not_hide_the_others(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        import database.datasources as datasources_module
+
+        self._sources_project_dir(schema_dir)
+        _write_schema(schema_dir, {
+            "Widget": {
+                "description": "t", "datasource": "main",
+                "columns": {"ID": "primary key"},
+            },
+            "Gadget": {
+                "description": "t", "datasource": "archive",
+                "columns": {"ID": "primary key"},
+            },
+        })
+
+        main_db = tmp_path / "main.db"
+        main_engine = create_engine(f"sqlite:///{main_db}")
+        with main_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE Widget (ID INTEGER)"))
+
+        def _get_engine(name=None):
+            if name == "archive":
+                raise RuntimeError("archive unreachable")
+            return main_engine
+
+        try:
+            with override_settings(project_config_dir=str(schema_dir)):
+                registry_module._cache.clear()
+                datasources_module.reset_datasources_cache()
+                with pytest.MonkeyPatch.context() as mp:
+                    mp.setattr("database.connection.get_engine", _get_engine)
+                    report = check_schema_drift()
+        finally:
+            main_engine.dispose()
+            registry_module._cache.clear()
+            datasources_module.reset_datasources_cache()
+
+        assert "Gadget" in report.unverifiable_tables
+        assert "Widget" not in report.unverifiable_tables

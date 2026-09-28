@@ -30,7 +30,7 @@ import pytest
 
 import retrieval.dimension_vocabulary as dimension_vocabulary
 import retrieval.value_resolver as value_resolver
-from security.dialects import quote_tsql_identifier
+from security.dialects import quote_tsql_identifier, quote_tsql_qualifier
 
 #: Every non-tsql dialect this project supports transpiling *to* -- see
 #: security.dialects.DIALECT_PROFILES.
@@ -65,6 +65,46 @@ def test_quote_tsql_identifier_ordinary_name_unchanged() -> None:
     builders' doctests rely on."""
     assert quote_tsql_identifier("Name") == "[Name]"
     assert quote_tsql_identifier("Customer") == "[Customer]"
+
+
+# ---------------------------------------------------------------------------
+# 1b. quote_tsql_qualifier -- multi-part db_schema (another database on
+# the same SQL Server instance)
+# ---------------------------------------------------------------------------
+
+
+class TestQuoteTsqlQualifier:
+    def test_single_part_renders_like_a_plain_identifier(self) -> None:
+        assert quote_tsql_qualifier("sales") == "[sales]"
+
+    def test_two_parts_render_as_database_dot_schema(self) -> None:
+        assert quote_tsql_qualifier("OtherDb.dbo") == "[OtherDb].[dbo]"
+
+    def test_three_parts_render_as_server_database_schema(self) -> None:
+        assert quote_tsql_qualifier("Linked.OtherDb.dbo") == "[Linked].[OtherDb].[dbo]"
+
+    def test_four_parts_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="at most three parts"):
+            quote_tsql_qualifier("a.b.c.d")
+
+    @pytest.mark.parametrize("bad", ["", "a..b", ".a", "a.", "..", "a. .b"])
+    def test_an_empty_part_is_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="empty part"):
+            quote_tsql_qualifier(bad)
+
+    def test_each_part_is_independently_bracket_quoted(self) -> None:
+        """A hostile part (one containing ``]``) must still round-trip --
+        the same guarantee :func:`quote_tsql_identifier` gives a single
+        identifier, applied to every part."""
+        rendered = quote_tsql_qualifier("Ot]her.db]o")
+        assert rendered == "[Ot]]her].[db]]o]"
+        parsed = sqlglot.parse_one(f"SELECT 1 FROM {rendered}.[T]", read="tsql")
+        table_exp = parsed.find(sqlglot.exp.Table)
+        assert table_exp.db == "db]o"
+        assert table_exp.catalog == "Ot]her"
+
+    def test_surrounding_whitespace_per_part_is_stripped(self) -> None:
+        assert quote_tsql_qualifier(" OtherDb . dbo ") == "[OtherDb].[dbo]"
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +161,34 @@ def test_build_query_hostile_column_table_schema(monkeypatch: pytest.MonkeyPatch
         parsed_target = sqlglot.parse_one(transpiled, read=target)
         assert parsed_target.expressions[0].name == column
         assert parsed_target.find(sqlglot.exp.Table).name == table
+
+
+def test_prefetch_query_multi_part_db_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A table in another database on the same server (``db_schema:
+    "OtherDb.dbo"``) renders the three-part reference
+    ``[OtherDb].[dbo].[Table]`` -- see ``security.dialects.quote_tsql_qualifier``."""
+    table, column, schema = "Widget", "Name", "OtherDb.dbo"
+    monkeypatch.setitem(dimension_vocabulary._TABLE_SCHEMAS, table, schema)
+
+    sql = dimension_vocabulary._prefetch_query(table, column, dialect="tsql")
+    assert "[OtherDb].[dbo].[Widget]" in sql
+    parsed = sqlglot.parse_one(sql, read="tsql")
+    table_exp = parsed.find(sqlglot.exp.Table)
+    assert table_exp.name == table
+    assert table_exp.db == "dbo"
+    assert table_exp.catalog == "OtherDb"
+
+
+def test_build_query_multi_part_db_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    table, column, schema = "Widget", "Name", "OtherDb.dbo"
+    monkeypatch.setitem(value_resolver._TABLE_SCHEMAS, table, schema)
+
+    sql = value_resolver._build_query(table, column, dialect="tsql")
+    assert "[OtherDb].[dbo].[Widget]" in sql
+    parsed = sqlglot.parse_one(sql, read="tsql")
+    table_exp = parsed.find(sqlglot.exp.Table)
+    assert table_exp.catalog == "OtherDb"
+    assert table_exp.db == "dbo"
 
 
 def test_build_query_hostile_schemaless_table() -> None:

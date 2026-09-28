@@ -99,10 +99,14 @@ class TestSettings:
         with pytest.raises(ValueError, match="OPENAI_MODEL"):
             s.validate()
 
-    def test_validate_raises_for_empty_url(self):
-        s = Settings.__new__(Settings)
-        object.__setattr__(s, "openai_model", "gpt-oss:20b")
-        object.__setattr__(s, "db_connection_url", "")
+    def test_validate_raises_for_empty_url(self, tmp_path):
+        # No datasources.yaml in the config dir: DB_CONNECTION_URL is the
+        # single source and must be set.
+        s = Settings(
+            openai_model="gpt-oss:20b",
+            db_connection_url="",
+            project_config_dir=str(tmp_path),
+        )
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
 

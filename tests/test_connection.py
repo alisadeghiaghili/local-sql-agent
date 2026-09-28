@@ -18,10 +18,14 @@ arguments.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
+import yaml
 
 import config as cfg
-from database.connection import get_engine
+from database.connection import dispose_engine, get_engine
+from database.datasources import UnknownDataSourceError, reset_datasources_cache
 
 
 class TestPoolPrePingIsConfigurable:
@@ -123,3 +127,98 @@ class TestApplicationNameIsApplied:
         called_url = mock_create.call_args.args[0]
         assert called_url == url
         get_engine.cache_clear()
+
+
+class TestMultipleDataSources:
+    """One cached engine per data source (``database.datasources``) --
+    ``get_engine()`` with no argument, and with the default source's own
+    name, must resolve to the SAME cached engine and never call
+    ``create_engine`` twice for it."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_engine_cache(self):
+        get_engine.cache_clear()
+        reset_datasources_cache()
+        yield
+        get_engine.cache_clear()
+        reset_datasources_cache()
+
+    @pytest.fixture()
+    def two_sources(self, tmp_path, monkeypatch):
+        (tmp_path / "datasources.yaml").write_text(yaml.dump({
+            "default": "main",
+            "datasources": {
+                "main": {"url_env": "DB_URL_MAIN"},
+                "archive": {"url_env": "DB_URL_ARCHIVE"},
+            },
+        }), encoding="utf-8")
+        monkeypatch.setenv(
+            "DB_URL_MAIN",
+            "mssql+pyodbc://svc@main-host/DB?driver=ODBC+Driver+17+for+SQL+Server",
+        )
+        monkeypatch.setenv(
+            "DB_URL_ARCHIVE",
+            "mssql+pyodbc://svc@archive-host/DB?driver=ODBC+Driver+17+for+SQL+Server",
+        )
+        return tmp_path
+
+    def test_no_argument_and_the_default_name_share_one_engine(self, two_sources):
+        with cfg.override_settings(project_config_dir=str(two_sources)), \
+             patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            engine_bare = get_engine()
+            engine_named = get_engine("main")
+        assert engine_bare is engine_named
+        mock_create.assert_called_once()
+
+    def test_two_sources_build_two_engines_with_the_right_urls(self, two_sources):
+        with cfg.override_settings(project_config_dir=str(two_sources)), \
+             patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine("main")
+            get_engine("archive")
+        assert mock_create.call_count == 2
+        called_urls = [c.args[0] for c in mock_create.call_args_list]
+        assert any("main-host" in u for u in called_urls)
+        assert any("archive-host" in u for u in called_urls)
+
+    def test_each_source_gets_its_own_application_name(self, tmp_path, monkeypatch):
+        (tmp_path / "datasources.yaml").write_text(yaml.dump({
+            "default": "main",
+            "datasources": {
+                "main": {"url_env": "DB_URL_MAIN", "application_name": "app-main"},
+                "archive": {"url_env": "DB_URL_ARCHIVE", "application_name": "app-archive"},
+            },
+        }), encoding="utf-8")
+        monkeypatch.setenv(
+            "DB_URL_MAIN",
+            "mssql+pyodbc://svc@main-host/DB?driver=ODBC+Driver+17+for+SQL+Server",
+        )
+        monkeypatch.setenv(
+            "DB_URL_ARCHIVE",
+            "mssql+pyodbc://svc@archive-host/DB?driver=ODBC+Driver+17+for+SQL+Server",
+        )
+        with cfg.override_settings(project_config_dir=str(tmp_path)), \
+             patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine("main")
+            get_engine("archive")
+        called_urls = {c.args[0] for c in mock_create.call_args_list}
+        assert any("APP=app-main" in u for u in called_urls)
+        assert any("APP=app-archive" in u for u in called_urls)
+
+    def test_unknown_source_name_raises(self, two_sources):
+        with cfg.override_settings(project_config_dir=str(two_sources)):
+            with pytest.raises(UnknownDataSourceError):
+                get_engine("does-not-exist")
+
+    def test_dispose_engine_disposes_every_source(self, two_sources):
+        mock_engines = [MagicMock(name="main-engine"), MagicMock(name="archive-engine")]
+        with cfg.override_settings(project_config_dir=str(two_sources)), \
+             patch("database.connection.create_engine", side_effect=mock_engines), \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine("main")
+            get_engine("archive")
+            dispose_engine()
+        for engine in mock_engines:
+            engine.dispose.assert_called_once()

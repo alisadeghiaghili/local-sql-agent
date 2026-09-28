@@ -78,7 +78,7 @@ def _fast_deployment_checks(monkeypatch):
     def _stub_check() -> CheckResult:
         return CheckResult("stub check", "PASS", "stubbed for test speed")
 
-    monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_stub_check])
+    monkeypatch.setattr(verify_deployment_module, "build_checks", lambda: [_stub_check])
     yield
 
 
@@ -410,7 +410,7 @@ class TestEveryMutatingAdminRouteDeclaresARoleDependency:
 
 class TestHealthChecksCaching:
     """``_fast_deployment_checks`` (module-level fixture above) stubs
-    ``scripts.verify_deployment._CHECKS`` down to one deterministic,
+    ``scripts.verify_deployment.build_checks()`` down to one deterministic,
     instrumented check so these tests are about the CACHE, not about
     verify_deployment's own checks (covered by tests/test_verify_deployment.py)."""
 
@@ -426,7 +426,7 @@ class TestHealthChecksCaching:
             calls["n"] += 1
             return CheckResult("counting check", "PASS", f"run #{calls['n']}")
 
-        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_counting_check])
+        monkeypatch.setattr(verify_deployment_module, "build_checks", lambda: [_counting_check])
 
         _, client = app_and_client
         with override_settings(
@@ -453,7 +453,7 @@ class TestHealthChecksCaching:
             calls["n"] += 1
             return CheckResult("counting check", "PASS", f"run #{calls['n']}")
 
-        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_counting_check])
+        monkeypatch.setattr(verify_deployment_module, "build_checks", lambda: [_counting_check])
 
         _, client = app_and_client
         with override_settings(
@@ -488,7 +488,7 @@ class TestHealthChecksCaching:
             calls["n"] += 1
             return CheckResult("counting check", "PASS", f"run #{calls['n']}")
 
-        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_counting_check])
+        monkeypatch.setattr(verify_deployment_module, "build_checks", lambda: [_counting_check])
 
         clock = {"t": 1000.0}
         monkeypatch.setattr(admin_result_cache_module.time, "monotonic", lambda: clock["t"])
@@ -528,8 +528,7 @@ class TestDeepChecksAreOptIn:
         _query_timeout.__name__ = "check_query_timeout"
 
         monkeypatch.setattr(
-            verify_deployment_module, "_CHECKS",
-            [_harmless, _login_is_read_only, _query_timeout],
+            verify_deployment_module, "build_checks", lambda: [_harmless, _login_is_read_only, _query_timeout],
         )
 
         _, client = app_and_client
@@ -559,7 +558,7 @@ class TestDeepChecksAreOptIn:
 
         _login_is_read_only.__name__ = "check_login_is_read_only"
 
-        monkeypatch.setattr(verify_deployment_module, "_CHECKS", [_login_is_read_only])
+        monkeypatch.setattr(verify_deployment_module, "build_checks", lambda: [_login_is_read_only])
 
         _, client = app_and_client
         with override_settings(auth_required=True, api_keys_json=_KEYS_JSON):
@@ -582,7 +581,7 @@ class TestDeepChecksAreOptIn:
             return CheckResult("harmless check", "PASS", "light result")
 
         monkeypatch.setattr(
-            verify_deployment_module, "_CHECKS", [_harmless, _login_is_read_only],
+            verify_deployment_module, "build_checks", lambda: [_harmless, _login_is_read_only],
         )
 
         _, client = app_and_client

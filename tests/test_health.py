@@ -12,7 +12,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import config as cfg
-from api.health import _ping_db, _ping_openai, check_health
+from api.health import _ping_datasource, _ping_db, _ping_openai, check_health
 
 
 def _response(status: int) -> MagicMock:
@@ -136,6 +136,63 @@ class TestPingDb:
             ok, detail = _ping_db()
         assert ok is False
         assert "RuntimeError" in detail
+
+
+class TestPingDbMultipleSources:
+    """Multiple warehouse data sources (``database.datasources``): every
+    configured source is pinged, and the single-source detail shape stays
+    exactly as before -- see ``_ping_db``'s own docstring."""
+
+    def test_single_source_detail_is_unchanged(self):
+        """No ``datasources.yaml`` (the default): ``_ping_db``'s detail
+        must be exactly ``_ping_datasource``'s own detail, not wrapped in
+        a ``"default: ..."`` prefix -- byte-for-byte the pre-existing
+        shape."""
+        with patch("api.health._ping_datasource", return_value=(True, "SELECT 1 succeeded")):
+            ok, detail = _ping_db()
+        assert ok is True
+        assert detail == "SELECT 1 succeeded"
+
+    def test_several_sources_are_all_pinged_and_named_in_the_detail(self):
+        with patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ), patch(
+            "api.health._ping_datasource",
+            side_effect=[(True, "SELECT 1 succeeded"), (False, "OperationalError: down")],
+        ) as mock_ping:
+            ok, detail = _ping_db()
+        assert ok is False  # not every source is up
+        assert mock_ping.call_args_list == [(("main",),), (("archive",),)]
+        assert detail == "main: SELECT 1 succeeded; archive: OperationalError: down"
+
+    def test_ok_only_when_every_source_answers(self):
+        with patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ), patch(
+            "api.health._ping_datasource",
+            side_effect=[(True, "up"), (True, "up")],
+        ):
+            ok, _ = _ping_db()
+        assert ok is True
+
+    def test_an_invalid_datasources_yaml_is_a_health_failure_not_a_crash(self):
+        with patch(
+            "database.datasources.datasource_names",
+            side_effect=ValueError("[datasources.yaml] bad"),
+        ):
+            ok, detail = _ping_db()
+        assert ok is False
+        assert "bad" in detail
+
+    def test_ping_datasource_uses_the_named_engine(self):
+        fake_conn = MagicMock()
+        fake_engine = MagicMock()
+        fake_engine.connect.return_value.__enter__.return_value = fake_conn
+        with patch("database.connection.get_engine", return_value=fake_engine) as mock_get_engine:
+            ok, detail = _ping_datasource("archive")
+        assert ok is True
+        assert "SELECT 1" in detail
+        mock_get_engine.assert_called_once_with("archive")
 
 
 class TestCheckHealth:
