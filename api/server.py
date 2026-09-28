@@ -148,6 +148,19 @@ async def lifespan(app: FastAPI):
     except ValueError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc
 
+    # Logged once, every startup, unconditionally (not just when the list
+    # is non-default): a real deployment split across two ports/hosts
+    # diagnosed a "backend down" symptom that was actually an empty CORS
+    # allowlist purely by trial and error, because nothing in the startup
+    # log named which origins were actually allowed. See
+    # ``docs/deployment-runbook.md`` and ``docs/fa/getting-started.md``
+    # §2.3.1 for the full symptom (every health light red, cross-origin
+    # only) this line exists to short-circuit.
+    logger.info(
+        "CORS allowed origins: %s",
+        ", ".join(cfg.settings.cors_allowed_origins) or "(none — same-origin callers only)",
+    )
+
     # ── Phase 8: fail closed on authentication config ──────────────────────
     # Mirrors the db_connection_url precedent immediately above: a broken
     # or absent auth configuration must stop the server from starting at
