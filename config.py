@@ -165,6 +165,71 @@ def _parse_port(env_var: str, default: str) -> int:
     return port
 
 
+
+def _check_warehouse_url(label: str, url: str, dialect: str, placeholders: set[str]) -> None:
+    """Refuse an unset, placeholder or wrong-dialect warehouse connection string.
+
+    Two independent placeholder checks apply: an exact match against
+    *placeholders* (single unfilled tokens such as ``"change_me"``) and a
+    substring check for ``"username@server"``, the literal host baked into
+    :attr:`Settings.db_connection_url`'s factory default. The default is a
+    *full connection string*, not a bare token, so it never equals any
+    entry in *placeholders* and used to pass validation silently whenever
+    a user copied ``.env.example`` and forgot to fill in the variable.
+
+    The dialect check catches the "set SQL_DIALECT but forgot to update the
+    connection string" misconfiguration -- a mismatch means every query
+    would fail at execution (or be silently misinterpreted). It parses the
+    URL string only (``sqlalchemy.engine.make_url`` needs no driver import
+    and opens no connection); an exotic backend with no sqlglot-dialect
+    mapping is not an error on its own and is skipped.
+
+    Parameters
+    ----------
+    label:
+        Environment variable the URL came from, used in the message.
+    url:
+        The connection string.
+    dialect:
+        The sqlglot dialect this connection must speak.
+    placeholders:
+        Unfilled-token values to refuse.
+
+    Raises
+    ------
+    ValueError
+        Naming *label* and what is wrong with it.
+    """
+    if not url or url in placeholders:
+        raise ValueError(f"{label} is not configured")
+    if "username@server" in url.lower():
+        raise ValueError(
+            f"{label} still has the factory-default placeholder "
+            "host (username@server) — set a real connection string in .env"
+        )
+
+    from sqlalchemy.engine import make_url
+
+    from security.dialects import sqlglot_dialect_for_backend
+
+    try:
+        backend_name = make_url(url).get_backend_name()
+        expected_dialect = sqlglot_dialect_for_backend(backend_name)
+    except Exception:  # noqa: BLE001 - an unrecognised backend is a
+        # different, unrelated concern -- not something this
+        # SQL_DIALECT/connection-string consistency check can judge.
+        expected_dialect = None
+    if expected_dialect is not None and expected_dialect != dialect:
+        raise ValueError(
+            f"SQL_DIALECT={dialect!r} does not match "
+            f"{label}'s backend ({backend_name!r}, which "
+            f"this deployment targets as {expected_dialect!r}) -- "
+            "every query would fail at execution against the wrong "
+            f"dialect. Set SQL_DIALECT to match {label}, or "
+            f"fix {label} to point at the intended database."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Immutable runtime settings resolved from environment variables."""
@@ -961,11 +1026,13 @@ class Settings:
     rights a DBA will not grant an application.
 
     Must never resolve to the same server+database as
-    :attr:`db_connection_url` — :func:`appdb.engine.raise_if_same_database`
-    is checked at start-up (``api/server.py``'s ``lifespan``) and refuses to
-    start otherwise, because the warehouse connection is deliberately
-    read-only (``docs/db-hardening.md``) and the application database needs
-    writes."""
+    :attr:`db_connection_url` — or, with :mod:`database.datasources`
+    configured (``project_config/datasources.yaml``), any configured
+    warehouse data source — :func:`appdb.engine.raise_if_same_database` is
+    checked at start-up (``api/server.py``'s ``lifespan``, once per
+    source) and refuses to start otherwise, because every warehouse
+    connection is deliberately read-only (``docs/db-hardening.md``) and
+    the application database needs writes."""
 
     app_db_sqlite_path: str = field(
         default_factory=lambda: os.getenv("APP_DB_SQLITE_PATH", "logs/app.db")
@@ -1374,15 +1441,10 @@ class Settings:
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 
-        Two independent checks guard ``db_connection_url``: an exact match
-        against ``placeholders`` (single unfilled tokens such as
-        ``"change_me"``) and a substring check for ``"username@server"``,
-        the literal host baked into this module's own factory default (see
-        ``db_connection_url``'s ``default_factory`` above). The default is
-        a *full connection string*, not a bare token, so it never equals
-        any entry in ``placeholders`` and used to pass validation silently
-        whenever a user copied ``.env.example`` and forgot to fill in
-        ``DB_CONNECTION_URL``.
+        Every warehouse connection string is checked by
+        :func:`_check_warehouse_url`: ``db_connection_url`` when there is no
+        ``datasources.yaml``, otherwise each data source's ``url_env``
+        variable (see :mod:`database.datasources`).
         """
         placeholders = {
             "your_password_here", "your_server_here",
@@ -1390,13 +1452,6 @@ class Settings:
         }
         if not self.openai_model or self.openai_model in placeholders:
             raise ValueError("OPENAI_MODEL is not configured")
-        if not self.db_connection_url or self.db_connection_url in placeholders:
-            raise ValueError("DB_CONNECTION_URL is not configured")
-        if "username@server" in self.db_connection_url.lower():
-            raise ValueError(
-                "DB_CONNECTION_URL still has the factory-default placeholder "
-                "host (username@server) — set a real connection string in .env"
-            )
         # Fail closed for an unconfigured/unsupported SQL_DIALECT -- an
         # unknown dialect, or one whose profile has no system-catalogue
         # blocklist, must never reach request-serving code (see
@@ -1411,36 +1466,17 @@ class Settings:
 
         require_dialect_supported(self.sql_dialect)
 
-        # Catch the "set SQL_DIALECT but forgot to update DB_CONNECTION_URL"
-        # misconfiguration -- a mismatch here means every single query
-        # would fail at execution (or, worse, be silently misinterpreted),
-        # so this fails closed the same way the placeholder checks above
-        # do, rather than starting a server that will simply not work.
-        # Parses the connection URL string only (sqlalchemy.engine.make_url
-        # needs no driver import and opens no connection) -- an exotic
-        # backend this module has no sqlglot-dialect mapping for is not an
-        # error on its own (a different concern to this check), so that
-        # case is silently skipped rather than treated as a mismatch.
-        from sqlalchemy.engine import make_url
+        # Every warehouse connection string gets the same checks: the
+        # single DB_CONNECTION_URL when there is no datasources.yaml, or
+        # each source's url_env variable when there is one (in which case
+        # DB_CONNECTION_URL itself is not used and not required). See
+        # database.datasources.
+        from database.datasources import validate_datasource_urls
 
-        from security.dialects import sqlglot_dialect_for_backend
-
-        try:
-            backend_name = make_url(self.db_connection_url).get_backend_name()
-            expected_dialect = sqlglot_dialect_for_backend(backend_name)
-        except Exception:  # noqa: BLE001 - an unrecognised backend is a
-            # different, unrelated concern -- not something this
-            # SQL_DIALECT/DB_CONNECTION_URL consistency check can judge.
-            expected_dialect = None
-        if expected_dialect is not None and expected_dialect != self.sql_dialect:
-            raise ValueError(
-                f"SQL_DIALECT={self.sql_dialect!r} does not match "
-                f"DB_CONNECTION_URL's backend ({backend_name!r}, which "
-                f"this deployment targets as {expected_dialect!r}) -- "
-                "every query would fail at execution against the wrong "
-                "dialect. Set SQL_DIALECT to match DB_CONNECTION_URL, or "
-                "fix DB_CONNECTION_URL to point at the intended database."
-            )
+        validate_datasource_urls(
+            lambda label, url, dialect: _check_warehouse_url(label, url, dialect, placeholders),
+            self,
+        )
 
         # LLM_EXTRA_BODY is parsed on every request, so a malformed value
         # would otherwise surface as an error on the first question rather

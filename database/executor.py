@@ -35,6 +35,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import config as cfg
 from database.connection import get_engine
 from database.errors import classify_database_error
+from database.routing import CrossDatasourceError, resolve_datasource
 from security.dialects import get_dialect_profile
 
 logger = logging.getLogger(__name__)
@@ -96,10 +97,31 @@ def _apply_session_setup(conn, dialect: str, timeout_seconds: int) -> None:
             )
 
 
-def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
+def _route(sql: str, datasource: str | None) -> str:
+    """Return the data source *sql* runs on (see :mod:`database.routing`).
+
+    An explicit *datasource* wins; otherwise the source is derived from the
+    tables *sql* references. A statement spanning two sources is refused
+    with the same single exception type every other failure here uses;
+    :func:`security.sql_guard.validate_sql` refuses such SQL earlier with a
+    user-facing message, so reaching this branch means a caller skipped
+    the guard.
+    """
+    if datasource is not None:
+        return datasource
+    try:
+        return resolve_datasource(sql, cfg.settings.sql_dialect)
+    except CrossDatasourceError as exc:
+        logger.error("Refusing to execute a cross-data-source statement: %s", exc)
+        raise RuntimeError(f"Database error: {exc}") from exc
+
+
+def _execute(
+    sql: str, params: Sequence[object] | None, datasource: str | None,
+) -> pd.DataFrame:
     """Shared implementation behind :func:`execute_sql` and
     :func:`execute_sql_params` — see :func:`execute_sql`'s docstring for the
-    full behaviour contract (timeout, lock timeout, rollback-only
+    full behaviour contract (routing, timeout, lock timeout, rollback-only
     transaction, streaming, row cap). The only difference between the two
     public entry points is whether *params* is ``None`` (plain
     :meth:`~sqlalchemy.engine.Connection.exec_driver_sql` call) or a bound
@@ -108,9 +130,10 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
     timeout_seconds = cfg.settings.query_timeout_seconds
     dialect = cfg.settings.sql_dialect
     profile = get_dialect_profile(dialect)
+    source = _route(sql, datasource)
 
     try:
-        engine = get_engine()
+        engine = get_engine(source)
         with engine.connect() as conn:
             # Connection.execution_options() mutates and returns the same
             # Connection, so this rebinding does not change what __exit__
@@ -180,7 +203,7 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
         # database.errors.classify_database_error on the *original* error
         # rather than re-deriving anything from this RuntimeError's own
         # (already sanitised) text.
-        logger.error("SQL execution failed: %s", exc)
+        logger.error("SQL execution failed on data source %r: %s", source, exc)
         classification = classify_database_error(exc)
         raise RuntimeError(f"Database error: {classification.client_message}") from exc
 
@@ -189,11 +212,15 @@ def _execute(sql: str, params: Sequence[object] | None) -> pd.DataFrame:
     return df
 
 
-def execute_sql(sql: str) -> pd.DataFrame:
-    """Execute *sql* against Auction_DM and return the result as a DataFrame.
+def execute_sql(sql: str, *, datasource: str | None = None) -> pd.DataFrame:
+    """Execute *sql* against its data source and return the result as a DataFrame.
 
     Behaviour
     ---------
+    * **Routing** — the statement runs on the data source its tables belong
+      to (:func:`database.routing.resolve_datasource`), or on *datasource*
+      when given. A statement with no configured table runs on the default
+      source; one spanning two sources is refused.
     * **Raw driver execution** — the query is passed to
       :meth:`~sqlalchemy.engine.Connection.exec_driver_sql`, not
       ``conn.execute(text(sql))``. SQLAlchemy's :func:`~sqlalchemy.text`
@@ -241,6 +268,10 @@ def execute_sql(sql: str) -> pd.DataFrame:
         responsible for running
         :func:`~security.sql_guard.validate_sql` (and optionally
         :func:`~security.sql_guard.ensure_top`) before passing SQL here.
+    datasource:
+        Run on this data source instead of the one derived from *sql*.
+        For operator probes (``/health``, ``scripts/verify_deployment.py``)
+        that must reach every source; request-serving code leaves it unset.
 
     Returns
     -------
@@ -255,8 +286,9 @@ def execute_sql(sql: str) -> pd.DataFrame:
     RuntimeError
         Wraps any :class:`~sqlalchemy.exc.SQLAlchemyError` raised while
         acquiring the engine, connecting, or executing *sql*, with a
-        human-readable message.  The original exception is attached as
-        ``__cause__`` so tracebacks still show the root cause.
+        human-readable message, and a statement that spans two data
+        sources.  The original exception is attached as ``__cause__`` so
+        tracebacks still show the root cause.
 
     Examples
     --------
@@ -277,11 +309,13 @@ def execute_sql(sql: str) -> pd.DataFrame:
         ...
     RuntimeError: Database error: ...
     """
-    return _execute(sql, None)
+    return _execute(sql, None, datasource)
 
 
-def execute_sql_params(sql: str, params: Sequence[object]) -> pd.DataFrame:
-    """Execute a **parameterised** *sql* string against Auction_DM.
+def execute_sql_params(
+    sql: str, params: Sequence[object], *, datasource: str | None = None,
+) -> pd.DataFrame:
+    """Execute a **parameterised** *sql* string against its data source.
 
     The one, parameterised sibling of :func:`execute_sql` — added so a
     caller that must build a query from user-supplied text (the Phase 5b
@@ -308,6 +342,10 @@ def execute_sql_params(sql: str, params: Sequence[object]) -> pd.DataFrame:
         Positional bind values, passed straight through to the DBAPI
         driver's ``execute(sql, parameters)`` — never interpolated into
         *sql* by this function or by anything it calls.
+    datasource:
+        Same as :func:`execute_sql`'s. The fixed templates in
+        :mod:`retrieval` name their table, so routing from *sql* already
+        sends them to that table's source.
 
     Returns
     -------
@@ -329,7 +367,7 @@ def execute_sql_params(sql: str, params: Sequence[object]) -> pd.DataFrame:
     >>> isinstance(df, pd.DataFrame)  # doctest: +SKIP
     True
     """
-    return _execute(sql, params)
+    return _execute(sql, params, datasource)
 
 
 # Backward-compatible alias used by tests that monkeypatch
