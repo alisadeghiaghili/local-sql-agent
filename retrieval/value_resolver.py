@@ -142,9 +142,9 @@ from typing import Any, Callable, Literal, Sequence
 import pandas as pd
 
 import config as cfg
-from schema_data.registry import get_resolvable_columns, get_table_schema_qualifiers
+from schema_data.registry import bare_table_name, get_resolvable_columns, get_table_schema_qualifiers, table_reference_sql
 from security.auth import ANONYMOUS, Principal, scope_key
-from security.dialects import get_dialect_profile, quote_tsql_identifier, quote_tsql_qualifier
+from security.dialects import get_dialect_profile, quote_tsql_identifier
 from security.sql_guard import transpile_sql
 from session.models import Clarification
 
@@ -178,13 +178,13 @@ ExecuteParamsFn = Callable[[str, Sequence[object]], "pd.DataFrame"]
 #: NOT covered" section.
 RESOLVABLE_COLUMNS: dict[str, tuple[str, ...]] = get_resolvable_columns()
 
-#: table -> its schema/db qualifier (e.g. "ref"), same source --
-#: schema_data.registry.get_table_schema_qualifiers. Per-table rather than
-#: one shared constant because a warehouse routinely spans more than one
-#: schema; every table named in RESOLVABLE_COLUMNS is guaranteed an entry
-#: here (schema_data.registry.SchemaConfig's validator enforces that a
-#: table cannot declare resolvable_columns without also giving a
-#: db_schema).
+#: table KEY -> its EFFECTIVE schema/db qualifier (e.g. "ref"), same source
+#: -- schema_data.registry.get_table_schema_qualifiers. Per-table rather
+#: than one shared constant because a warehouse routinely spans more than
+#: one schema; every table named in RESOLVABLE_COLUMNS is guaranteed an
+#: entry here (schema_data.registry.SchemaConfig's validator enforces that
+#: a table cannot declare resolvable_columns without also having a
+#: qualifier, from a qualified key or from db_schema).
 _TABLE_SCHEMAS: dict[str, str] = get_table_schema_qualifiers()
 
 #: Phase 7 seam: a tool-call-shaped description of :func:`resolve_value`,
@@ -319,10 +319,9 @@ def _build_query(table: str, column: str, dialect: str = "tsql") -> str:
     """
     profile = get_dialect_profile(dialect)
     if profile.schema_qualification == "none":
-        table_ref = quote_tsql_identifier(table)
+        table_ref = quote_tsql_identifier(bare_table_name(table))
     else:
-        schema = _TABLE_SCHEMAS[table]
-        table_ref = f"{quote_tsql_qualifier(schema)}.{quote_tsql_identifier(table)}"
+        table_ref = table_reference_sql(table, _TABLE_SCHEMAS[table])
     column_ref = quote_tsql_identifier(column)
     tsql = (
         f"SELECT DISTINCT TOP (?) {column_ref} FROM {table_ref} "
