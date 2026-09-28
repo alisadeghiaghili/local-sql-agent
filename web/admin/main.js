@@ -14,6 +14,21 @@
  * with the `admin` capability, so this page shares the exact same
  * localStorage-backed key store the analyst UI (web/) already uses,
  * rather than inventing a second one.
+ *
+ * Backend address: this page used to fall back to state.js's own
+ * hardcoded "http://localhost:8000" placeholder default whenever nothing
+ * had been saved to localStorage yet -- unlike web/ (main.js), it never
+ * applied web/js/config.js's DEFAULT_BASE_URL/DEFAULT_API_PORT at all, so
+ * a deployment that moved host had to type the new address into this
+ * page's top bar by hand every time. It now resolves its default via
+ * resolveDefaultBaseUrl exactly the same way web/ does (same two
+ * constants, same precedence: `?base=` > saved value > config.js
+ * default), and validates every address that reaches it (top-bar entry,
+ * `?base=`, a saved value) through normalizeBaseUrl -- see the top-bar
+ * wiring and loadPersisted() (state.js) for why: an operator once typed
+ * "172.16.101.42:8076" (no scheme) into this exact top bar and every
+ * request silently went to a RELATIVE path on the static file server
+ * instead of the API.
  */
 
 "use strict";
@@ -21,7 +36,11 @@
 import { AdminApi, AdminUnauthorizedError, AdminForbiddenError, AdminApiError } from "./admin.js";
 import { renderAccessRequestsList } from "./access-requests.js";
 import { getApiKey, setApiKey, clearApiKey, hasApiKey } from "../js/apikey.js";
-import { state, loadPersisted, persistTheme, persistBaseUrl, applyTheme } from "../js/state.js";
+import {
+  state, loadPersisted, persistTheme, persistBaseUrl, applyTheme,
+  resolveBootBaseUrl, resolveDefaultBaseUrl, normalizeBaseUrl,
+} from "../js/state.js";
+import { DEFAULT_BASE_URL, DEFAULT_API_PORT } from "../js/config.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -71,8 +90,31 @@ const CARDS_WHERE_403_IS_A_CAPABILITY_GAP = new Map([
   ["accessRequests", "security"],
 ]);
 
+// Same precedence as web/ (main.js): config.js default (or, when that is
+// empty, this page's own protocol/host + DEFAULT_API_PORT) first;
+// loadPersisted() then overrides it with a saved localStorage value if
+// one exists -- and now repairs/discards a bad one via normalizeBaseUrl
+// rather than loading it verbatim (state.js); `?base=` is the final,
+// highest-precedence override for a one-off load, validated the same
+// way before being trusted.
+const _bootParams = new URLSearchParams(location.search);
+state.baseUrl = resolveDefaultBaseUrl(DEFAULT_BASE_URL, DEFAULT_API_PORT, location);
 loadPersisted();
 applyTheme();
+
+const _rawBootBaseUrl = resolveBootBaseUrl(_bootParams, state.baseUrl);
+if (_rawBootBaseUrl !== state.baseUrl) {
+  const _bootResult = normalizeBaseUrl(_rawBootBaseUrl);
+  if (_bootResult.ok) {
+    state.baseUrl = _bootResult.url;
+  } else {
+    showNotice(
+      "error",
+      `نشانی بک‌اند در ?base= نامعتبر است و نادیده گرفته شد — باید یک نشانی http:// یا https:// معتبر باشد. (?base=${_rawBootBaseUrl})`,
+    );
+  }
+}
+
 let api = new AdminApi(state.baseUrl);
 
 wireTopbar();
@@ -93,9 +135,21 @@ function wireTopbar() {
 
   $("live-base-input").value = state.baseUrl;
   $("live-base-connect").addEventListener("click", () => {
-    const val = $("live-base-input").value.trim();
-    if (!val) return;
-    state.baseUrl = val.replace(/\/+$/, "");
+    const val = $("live-base-input").value;
+    const result = normalizeBaseUrl(val);
+    if (!result.ok) {
+      // Never silently used as-is (the exact "172.16.101.42:8076"
+      // incident this page's normalisation exists for -- see this
+      // file's module docstring): reject with a clear message and keep
+      // whatever the panel is already connected to.
+      showNotice(
+        "error",
+        "نشانی بک‌اند نامعتبر است — باید یک نشانی http:// یا https:// معتبر باشد (مثلاً http://172.16.101.42:8076).",
+      );
+      return;
+    }
+    state.baseUrl = result.url;
+    $("live-base-input").value = state.baseUrl;
     persistBaseUrl(state.baseUrl);
     api = new AdminApi(state.baseUrl);
     refreshAll();

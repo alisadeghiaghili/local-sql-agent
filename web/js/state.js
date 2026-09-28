@@ -26,6 +26,13 @@ export const state = {
   // refreshHealth in main.js) instead of a working simulated demo — see
   // that error's own wording for why that is the right trade.
   mode: "live", // "simulated" | "live"
+  // Placeholder only -- every real page boot (web/js/main.js,
+  // web/admin/main.js) overwrites this immediately via
+  // resolveDefaultBaseUrl (config.js's DEFAULT_BASE_URL/DEFAULT_API_PORT)
+  // before loadPersisted() even runs. Kept non-empty here only so a
+  // module that imports state.js without running either boot sequence
+  // (a stray test, say) still gets a syntactically valid URL rather than
+  // an empty string.
   baseUrl: "http://localhost:8000",
   theme: "system", // "system" | "light" | "dark"
   lang: "fa", // "fa" | "en" — chrome only; questions may be either
@@ -49,7 +56,26 @@ export function loadPersisted() {
   } catch { /* localStorage unavailable (private mode, etc.) — keep default */ }
   try {
     const b = localStorage.getItem(STORAGE_BASE_KEY);
-    if (b) state.baseUrl = b;
+    if (b) {
+      // A value saved before normalizeBaseUrl existed (or saved by a
+      // build that had a bug, like the real "172.16.101.42:8076" no
+      // scheme/trailing-path incident this normalisation exists for)
+      // must not go on shadowing the deploy default forever just
+      // because it once made it into localStorage. Repair it in place
+      // when it is fixable (e.g. missing scheme); when it is not
+      // parseable/valid at all, drop it instead of loading a value that
+      // would only fail every request — the deploy-time default (already
+      // in state.baseUrl at this point in the boot sequence) stands.
+      const result = normalizeBaseUrl(b);
+      if (result.ok) {
+        state.baseUrl = result.url;
+        if (result.url !== b) {
+          try { localStorage.setItem(STORAGE_BASE_KEY, result.url); } catch { /* ignore */ }
+        }
+      } else {
+        try { localStorage.removeItem(STORAGE_BASE_KEY); } catch { /* ignore */ }
+      }
+    }
   } catch { /* ignore */ }
   try {
     const s = localStorage.getItem(STORAGE_SESSION_KEY);
@@ -131,6 +157,94 @@ export function resolveBootMode(searchParams, defaultMode) {
 export function resolveBootBaseUrl(searchParams, currentBaseUrl) {
   const base = searchParams.get("base");
   return base ? base : currentBaseUrl;
+}
+
+/** Derives the effective deploy-time DEFAULT backend base URL from
+ * web/js/config.js's two constants and THIS page's own location, so both
+ * web/ and web/admin/ resolve the same default the same way without
+ * either one hardcoding a host.
+ *
+ * *defaultBaseUrl* (config.js's DEFAULT_BASE_URL) wins whenever it is a
+ * non-empty string, unchanged — this is the existing, documented "one
+ * file a deployment edits" path, kept exactly as it already worked.
+ * Only when it is empty does this derive an address from *pageOrigin*
+ * (an object with `protocol`/`hostname`, e.g. `window.location` itself,
+ * or a plain object in a test) and *defaultApiPort* (config.js's
+ * DEFAULT_API_PORT): `<page protocol>//<page hostname>:<port>`. This is
+ * what lets a deployment move the API+UI pair to a new host with no JS
+ * edit at all — the API is assumed reachable on the same hostname the
+ * page itself was loaded from, just on its own port.
+ *
+ * Pure, total, no DOM access beyond reading the two fields off
+ * *pageOrigin* that are passed in explicitly — unit-testable without a
+ * real `window.location`. */
+export function resolveDefaultBaseUrl(defaultBaseUrl, defaultApiPort, pageOrigin) {
+  const trimmed = (defaultBaseUrl || "").trim();
+  if (trimmed) return trimmed;
+  return `${pageOrigin.protocol}//${pageOrigin.hostname}:${defaultApiPort}`;
+}
+
+/** Closed set of reasons normalizeBaseUrl can reject a value — each
+ * page renders its OWN message (in its own language) for each reason
+ * rather than this shared module owning any UI copy; see
+ * web/js/main.js's / web/admin/main.js's own mapping. */
+export const BASE_URL_INVALID_EMPTY = "empty";
+export const BASE_URL_INVALID_UNPARSEABLE = "unparseable";
+export const BASE_URL_INVALID_SCHEME = "scheme";
+
+/** Normalises and validates a typed or saved API base-address string —
+ * an admin top-bar entry, a `?base=` query param, or a value already
+ * sitting in localStorage from a previous, possibly-bad save.
+ *
+ * A real deployment typed "172.16.101.42:8076" (no scheme) into the
+ * admin top bar; `fetch` then treated it as a RELATIVE path, and every
+ * request went to `GET /admin/172.16.101.42:8076/admin/...` on the
+ * static file server instead of the API. This exists so that never
+ * happens silently again:
+ *   1. trim whitespace;
+ *   2. if there is no `scheme://` prefix, prepend `http://` (the exact
+ *      repair the incident above needed);
+ *   3. parse with `new URL()` — a value that still does not parse (spaces,
+ *      garbage, ...) is rejected, not silently used as a relative path;
+ *   4. reject anything whose scheme is not `http`/`https` (e.g.
+ *      `javascript:`, `file:`);
+ *   5. on success, keep only the origin — `protocol//host` — discarding
+ *      any path, query, or trailing slash, so `http://host:port/some/path`
+ *      and `http://host:port/` both normalise to `http://host:port`.
+ *
+ * A second, narrower repair lives here too: a value that does NOT start
+ * with a scheme but has one embedded further in ("/http://host:port" —
+ * an accidental leading slash pasted in front of an otherwise-correct
+ * address) is deliberately REJECTED rather than guessed at. Blindly
+ * prepending "http://" to that one (as step 2 does for the ordinary
+ * no-scheme case) parses "successfully" into a nonsense origin
+ * (`new URL("http:///http://host:port")` resolves the second "http" as
+ * the HOSTNAME, silently) — a wrong answer that never surfaces as an
+ * error. An address that already contains "://" somewhere is only safe
+ * to accept when that occurrence is the leading scheme; anywhere else,
+ * this rejects it with a clear reason instead of risking a silent
+ * mis-parse toward the wrong host.
+ *
+ * Returns `{ok: true, url}` or `{ok: false, reason}` (one of the
+ * `BASE_URL_INVALID_*` constants above) — never throws. Pure, total, no
+ * DOM/localStorage access. */
+export function normalizeBaseUrl(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return { ok: false, reason: BASE_URL_INVALID_EMPTY };
+  const hasSchemePrefix = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  const hasSchemeElsewhere = !hasSchemePrefix && /:\/\//.test(trimmed);
+  if (hasSchemeElsewhere) return { ok: false, reason: BASE_URL_INVALID_UNPARSEABLE };
+  const candidate = hasSchemePrefix ? trimmed : `http://${trimmed}`;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return { ok: false, reason: BASE_URL_INVALID_UNPARSEABLE };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, reason: BASE_URL_INVALID_SCHEME };
+  }
+  return { ok: true, url: parsed.origin };
 }
 
 export function persistTheme(theme) {

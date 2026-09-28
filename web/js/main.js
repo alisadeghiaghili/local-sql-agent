@@ -18,11 +18,11 @@ import {
 import {
   state, loadPersisted, persistTheme, persistSessionId, persistInterpret,
   applyTheme, addTurn, findTurn, resetTranscript, resolveActiveSessionId,
-  resolveBootMode, resolveBootBaseUrl,
+  resolveBootMode, resolveBootBaseUrl, resolveDefaultBaseUrl, normalizeBaseUrl,
 } from "./state.js";
 import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError } from "./api.js";
 import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
-import { DEFAULT_BASE_URL } from "./config.js";
+import { DEFAULT_BASE_URL, DEFAULT_API_PORT } from "./config.js";
 import { createTurnCard, FAILURE_BY_CODE } from "./render/turn.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
@@ -91,21 +91,41 @@ const HEALTH_STATE_LABEL_KEY = { ok: "healthStateUp", down: "healthStateDown", u
 ensureTsqlPrismReady();
 
 const params = new URLSearchParams(location.search);
-// Deploy-time default (web/js/config.js) first; loadPersisted() then
-// overrides it with a localStorage value if one was ever saved (e.g. an
-// operator debugging against a different backend from this browser);
+// Deploy-time default (web/js/config.js's DEFAULT_BASE_URL, or — when
+// that is left empty — this page's own protocol/host plus
+// DEFAULT_API_PORT, see resolveDefaultBaseUrl) first; loadPersisted()
+// then overrides it with a localStorage value if one was ever saved
+// (e.g. an operator debugging against a different backend from this
+// browser) — loadPersisted() itself now repairs/discards a bad saved
+// value via normalizeBaseUrl rather than loading it verbatim.
 // resolveBootBaseUrl's `?base=` param is the final, highest-precedence
-// override, for a one-off load. Same layering for mode: state.js's own
-// default ("live" — see its comment) unless `?live=0`/`?live=1` says
-// otherwise. Run mode is URL-only now, decided once at boot; there is no
-// topbar control left that can change it afterward.
-state.baseUrl = DEFAULT_BASE_URL;
+// override, for a one-off load; it is validated below the same way
+// before being trusted. Same layering for mode: state.js's own default
+// ("live" — see its comment) unless `?live=0`/`?live=1` says otherwise.
+// Run mode is URL-only now, decided once at boot; there is no topbar
+// control left that can change it afterward.
+state.baseUrl = resolveDefaultBaseUrl(DEFAULT_BASE_URL, DEFAULT_API_PORT, location);
 loadPersisted();
 state.mode = resolveBootMode(params, state.mode);
-state.baseUrl = resolveBootBaseUrl(params, state.baseUrl);
 state.lang = loadLang();
 applyTheme();
 applyLang(state.lang);
+
+const rawBootBaseUrl = resolveBootBaseUrl(params, state.baseUrl);
+if (rawBootBaseUrl !== state.baseUrl) {
+  // A `?base=` param was actually supplied for this load -- validate it
+  // instead of trusting it silently (the same
+  // "172.16.101.42:8076"-style incident this normalisation exists for,
+  // just arriving via the URL instead of a typed field). An invalid
+  // value is REJECTED, not guessed at: whatever state.baseUrl already
+  // resolved to (the persisted value, or the deploy default) stands.
+  const result = normalizeBaseUrl(rawBootBaseUrl);
+  if (result.ok) {
+    state.baseUrl = result.url;
+  } else {
+    showNotice("error", `${t("invalidBaseUrlNotice")} (?base=${rawBootBaseUrl})`);
+  }
+}
 
 let api = new Api(state.baseUrl);
 
@@ -439,8 +459,19 @@ async function refreshHealth() {
     if (h.llmDetail) lines.push(`LLM: ${h.llmDetail}`);
     if (h.dbDetail) lines.push(`DB: ${h.dbDetail}`);
     setHealth(h.api, h.llm, h.db, lines.join("\n"));
-  } catch {
-    setHealth(false, false, false, "بک‌اند در دسترس نیست — uvicorn api.server:app را اجرا کنید یا حالت نمایشی را انتخاب کنید");
+  } catch (err) {
+    // TRANSPORT_ERROR (api.js's health()) means the fetch itself never
+    // got a response -- unreachable host, or (the incident this branch
+    // exists for) a CORS rejection that looks identical to it from the
+    // page's point of view. err.message already carries
+    // describeTransportFailure's bilingual, actionable hint (naming this
+    // page's own origin and CORS_ALLOWED_ORIGINS); a real HTTP error
+    // response (e.g. 500) falls through to the plain fallback instead,
+    // since that is a live backend, not a transport problem.
+    const hint = err && err.code === "TRANSPORT_ERROR" && err.message
+      ? err.message
+      : "بک‌اند در دسترس نیست — uvicorn api.server:app را اجرا کنید یا حالت نمایشی را انتخاب کنید";
+    setHealth(false, false, false, hint);
   }
 }
 
