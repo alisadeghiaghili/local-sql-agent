@@ -99,7 +99,7 @@ class GuardVerdict(BaseModel):
     reason: (
         Literal[
             "denied_column", "forbidden_statement", "unknown_table",
-            "system_catalogue", "no_table_reference", "other",
+            "system_catalogue", "no_table_reference", "cross_datasource", "other",
         ]
         | None
     ) = None

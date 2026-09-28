@@ -217,7 +217,7 @@ as before this phase.
     "reason": null,                 // populated on rejection: "denied_column"
                                      // | "forbidden_statement" | "unknown_table"
                                      // | "system_catalogue" | "no_table_reference"
-                                     // | "other" -- lets
+                                     // | "cross_datasource" | "other" -- lets
                                      // the client pick a targeted next action
                                      // (DESIGN-INVARIANTS.md §8) without
                                      // parsing `rule`'s free text

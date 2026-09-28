@@ -283,7 +283,7 @@ from security.dialects import get_dialect_profile
 #: (``reason is None``, which no raise site below actually produces).
 _REASONS = frozenset({
     "denied_column", "forbidden_statement", "unknown_table",
-    "system_catalogue", "no_table_reference", "other",
+    "system_catalogue", "no_table_reference", "cross_datasource", "other",
 })
 
 
@@ -802,6 +802,39 @@ def _resolve_star_tables(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) -> None:
+    """Refuse a query whose tables live in more than one data source.
+
+    Every table has already passed the allowlist when this runs. The
+    mapping comes from ``schema.yaml`` via :mod:`database.routing`; with a
+    single data source (the default deployment) every table maps to it and
+    this never raises.
+
+    A :class:`CorrectableRejection` with ``is_refusal`` set, the same shape
+    as the unknown-table rejection: a retry can plausibly answer from one
+    source's tables (the message tells the model which table is where),
+    but the reason it was refused is a rule, not the SQL's shape.
+    """
+    tables = {
+        canonical
+        for table in tree.find_all(exp.Table)
+        if (canonical := _resolve_table_name(table.name, cte_names)) is not None
+    }
+    if len(tables) < 2:
+        return
+
+    from database.routing import CrossDatasourceError, group_tables_by_datasource
+
+    groups = group_tables_by_datasource(tables)
+    if len(groups) > 1:
+        exc = CorrectableRejection(
+            str(CrossDatasourceError(groups)), reason="cross_datasource",
+        )
+        exc.is_refusal = True
+        raise exc
+
 
 def clean_sql(raw: str) -> str:
     """Strip LLM artefacts from *raw* and return a bare T-SQL string.
@@ -1388,6 +1421,8 @@ def validate_sql(
                     )
                     exc.is_refusal = True
                     raise exc
+
+    _require_single_datasource(tree, cte_names)
 
     denied = frozenset(c.upper() for c in denied_columns) if denied_columns else frozenset()
     alias_map = _collect_table_alias_map(tree, cte_names)
