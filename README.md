@@ -206,6 +206,8 @@ python app.py
 # 5b. HTTP API (--no-server-header: uvicorn adds `Server: uvicorn` at the
 #     protocol layer, which the app's middleware cannot strip; drop it here)
 uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header
+# ...or, once API_HOST/API_PORT are set in .env, the equivalent launcher:
+python -m api
 
 # 6. Before a real deployment, check the four things that stop a week
 python -m scripts.verify_deployment
@@ -226,6 +228,9 @@ python -m scripts.verify_deployment
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model name served by the endpoint |
 | `OPENAI_API_KEY` | *(required)* | API key for the endpoint |
+| `API_HOST` | `127.0.0.1` | Interface `python -m api` binds to (loopback until widened on purpose) |
+| `API_PORT` | `8000` | Port `python -m api` binds to |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:8080`, `http://127.0.0.1:8080` | Comma-separated browser origins allowed to call this API cross-origin — set this to the UI's own origin whenever the API and the static UI are on different ports/hosts, or every call looks like a dead backend instead of a CORS rejection (see `docs/deployment-runbook.md`) |
 | `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string |
 | `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time (seconds) |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
