@@ -78,11 +78,14 @@ allowlists from ever drifting out of sync with ``schema.yaml``'s own
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from knowledge.config_loader import ConfigNotFoundError, load_yaml
 
@@ -92,6 +95,7 @@ __all__ = [
     "TableDefinition",
     "RelationshipDefinition",
     "SchemaConfig",
+    "TableRef",
     "load_schema",
     "validate_schema_yaml_text",
     "get_table_descriptions",
@@ -102,7 +106,244 @@ __all__ = [
     "get_resolvable_columns",
     "get_prefetchable_columns",
     "check_allowlist_structural_invariants",
+    "table_ref_parts",
+    "split_table_key",
+    "bare_table_name",
+    "effective_qualifier",
+    "table_reference_sql",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Qualified table keys -- single source of truth for parsing/normalising a
+# schema.yaml table key ("Customer", "sales.Customer", "OtherDb.dbo.Customer",
+# "Linked.OtherDb.dbo.Customer") and for rendering the T-SQL reference it
+# names. Every consumer that needs a table key's bare name, qualifier, or
+# quoted SQL reference goes through the functions below -- there is no
+# second, independently-written copy of this parsing anywhere else in the
+# codebase (see docs/design/TABLE-NAMES.md).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TableRef:
+    """A parsed, dotted table identifier -- a ``schema.yaml`` key, or a real
+    SQL ``exp.Table`` reference -- reduced to its ordered parts.
+
+    ``parts`` holds every dotted segment, qualifier first, the bare table
+    name last -- e.g. ``("sales", "Customer")`` for the key ``"sales.Customer"``,
+    or ``("Customer",)`` for the bare key ``"Customer"``. Brackets and
+    ``]]`` escapes are already stripped: this is the *parsed* identity, not
+    the original text.
+    """
+
+    parts: tuple[str, ...]
+
+    @property
+    def name(self) -> str:
+        """The bare table name -- the rightmost part."""
+        return self.parts[-1]
+
+    @property
+    def qualifier(self) -> tuple[str, ...]:
+        """The leading qualifier parts, empty for a bare identifier."""
+        return self.parts[:-1]
+
+
+def table_ref_parts(table: exp.Table) -> tuple[str, ...]:
+    """Flatten a parsed sqlglot ``exp.Table`` into its ordered dotted parts.
+
+    ``exp.Table`` has only two qualifier slots (``catalog``, ``db``); a
+    third leading part (a four-part T-SQL name, ``server.database.schema.table``)
+    is represented by sqlglot as a nested ``exp.Dot`` chain inside the
+    node's own ``this`` -- this function walks that chain so every part is
+    returned in one flat, left-to-right tuple regardless of how sqlglot
+    happened to nest it. Used both to parse a ``schema.yaml`` key (via
+    :func:`split_table_key`, which builds *table* with ``exp.to_table``) and
+    to read a real SQL reference's qualifier (``security.sql_guard``) --
+    the one place this flattening is implemented.
+
+    Parameters
+    ----------
+    table:
+        A parsed ``exp.Table`` node.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Every part, quoting stripped, qualifier(s) first and the bare name
+        last. Empty only if *table* names nothing at all.
+
+    Examples
+    --------
+    >>> import sqlglot.expressions as exp
+    >>> table_ref_parts(exp.to_table("Customer", dialect="tsql"))
+    ('Customer',)
+    >>> table_ref_parts(exp.to_table("sales.Customer", dialect="tsql"))
+    ('sales', 'Customer')
+    >>> table_ref_parts(exp.to_table("Linked.OtherDb.dbo.Customer", dialect="tsql"))
+    ('Linked', 'OtherDb', 'dbo', 'Customer')
+    """
+
+    def _flatten(node: exp.Expression) -> list[str]:
+        if isinstance(node, exp.Dot):
+            return _flatten(node.this) + _flatten(node.expression)
+        if isinstance(node, exp.Identifier):
+            return [node.this]
+        name = getattr(node, "name", None)  # pragma: no cover - defensive
+        return [name] if name else []  # pragma: no cover - defensive
+
+    parts: list[str] = []
+    if table.catalog:
+        parts.append(table.catalog)
+    if table.db:
+        parts.append(table.db)
+    this = table.args.get("this")
+    if isinstance(this, exp.Dot):
+        parts.extend(_flatten(this))
+    else:
+        name = table.name
+        if name:
+            parts.append(name)
+    return tuple(parts)
+
+
+def split_table_key(key: str) -> TableRef:
+    """Parse a ``schema.yaml`` table key into its qualifier and bare name.
+
+    Parses with ``sqlglot.exp.to_table(key, dialect="tsql")`` -- so
+    ``[sales].[Customer]`` and a doubled ``]]`` bracket escape both work
+    exactly as they would inside a real query -- then flattens the result
+    with :func:`table_ref_parts`. Up to three leading qualifier parts are
+    accepted (``catalog.database.schema``, SQL Server's own limit before
+    the table name); a key with more is rejected.
+
+    Parameters
+    ----------
+    key:
+        A table key exactly as written under ``schema.yaml``'s ``tables``
+        map -- ``"Customer"``, ``"sales.Customer"``, ``"OtherDb.dbo.Customer"``,
+        or bracket-quoted.
+
+    Returns
+    -------
+    TableRef
+
+    Raises
+    ------
+    ValueError
+        If *key* does not parse as a T-SQL table identifier, or names more
+        than three leading qualifier parts.
+
+    Examples
+    --------
+    >>> split_table_key("Customer").parts
+    ('Customer',)
+    >>> split_table_key("sales.Customer").qualifier
+    ('sales',)
+    >>> split_table_key("[sales].[Customer]").name
+    'Customer'
+    >>> split_table_key("Linked.OtherDb.dbo.Customer").qualifier
+    ('Linked', 'OtherDb', 'dbo')
+    >>> split_table_key("a.b.c.d.e")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid table key 'a.b.c.d.e': at most three leading qualifier parts (catalog.database.schema) may precede the table name
+    """
+    try:
+        table = exp.to_table(key, dialect="tsql")
+    except SqlglotError as exc:
+        raise ValueError(f"invalid table key {key!r}: {exc}") from exc
+    parts = table_ref_parts(table)
+    if not parts:  # pragma: no cover - defensive; exp.to_table never returns an empty Table
+        raise ValueError(f"invalid table key {key!r}: no table name found")
+    if len(parts) > 4:
+        raise ValueError(
+            f"invalid table key {key!r}: at most three leading qualifier "
+            "parts (catalog.database.schema) may precede the table name"
+        )
+    return TableRef(parts=parts)
+
+
+def bare_table_name(key: str) -> str:
+    """The bare table name of *key* -- ``split_table_key(key).name``."""
+    return split_table_key(key).name
+
+
+def effective_qualifier(key: str, db_schema: str = "") -> tuple[str, ...]:
+    """The qualifier a table reference to *key* is actually checked against.
+
+    The key's own leading parts win when *key* is qualified; otherwise
+    *db_schema* (split on ``.``) applies; a bare key with no *db_schema*
+    has no qualifier at all (``()``). See
+    :meth:`SchemaConfig._table_keys_are_consistent_and_unambiguous` for the
+    rule requiring the two to agree, case-insensitively, when both are given.
+
+    Parameters
+    ----------
+    key:
+        A ``schema.yaml`` table key.
+    db_schema:
+        That table's ``db_schema`` field, or ``""``.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The qualifier parts, in order, quoting stripped. Empty when *key*
+        is bare and *db_schema* is empty.
+
+    Examples
+    --------
+    >>> effective_qualifier("sales.Customer")
+    ('sales',)
+    >>> effective_qualifier("Customer", "sales")
+    ('sales',)
+    >>> effective_qualifier("Customer")
+    ()
+    """
+    ref = split_table_key(key)
+    if ref.qualifier:
+        return ref.qualifier
+    if db_schema:
+        return tuple(db_schema.split("."))
+    return ()
+
+
+def table_reference_sql(key: str, qualifier: str = "") -> str:
+    """The quoted T-SQL reference for table *key*.
+
+    Parameters
+    ----------
+    key:
+        A ``schema.yaml`` table key.
+    qualifier:
+        The table's EFFECTIVE qualifier (dot-joined, e.g. what
+        :func:`get_table_schema_qualifiers` returns for *key* -- already
+        resolved from *key*'s own leading parts or ``db_schema``, per
+        :func:`effective_qualifier`), or ``""`` for no qualifier at all.
+
+    Returns
+    -------
+    str
+        ``[q1].[q2].[Name]`` (however many parts *qualifier* has), or
+        ``[Name]`` alone when *qualifier* is empty.
+
+    Examples
+    --------
+    >>> table_reference_sql("Customer")
+    '[Customer]'
+    >>> table_reference_sql("sales.Customer", "sales")
+    '[sales].[Customer]'
+    >>> table_reference_sql("Customer", "OtherDb.dbo")
+    '[OtherDb].[dbo].[Customer]'
+    """
+    from security.dialects import quote_tsql_identifier, quote_tsql_qualifier
+
+    name = bare_table_name(key)
+    ident = quote_tsql_identifier(name)
+    if not qualifier:
+        return ident
+    return f"{quote_tsql_qualifier(qualifier)}.{ident}"
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +408,11 @@ class SchemaConfig(BaseModel):
            from ever drifting out of sync with ``schema.yaml``'s own column
            list: there is exactly one place a column is declared, and these
            flags can only ever narrow it, never extend it.
-        2. A table that flags either list non-empty must also give a
-           non-empty ``db_schema`` -- without it there is no schema
-           qualifier to build a ``[schema].[table]`` reference with, and
+        2. A table that flags either list non-empty must have a non-empty
+           EFFECTIVE qualifier (:func:`effective_qualifier` -- a qualified
+           table key, or a non-empty ``db_schema``, satisfies this either
+           way) -- without one there is no schema qualifier to build a
+           ``[schema].[table]`` reference with, and
            :mod:`retrieval.value_resolver` / :mod:`retrieval.dimension_vocabulary`
            would have nothing to look up at query-build time.
 
@@ -205,12 +448,64 @@ class SchemaConfig(BaseModel):
                     f"name column(s) {unknown} that are not in this table's "
                     f"`columns` map"
                 )
-            if not table.db_schema:
+            if not effective_qualifier(name, table.db_schema):
                 raise ValueError(
                     f"table '{name}': resolvable_columns/prefetchable_columns "
-                    f"is set but `db_schema` is empty -- a schema qualifier is "
+                    f"is set but this table has no qualifier (neither the key "
+                    f"nor `db_schema` names one) -- a schema qualifier is "
                     f"required to build a query for this table"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _table_keys_are_consistent_and_unambiguous(self) -> "SchemaConfig":
+        """Validates every table key against :func:`split_table_key`, and
+        the qualifier rules a qualified key introduces.
+
+        A table key may be bare (``"Customer"``) or carry 1-3 leading
+        qualifier parts (``"sales.Customer"``, ``"OtherDb.dbo.Customer"``);
+        see :func:`split_table_key` and the module docstring's "Qualified
+        table keys" section. Two rules, checked per table:
+
+        1. **Qualifier / db_schema agreement.** When a key IS qualified
+           and ``db_schema`` is also given, the two must name the same
+           qualifier, case-insensitively, part for part -- a key of
+           ``"sales.Customer"`` with ``db_schema: "ref"`` is a
+           self-contradictory table entry, not "the key wins" or
+           "db_schema wins" by silent convention.
+        2. **No two keys collide.** Two keys that resolve to the same
+           (:func:`effective_qualifier`, bare name) pair, case-insensitively,
+           are the same table named twice -- caught here rather than left to
+           produce two allowlist entries an operator cannot tell apart.
+           Two *different* qualifiers sharing a bare name (``sales.Customer``
+           and ``ref.Customer``) are NOT a collision -- that is exactly the
+           duplicate-name-across-schemas case this feature exists to support;
+           see ``security.sql_guard``'s table-resolution rules for how a
+           query disambiguates between them.
+        """
+        seen: dict[tuple[tuple[str, ...], str], str] = {}
+        for name, table in self.tables.items():
+            ref = split_table_key(name)  # raises ValueError with 'name' already in context below
+            if ref.qualifier and table.db_schema:
+                key_qualifier = tuple(p.lower() for p in ref.qualifier)
+                declared_qualifier = tuple(p.lower() for p in table.db_schema.split("."))
+                if key_qualifier != declared_qualifier:
+                    raise ValueError(
+                        f"table {name!r}: the key's own qualifier "
+                        f"({'.'.join(ref.qualifier)!r}) does not match its "
+                        f"db_schema ({table.db_schema!r}) -- give one or the "
+                        f"other, or make them agree"
+                    )
+            qualifier = effective_qualifier(name, table.db_schema)
+            dedup_key = (tuple(p.lower() for p in qualifier), ref.name.lower())
+            collided_with = seen.get(dedup_key)
+            if collided_with is not None:
+                raise ValueError(
+                    f"table {name!r} and {collided_with!r} both resolve to "
+                    f"the same table ({table_reference_sql(name, '.'.join(qualifier))}) "
+                    "-- remove one, or give them different qualifiers"
+                )
+            seen[dedup_key] = name
         return self
 
 
@@ -333,7 +628,9 @@ def _schema_cache() -> dict[str, Any]:
             for rel in cfg.relationships
         }
         _cache["table_schemas"] = {
-            name: table.db_schema for name, table in cfg.tables.items() if table.db_schema
+            name: ".".join(qualifier)
+            for name, table in cfg.tables.items()
+            if (qualifier := effective_qualifier(name, table.db_schema))
         }
         _cache["table_datasources"] = {
             name: table.datasource for name, table in cfg.tables.items()
@@ -358,15 +655,19 @@ def get_table_descriptions() -> dict[str, str]:
 
 
 def get_table_schema_qualifiers() -> dict[str, str]:
-    """Return ``{table_name: db_schema}`` for every table that sets one.
+    """Return ``{table_name: effective_qualifier}`` for every table that has one.
 
-    A table with no ``db_schema`` in ``schema.yaml`` (the common case for a
-    table that is only ever described, not resolved/prefetched against) is
-    simply absent here rather than mapped to ``""`` -- callers that need a
-    schema qualifier for a specific table (:mod:`retrieval.value_resolver`,
-    :mod:`retrieval.dimension_vocabulary`) only ever look up tables that
-    :func:`get_resolvable_columns` / :func:`get_prefetchable_columns` already
-    guarantee have one (see :class:`SchemaConfig`'s validator).
+    The EFFECTIVE qualifier (:func:`effective_qualifier`, dot-joined the
+    same way ``db_schema`` itself is written) -- a qualified table key's
+    own leading parts when it has any, else ``db_schema``. A table with
+    neither (the common case for a bare-keyed table that is only ever
+    described, not resolved/prefetched against) is simply absent here
+    rather than mapped to ``""`` -- callers that need a qualifier for a
+    specific table (:mod:`retrieval.value_resolver`,
+    :mod:`retrieval.dimension_vocabulary`, :mod:`schema_data.drift`) only
+    ever look up tables that :func:`get_resolvable_columns` /
+    :func:`get_prefetchable_columns` already guarantee have one (see
+    :class:`SchemaConfig`'s validator).
     """
     return _schema_cache()["table_schemas"]
 
@@ -498,7 +799,7 @@ def check_allowlist_structural_invariants(
         violations.append(f"allowlisted table(s) not described: {undescribed}")
 
     for key in relationships:
-        left_table = key.split(" -> ")[0].split(".")[0]
+        left_table = key.split(" -> ")[0]
         if left_table not in table_descriptions:
             violations.append(f"relationship {key!r}: unknown left table {left_table!r}")
 
@@ -597,6 +898,16 @@ class SchemaRegistry:
         if not selected_tables:
             selected_tables = list(table_columns.keys())
 
+        # How many queryable keys share each bare name -- a table whose
+        # bare name is unique needs no disambiguating "Reference as:" line
+        # merely for that reason (it may still get one below for a
+        # multi-part qualifier); one whose bare name is NOT unique must
+        # always get one, even with a single-part qualifier, since
+        # "Table: Customer" alone would no longer say which Customer.
+        bare_name_counts: dict[str, int] = {}
+        for name in table_columns:
+            bare_name_counts[bare_table_name(name)] = bare_name_counts.get(bare_table_name(name), 0) + 1
+
         lines = []
         shown_sources: set[str] = set()
 
@@ -616,15 +927,16 @@ class SchemaRegistry:
                 lines.append(f"Data source: {source}")
 
             qualifier = table_schemas.get(table_name, "")
-            if "." in qualifier:
-                # Another database on the same server: the model has to
-                # write the three-part name for the query to resolve.
-                from security.dialects import quote_tsql_identifier, quote_tsql_qualifier
-
-                lines.append(
-                    f"Reference as: {quote_tsql_qualifier(qualifier)}."
-                    f"{quote_tsql_identifier(table_name)}"
-                )
+            bare_name = bare_table_name(table_name)
+            needs_reference = "." in qualifier or bare_name_counts.get(bare_name, 0) > 1
+            if needs_reference:
+                # Either another database on the same server (a multi-part
+                # qualifier -- the model must write the full name for the
+                # query to resolve) or a bare name this table shares with
+                # another key (schema.yaml has more than one "Customer",
+                # distinguished only by qualifier) -- either way "Table:
+                # <key>" alone is not enough to know what to write in FROM.
+                lines.append(f"Reference as: {table_reference_sql(table_name, qualifier)}")
 
             if description:
                 lines.append(f"Description: {description}")
@@ -658,9 +970,9 @@ class SchemaRegistry:
         ``selected_tables``.  Edges where either endpoint is absent are
         silently omitted.
 
-        Relationship keys follow the format ``"LeftTable -> RightTable"``
-        (with optional schema prefix, e.g. ``"Order.CustomerID ->
-        Customer.ID"``).
+        Relationship keys follow the format ``"LeftTable -> RightTable"``,
+        where each side is exactly a ``schema.yaml`` table key -- bare
+        (``"Customer"``) or qualified (``"sales.Customer"``) alike.
 
         Parameters
         ----------
@@ -701,9 +1013,7 @@ class SchemaRegistry:
         result = []
 
         for name, join_sql in get_relationships_map().items():
-            parts = name.split(" -> ")
-            left  = parts[0].split(".")[0]
-            right = parts[1].split(".")[0]
+            left, right = name.split(" -> ")
 
             if left in selected and right in selected:
                 result.append(join_sql)
