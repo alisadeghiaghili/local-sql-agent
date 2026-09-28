@@ -2,16 +2,14 @@
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """Unit tests for ``database.routing``.
 
-``security.sql_guard.TABLE_COLUMNS`` is bound once, at that module's own
-first import, from whichever ``schema.yaml`` was active at that moment
-(see ``appdb/config_versions.py``'s module docstring, "What takes effect
-immediately, and what needs a restart") -- it cannot be swapped out for a
-synthetic one mid-suite the way ``schema_data.registry``'s cache can. So
-every test here drives :func:`~database.routing.resolve_datasource`
-against REAL table names from whichever schema is loaded for this test
-run (``PROJECT_CONFIG_DIR=project_config.example`` in CI: ``Order``,
-``Customer``, ``Ring``, all genuinely queryable) and reassigns only the
-TABLE-TO-SOURCE mapping, by patching
+``security.sql_guard``'s table lookup is built from whichever
+``schema.yaml`` is loaded for the run; swapping it mid-suite needs
+:func:`security.sql_guard.refresh_schema_lookup`, which these tests do
+not need. So every test here drives
+:func:`~database.routing.resolve_datasource` against REAL table names
+from the loaded schema (``PROJECT_CONFIG_DIR=project_config.example`` in
+CI: ``Order``, ``Customer``, ``Ring``, all genuinely queryable) and
+reassigns only the TABLE-TO-SOURCE mapping, by patching
 :func:`database.routing.table_datasources` /
 :func:`database.routing.default_datasource_name` directly -- the one part
 of the picture that genuinely is just data, re-readable at any time.

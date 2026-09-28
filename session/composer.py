@@ -41,15 +41,9 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from schema_data.columns import TABLE_COLUMNS
-from security.sql_guard import clean_sql, ensure_top
+from security.sql_guard import clean_sql, ensure_top, resolve_table_key
 
 _DIALECT = "tsql"
-
-#: Case-insensitive table-name lookup, mirroring ``security.sql_guard``'s
-#: own (private) table allowlist lookup -- duplicated here rather than
-#: imported so this module does not reach into that module's private
-#: helpers; both are built from the same ``TABLE_COLUMNS`` source of truth.
-_TABLE_LOOKUP: dict[str, str] = {name.lower(): name for name in TABLE_COLUMNS}
 
 
 def _qualified_projection(tree: exp.Select) -> list[exp.Expression]:
@@ -72,6 +66,14 @@ def _qualified_projection(tree: exp.Select) -> list[exp.Expression]:
     bare ``alias.*`` -- still possibly ambiguous in that one case, which
     is a known, documented limitation of composing a refinement over a
     previous turn shaped that way (see the module docstring).
+
+    Resolution itself (bare name + qualifier -> canonical ``schema.yaml``
+    key) is :func:`security.sql_guard.resolve_table_key`, not a second
+    copy of it -- a
+    duplicate-bare-name deployment (``sales.Customer``/``ref.Customer``)
+    needs the SAME qualifier-aware matching here as the guard applies when
+    it validates the composed statement, or this function could silently
+    pick the wrong one of two same-named tables.
     """
     sources: list[exp.Expression] = []
     from_clause = tree.args.get("from_") or tree.args.get("from")
@@ -87,7 +89,7 @@ def _qualified_projection(tree: exp.Select) -> list[exp.Expression]:
             projections.append(exp.Star())
             continue
         alias = source.alias_or_name
-        canonical = _TABLE_LOOKUP.get((source.name or "").lower())
+        canonical = resolve_table_key(source, tree)
         if canonical is None:
             projections.append(exp.Column(this=exp.Star(), table=exp.to_identifier(alias)))
             continue

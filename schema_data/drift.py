@@ -62,7 +62,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
 
 import config as cfg
-from schema_data.registry import get_table_columns, get_table_schema_qualifiers
+from schema_data.registry import bare_table_name, get_table_columns, get_table_schema_qualifiers
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ def _scan(
     engine: Engine,
     table_columns: dict[str, dict[str, str]],
     table_schemas: dict[str, str],
-) -> tuple[list[str], dict[str, dict[str, str]], set[str]]:
+) -> tuple[list[str], dict[tuple[str, str], dict[str, str]], set[str]]:
     """Reflect the live tables *engine* can see for the given ``schema.yaml`` tables.
 
     Parameters
@@ -156,16 +156,21 @@ def _scan(
     table_columns:
         ``{table: columns}`` for the queryable tables to verify.
     table_schemas:
-        ``{table: db_schema}``; a multi-part value (``"OtherDb.dbo"``) is
-        passed to SQLAlchemy as-is, which reflects another database on
-        the same SQL Server instance.
+        ``{table: effective_qualifier}`` (:func:`~schema_data.registry.get_table_schema_qualifiers`);
+        a multi-part value (``"OtherDb.dbo"``) is passed to SQLAlchemy
+        as-is, which reflects another database on the same SQL Server
+        instance.
 
     Returns
     -------
     tuple
         ``(schemas_scanned, live, verifiable_tables)`` where *live* is
-        ``{table_name: {column: normalised type}}`` for every table found
-        in the scanned schemas, and *verifiable_tables* is the subset of
+        ``{(schema_name, bare_table_name): {column: normalised type}}`` --
+        keyed per SCANNED SCHEMA, not merged across schemas, so two
+        same-bare-name tables in different schemas (``sales.Customer``,
+        ``ref.Customer``) are kept apart; *schema_name* is ``""`` for a
+        table reflected under SQLAlchemy's default search path (no
+        qualifier scanned). *verifiable_tables* is the subset of
         *table_columns* whose schema was scanned.
     """
     schemas_scanned = sorted({s for t, s in table_schemas.items() if t in table_columns and s})
@@ -179,10 +184,11 @@ def _scan(
 
     inspector = sa_inspect(engine)
 
-    # {qualified_table_name: {column: type}} -- qualified by schema.yaml's
-    # own table name only (never re-prefixed with the schema), matching
-    # how schema.yaml itself names tables.
-    live: dict[str, dict[str, str]] = {}
+    # {(schema_name, bare_table_name): {column: type}} -- the BARE name
+    # SQLAlchemy itself reports, kept apart per scanned schema; mapped back
+    # to a schema.yaml KEY (which may be qualified) in check_schema_drift,
+    # the one place that owns that reverse lookup.
+    live: dict[tuple[str, str], dict[str, str]] = {}
     scan_targets = list(schemas_scanned) + ([None] if scan_default_schema else [])
     for schema_name in scan_targets:
         try:
@@ -202,9 +208,10 @@ def _scan(
                     schema_name, table_name, exc,
                 )
                 continue
-            live.setdefault(table_name, {})
+            live_key = (schema_name or "", table_name)
+            live.setdefault(live_key, {})
             for col in columns:
-                live[table_name][col["name"]] = _normalise_type(col["type"])
+                live[live_key][col["name"]] = _normalise_type(col["type"])
 
     verifiable_tables = {
         t for t in table_columns if table_schemas.get(t) in schemas_scanned or (
@@ -217,7 +224,7 @@ def _scan(
 def _scan_every_datasource(
     table_columns: dict[str, dict[str, str]],
     table_schemas: dict[str, str],
-) -> tuple[list[str], dict[str, dict[str, str]], set[str]]:
+) -> tuple[list[str], dict[tuple[str, str], dict[str, str]], set[str]]:
     """Run :func:`_scan` once per data source, on that source's own tables.
 
     With one data source this is exactly one :func:`_scan` over every
@@ -236,7 +243,7 @@ def _scan_every_datasource(
 
     assignments = table_datasources()
     schemas_scanned: list[str] = []
-    live: dict[str, dict[str, str]] = {}
+    live: dict[tuple[str, str], dict[str, str]] = {}
     verifiable: set[str] = set()
     for name in names:
         subset = {t: c for t, c in table_columns.items() if assignments.get(t) == name}
@@ -249,8 +256,8 @@ def _scan_every_datasource(
             continue
         scanned, source_live, source_verifiable = _scan(engine, subset, table_schemas)
         schemas_scanned.extend(f"{name}/{schema}" for schema in scanned)
-        for table, columns in source_live.items():
-            live.setdefault(table, {}).update(columns)
+        for live_key, columns in source_live.items():
+            live.setdefault(live_key, {}).update(columns)
         verifiable |= source_verifiable
     return sorted(schemas_scanned), live, verifiable
 
@@ -298,10 +305,36 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
         for column in table_columns[table]:
             schema_col_ids[f"{table}.{column}"] = table
 
+    # Map a live (schema, bare_name) pair back to the schema.yaml KEY it
+    # matches -- a qualified key's own bare name may differ from the key
+    # itself (`"sales.Customer"` -> bare `"Customer"`), so the live scan's
+    # bare-named result has to be looked up, not assumed identical to the
+    # key. Two schema.yaml keys sharing a bare name in different schemas
+    # (the very case this feature exists to support) map back correctly
+    # here because the lookup is keyed on (schema, bare_name) together.
+    key_by_schema_and_bare = {
+        (table_schemas.get(t, ""), bare_table_name(t)): t for t in verifiable_tables
+    }
+
     live_col_ids: dict[str, str] = {}
-    for table, columns in live.items():
+    for (schema_name, bare_name), columns in live.items():
+        key = key_by_schema_and_bare.get((schema_name, bare_name))
+        if key is not None:
+            # Matches a known table -- report under its schema.yaml key,
+            # UNCHANGED from today's output for a bare, non-duplicated key
+            # (there, key == bare_name, exactly what this branch already
+            # produced before qualified keys existed).
+            table_id = key
+        elif schema_name:
+            # No schema.yaml key names this table at all (a genuine
+            # warehouse_only table) -- reported schema-qualified when the
+            # schema is known, so two same-bare-name warehouse-only tables
+            # in different schemas are not collapsed into one identity.
+            table_id = f"{schema_name}.{bare_name}"
+        else:
+            table_id = bare_name
         for column, col_type in columns.items():
-            live_col_ids[f"{table}.{column}"] = col_type
+            live_col_ids[f"{table_id}.{column}"] = col_type
 
     # A whole table the warehouse has that schema.yaml never mentions at
     # all reports here too, one entry per column -- there is nothing in

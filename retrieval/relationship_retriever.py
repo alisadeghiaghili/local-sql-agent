@@ -20,9 +20,7 @@ class RelationshipRetriever:
         results: list[str] = []
 
         for name, join_sql in RELATIONSHIPS.items():
-            parts = name.split(" -> ")
-            left  = parts[0].split(".")[0]
-            right = parts[1].split(".")[0]
+            left, right = name.split(" -> ")
 
             if left in selected and right in selected:
                 results.append(join_sql)

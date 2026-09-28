@@ -385,7 +385,8 @@ function isGuardRejected(turn) {
  * One Persian, analyst-facing lead sentence per `GuardVerdict.reason`
  * (session/models.py -- the same closed literal set enumerated there:
  * "denied_column", "forbidden_statement", "unknown_table",
- * "system_catalogue", "no_table_reference", "cross_datasource", "other").
+ * "system_catalogue", "no_table_reference", "cross_datasource",
+ * "ambiguous_table", "other").
  * `denied_column` is built dynamically below (it names the specific
  * `subject` column when one is known) and so is NOT in this table; every
  * other reason maps straight to its sentence here, and a reason this table does not recognise --
@@ -408,6 +409,9 @@ const GUARD_REASON_LEADS = Object.freeze({
   cross_datasource:
     "این پرسش اجرا نشد — پاسخ به آن به داده‌های دو منبع جدا (دو سرور متفاوت) نیاز دارد و " +
     "این سامانه هر پرسش را فقط روی یک منبع اجرا می‌کند. پرسش را طوری بپرسید که فقط به یکی از آن‌ها نیاز داشته باشد.",
+  ambiguous_table:
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده جدولی را نام برد که در بیش از یک اسکیما هست " +
+    "و مشخص نکرد منظورش کدام است.",
 });
 const GENERIC_GUARD_LEAD = "این پرسش اصلاً اجرا نشد — لایهٔ نگهبانی امنیتی پیش از اجرا آن را رد کرد.";
 
