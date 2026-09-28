@@ -106,6 +106,47 @@ class TestSettings:
         with pytest.raises(ValueError, match="DB_CONNECTION_URL"):
             s.validate()
 
+    # --- HTTP server binding: API_HOST / API_PORT (python -m api launcher) ---
+
+    def test_default_api_host_is_loopback(self):
+        with patch.dict(os.environ):
+            os.environ.pop("API_HOST", None)
+            assert Settings().api_host == "127.0.0.1"
+
+    def test_default_api_port_is_8000(self):
+        with patch.dict(os.environ):
+            os.environ.pop("API_PORT", None)
+            assert Settings().api_port == 8000
+
+    def test_env_override_api_host(self):
+        with patch.dict(os.environ, {"API_HOST": "0.0.0.0"}):
+            assert Settings().api_host == "0.0.0.0"
+
+    def test_env_override_api_port(self):
+        with patch.dict(os.environ, {"API_PORT": "9123"}):
+            assert Settings().api_port == 9123
+
+    def test_non_integer_api_port_raises_naming_the_variable_and_value(self):
+        """A bare `int(os.getenv(...))` would raise "invalid literal for
+        int() with base 10: 'abc'" -- naming neither API_PORT nor pointing
+        an operator at .env. This must name both."""
+        with patch.dict(os.environ, {"API_PORT": "abc"}):
+            with pytest.raises(ValueError, match="API_PORT") as exc_info:
+                Settings()
+            assert "abc" in str(exc_info.value)
+
+    @pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "999999"])
+    def test_out_of_range_api_port_raises_naming_the_variable_and_value(self, bad_port):
+        with patch.dict(os.environ, {"API_PORT": bad_port}):
+            with pytest.raises(ValueError, match="API_PORT") as exc_info:
+                Settings()
+            assert bad_port in str(exc_info.value)
+
+    @pytest.mark.parametrize("good_port", ["1", "65535", "8000"])
+    def test_boundary_valid_api_ports_are_accepted(self, good_port):
+        with patch.dict(os.environ, {"API_PORT": good_port}):
+            assert Settings().api_port == int(good_port)
+
     # --- multi-dialect: SQL_DIALECT (new) ---
 
     def test_default_sql_dialect_is_tsql(self):
