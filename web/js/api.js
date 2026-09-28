@@ -258,7 +258,19 @@ export class Api {
     const headers = {};
     const key = getApiKey();
     if (key) headers["Authorization"] = `Bearer ${key}`;
-    const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs), headers });
+    let res;
+    try {
+      res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs), headers });
+    } catch (err) {
+      // No HTTP response at all -- unreachable host, DNS failure, or a
+      // refused cross-origin preflight (CORS). Same distinction
+      // `_fetchV2` draws for every other route, and the same reason: a
+      // 500/404 (caught below) is a live backend answering with a real
+      // problem, while THIS is the "three red lights on a healthy
+      // backend" symptom `describeTransportFailure` exists for -- see
+      // its own docstring for the real deployment incident.
+      throw new ApiError(describeTransportFailure(this.baseUrl, "/health", err), 0, "TRANSPORT_ERROR");
+    }
     if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
     const h = await res.json();
     return {

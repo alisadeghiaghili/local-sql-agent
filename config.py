@@ -147,6 +147,24 @@ DEFAULT_CORS_ALLOWED_ORIGINS: tuple[str, ...] = (
 )
 
 
+def _parse_port(env_var: str, default: str) -> int:
+    """Parse *env_var* (falling back to *default*) as a TCP port number,
+    raising a message that names the variable and the bad value instead
+    of letting a bare ``int(...)`` ``ValueError`` -- "invalid literal for
+    int() with base 10: '...'", which names neither -- propagate out of a
+    ``default_factory`` and crash ``import config`` with nothing an
+    operator could act on without already knowing this module's
+    internals."""
+    raw = os.getenv(env_var, default)
+    try:
+        port = int(raw)
+    except ValueError:
+        raise ValueError(f"{env_var} must be an integer (got {raw!r})") from None
+    if not (1 <= port <= 65535):
+        raise ValueError(f"{env_var} must be between 1 and 65535 (got {port})")
+    return port
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Immutable runtime settings resolved from environment variables."""
@@ -171,6 +189,54 @@ class Settings:
     )
     """Bearer token for :attr:`openai_base_url`. Empty is valid — many
     self-hosted OpenAI-compatible servers don't check it."""
+
+    # ── HTTP server binding (``python -m api`` launcher) ────────────────
+    # The API port has always been settable on the `uvicorn` command line
+    # (`--port`) but never in `.env` -- an operator who only ever edits
+    # `.env` (the documented workflow for every other setting on this
+    # page) had no way to change it there, and started the server on the
+    # default port while the rest of their `.env` assumed a different one.
+    # These two exist so `.env` is a complete description of where the
+    # server binds, and `python -m api` (this module's own `__main__.py`)
+    # is a launcher that actually reads them -- the plain `uvicorn ...`
+    # command in the runbook/README keeps working unmodified either way,
+    # since uvicorn itself never reads these variables.
+    api_host: str = field(default_factory=lambda: os.getenv("API_HOST", "127.0.0.1"))
+    """Interface ``python -m api`` binds to. Defaults to the loopback-only
+    ``127.0.0.1`` -- a freshly-cloned checkout should not be reachable
+    from the network until an operator deliberately widens it. The
+    documented deployment command binds ``0.0.0.0`` (every interface, see
+    ``docs/deployment-runbook.md`` step 4) explicitly, on the command
+    line, precisely because that choice should be visible at the call
+    site rather than silently inherited from a default an operator never
+    looked at."""
+
+    api_port: int = field(default_factory=lambda: _parse_port("API_PORT", "8000"))
+    """Port ``python -m api`` binds to. ``8000`` matches every other
+    default in this codebase that assumes the API is reachable at
+    ``http://localhost:8000`` (``web/js/config.js``'s ``DEFAULT_API_PORT``,
+    ``DEFAULT_CORS_ALLOWED_ORIGINS`` above's counterpart on the UI side,
+    the runbook, the README). Changing it here changes what ``python -m
+    api`` binds to; a plain ``uvicorn ...`` invocation is unaffected --
+    its port comes only from its own ``--port`` flag.
+
+    A non-integer or out-of-range (outside 1-65535) ``API_PORT`` fails
+    ``import config`` immediately with a message naming ``API_PORT`` and
+    the offending value (see :func:`_parse_port`) rather than a bare
+    ``int()`` traceback that names neither."""
+
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    """Level (``"DEBUG"``/``"INFO"``/``"WARNING"``/...) the application's
+    own loggers emit at, applied to the ROOT logger by
+    :func:`core.logging_setup.configure_stdlib_logging` -- called once,
+    early, by both ``api/server.py``'s ``lifespan`` and ``python -m api``
+    (``api/__main__.py``) -- but only when nothing has configured logging
+    yet (root has no handler). Exists because neither documented way of
+    starting the HTTP API otherwise makes an ``INFO`` line -- the startup
+    provenance banner, the CORS-allowlist line -- reach anywhere at all:
+    uvicorn's own default logging config never touches the root logger,
+    which Python itself starts at ``WARNING`` with no handler. See
+    ``core.logging_setup``'s module docstring for the full mechanism."""
 
     db_connection_url: str = field(
         default_factory=lambda: os.getenv(

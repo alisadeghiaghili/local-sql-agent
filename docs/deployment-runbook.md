@@ -102,6 +102,21 @@ tells you otherwise for your specific expected concurrency — see
 `config.Settings.rate_limit_requests` / `.log_backup_count` for the
 reasoning behind each default before changing it.
 
+If the API and the static UI end up on different ports or hosts (the
+`web/` layout described in step 4 below and in `web/README.md` puts them
+on separate ports even on one machine), set two more things now rather
+than discovering the gap once the UI is already showing three red lights:
+
+- `API_HOST` / `API_PORT` — where this API itself binds when started with
+  `python -m api` (§4 below); `.env` is now a complete description of
+  this, not just of everything downstream of it. Defaults to
+  `127.0.0.1:8000` — loopback only, until you widen it on purpose.
+- `CORS_ALLOWED_ORIGINS` — the UI's **own** origin (protocol + host +
+  port, e.g. `http://172.16.101.42:8077`), so the browser's own
+  cross-origin check does not silently block every call the UI makes.
+  See its dedicated warning in step 4 below — this is the single most
+  common cause of "the UI shows the backend as down when it is not."
+
 ## 3. Run the preflight
 
 ```bash
@@ -167,6 +182,32 @@ in-memory state today, so multiple workers each keep their own rate-limit
 buckets and cache; this does not affect correctness, only means each
 worker's rate limit applies independently.)
 
+Equivalently, once `API_HOST`/`API_PORT` are set in `.env` (step 2 above):
+
+```bash
+python -m api
+```
+
+This runs the identical app with the identical `--no-server-header`
+guarantee, bound to whatever `API_HOST`/`API_PORT` resolve to — useful
+when the host/port belong in `.env` alongside everything else this
+deployment already keeps there, rather than only on a command line
+someone has to remember or script separately. It does not support
+`--workers`; use the plain `uvicorn` command above for that.
+
+> **The API and the UI on different ports/hosts?** This is the single
+> most common first-week deployment snag, and it presents as a dead
+> backend, not as a configuration error: the UI shows all three health
+> lights red, `curl http://<api-host>:<api-port>/health` from the same
+> machine answers fine, and the browser's console shows nothing more
+> specific than "Failed to fetch" — because a browser reports a blocked
+> cross-origin (CORS) request and a truly unreachable host identically,
+> on purpose. Set `CORS_ALLOWED_ORIGINS` to the **UI's own origin**
+> (protocol + host + port the UI is served from, e.g.
+> `http://172.16.101.42:8077`) and restart — see the CORS block in `.env`
+> step 2 above, and confirm the effective list in the startup log (step 5
+> below logs it as `CORS allowed origins: ...`).
+
 ## 5. Confirm the startup banner
 
 The very first thing logged, before any config is even validated, is the
@@ -176,6 +217,32 @@ appears in the server's log output:
 ```
 Auction NLQ Engine — <version/licence line identifying this codebase>
 ```
+
+Right after it, confirm the CORS line — the one place the effective,
+post-`.env` allowlist is stated plainly, rather than left for the UI to
+discover by failing:
+
+```
+CORS allowed origins: http://localhost:8080, http://127.0.0.1:8080
+```
+
+If the UI's own origin is not in that list (and the UI is not
+same-origin with the API), that is the fix — see the CORS callout in
+step 4 above before assuming anything else is wrong.
+
+If neither line appears at all, nothing is wrong with this deployment's
+`.env` — it means logging itself never reached a handler. Both
+documented start commands leave the ROOT logger exactly as Python starts
+it (level `WARNING`, no handler): uvicorn's own default logging config
+only covers its own `uvicorn`/`uvicorn.access` loggers, never the root
+one. `api/server.py`'s `lifespan` now fixes this itself, once, on every
+startup (`core/logging_setup.py`) — so on a current checkout this should
+never actually happen; if it does, an unusual logging setup elsewhere in
+the process (an operator's own `logging.basicConfig()` or `dictConfig`
+that attached a handler at a level above `INFO` before startup reached
+this point) is the most likely cause. `LOG_LEVEL` (default `INFO`, see
+`.env.example`) is what that same fix applies to the root logger's level
+when nothing else has configured logging first.
 
 If startup instead exits immediately with `RuntimeError: ...`, the
 preflight in step 3 should have already caught the same problem — go back

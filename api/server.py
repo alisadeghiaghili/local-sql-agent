@@ -51,6 +51,7 @@ import api.v2_routes as v2_routes
 from api.auth import AuthMiddleware, get_principal_if_any, require_principal
 from api.errors import register_handlers
 from api.maintenance import require_not_in_maintenance
+from core.logging_setup import configure_stdlib_logging
 from core.provenance import log_startup_notice
 from core.version import __version__
 from api.middleware import (
@@ -137,16 +138,41 @@ async def _run_query_bounded(**kwargs) -> QueryResponse:
 async def lifespan(app: FastAPI):
     global _system_prompt
 
-    # Stated before anything can fail: an operator who never reaches a
-    # working config should still have seen whose work this is and on what
-    # terms. See core/provenance.py for why this is a log line and not a
-    # licence check that could refuse to start.
+    # Neither documented way of starting this API (a plain `uvicorn
+    # api.server:app ...`, or `python -m api`) otherwise makes a single
+    # INFO line -- this function's own provenance banner and CORS line
+    # among them -- reach anywhere: uvicorn's default logging config never
+    # touches the ROOT logger, which Python itself starts at WARNING with
+    # no handler. A no-op once an operator (or this same call, on a
+    # second lifespan start in one process, e.g. under a test) has
+    # already configured logging -- see core.logging_setup's module
+    # docstring for the full mechanism. Must run before the first log
+    # call below, or that call is the one that gets silently dropped.
+    configure_stdlib_logging(cfg.settings.log_level)
+
+    # Stated before anything else can fail: an operator who never reaches
+    # a working config should still have seen whose work this is and on
+    # what terms. See core/provenance.py for why this is a log line and
+    # not a licence check that could refuse to start.
     log_startup_notice(logger)
 
     try:
         cfg.settings.validate()
     except ValueError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc
+
+    # Logged once, every startup, unconditionally (not just when the list
+    # is non-default): a real deployment split across two ports/hosts
+    # diagnosed a "backend down" symptom that was actually an empty CORS
+    # allowlist purely by trial and error, because nothing in the startup
+    # log named which origins were actually allowed. See
+    # ``docs/deployment-runbook.md`` and ``docs/fa/getting-started.md``
+    # §2.3.1 for the full symptom (every health light red, cross-origin
+    # only) this line exists to short-circuit.
+    logger.info(
+        "CORS allowed origins: %s",
+        ", ".join(cfg.settings.cors_allowed_origins) or "(none — same-origin callers only)",
+    )
 
     # ── Phase 8: fail closed on authentication config ──────────────────────
     # Mirrors the db_connection_url precedent immediately above: a broken

@@ -66,6 +66,7 @@ const STRINGS = {
     themeSystemLabel: "پوسته: سیستم",
     themeLightLabel: "پوسته: روشن",
     themeDarkLabel: "پوسته: تیره",
+    invalidBaseUrlNotice: "نشانی بک‌اند نامعتبر است و نادیده گرفته شد — باید یک نشانی http:// یا https:// معتبر باشد.",
   },
   en: {
     productTitle: "SQL Agent",
@@ -114,6 +115,7 @@ const STRINGS = {
     themeSystemLabel: "Theme: system",
     themeLightLabel: "Theme: light",
     themeDarkLabel: "Theme: dark",
+    invalidBaseUrlNotice: "Invalid backend address — ignored. Must be a valid http:// or https:// address.",
   },
 };
 
