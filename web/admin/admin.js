@@ -26,6 +26,12 @@
 "use strict";
 
 import { getApiKey } from "../js/apikey.js";
+// Shared with web/js/api.js's own `_fetchV2` -- one function builds the
+// bilingual "unreachable host or CORS" hint for both pages, so a
+// deployment fixing this symptom on the analyst UI gets the identical
+// diagnosis (and the identical CORS_ALLOWED_ORIGINS line, naming THIS
+// page's own origin) on the admin panel too.
+import { describeTransportFailure } from "../js/api.js";
 
 export class AdminApiError extends Error {
   constructor(message, status) {
@@ -319,7 +325,14 @@ export class AdminApi {
     try {
       res = await fetch(`${this.baseUrl}${path}`, init);
     } catch (err) {
-      throw new AdminApiError(`Network error calling ${path}: ${err.message}`, 0);
+      // No HTTP response at all -- unreachable host, or a CORS rejection
+      // that presents identically ("Failed to fetch") from the page's
+      // point of view. describeTransportFailure states both
+      // possibilities and, when this call was cross-origin, names this
+      // page's own origin and CORS_ALLOWED_ORIGINS explicitly instead of
+      // leaving the operator to guess -- see its docstring for the real
+      // deployment incident this exists for.
+      throw new AdminApiError(describeTransportFailure(this.baseUrl, path, err), 0);
     }
 
     if (res.status === 401) {
