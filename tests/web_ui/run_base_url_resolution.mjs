@@ -110,13 +110,31 @@ const ACCEPTED = [
   ["HTTP://172.16.101.42:8076", "http://172.16.101.42:8076"], // upper-case scheme
   ["https://host.example", "https://host.example"], // https, no port -- kept as-is
   ["localhost:8076", "http://localhost:8076"], // bare host:port
+  ["[::1]:8076", "http://[::1]:8076"], // IPv6 literal, no scheme
+  ["http://[::1]:8076/admin", "http://[::1]:8076"], // IPv6 literal + pasted admin path
+  ["http://user:pass@172.16.101.42:8076/admin/", "http://172.16.101.42:8076"], // credentials + pasted path
 ];
 for (const [input, expected] of ACCEPTED) {
   const result = normalizeBaseUrl(input);
   assert.equal(result.ok, true, `expected ${JSON.stringify(input)} to be accepted, got ${JSON.stringify(result)}`);
   assert.equal(result.url, expected, `expected ${JSON.stringify(input)} to normalise to ${expected}, got ${result.url}`);
 }
-console.log("[ok] normalizeBaseUrl accepts and correctly normalises every valid-address case");
+console.log("[ok] normalizeBaseUrl accepts and correctly normalises every valid-address case (including IPv6 literals and a pasted admin path)");
+
+/* ── Scenario 2b: credentials embedded in a typed/saved address (e.g.
+ * pasted from a connection string, or a browser autofill) must never
+ * survive into the normalised, SAVED/USED address -- `origin` never
+ * carries userinfo, but this asserts that explicitly rather than only
+ * incidentally via the ACCEPTED table above. ───────────────────────────── */
+{
+  const withCreds = normalizeBaseUrl("http://user:pass@host.example:8076");
+  assert.equal(withCreds.ok, true);
+  assert.equal(withCreds.url, "http://host.example:8076");
+  assert.ok(!withCreds.url.includes("user"), `credentials must not survive normalisation, got ${withCreds.url}`);
+  assert.ok(!withCreds.url.includes("pass"), `credentials must not survive normalisation, got ${withCreds.url}`);
+  assert.ok(!withCreds.url.includes("@"), `no userinfo separator must remain, got ${withCreds.url}`);
+}
+console.log("[ok] normalizeBaseUrl strips embedded credentials, keeping only the origin");
 
 const REJECTED = [
   "/http://172.16.101.42:8076", // accidental leading slash in front of an embedded scheme --
