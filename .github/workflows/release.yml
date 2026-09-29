@@ -1,0 +1,190 @@
+name: Release
+
+# A release is a `chore/release-X.Y.Z` pull request that changes CHANGELOG.md
+# and core/version.py. Merging it used to leave two manual steps that only
+# work on GitHub's side -- tag the merge commit, then publish the Release --
+# and both were easy to forget or to spell slightly differently each time.
+# This workflow does them, in the same shape every time:
+#
+#   tag      vX.Y.Z, annotated, on the merge commit, message "X.Y.Z — <summary>"
+#   Release  titled "X.Y.Z — <summary>", body = that version's CHANGELOG.md
+#            section without its heading line
+#
+# <summary> is read from the release commit's own subject
+# (`chore(release): X.Y.Z — <summary>`), so it is written once, in the PR.
+# What can be decided from the repository alone lives in
+# scripts/release_notes.py, which has tests; this file only does what needs
+# GitHub.
+on:
+  # The normal path: the release PR's merge commit touches core/version.py.
+  # Any other change to that file (a docstring edit, say) reaches the same
+  # job and finds the tag already there, which is a no-op.
+  push:
+    branches: [main]
+    paths: [core/version.py]
+
+  # The recovery path, for a release that was merged but never published
+  # (the workflow was not there yet, or a run failed and could not be
+  # re-run). `ref` is the commit to tag; core/version.py at that commit must
+  # declare `version`, so a typo cannot tag the wrong commit.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without a leading v (for example 6.1.0)"
+        required: true
+        type: string
+      ref:
+        description: "Commit SHA or branch to tag (the merge commit of the release PR)"
+        required: true
+        type: string
+
+# Pushing a tag and creating a Release are the only writes this needs.
+permissions:
+  contents: write
+
+# Two runs for the same repository must not race to create the same tag or
+# Release. Queued, never cancelled: cancelling half-way is how a tag ends up
+# with no Release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and publish
+    runs-on: ubuntu-latest
+
+    # bash as the run-step shell, as in ci.yml, so every step below is one
+    # script with the same quoting rules.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Full history, because the summary comes from a commit subject that
+      # sits behind the merge commit, and tags, because the steps below ask
+      # whether v<version> already exists. A push checks out github.sha, the
+      # merge commit; a dispatch checks out the ref it was given.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      # The helper script comes from the commit the workflow itself runs
+      # at, not from the tagged commit. A release that was missed may be
+      # older than this workflow, and would not have scripts/release_notes.py
+      # at all. Only that one file is fetched, and without credentials: the
+      # checkout above keeps the ones the tag push needs.
+      - name: Checkout the release script
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          sparse-checkout: scripts/release_notes.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The runner's own python3 is enough: the script uses only the
+      # standard library, so nothing is installed and nothing is cached.
+      #
+      # The dispatch inputs are passed through env, never interpolated into
+      # the script text, so a crafted input cannot become shell syntax.
+      - name: Read and check the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          expect=()
+          if [ -n "$INPUT_VERSION" ]; then
+            expect=(--expect "$INPUT_VERSION")
+          fi
+          version="$(python3 .release-tools/scripts/release_notes.py version "${expect[@]}")"
+          target="$(git rev-parse HEAD)"
+          tag="v${version}"
+
+          publish=true
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            tagged="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            if [ "$tagged" != "$target" ]; then
+              # v<version> was released from another commit. A push that
+              # merely touched core/version.py has nothing to do; a dispatch
+              # asked for something that cannot be done, and must say so.
+              if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+                echo "::error title=Release::${tag} already exists at ${tagged}, not at ${target}. Delete that tag first if it is wrong; this workflow will not move it."
+                exit 1
+              fi
+              echo "${tag} already exists at ${tagged}; nothing to publish for ${target}."
+              publish=false
+            else
+              # Same commit: an earlier run pushed the tag and stopped
+              # before the Release. Carry on; each later step skips what is
+              # already done.
+              echo "${tag} already exists at ${target}; checking that the Release exists too."
+            fi
+          fi
+
+          {
+            echo "version=${version}"
+            echo "target=${target}"
+            echo "tag=${tag}"
+            echo "publish=${publish}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Fails, with the reason, if there is no `chore(release): <version> — `
+      # commit behind the target or the CHANGELOG.md section is missing or
+      # empty -- before anything is pushed.
+      - name: Prepare the title and notes
+        id: notes
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ steps.version.outputs.target }}
+        run: |
+          summary="$(python3 .release-tools/scripts/release_notes.py prepare \
+            --version "$VERSION" \
+            --target "$TARGET" \
+            --notes-file "$RUNNER_TEMP/release-notes.md")"
+          echo "summary=${summary}" >> "$GITHUB_OUTPUT"
+          echo "Title: ${VERSION} — ${summary}"
+          echo "----- notes -----"
+          cat "$RUNNER_TEMP/release-notes.md"
+
+      # The tagger is the maintainer, not the workflow's token identity, so
+      # tags made here read the same as the earlier ones (`git show v6.0.2`).
+      - name: Create and push the tag
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ steps.version.outputs.target }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SUMMARY: ${{ steps.notes.outputs.summary }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "${TAG} already exists; not creating it again."
+          else
+            git -c user.name="Ali Sadeghi Aghili" \
+                -c user.email="alisadeghiaghili@gmail.com" \
+                tag -a "$TAG" "$TARGET" -m "${VERSION} — ${SUMMARY}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      # --verify-tag makes gh fail rather than invent a tag from the default
+      # branch's tip if the push above did not land.
+      - name: Publish the GitHub Release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SUMMARY: ${{ steps.notes.outputs.summary }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "A Release for ${TAG} already exists; not creating it again."
+          else
+            gh release create "$TAG" \
+              --verify-tag \
+              --title "${VERSION} — ${SUMMARY}" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
