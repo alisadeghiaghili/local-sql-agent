@@ -427,7 +427,8 @@ local-sql-agent/
 │   ├── verify_deployment.py  #   pre-flight check for the four things that stop a week
 │   ├── issue_api_key.py      #   mint a new API key
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis
-│   └── analyze_misses.py     #   offline retrieval miss diagnostics
+│   ├── analyze_misses.py     #   offline retrieval miss diagnostics
+│   └── release_notes.py      #   version, summary and notes for the release workflow
 ├── docs/
 │   ├── api-contract-v2.md    #   the frozen conversational-session contract
 │   ├── admin-panel-architecture.md  # agreed design for the admin panel
@@ -460,6 +461,44 @@ CI runs on every push via GitHub Actions across Python 3.11, 3.12 and
 3.13, with doctests, coverage, and an offline evaluation gate. It runs
 with `PROJECT_CONFIG_DIR=project_config.example` and no `project_config/`
 present, so the suite never depends on real domain data.
+
+---
+
+## Releasing
+
+A release is a `chore/release-X.Y.Z` pull request that changes only
+`CHANGELOG.md` (a `## [X.Y.Z] — YYYY-MM-DD` section) and `core/version.py`
+(`__version__ = "X.Y.Z"`), with the commit subject
+`chore(release): X.Y.Z — <summary>`.
+
+**Merging that pull request publishes the release.**
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs when
+`core/version.py` changes on `main` and, unless `vX.Y.Z` already exists:
+
+- pushes the annotated tag `vX.Y.Z` on the merge commit, with the message
+  `X.Y.Z — <summary>`;
+- publishes a GitHub Release titled `X.Y.Z — <summary>`, whose body is that
+  version's `CHANGELOG.md` section without its heading line.
+
+The `<summary>` is taken from the release commit's subject, so it is written
+once, in the pull request. The run fails, before pushing anything, if that
+commit or the changelog section is missing or empty. A repeated run only
+does what is still missing.
+
+**A release that was merged but never published** (the workflow did not
+exist yet, or a run failed): open *Actions → Release → Run workflow* and give
+it the `version` (`6.1.0`, no leading `v`) and the `ref` to tag, which is the
+merge commit of the release pull request. The run refuses to continue unless
+`core/version.py` at that `ref` declares that version, or if the tag already
+exists on a different commit. The same from a terminal:
+
+```bash
+gh workflow run release.yml -f version=6.1.0 -f ref=<merge-commit-sha>
+```
+
+The logic that reads the version, summary and notes is in
+[`scripts/release_notes.py`](scripts/release_notes.py) and is tested by
+`tests/test_release_notes.py`.
 
 ---
 
