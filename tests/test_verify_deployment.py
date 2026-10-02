@@ -351,3 +351,63 @@ class TestBuildChecks:
         names = [c.__name__ for c in checks]
         assert names[0] == "check_settings_valid"
         assert names[1] == "check_table_datasources"
+
+
+# ---------------------------------------------------------------------------
+# The connectivity check never prints a password
+# ---------------------------------------------------------------------------
+
+class TestConnectivityCheckRedactsTheUrl:
+    SECRET = "hunter2@%:/"
+
+    @pytest.fixture()
+    def project_dir(self, tmp_path, monkeypatch):
+        (tmp_path / "datasources.yaml").write_text(
+            "datasources:\n"
+            "  auction:\n"
+            "    host: db1.example.test\n"
+            "    database: SalesDW\n"
+            "    username: nlq_reader\n"
+            "    password_env: DB_PASSWORD_SALES\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DB_PASSWORD_SALES", self.SECRET)
+        reset_datasources_cache()
+        yield tmp_path
+        reset_datasources_cache()
+
+    def test_a_successful_check_shows_the_masked_url(self, project_dir):
+        from unittest.mock import MagicMock
+
+        from scripts.verify_deployment import check_db_connectivity
+
+        with override_settings(project_config_dir=str(project_dir)), \
+             patch("database.connection.get_engine", return_value=MagicMock()):
+            result = check_db_connectivity()
+        assert result.status == "PASS"
+        assert "hunter2" not in result.render()
+        assert "nlq_reader:***@db1.example.test:1433/SalesDW" in result.detail
+
+    def test_a_failed_check_shows_the_masked_url(self, project_dir):
+        from sqlalchemy.exc import OperationalError
+
+        from scripts.verify_deployment import check_db_connectivity
+
+        failure = OperationalError("SELECT 1", {}, Exception("login failed"))
+        with override_settings(project_config_dir=str(project_dir)), \
+             patch("database.connection.get_engine", side_effect=failure):
+            result = check_db_connectivity()
+        assert result.status == "FAIL"
+        assert "hunter2" not in result.render()
+        assert "%40" not in result.render()
+        assert "nlq_reader:***@db1.example.test" in result.detail
+
+    def test_a_missing_variable_is_reported_by_name_not_value(self, project_dir, monkeypatch):
+        from scripts.verify_deployment import check_db_connectivity
+
+        monkeypatch.delenv("DB_PASSWORD_SALES")
+        with override_settings(project_config_dir=str(project_dir)):
+            result = check_db_connectivity()
+        assert result.status == "FAIL"
+        assert "DB_PASSWORD_SALES" in result.detail
+        assert "auction" in result.detail

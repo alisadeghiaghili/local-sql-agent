@@ -115,3 +115,43 @@ class TestSameDatabaseRefusal:
         # by accident of two different literals.
         same_literal = "sqlite://"
         raise_if_same_database(same_literal, same_literal)
+
+
+class TestRefusalNeverPrintsAPassword:
+    def test_the_message_masks_both_passwords(self):
+        with pytest.raises(RuntimeError, match="same server and database") as info:
+            raise_if_same_database(
+                "mssql+pyodbc://app:s3cret-app@db1:1433/Sales",
+                "mssql+pyodbc://ro:s3cret-ro@db1:1433/Sales",
+            )
+        message = str(info.value)
+        assert "s3cret" not in message
+        assert "app:***@db1" in message
+        assert "ro:***@db1" in message
+
+    def test_special_characters_in_a_password_do_not_leak_a_fragment(self):
+        with pytest.raises(RuntimeError) as info:
+            raise_if_same_database(
+                "mssql+pyodbc://app:x@db1/Sales",
+                "mssql+pyodbc://ro:p%40ss%2Fw%3Ard@db1/Sales",
+            )
+        message = str(info.value)
+        for fragment in ("p%40ss", "p@ss", "w%3Ard", "w:rd"):
+            assert fragment not in message
+
+
+class TestRedactUrl:
+    def test_masks_the_password(self):
+        from appdb.engine import redact_url
+
+        assert redact_url("postgresql://u:pw@h/db") == "postgresql://u:***@h/db"
+
+    def test_a_url_without_a_password_is_unchanged(self):
+        from appdb.engine import redact_url
+
+        assert redact_url("sqlite:///logs/app.db") == "sqlite:///logs/app.db"
+
+    def test_an_unparsable_string_is_replaced_not_echoed(self):
+        from appdb.engine import redact_url
+
+        assert redact_url("hunter2") == "<unparseable connection URL>"

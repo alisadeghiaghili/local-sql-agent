@@ -222,3 +222,141 @@ class TestMultipleDataSources:
             dispose_engine()
         for engine in mock_engines:
             engine.dispose.assert_called_once()
+
+
+class TestStructuredSourcesBuildTheirEngines:
+    """``create_engine`` is handed the URL built from the YAML fields and the
+    raw password in the environment -- host, database and password intact,
+    whatever characters the password holds."""
+
+    PASSWORD_A = "p@ss%41]:/?#&=+; w"
+    PASSWORD_B = "100% sure"
+
+    @pytest.fixture(autouse=True)
+    def _clean_engine_cache(self):
+        get_engine.cache_clear()
+        reset_datasources_cache()
+        yield
+        get_engine.cache_clear()
+        reset_datasources_cache()
+
+    @pytest.fixture()
+    def structured(self, tmp_path, monkeypatch):
+        (tmp_path / "datasources.yaml").write_text(yaml.dump({
+            "default": "auction",
+            "datasources": {
+                "auction": {
+                    "host": "db1.example.test", "database": "SalesDW",
+                    "username": "nlq_reader", "password_env": "DB_PASSWORD_SALES",
+                    "options": {"TrustServerCertificate": True},
+                    "application_name": "app-auction",
+                },
+                "futures": {
+                    "host": "db1.example.test", "port": 1444, "database": "FuturesDW",
+                    "username": "nlq_reader", "password_env": "DB_PASSWORD_FUTURES",
+                },
+                "windows": {
+                    "host": "db2.example.test", "database": "ReportsDW",
+                    "trusted_connection": True,
+                },
+            },
+        }), encoding="utf-8")
+        monkeypatch.setenv("DB_PASSWORD_SALES", self.PASSWORD_A)
+        monkeypatch.setenv("DB_PASSWORD_FUTURES", self.PASSWORD_B)
+        return tmp_path
+
+    def _url_passed_for(self, project_dir, source):
+        from sqlalchemy.engine import make_url
+
+        with cfg.override_settings(project_config_dir=str(project_dir)), \
+             patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine(source)
+        mock_create.assert_called_once()
+        return make_url(mock_create.call_args.args[0])
+
+    def test_each_source_gets_its_own_url(self, structured):
+        auction = self._url_passed_for(structured, "auction")
+        assert (auction.host, auction.port, auction.database) == ("db1.example.test", 1433, "SalesDW")
+        assert auction.username == "nlq_reader"
+        assert auction.drivername == "mssql+pyodbc"
+        assert auction.query["driver"] == "ODBC Driver 18 for SQL Server"
+        assert auction.query["TrustServerCertificate"] == "yes"
+
+    def test_two_databases_on_one_server_are_two_pools(self, structured):
+        get_engine.cache_clear()
+        with cfg.override_settings(project_config_dir=str(structured)), \
+             patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine("auction")
+            get_engine("futures")
+        from sqlalchemy.engine import make_url
+
+        urls = [make_url(c.args[0]) for c in mock_create.call_args_list]
+        assert [u.host for u in urls] == ["db1.example.test"] * 2
+        assert [u.database for u in urls] == ["SalesDW", "FuturesDW"]
+        assert [u.port for u in urls] == [1433, 1444]
+
+    def test_the_raw_password_reaches_create_engine_intact(self, structured):
+        assert self._url_passed_for(structured, "auction").password == self.PASSWORD_A
+        get_engine.cache_clear()
+        assert self._url_passed_for(structured, "futures").password == self.PASSWORD_B
+
+    def test_application_name_is_stamped_without_disturbing_the_password(self, structured):
+        url = self._url_passed_for(structured, "auction")
+        assert url.query["APP"] == "app-auction"
+        assert url.password == self.PASSWORD_A
+
+    def test_trusted_connection_engine_has_no_login(self, structured):
+        url = self._url_passed_for(structured, "windows")
+        assert (url.username, url.password) == (None, None)
+        assert url.query["trusted_connection"] == "yes"
+        assert url.host == "db2.example.test"
+
+    def test_a_missing_password_variable_stops_the_engine_naming_it(
+        self, structured, monkeypatch,
+    ):
+        from database.datasources import DataSourceConfigError
+
+        monkeypatch.delenv("DB_PASSWORD_SALES")
+        with cfg.override_settings(project_config_dir=str(structured)), \
+             patch("database.connection.create_engine") as mock_create:
+            with pytest.raises(DataSourceConfigError, match="auction.*DB_PASSWORD_SALES"):
+                get_engine("auction")
+        mock_create.assert_not_called()
+
+
+class TestSingleSourceDbPassword:
+    @pytest.fixture(autouse=True)
+    def _clean_engine_cache(self):
+        get_engine.cache_clear()
+        yield
+        get_engine.cache_clear()
+
+    def test_db_password_is_set_on_the_url_passed_to_create_engine(self, tmp_path):
+        from sqlalchemy.engine import make_url
+
+        raw = "p@ss/w:rd?#%40"
+        with cfg.override_settings(
+            project_config_dir=str(tmp_path),
+            db_connection_url="mssql+pyodbc://nlq@db1:1433/SalesDW?driver=ODBC+Driver+18+for+SQL+Server",
+            db_password=raw,
+        ), patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine()
+        url = make_url(mock_create.call_args.args[0])
+        assert url.password == raw
+        assert url.username == "nlq"
+        assert url.query["APP"] == cfg.settings.db_application_name
+
+    def test_without_db_password_the_url_is_passed_as_written(self, tmp_path):
+        from sqlalchemy.engine import make_url
+
+        with cfg.override_settings(
+            project_config_dir=str(tmp_path),
+            db_connection_url="mssql+pyodbc://nlq:p%40ss@db1/SalesDW?driver=x",
+            db_password="",
+        ), patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.install_idle_aware_ping"):
+            get_engine()
+        assert make_url(mock_create.call_args.args[0]).password == "p@ss"

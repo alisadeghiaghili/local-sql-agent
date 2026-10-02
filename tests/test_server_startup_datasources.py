@@ -178,3 +178,49 @@ class TestLifespanRefusesAnUnknownTableDatasource:
             ):
                 with pytest.raises(RuntimeError, match="sentinel"):
                     asyncio.run(_run_lifespan())
+
+
+class TestLifespanWithStructuredSources:
+    def test_a_structured_source_colliding_with_app_db_url_is_refused_without_its_password(
+        self, tmp_path, monkeypatch,
+    ):
+        (tmp_path / "datasources.yaml").write_text(
+            "datasources:\n"
+            "  auction:\n"
+            "    host: db1.example.test\n"
+            "    database: SalesDW\n"
+            "    username: nlq_reader\n"
+            "    password_env: DB_PASSWORD_SALES\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("DB_PASSWORD_SALES", "hunter2@%")
+        reset_datasources_cache()
+        with override_settings(
+            project_config_dir=str(tmp_path),
+            openai_model="gpt-oss-20b",
+            auth_required=False,
+            app_db_url="mssql+pyodbc://app:other-secret@db1.example.test:1433/SalesDW",
+        ):
+            with pytest.raises(RuntimeError, match="same server and database") as info:
+                asyncio.run(_run_lifespan())
+        assert "hunter2" not in str(info.value)
+        assert "other-secret" not in str(info.value)
+
+    def test_a_missing_password_variable_stops_start_up_naming_it(self, tmp_path, monkeypatch):
+        (tmp_path / "datasources.yaml").write_text(
+            "datasources:\n"
+            "  auction:\n"
+            "    host: db1.example.test\n"
+            "    database: SalesDW\n"
+            "    username: nlq_reader\n"
+            "    password_env: DB_PASSWORD_SALES\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("DB_PASSWORD_SALES", raising=False)
+        reset_datasources_cache()
+        with override_settings(
+            project_config_dir=str(tmp_path), openai_model="gpt-oss-20b",
+            auth_required=False,
+        ):
+            with pytest.raises(RuntimeError, match="Invalid configuration.*auction.*DB_PASSWORD_SALES"):
+                asyncio.run(_run_lifespan())
