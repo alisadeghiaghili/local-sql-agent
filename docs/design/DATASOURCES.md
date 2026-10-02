@@ -21,34 +21,49 @@ question that might touch either one.
 
 - `project_config/datasources.yaml` is an **optional** file. Its absence
   means exactly one data source, named `"default"`, using
-  `DB_CONNECTION_URL` — byte-for-byte what every earlier release did. A
-  deployment that never adds this file is completely unaffected by
-  anything below.
-- When present, it lists named sources. Each source gives only `url_env`:
-  the *name* of an environment variable holding that source's SQLAlchemy
-  connection string, plus an optional `description` and a per-source
-  `dialect`/`application_name` override. One `default` key says which
-  source a table with no explicit assignment belongs to (required once
-  more than one source is listed; inferred when there is only one).
-- **Connection strings never go in `datasources.yaml`.** That file is
-  versioned and reviewed like the rest of `project_config/` (it sits next
-  to `schema.yaml`, gets read by `git diff`, and is meant to be committed
-  to a deployment's own private fork of the config). A password belongs in
+  `DB_CONNECTION_URL` — byte-for-byte what every earlier release did
+  (the raw password may now be given in `DB_PASSWORD` instead of inside
+  the URL; unset, nothing changes). A deployment that never adds this file
+  is completely unaffected by anything below.
+- When present, it lists named sources, and each source **describes its
+  connection**: `host`, `port`, `database`, `driver`, a login and optional
+  ODBC `options` (the structured form, below). Only the secret stays in
+  the environment, named by `password_env`. A source may instead use the
+  legacy `url_env` form (below). Either form may add an optional
+  `description` and a per-source `dialect`/`application_name` override.
+  One `default` key says which source a table with no explicit assignment
+  belongs to (required once more than one source is listed; inferred when
+  there is only one).
+- **Secrets never go in `datasources.yaml`.** That file is versioned and
+  reviewed like the rest of `project_config/` (it sits next to
+  `schema.yaml`, gets read by `git diff`, and is meant to be committed to a
+  deployment's own private fork of the config). A password belongs in
   `.env` or a secret store, referenced only by the name of the variable
-  that holds it — the same separation `DB_CONNECTION_URL` itself already
-  had, just generalised to N sources instead of one.
+  that holds it. A `password:`, `pwd:` or `url:` key in the file is refused
+  with a message saying so, and so is a credential-like key under
+  `options`.
+
 - Each table in `schema.yaml` may set `datasource: <name>`; a table
   without one belongs to the default source. Table names stay globally
   unique across every source — there is one flat allowlist, not one per
   source — so a question never has to know which source a table lives on
   before it can ask about it.
-- Several databases on **one** SQL Server instance are **one** data
-  source: SQL Server can join across databases on the same instance with a
-  three-part name, so a table in a second database on that instance just
-  sets a multi-part `db_schema: "OtherDb.dbo"`, rendered
-  `[OtherDb].[dbo].[Table]` (`security.dialects.quote_tsql_qualifier`).
-  Nothing about routing changes — it is still one connection, one pool,
-  one login.
+- Several databases on **one** SQL Server instance can be configured two
+  ways, and both are supported:
+  - **Two sources** (same `host`, different `database`). Each has its own
+    connection pool and its own login. One query still runs on exactly one
+    source, so a question that needs tables from both databases is refused
+    (`cross_datasource`).
+  - **One source** with a multi-part `db_schema: "OtherDb.dbo"` on the
+    second database's tables, rendered `[OtherDb].[dbo].[Table]`
+    (`security.dialects.quote_tsql_qualifier`). SQL Server can join across
+    databases on one instance with a three-part name, so this is the way
+    to keep cross-database joins working. It is one connection, one pool,
+    one login.
+
+  Choose by whether questions join across the databases: if they do, use
+  one source and `db_schema`; if they do not, two sources give each
+  database its own pool and login.
 - Table names are globally unique **as `schema.yaml` keys**, not
   necessarily as bare names: a warehouse with the same table name in two
   schemas (`sales.Customer`, `ref.Customer`) gives each one its own
@@ -74,17 +89,102 @@ question that might touch either one.
   than the deployment's own `SQL_DIALECT` is refused at start-up
   (`database.datasources.validate_datasource_urls`).
 
+## Structured sources: what changed and why
+
+The first version of this file mapped a source name to `url_env` and
+nothing else. Every real connection detail (host, port, database, driver,
+ODBC options) was still one long URL in `.env`, so the YAML said almost
+nothing, and operators had to percent-encode special characters in the
+password by hand (`@` as `%40`), which they got wrong.
+
+The division of labour is now: **the YAML describes the connection, `.env`
+holds only the secret, and the code builds and escapes the URL.**
+
+```yaml
+default: sales
+datasources:
+  sales:
+    description: Sales warehouse
+    host: 10.0.0.5
+    port: 1433                         # optional, default 1433
+    database: SalesDW
+    driver: ODBC Driver 18 for SQL Server   # optional, this is the default
+    username: nlq_reader               # or username_env: VAR_NAME
+    password_env: DB_PASSWORD_SALES    # NAME of the variable holding the RAW password
+    options:                           # optional extra ODBC keywords
+      TrustServerCertificate: true     # true/false -> yes/no, numbers -> text
+  reports:
+    host: 10.0.0.5
+    database: ReportsDW
+    trusted_connection: true           # Windows authentication
+```
+
+- **One URL-building function.** `database.datasources.build_url` calls
+  `sqlalchemy.engine.URL.create("mssql+pyodbc", username=..., password=<raw
+  value>, host=..., port=..., database=..., query={"driver": ..., **options,
+  "trusted_connection": "yes"})`. SQLAlchemy escapes each part when the URL
+  is rendered, so a password containing `@ % ] : / ? # & = + ;` or spaces
+  needs nothing from the operator; `tests/test_datasources.py` proves the
+  round trip through the rendered URL, the application-name rewrite and the
+  ODBC connection string the pyodbc dialect produces. The dialect picks the
+  SQLAlchemy driver name from a small mapping, so a future dialect is one
+  entry (only `tsql` exists today). A per-source `dialect` must still equal
+  `SQL_DIALECT`.
+- **`DataSource.url` stays a string**, rendered with
+  `URL.render_as_string(hide_password=False)`. Every consumer already
+  takes a string (`with_application_name`, `_check_warehouse_url`,
+  `appdb.engine.raise_if_same_database`, `create_engine`), SQLAlchemy's
+  own rendering round-trips every password, and the unchanged legacy path
+  produces strings too. The password is therefore in that string, which is
+  why `DataSource.__repr__` omits it, `DataSource.redacted_url` is what
+  anything displayed uses, and the same-database refusal and
+  `scripts/verify_deployment.py` print the redacted form.
+- **Rules, refused when the file loads (the message names the source):** a
+  source is structured (`host` and `database` required) or `url_env`,
+  never both; `trusted_connection: true` forbids `username`,
+  `username_env` and `password_env`; otherwise exactly one of `username` /
+  `username_env` plus `password_env`; the `*_env` values must be variable
+  names, not values; `options` keys must not be credentials (`pwd`,
+  `password`, `uid`, `user`, `user id`, case-insensitive) or one of the
+  keys that have their own field (`driver`, `trusted_connection`,
+  `server`, `database`, `odbc_connect`).
+- **Start-up checks.** A `password_env` or `username_env` variable that is
+  unset or empty is refused naming the source and the variable, never the
+  value. A structured source's host, database, user name and password are
+  compared with the unfilled-placeholder tokens (`your_server_here`,
+  `change_me`, ...), because a built URL never contains the
+  `username@server` text a hand-written one does.
+- **The single-source path gets the same convenience.** Without
+  `datasources.yaml`, `DB_PASSWORD` holds the raw password for
+  `DB_CONNECTION_URL`; the code sets it with `URL.set(password=...)`. A
+  password in both places is refused as ambiguous. A raw password written
+  *inside* `DB_CONNECTION_URL` is deliberately not auto-detected or
+  re-encoded: a password containing `/ ? # :` or a literal `%40` cannot be
+  told apart from an already encoded one, and guessing would silently
+  break configurations that work today.
+
+### `url_env` (legacy)
+
+`url_env: DB_URL_MAIN` names a variable holding a complete SQLAlchemy URL.
+It keeps working exactly as in 6.1 and 6.2: the URL is used as written,
+so a password inside it must still be percent-encoded by hand. It can sit
+beside structured sources in one file. To move a source over, copy the
+host, port, database, login and any query parameters out of the URL into
+the YAML fields, put only the raw password in a new `DB_PASSWORD_*`
+variable, and point `password_env` at it.
+
 ## Alternatives considered and rejected
 
-**Connection strings inside `datasources.yaml`.** The obvious shape — put
-the whole SQLAlchemy URL next to the source's name — was rejected outright
-because `datasources.yaml` is meant to be committed and code-reviewed the
-same way `schema.yaml` is. A file that is safe to put in a pull request
-must never be able to carry a password. Pointing at an environment
-variable *name* keeps the file itself credential-free while still making
-"what sources exist and what do they mean" a reviewable, versioned
-artefact — the two concerns (topology vs. secrets) live in the two places
-that already own them (`project_config/` vs. `.env`).
+**A password, or a whole connection string, inside `datasources.yaml`.**
+The obvious shape — put the SQLAlchemy URL next to the source's name — was
+rejected outright because `datasources.yaml` is meant to be committed and
+code-reviewed the same way `schema.yaml` is. A file that is safe to put in
+a pull request must never be able to carry a password. The structured form
+splits the connection along that line: host, port, database, driver and
+options are not secret and are the reviewable, versioned part ("what
+sources exist and what do they mean"), while the password is only ever the
+*name* of an environment variable. The two concerns (topology vs. secrets)
+live in the two places that already own them (`project_config/` vs. `.env`).
 
 **Letting the model choose the data source.** A tempting shortcut is to
 ask the model to name the source alongside the SQL it generates, the same

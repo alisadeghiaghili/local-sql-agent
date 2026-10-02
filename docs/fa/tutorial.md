@@ -59,7 +59,8 @@ cp .env.example .env
 
 ```dotenv
 # Required
-DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/YourDB?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
+DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/YourDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+DB_PASSWORD=your-database-password
 OPENAI_BASE_URL=http://your-llm-host:8000/v1
 OPENAI_MODEL=gpt-oss-20:F16
 OPENAI_API_KEY=your-key
@@ -74,7 +75,31 @@ CACHE_TTL_SECONDS=300
 
 `OPENAI_BASE_URL` باید به سروری اشاره کند که API گفتگو سازگار با OpenAI (`/chat/completions`) را ارائه می‌دهد — برای مثال vLLM، LM Studio یا اولاما (`/v1`). مدلی که در `OPENAI_MODEL` نام می‌برید باید توسط همان endpoint سرو شود.
 
-`DB_CONNECTION_URL` بالا برای وقتی است که فقط یک انبار داده دارید — که برای اکثر استقرارها همین کافی است. اگر باید روی بیش از یک پایگاه داده کوئری بزنید (مثلاً یک سرور SQL Server دوم برای داده‌های آرشیو)، به‌جای آن فایل `project_config/datasources.yaml` را اضافه کنید (از روی `project_config.example/datasources.example.yaml` کپی بگیرید) و هر منبع را با نام متغیر محیطی‌ای که رشتهٔ اتصال آن را نگه می‌دارد معرفی کنید. برای جزئیات کامل به `docs/design/DATASOURCES.md` و بخش ۱۶ از `docs/deployment-runbook.md` مراجعه کنید.
+`DB_CONNECTION_URL` بالا برای وقتی است که فقط یک انبار داده دارید — که برای اکثر استقرارها همین کافی است. `DB_PASSWORD` رمز عبور دیتابیس است، **همان‌طور که هست و بدون هیچ کدگذاری**: رمزی مثل `p@ss/w:rd#1` را دقیقاً همین‌طور بنویسید و آن را داخل URL نگذارید. برنامه خودش رمز را درست در URL می‌گذارد. (اگر رمز را داخل URL بنویسید، باید دستی کدگذاری شود — `@` می‌شود `%40` — و اگر هم `DB_PASSWORD` و هم رمز داخل URL را بگذارید، سرور بالا نمی‌آید.)
+
+اگر باید روی بیش از یک پایگاه داده کوئری بزنید، به‌جای آن‌ها فایل `project_config/datasources.yaml` را اضافه کنید (از روی `project_config.example/datasources.example.yaml` کپی بگیرید). این فایل خودِ اتصال را توصیف می‌کند و در `.env` فقط رمزها می‌مانند. مثلاً دو دیتابیس روی یک سرور، به‌صورت دو منبع:
+
+```yaml
+default: sales
+datasources:
+  sales:
+    host: 10.0.0.5
+    database: SalesDW
+    username: nlq_reader
+    password_env: DB_PASSWORD_SALES
+  inventory:
+    host: 10.0.0.5
+    database: InventoryDW
+    username: nlq_reader
+    password_env: DB_PASSWORD_INVENTORY
+```
+
+```dotenv
+DB_PASSWORD_SALES=p@ss/w:rd#1
+DB_PASSWORD_INVENTORY=another-password
+```
+
+هر منبع استخر اتصال خودش را دارد و هر کوئری فقط روی یک منبع اجرا می‌شود؛ اگر سؤال‌ها باید جدول‌های هر دو دیتابیس را با `JOIN` وصل کنند، یک منبع بسازید و برای جدول‌های دیتابیس دوم `db_schema` چندبخشی (مثل `InventoryDW.dbo`) بگذارید. منبع‌هایی که با `url_env` نوشته شده‌اند (نسخه‌های ۶.۱ و ۶.۲) همچنان کار می‌کنند. برای جزئیات کامل به `docs/design/DATASOURCES.md` و بخش ۱۶ از `docs/deployment-runbook.md` مراجعه کنید.
 
 ---
 

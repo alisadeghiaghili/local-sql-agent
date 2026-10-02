@@ -182,11 +182,13 @@ pip install -r requirements.lock   # exact, audited pins — see requirements.tx
 # 2. Configure
 cp .env.example .env
 # Set at minimum:
-#   DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/DB?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes
+#   DB_CONNECTION_URL=mssql+pyodbc://user@server:1433/DB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+#   DB_PASSWORD=<the raw password -- no URL encoding>
 #   OPENAI_BASE_URL=http://your-llm-host:8000/v1
 #   OPENAI_MODEL=gpt-oss-20:F16
 #   OPENAI_API_KEY=your-key
 # Querying more than one database? Add project_config/datasources.yaml
+# (host, database, login per source; one DB_PASSWORD_* variable each)
 # instead of a single DB_CONNECTION_URL — see docs/design/DATASOURCES.md.
 
 # 3. Provide the domain config — the server will NOT start without it
@@ -233,7 +235,8 @@ python -m scripts.verify_deployment
 | `API_HOST` | `127.0.0.1` | Interface `python -m api` binds to (loopback until widened on purpose) |
 | `API_PORT` | `8000` | Port `python -m api` binds to |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:8080`, `http://127.0.0.1:8080` | Comma-separated browser origins allowed to call this API cross-origin — set this to the UI's own origin whenever the API and the static UI are on different ports/hosts, or every call looks like a dead backend instead of a CORS rejection (see `docs/deployment-runbook.md`) |
-| `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string — the one warehouse connection, unless `project_config/datasources.yaml` names several (see [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md)), in which case it is unused |
+| `DB_CONNECTION_URL` | *(required)* | SQLAlchemy connection string — the one warehouse connection, unless `project_config/datasources.yaml` describes the connections (see [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md)), in which case it is unused. Leave the password out of it and set `DB_PASSWORD`; a password written inside the URL must be percent-encoded (`@` → `%40`) |
+| `DB_PASSWORD` | *(empty)* | The **raw** password for `DB_CONNECTION_URL`, with no URL encoding; applied to the parsed URL. Setting it as well as a password inside the URL is refused. With `datasources.yaml`, each source names its own `password_env` variable instead (e.g. `DB_PASSWORD_SALES`) |
 | `QUERY_TIMEOUT_SECONDS` | `60` | Max query execution time (seconds) |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap applied to all queries |
 | `CACHE_TTL_SECONDS` | `300` | Query cache TTL in seconds (`0` = disabled) |
