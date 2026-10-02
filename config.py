@@ -166,6 +166,33 @@ def _parse_port(env_var: str, default: str) -> int:
 
 
 
+def _has_placeholder_login_host(url: str) -> bool:
+    """Whether *url* still names ``username@server``, the factory default.
+
+    The literal text is matched, and so is the parsed login and host: once
+    ``DB_PASSWORD`` is set on the URL it reads ``username:<password>@server``,
+    which the literal text no longer matches.
+
+    Examples
+    --------
+    >>> _has_placeholder_login_host("mssql+pyodbc://username@server:1433/db")
+    True
+    >>> _has_placeholder_login_host("mssql+pyodbc://username:pw@server/db")
+    True
+    >>> _has_placeholder_login_host("mssql+pyodbc://nlq:pw@db1/db")
+    False
+    """
+    if "username@server" in url.lower():
+        return True
+    from sqlalchemy.engine import make_url
+
+    try:
+        parsed = make_url(url)
+    except Exception:  # noqa: BLE001 - an unparsable URL has no login to compare
+        return False
+    return (parsed.username or "").lower() == "username" and (parsed.host or "").lower() == "server"
+
+
 def _check_warehouse_url(label: str, url: str, dialect: str, placeholders: set[str]) -> None:
     """Refuse an unset, placeholder or wrong-dialect warehouse connection string.
 
@@ -202,7 +229,7 @@ def _check_warehouse_url(label: str, url: str, dialect: str, placeholders: set[s
     """
     if not url or url in placeholders:
         raise ValueError(f"{label} is not configured")
-    if "username@server" in url.lower():
+    if _has_placeholder_login_host(url):
         raise ValueError(
             f"{label} still has the factory-default placeholder "
             "host (username@server) — set a real connection string in .env"
@@ -310,6 +337,22 @@ class Settings:
             "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
         )
     )
+    """The single warehouse connection, used only when there is no
+    ``project_config/datasources.yaml``. Any password written inside it must
+    be percent-encoded (``@`` as ``%40``); to avoid that, leave the password
+    out and give it raw in :attr:`db_password`."""
+
+    db_password: str = field(
+        default_factory=lambda: os.getenv("DB_PASSWORD", ""),
+        repr=False,
+    )
+    """The raw password for :attr:`db_connection_url` (``DB_PASSWORD``), with
+    no URL encoding. Empty (the default) leaves the URL exactly as written.
+    When set, the URL must carry a login but no password: it is set on the
+    parsed URL by :func:`database.datasources.apply_db_password`, and a
+    password present in both places is refused at start-up. Ignored when
+    ``datasources.yaml`` exists (each source there names its own
+    ``password_env``). Excluded from ``repr`` so it never reaches a log."""
     db_pool_pre_ping: bool = field(
         default_factory=lambda: os.getenv("DB_POOL_PRE_PING", "true").lower()
         in ("1", "true", "yes")
@@ -1442,9 +1485,12 @@ class Settings:
         """Raise ValueError if any required setting is missing or still a placeholder.
 
         Every warehouse connection string is checked by
-        :func:`_check_warehouse_url`: ``db_connection_url`` when there is no
-        ``datasources.yaml``, otherwise each data source's ``url_env``
-        variable (see :mod:`database.datasources`).
+        :func:`_check_warehouse_url`: ``db_connection_url`` (with
+        ``db_password`` applied) when there is no ``datasources.yaml``,
+        otherwise each data source's connection (see
+        :mod:`database.datasources`). A structured source whose
+        ``username_env`` / ``password_env`` variable is unset or empty is
+        refused, naming the source and the variable.
         """
         placeholders = {
             "your_password_here", "your_server_here",
@@ -1468,7 +1514,7 @@ class Settings:
 
         # Every warehouse connection string gets the same checks: the
         # single DB_CONNECTION_URL when there is no datasources.yaml, or
-        # each source's url_env variable when there is one (in which case
+        # each source's connection when there is one (in which case
         # DB_CONNECTION_URL itself is not used and not required). See
         # database.datasources.
         from database.datasources import validate_datasource_urls
@@ -1476,6 +1522,7 @@ class Settings:
         validate_datasource_urls(
             lambda label, url, dialect: _check_warehouse_url(label, url, dialect, placeholders),
             self,
+            placeholders,
         )
 
         # LLM_EXTRA_BODY is parsed on every request, so a malformed value

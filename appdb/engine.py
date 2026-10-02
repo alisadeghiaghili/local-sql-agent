@@ -143,6 +143,26 @@ def _canonical_endpoint(url_str: str) -> tuple:
     return (backend, host, url.port, database)
 
 
+def redact_url(url_str: str) -> str:
+    """*url_str* with its password replaced by ``***``, for a message.
+
+    Parsed by SQLAlchemy rather than matched with a regular expression. A
+    string SQLAlchemy cannot parse is replaced by a placeholder, never
+    echoed.
+
+    Examples
+    --------
+    >>> redact_url("mssql+pyodbc://nlq:s3cret@db1/Sales")
+    'mssql+pyodbc://nlq:***@db1/Sales'
+    >>> redact_url("not a url")
+    '<unparseable connection URL>'
+    """
+    try:
+        return make_url(url_str).render_as_string(hide_password=True)
+    except Exception:  # noqa: BLE001 - never fall back to the raw string
+        return "<unparseable connection URL>"
+
+
 def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:
     """Refuse if *app_db_url* and *warehouse_url* name the same database.
 
@@ -170,8 +190,8 @@ def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:
             "APP_DB_URL resolves to the same server and database as a "
             "configured warehouse data source (read-only; see "
             "database.datasources for a deployment with more than one) -- "
-            f"refusing to start. Application database: {app_db_url!r}; "
-            f"warehouse: {warehouse_url!r}. The application database needs "
+            f"refusing to start. Application database: {redact_url(app_db_url)!r}; "
+            f"warehouse: {redact_url(warehouse_url)!r}. The application database needs "
             "write access (docs/db-hardening.md specifies the warehouse "
             "login as read-only, and database/executor.py always rolls "
             "back its transactions); pointing both at the same database "
