@@ -1387,3 +1387,40 @@ class TestHasPlaceholderLoginHost:
         from config import _has_placeholder_login_host
 
         assert _has_placeholder_login_host(url) is expected
+
+
+class TestExampleFile:
+    """``project_config.example/datasources.example.yaml`` is documentation an
+    operator copies; it must stay valid."""
+
+    _PATH = os.path.join(
+        os.path.dirname(__file__), "..", "project_config.example", "datasources.example.yaml",
+    )
+
+    def _text(self) -> str:
+        with open(self._PATH, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_example_as_shipped_is_valid(self):
+        parsed = validate_datasources_yaml_text(self._text())
+        assert parsed.default_name == "sales"
+        assert list(parsed.datasources) == ["sales", "inventory"]
+        sales, inventory = parsed.datasources.values()
+        assert sales.host == inventory.host  # two databases, one server
+        assert sales.database != inventory.database
+        assert sales.options == {"TrustServerCertificate": "yes"}
+
+    def test_every_commented_alternative_is_valid_when_uncommented(self):
+        import re
+
+        uncommented = re.sub(
+            r"^  # ((?:reports|finance|warehouse2):|  \S)", r"  \1", self._text(),
+            flags=re.MULTILINE,
+        )
+        parsed = validate_datasources_yaml_text(uncommented)
+        assert set(parsed.datasources) == {
+            "sales", "inventory", "reports", "finance", "warehouse2",
+        }
+        assert parsed.datasources["reports"].trusted_connection is True
+        assert parsed.datasources["finance"].username_env == "DB_USER_FINANCE"
+        assert parsed.datasources["warehouse2"].url_env == "DB_URL_WAREHOUSE2"
