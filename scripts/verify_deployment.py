@@ -71,7 +71,6 @@ from typing import Callable
 
 import requests
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 # Run as `python scripts/verify_deployment.py` from anywhere: Python puts
@@ -98,18 +97,6 @@ class CheckResult:
         return f"[{self.status:4s}] {self.name}" + (f" -- {self.detail}" if self.detail else "")
 
 
-def _redact(url: str) -> str:
-    """Render a connection URL with any password masked.
-
-    Never used to print a raw connection string -- see the module
-    docstring's "no credentials are ever printed" guarantee.
-    """
-    try:
-        return make_url(url).render_as_string(hide_password=True)
-    except Exception:  # noqa: BLE001 — a malformed URL must not crash reporting
-        return "<unparsable connection URL>"
-
-
 def check_settings_valid() -> CheckResult:
     """``Settings.validate()`` must pass -- required config, no placeholders."""
     try:
@@ -125,9 +112,14 @@ def _label(name: str, datasource: str | None) -> str:
 
 
 def _source_url(datasource: str | None) -> str:
+    """The data source's connection URL with its password masked.
+
+    Never the raw connection string -- see the module docstring's "no
+    credentials are ever printed" guarantee.
+    """
     from database.datasources import get_datasource
 
-    return get_datasource(datasource).url
+    return get_datasource(datasource).redacted_url
 
 
 def check_db_connectivity(datasource: str | None = None) -> CheckResult:
@@ -141,11 +133,11 @@ def check_db_connectivity(datasource: str | None = None) -> CheckResult:
     except SQLAlchemyError as exc:
         return CheckResult(
             name, "FAIL",
-            f"could not connect to {_redact(_source_url(datasource))}: {exc}",
+            f"could not connect to {_source_url(datasource)}: {exc}",
         )
     except Exception as exc:  # noqa: BLE001
         return CheckResult(name, "FAIL", str(exc))
-    return CheckResult(name, "PASS", f"connected to {_redact(_source_url(datasource))}")
+    return CheckResult(name, "PASS", f"connected to {_source_url(datasource)}")
 
 
 def check_login_is_read_only(datasource: str | None = None) -> CheckResult:

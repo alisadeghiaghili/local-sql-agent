@@ -93,10 +93,10 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import Table, func, inspect, select, text
-from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.engine import Engine
 
 import config as cfg
-from appdb.engine import _canonical_endpoint, build_engine
+from appdb.engine import _canonical_endpoint, build_engine, redact_url
 from appdb.models import (
     access_requests,
     admin_api_keys,
@@ -498,10 +498,7 @@ def _redacted(url: str) -> str:
     where a hand-rolled redaction would be most likely to miss something,
     and the identity it would have carried is not trustworthy anyway.
     """
-    try:
-        return make_url(url).render_as_string(hide_password=True)
-    except Exception:  # noqa: BLE001 - see the docstring's last paragraph
-        return "<unparseable connection URL>"
+    return redact_url(url)
 
 
 def check_not_same_database(source_url: str, target_url: str) -> None:

@@ -80,9 +80,17 @@ flow (§2.3).
 
 Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
 
-- `DB_CONNECTION_URL` — the real warehouse connection string. Querying
-  more than one database instead of one? See §16 below and use
-  `DB_URL_*` variables named by `datasources.yaml` instead.
+- `DB_CONNECTION_URL` — the real warehouse connection string, with the
+  login but **without** the password (`mssql+pyodbc://nlq_reader@host:1433/DB?driver=...`) —
+  and `DB_PASSWORD`, the raw password, exactly as the database knows it
+  with no URL encoding (`p@ss/w:rd` stays `p@ss/w:rd`). A password written
+  inside the URL instead must be percent-encoded by hand (`@` becomes
+  `%40`); setting it in both places is refused at start-up, and a raw
+  password inside the URL is not auto-detected, because `/ ? # :` or a
+  literal `%40` cannot be told apart from an encoded one. Querying more
+  than one database instead of one? See §16 below: the connection is then
+  described in `datasources.yaml` and `.env` holds only a
+  `DB_PASSWORD_*` variable per source.
 - `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_KEY` — the real LLM
   endpoint.
 - `API_KEYS_JSON` — the array from step 1 (every issued key's entry).
@@ -605,30 +613,70 @@ and how to read the result — including the same point §14 makes above:
 usually comes from something else. Hand every configured source's
 server, in turn, to its own DBA if they differ — see §16 below.
 
-## 16. Configuring several warehouse data sources (optional)
+## 16. Describing the connection in `datasources.yaml` (optional)
 
 Every step above assumes the default, single-source shape: one
-`DB_CONNECTION_URL`. Skip this section entirely unless this deployment
-genuinely needs to query more than one database — a second SQL Server
-instance holding an archive, a partner's warehouse on its own box. See
-`docs/design/DATASOURCES.md` for the full design and why it is shaped
-this way.
+`DB_CONNECTION_URL` (plus `DB_PASSWORD`). Use `datasources.yaml` when this
+deployment queries more than one database — a second database on the same
+server, another SQL Server instance, a partner's warehouse on its own box
+— or simply wants host, database and driver written in a reviewable file
+instead of one long URL in `.env`. See `docs/design/DATASOURCES.md` for
+the full design and why it is shaped this way.
+
+**One server, two databases: two sources, or one.** Two databases on the
+same server are a supported configuration as **two sources** (same `host`,
+different `database`). Each source has its own connection pool and login,
+and one query still runs on exactly one source. If questions need to
+**join across** the two databases, use **one** source instead and give the
+second database's tables a multi-part `db_schema` (`db_schema:
+"OtherDb.dbo"`, step 3 below), which SQL Server can join with a
+three-part name.
 
 **Configuring it.**
 
 1. Copy `project_config.example/datasources.example.yaml` to
-   `project_config/datasources.yaml` and name each real source. This file
-   is versioned like `schema.yaml` and must **never** hold a connection
-   string — only `url_env`, the name of an environment variable.
-2. Set each source's actual connection string in `.env`, under the
-   variable name `url_env` points at (e.g. `DB_URL_MAIN`,
-   `DB_URL_ARCHIVE`). `DB_CONNECTION_URL` itself is then unused, and no
-   longer required.
+   `project_config/datasources.yaml` and describe each real source:
+
+   ```yaml
+   default: sales
+   datasources:
+     sales:
+       host: 10.0.0.5
+       database: SalesDW
+       username: nlq_reader
+       password_env: DB_PASSWORD_SALES
+       options:
+         TrustServerCertificate: true
+     inventory:                      # same server, its own pool
+       host: 10.0.0.5
+       database: InventoryDW
+       username: nlq_reader
+       password_env: DB_PASSWORD_INVENTORY
+   ```
+
+   `port` defaults to 1433 and `driver` to `ODBC Driver 18 for SQL
+   Server`. For Windows authentication write `trusted_connection: true`
+   and leave out the username and `password_env`. This file is versioned
+   like `schema.yaml` and must **never** hold a password; a `password:`
+   key is refused, and so is a credential key under `options`.
+2. Set each source's **raw** password in `.env`, under the variable
+   `password_env` names:
+
+   ```
+   DB_PASSWORD_SALES=p@ss/w:rd#1
+   DB_PASSWORD_INVENTORY=...
+   ```
+
+   Write the password exactly as the database knows it. Do **not**
+   URL-encode it: the application builds the connection URL and escapes
+   every special character itself. `DB_CONNECTION_URL` and `DB_PASSWORD`
+   are then unused, and no longer required. A missing or empty variable is
+   refused at start-up with a message naming the source and the variable.
 3. In `project_config/schema.yaml`, give every table that is not on the
    default source a `datasource: <name>` key. A table in a second
-   database on the **same** server as an existing source is not a new
-   source at all — give it a multi-part `db_schema: "OtherDb.dbo"`
-   instead and leave `datasource` unset.
+   database on the **same** server that should stay joinable with an
+   existing source's tables is not a new source — give it a multi-part
+   `db_schema: "OtherDb.dbo"` instead and leave `datasource` unset.
 
    **If your warehouse has the same table name in more than one schema**
    (e.g. `sales.Customer` and `ref.Customer`), give each one its own
@@ -644,9 +692,19 @@ this way.
    panel's versioned config bundle covers — a change to it needs a
    restart, the same as changing `DB_CONNECTION_URL` always did.
 
+**Moving a `url_env` source to the structured form.** A source written
+for 6.1 or 6.2 (`url_env: DB_URL_MAIN`, the variable holding a complete
+URL) keeps working unchanged, and may sit beside structured sources in
+one file. To move it: copy the host, port, database, login and query
+parameters (`TrustServerCertificate=yes` and the like, which become
+`options`) from the URL into the YAML; put only the raw, un-encoded
+password in a new `DB_PASSWORD_*` variable; replace `url_env` with
+`password_env`; restart and run `python -m scripts.verify_deployment`.
+Remove the old `DB_URL_*` variable afterwards.
+
 **Verifying it.** `python -m scripts.verify_deployment` (step 3 above)
 runs every database check once per configured source automatically —
-`Database connectivity [main]`, `Database connectivity [archive]`, and so
+`Database connectivity [sales]`, `Database connectivity [inventory]`, and so
 on for the read-only-login, row-cap and query-timeout checks — plus one
 new check, `Tables map to data sources`, confirming every `schema.yaml`
 table's `datasource:` (if any) actually names a configured source. The
@@ -658,7 +716,7 @@ field is exactly what it always was (e.g. `"SELECT 1 succeeded"`). With
 more than one, it names each source in turn:
 
 ```
-main: SELECT 1 succeeded; archive: SELECT 1 succeeded
+sales: SELECT 1 succeeded; inventory: SELECT 1 succeeded
 ```
 
 and `database` (the boolean) is `true` only when **every** configured

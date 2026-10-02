@@ -1659,11 +1659,25 @@ All configuration is read from **environment variables** (or a `.env` file):
 
 `DB_CONNECTION_URL` above is what a deployment with exactly **one**
 warehouse connection sets — the default, and still the whole story for
-most deployments. A deployment that needs to query more than one database
-(a second SQL Server instance, an archive on its own box) instead adds
-`project_config/datasources.yaml`, which names each source and the
-environment variable holding *its* connection string (`DB_URL_MAIN`,
-`DB_URL_ARCHIVE`, …) — `DB_CONNECTION_URL` is then unused. See
+most deployments. Its password goes in `DB_PASSWORD`, raw: the code sets it
+on the parsed URL (`database.datasources.apply_db_password`,
+`URL.set(password=...)`), so nothing is percent-encoded by hand. A password
+written inside the URL itself is used as written (and so must be encoded),
+and one in both places is refused.
+
+A deployment that needs to query more than one database (a second database
+on the same server, another SQL Server instance) instead adds
+`project_config/datasources.yaml`, whose sources **describe the
+connection** — `host`, `port`, `database`, `driver`, `username`, `options`,
+or `trusted_connection: true` for Windows authentication — while `.env`
+holds only the raw password, one variable per source, named by
+`password_env` (`DB_PASSWORD_SALES`, …). `database.datasources.build_url`
+assembles each URL with `sqlalchemy.engine.URL.create`, which escapes the
+password. A source may instead keep the earlier `url_env` form (a variable
+holding a complete URL); the two forms can share one file.
+`DB_CONNECTION_URL` and `DB_PASSWORD` are then unused. Two databases on one
+server are two sources with a pool each; a question that must join across
+them needs one source and a multi-part `db_schema` instead. See
 `docs/design/DATASOURCES.md` for the full design and
 `docs/deployment-runbook.md` §16 for configuring and verifying it.
 

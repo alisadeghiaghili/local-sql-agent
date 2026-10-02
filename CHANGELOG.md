@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+A warehouse connection is now described in `datasources.yaml`, and `.env`
+holds only the raw password. Existing setups keep working unchanged.
+
+### Added
+
+- **Structured data sources.** A source in `project_config/datasources.yaml` may give `host`, `port` (default 1433), `database`, `driver` (default `ODBC Driver 18 for SQL Server`), a login (`username`, or `username_env` naming a variable) and `password_env`, the name of the variable holding the **raw** password. `trusted_connection: true` selects Windows authentication and takes no login. Extra ODBC keywords go under `options`; YAML `true`/`false` become `yes`/`no` and numbers become their text.
+  - The URL is built in one place with SQLAlchemy's `URL.create`, which escapes the password itself. A password containing `@ % ] : / ? # & = + ;` or spaces needs no encoding.
+  - Two databases on one server are two sources, each with its own pool. One query still runs on one source; keep a single source with a multi-part `db_schema` when questions join across databases.
+- **`DB_PASSWORD`.** Without `datasources.yaml`, the raw password for `DB_CONNECTION_URL` can be set here instead of being percent-encoded inside the URL. It is applied to the parsed URL. A password in both places is refused at startup.
+- **Clear refusals at startup.** A `password_env` or `username_env` variable that is unset or empty is refused naming the source and the variable, never the value. A source that sets both `url_env` and structured fields, a `password:`/`pwd:`/`url:` key in the file, a credential-like `options` key (`pwd`, `password`, `uid`, `user`, `user id`) and a placeholder host, database, user name or password are refused too.
+
+### Changed
+
+- **`url_env` is the legacy form.** It works exactly as in 6.1 and 6.2, may share a file with structured sources, and still needs the password inside the URL percent-encoded (`@` becomes `%40`).
+- **`.env.example` and the example `datasources.example.yaml`** now show the structured form and `DB_PASSWORD_*` variables. The `DB_URL_*` examples are gone.
+
+### Security
+
+- **Passwords are masked in messages.** The refusal when `APP_DB_URL` points at a warehouse source used to print both URLs in full, passwords included. It now masks them, as `scripts/verify_deployment.py` does for the connectivity check.
+
+### Upgrading
+
+- No action needed. A deployment without `datasources.yaml` is unchanged, and so is one that uses `url_env`.
+- **To use `DB_PASSWORD`,** remove the password from `DB_CONNECTION_URL` and put it, raw, in `DB_PASSWORD`. A raw password written inside the URL is not detected or re-encoded, because `/ ? # :` or a literal `%40` cannot be told apart from an encoded one.
+- **To move a `url_env` source to the structured form,** copy the host, port, database, login and query parameters from its URL into the YAML (query parameters such as `TrustServerCertificate=yes` become `options`), put only the raw password in a new `DB_PASSWORD_*` variable, replace `url_env` with `password_env`, restart, and run `python scripts/verify_deployment.py`. Remove the old `DB_URL_*` variable afterwards.
+
 ## [6.2.0] — 2026-09-28
 
 Tables with the same name in different schemas can be described and

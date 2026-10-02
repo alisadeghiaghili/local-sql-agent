@@ -114,10 +114,13 @@ DB_CONNECTION_URL=mssql+pyodbc://auction_nlq_reader:<password>@<host>:1433/Aucti
 ```
 
 With `project_config/datasources.yaml` configured, there is no single
-`DB_CONNECTION_URL` — set the equivalent `DB_URL_<NAME>` variable for
-*this* source instead (see `docs/design/DATASOURCES.md`); repeat steps
-1–3 of this document for each other source's own server and its own
-`DB_URL_<NAME>`.
+`DB_CONNECTION_URL` — put this login in *this* source's `username` (or
+`username_env`) and its raw, un-encoded password in the variable named by
+`password_env` (see `docs/design/DATASOURCES.md`); repeat steps 1–3 of this
+document for each other source's own server and its own login. A source
+written with the legacy `url_env` form takes the login in its `DB_URL_<NAME>`
+URL instead. With a single `DB_CONNECTION_URL`, leave the password out of
+the URL and set it, raw, in `DB_PASSWORD`.
 
 ## 2. Explicit `DENY` grants
 
@@ -251,9 +254,9 @@ After applying the above:
       `AuctionNlqGroup` receiving connections from `auction_nlq_reader`
       (i.e. the classifier function is actually being applied) once the
       application's `.env` is switched over to the new login.
-- [ ] Update `.env`'s `DB_CONNECTION_URL` (or, with more than one data
-      source configured, this source's own `DB_URL_<NAME>`) to the new
-      login and remove `trusted_connection=yes` from the connection
+- [ ] Update `.env`'s `DB_CONNECTION_URL` (or, with
+      `datasources.yaml`, this source's `username` and `password_env`
+      variable) to the new login and remove `trusted_connection=yes` from the connection
       string.
 - [ ] With more than one data source: confirm this checklist has been
       run once per source, against that source's own server — a login

@@ -6,13 +6,19 @@
 # Optional file. When project_config/datasources.yaml does not exist, this
 # deployment has exactly one warehouse connection, named "default", using
 # DB_CONNECTION_URL -- the single-source behaviour every earlier release
-# had, unchanged. Add this file only once a deployment genuinely needs to
-# query more than one database, possibly on different servers.
+# had, unchanged. Add this file once a deployment wants its connection
+# described here instead of in one long URL in .env, or needs to query
+# more than one database.
 #
-# See docs/design/DATASOURCES.md for the full decision record (why the
-# file is shaped this way, what was rejected, and the roadmap for what it
-# deliberately does not support yet: combining data from different
-# servers in one answer, and mixing database types).
+# This file DESCRIBES the connection (host, port, database, driver, ODBC
+# options). .env holds only the secret: the RAW password, exactly as the
+# database knows it, with no URL encoding of any kind. The code builds the
+# SQLAlchemy URL and escapes every special character itself, so a password
+# such as  p@ss/w:rd#1  is written to .env exactly like that.
+#
+# See docs/design/DATASOURCES.md for the decision record and the roadmap
+# for what is deliberately not supported yet (combining data from different
+# servers in one answer, mixing database types).
 #
 # default:
 #   Which source a schema.yaml table belongs to when it sets no
@@ -20,50 +26,105 @@
 #   listed below; inferred automatically when there is exactly one.
 #
 # datasources:
-#   Source name -> definition. Each top-level key here is the name a
-#   schema.yaml table's `datasource:` field refers to, and the name shown
-#   in /health, the audit trail, and error messages -- keep it short and
-#   stable. Fields per source:
-#     url_env           : (required) the NAME of an environment variable
-#                          holding this source's SQLAlchemy connection
-#                          string -- e.g. DB_URL_MAIN. NEVER the
-#                          connection string itself: this file is
-#                          versioned and reviewed like schema.yaml, and
-#                          must never be able to carry a password. Set the
-#                          actual URL in .env (or a secret store) under
-#                          that variable name, the same way
-#                          DB_CONNECTION_URL already works today.
-#     description       : (optional) free text shown to operators.
-#     dialect           : (optional) must equal this deployment's
-#                          SQL_DIALECT if set at all -- mixed dialects
-#                          across sources are not supported yet (see the
-#                          design doc's roadmap). Leave it out; it exists
-#                          so a file written today does not need editing
-#                          once that lands.
-#     application_name  : (optional) overrides DB_APPLICATION_NAME for
-#                          just this source's connections, so a DBA can
-#                          tell which source's sessions are which in
-#                          their own server-side traces.
+#   Source name -> definition. Each key is the name a schema.yaml table's
+#   `datasource:` field refers to, and the name shown in /health, the audit
+#   trail and error messages -- keep it short and stable.
 #
-# Several databases on ONE server (one login, one connection pool) are
-# ONE data source, not two: give a table in the second database a
-# multi-part db_schema in schema.yaml instead, e.g.
-# `db_schema: "OtherDb.dbo"`, which renders the three-part
-# `[OtherDb].[dbo].[Table]` reference SQL Server expects. A second
-# `datasources.yaml` entry is for a genuinely different server (a
-# different host, a different login, a different connection pool).
+#   A source is EITHER structured (host + database) OR legacy (url_env);
+#   setting both is refused at start-up, naming the source.
 #
-# Every source's connection string is validated the same way
-# DB_CONNECTION_URL always was (Settings.validate(), checked at
-# start-up): the environment variable must be set, must not be a
-# leftover placeholder, and its URL's backend must match SQL_DIALECT.
+#   Structured fields:
+#     host                : (required) server name or address. For a named
+#                           instance write host\INSTANCE and leave port out.
+#     database            : (required) database name.
+#     port                : (optional) default 1433.
+#     driver              : (optional) ODBC driver, default
+#                           "ODBC Driver 18 for SQL Server".
+#     username            : the login as a plain value (it is not secret) ...
+#     username_env        : ... or the NAME of an environment variable that
+#                           holds it. Set one of the two, not both.
+#     password_env        : the NAME of the environment variable that holds
+#                           the RAW password. Required with a username.
+#     trusted_connection  : true = Windows authentication. No login is sent,
+#                           so username, username_env and password_env must
+#                           not be set.
+#     options             : (optional) extra ODBC keywords, e.g.
+#                           TrustServerCertificate. A YAML true/false becomes
+#                           "yes"/"no" and a number becomes its text.
+#                           Credential keys (pwd, password, uid, user,
+#                           user id), driver, trusted_connection, server,
+#                           database and odbc_connect are refused: they have
+#                           their own fields, or must never be written here.
+#
+#   Legacy field (kept for deployments written against 6.1 and 6.2):
+#     url_env             : the NAME of an environment variable holding a
+#                           complete SQLAlchemy URL. That URL is used as
+#                           written, so a password inside it still has to be
+#                           percent-encoded by hand (@ becomes %40).
+#
+#   Fields for either form:
+#     description         : (optional) free text shown to operators.
+#     dialect             : (optional) must equal this deployment's
+#                           SQL_DIALECT if set at all -- mixed dialects
+#                           across sources are not supported yet. Leave it
+#                           out; it exists so a file written today does not
+#                           need editing once that lands.
+#     application_name    : (optional) overrides DB_APPLICATION_NAME for just
+#                           this source's connections, so a DBA can tell
+#                           which source's sessions are which.
+#
+# Two databases on the SAME server are a supported configuration as two
+# sources, as below: each has its own connection pool, and each query runs
+# on exactly one of them. If a question has to JOIN tables from both
+# databases, use one source instead and give the second database's tables a
+# multi-part db_schema in schema.yaml (e.g. `db_schema: "InventoryDW.dbo"`),
+# which renders the three-part [InventoryDW].[dbo].[Table] reference SQL
+# Server expects.
+#
+# Every source is validated at start-up: each environment variable named
+# here must be set and non-empty (the message names the source and the
+# variable, never the value), no part may be a leftover placeholder, and
+# the connection's backend must match SQL_DIALECT.
 
-default: main
+default: sales
 
 datasources:
-  main:
-    url_env: DB_URL_MAIN
-    description: "Main warehouse server"
-  # archive:
-  #   url_env: DB_URL_ARCHIVE
-  #   description: "Read-only replica of last year's closed trading data"
+  sales:
+    description: Sales warehouse
+    host: 10.0.0.5
+    # port: 1433
+    database: SalesDW
+    # driver: ODBC Driver 18 for SQL Server
+    username: nlq_reader
+    password_env: DB_PASSWORD_SALES       # .env: DB_PASSWORD_SALES=<raw password>
+    options:
+      TrustServerCertificate: true        # rendered as TrustServerCertificate=yes
+
+  # A second database on the same server: its own source, its own pool.
+  inventory:
+    description: Inventory warehouse
+    host: 10.0.0.5
+    database: InventoryDW
+    username: nlq_reader
+    password_env: DB_PASSWORD_INVENTORY
+    options:
+      TrustServerCertificate: true
+
+  # Windows authentication instead of a login and password:
+  # reports:
+  #   host: 10.0.0.6
+  #   database: ReportsDW
+  #   trusted_connection: true
+
+  # The login's name from the environment as well:
+  # finance:
+  #   host: 10.0.0.7
+  #   database: FinanceDW
+  #   username_env: DB_USER_FINANCE
+  #   password_env: DB_PASSWORD_FINANCE
+
+  # Legacy form -- the NAME of a variable holding a complete SQLAlchemy URL.
+  # Still supported, unchanged; prefer the structured form above.
+  # warehouse2:
+  #   url_env: DB_URL_WAREHOUSE2          # .env: DB_URL_WAREHOUSE2=mssql+pyodbc://...
+  #   description: Written against 6.1/6.2
