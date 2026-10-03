@@ -170,20 +170,48 @@ class TestByteOrderMark:
         problems = _scan(tmp_path, f"{self.BOM}A=1\nB=2\n")
         assert "invalid_name" not in [p.kind for p in problems]
 
-    def test_a_first_line_that_is_no_valid_name_omits_it_from_the_message(self, tmp_path):
+    def test_a_bom_before_a_comment_loses_nothing_and_is_not_reported(self, tmp_path):
+        # python-dotenv glues the mark to the comment and keeps a None-valued
+        # "\ufeff" key that load_dotenv ignores; OPENAI_MODEL is read fine.
+        assert _scan(tmp_path, f"{self.BOM}# settings\nOPENAI_MODEL=x\n") == []
+
+    def test_a_bom_before_a_blank_line_loses_nothing_and_is_not_reported(self, tmp_path):
+        # The mark attaches to the blank line, not to the assignment below it.
+        assert _scan(tmp_path, f"{self.BOM}\nOPENAI_MODEL=x\n") == []
+        assert _scan(tmp_path, f"{self.BOM}\r\n\r\nOPENAI_MODEL=x\r\n") == []
+
+    def test_a_file_that_is_only_a_bom_is_not_reported(self, tmp_path):
+        assert _scan(tmp_path, self.BOM) == []
+
+    def test_a_bom_before_a_bare_name_loses_nothing_and_is_not_reported(self, tmp_path):
+        assert _scan(tmp_path, f"{self.BOM}FLAG\nA=1\n") == []
+
+    def test_what_python_dotenv_does_matches_what_is_reported(self, tmp_path):
+        # The reason for the rule: the variable is lost exactly when "bom" is reported.
+        from dotenv import dotenv_values
+
+        for text, lost in [
+            (f"{self.BOM}A=1\n", True),
+            (f"{self.BOM}# c\nA=1\n", False),
+            (f"{self.BOM}\nA=1\n", False),
+            (f"{self.BOM}   A=1\n", True),
+        ]:
+            path = tmp_path / ".env"
+            path.write_text(text, encoding="utf-8", newline="")
+            assert ("A" not in dotenv_values(path) or dotenv_values(path)["A"] is None) is lost
+            assert [p.kind for p in scan_dotenv(path)].count("bom") == int(lost)
+
+    def test_a_bom_before_an_invalid_name_is_an_invalid_name_not_a_bom(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}my-var=1\nB=2\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, None)]
-        assert problems[0].message == (
-            "line 1: the file starts with a byte-order mark (BOM), so the first "
-            "variable is read under the wrong name -- save .env as UTF-8 without BOM"
-        )
+        assert [(p.kind, p.line, p.name) for p in problems] == [("invalid_name", 1, None)]
 
-    def test_a_comment_first_line_names_no_variable(self, tmp_path):
-        problems = _scan(tmp_path, f"{self.BOM}# settings\nA=1\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, None)]
-
-    def test_a_file_that_is_only_a_bom_is_reported(self, tmp_path):
-        assert [(p.kind, p.name) for p in _scan(tmp_path, self.BOM)] == [("bom", None)]
+    def test_a_bom_before_whitespace_then_a_name_is_both(self, tmp_path):
+        # python-dotenv rejects the line, so A is lost; both causes are named.
+        problems = _scan(tmp_path, f"{self.BOM}   A=1\nB=2\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [
+            ("bom", 1, "A"),
+            ("unparsable", 1, "A"),
+        ]
 
     def test_crlf_changes_nothing(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\r\nDB_HOST=localhost\r\n")
@@ -219,6 +247,10 @@ class TestByteOrderMark:
             ("bom", 1, "BAD"),
             ("unparsable", 1, "BAD"),
         ]
+
+    def test_a_comment_first_bom_file_still_reports_its_later_problems(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}# c\nA=1\nBAD='open\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [("unparsable", 3, "BAD")]
 
     def test_a_bom_in_the_middle_of_the_file_is_not_a_byte_order_mark(self, tmp_path):
         problems = _scan(tmp_path, f"A=1\n{self.BOM}B=2\n")
