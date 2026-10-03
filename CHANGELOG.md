@@ -16,7 +16,7 @@ A configuration file that repeats a key is now refused instead of silently losin
 
 ### Upgrading
 
-- **A config file that had a duplicate key now fails at startup,** naming the key and both lines. Remove the duplicate; the later one was the one in effect, so keep that block's content if it is what you meant.
+- **A config file that repeats a key is now refused,** naming the key and both lines. A duplicate in `datasources.yaml` or `schema.yaml` stops the server at startup; one in the other files fails when that file is first read, and `python scripts/verify_deployment.py` reports it before then. `relationships.yaml` is optional and is skipped with a warning naming the duplicate, as with any other read error. Remove the duplicate; the later one was the one in effect, so keep that block's content if it is what you meant.
 
 ## [6.3.0] — 2026-10-02
 
