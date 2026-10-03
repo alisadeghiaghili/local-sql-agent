@@ -620,6 +620,80 @@ class TestApiKeyConfigValidation:
             _parse_api_keys(raw)
 
 
+class TestMissingDeniedColumnsWarnsOncePerKey:
+    """``load_api_keys`` re-parses on every key-cache refresh, so the
+    "no denied_columns field" warning is once per key per process, not once
+    per parse. ``tests/conftest.py`` resets the record between tests."""
+
+    @staticmethod
+    def _warnings(caplog) -> list[str]:
+        return [
+            r.getMessage() for r in caplog.records
+            if "has no denied_columns field" in r.getMessage()
+        ]
+
+    def test_parsing_the_same_json_twice_warns_once(self, caplog):
+        raw = json.dumps([_entry("analyst-1", "Analyst", RAW_KEY_A)])
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            first = _parse_api_keys(raw)
+            second = _parse_api_keys(raw)
+        assert first == second
+        warnings = self._warnings(caplog)
+        assert len(warnings) == 1
+        assert "API_KEYS_JSON[0] (id='analyst-1')" in warnings[0]
+
+    def test_each_unrestricted_entry_warns_once(self, caplog):
+        raw = json.dumps([
+            _entry("analyst-1", "One", RAW_KEY_A),
+            _entry("analyst-2", "Two", RAW_KEY_B),
+            _entry("analyst-3", "Three", "c" * 40, denied_columns=["Price"]),
+        ])
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            _parse_api_keys(raw)
+            _parse_api_keys(raw)
+        warnings = self._warnings(caplog)
+        assert len(warnings) == 2
+        assert "id='analyst-1'" in warnings[0]
+        assert "id='analyst-2'" in warnings[1]
+
+    def test_a_new_key_warns_again(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            _parse_api_keys(json.dumps([_entry("analyst-1", "One", RAW_KEY_A)]))
+            _parse_api_keys(json.dumps([
+                _entry("analyst-1", "One", RAW_KEY_A),
+                _entry("analyst-2", "Two", RAW_KEY_B),
+            ]))
+        warnings = self._warnings(caplog)
+        assert len(warnings) == 2
+        assert "id='analyst-2'" in warnings[1]
+
+    def test_the_same_id_with_a_changed_hash_warns_again(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            _parse_api_keys(json.dumps([_entry("analyst-1", "One", RAW_KEY_A)]))
+            _parse_api_keys(json.dumps([_entry("analyst-1", "One", RAW_KEY_B)]))
+        assert len(self._warnings(caplog)) == 2
+
+    def test_an_entry_that_gains_an_explicit_empty_list_stops_warning(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            _parse_api_keys(json.dumps([_entry("analyst-1", "One", RAW_KEY_A)]))
+            caplog.clear()
+            keys = _parse_api_keys(json.dumps(
+                [_entry("analyst-1", "One", RAW_KEY_A, denied_columns=[])]
+            ))
+        assert self._warnings(caplog) == []
+        assert keys[_sha256(RAW_KEY_A)].denied_columns == ()
+
+    def test_reset_makes_the_next_parse_warn_again(self, caplog):
+        from security.auth import _reset_denied_columns_warnings
+
+        raw = json.dumps([_entry("analyst-1", "One", RAW_KEY_A)])
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            _parse_api_keys(raw)
+            _reset_denied_columns_warnings()
+            _parse_api_keys(raw)
+        assert len(self._warnings(caplog)) == 2
+
+
 # ---------------------------------------------------------------------------
 # Column-level ACL, end to end (Principal.denied_columns -> validate_sql)
 # ---------------------------------------------------------------------------

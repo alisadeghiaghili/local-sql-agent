@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+A key in `API_KEYS_JSON` with no `denied_columns` field is now warned about once, not every time the key list is read.
+
+### Fixed
+
+- **The "no `denied_columns` field" warning is logged once per key.** The key list is read several times: at startup, by `python -m scripts.verify_deployment`, and again every `KEY_CACHE_TTL_SECONDS` while the server runs. Each read logged the warning again for every such key, so `verify_deployment` printed each one twice, and a running server repeated them at startup and on every key-cache refresh, burying real log lines. Each key is now warned about once per process; a new key, or the same id with a new hash, warns again, and adding `"denied_columns": []` stops the warning. Which keys get the warning, and what it says, are unchanged.
+
 ## [6.3.1] — 2026-10-03
 
 A configuration file that repeats a key is now refused instead of silently losing the first one, and the deployment check counts API keys the way the server does.
