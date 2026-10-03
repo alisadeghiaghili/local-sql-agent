@@ -157,14 +157,14 @@ def _unparsable(string: str, line: int) -> DotenvProblem:
 def _bom_problems(binding: Binding) -> list[DotenvProblem] | None:
     """What a byte-order mark python-dotenv left on the first binding amounts to.
 
-    Older python-dotenv releases (1.2.2 among them) open the file as plain
-    utf-8 and read ``\\ufeffNAME=value`` as a variable named
+    python-dotenv releases before 1.2.3 (1.2.2 among them) open the file as
+    plain utf-8 and read ``\\ufeffNAME=value`` as a variable named
     ``"\\ufeffNAME"``, so ``NAME`` is lost. That is one problem with one
     cause, so the line is reported as the byte-order mark and not also as an
     invalid name. A line python-dotenv rejects outright is still reported as
-    unparsable. Newer releases strip the mark themselves; the decision is
-    made from what the parser returned, never from the raw text, so they
-    report nothing here.
+    unparsable. Releases from 1.2.3 on (the ones requirements.lock pins)
+    strip the mark themselves; the decision is made from what the parser
+    returned, never from the raw text, so they report nothing here.
 
     A byte-order mark in front of a comment, a blank line or a bare name
     loses nothing (python-dotenv keeps a ``None``-valued ``"\\ufeff"`` key

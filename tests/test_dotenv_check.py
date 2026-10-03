@@ -154,9 +154,10 @@ class TestReassignedVariables:
 def _parser_keeps_bom() -> bool:
     """Whether the installed python-dotenv leaves a leading BOM on the first name.
 
-    1.2.2 (pinned in requirements.lock) does, so the variable is lost; newer
-    releases strip it themselves. The BOM tests derive what to expect from
-    this instead of assuming one behaviour.
+    Releases before 1.2.3 (1.2.2 among them) do, so the variable is lost;
+    1.2.3 and newer strip it themselves, and requirements.lock pins one of
+    those. The BOM tests derive what to expect from this instead of assuming
+    one behaviour, so they hold on an older python-dotenv too.
     """
     first = next(iter(parse_stream(io.StringIO("\ufeffA=1\n"))))
     return first.key is not None and first.key.startswith("\ufeff")
