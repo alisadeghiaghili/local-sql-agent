@@ -3,7 +3,8 @@
 """The API-key lifecycle — issue/disable/enable/revoke, read at call time.
 
 ``docs/admin-panel-architecture.md`` §5.5/§5.6 and the phase 2 spec §3:
-``API_KEYS_JSON`` is read once, at start-up, so a "disable" button could
+``API_KEYS_JSON`` (or the ``API_KEYS_FILE`` it can be moved into) is read
+once, at start-up, so a "disable" button could
 never take effect before the next restart. Keys move into the application
 database (:mod:`appdb.models`'s ``admin_api_keys`` table) precisely so a
 revoked or disabled key stops authenticating on the *very next request* —
@@ -26,8 +27,8 @@ request pays the round trip the whole point of caching exists to avoid.
 
 Environment keys keep working, and the ambiguity refusal (§3.3)
 -------------------------------------------------------------------
-``API_KEYS_JSON`` remains supported indefinitely, not just as a one-time
-migration path. :func:`bootstrap_from_env` imports its entries into the
+``API_KEYS_JSON`` / ``API_KEYS_FILE`` remain supported indefinitely, not
+just as a one-time migration path. :func:`bootstrap_from_env` imports its entries into the
 (then-empty) key table on the very first start against a fresh
 application database. After that, both sources keep being read on every
 request (:func:`get_active_principals` merges them) — but if the *same*
@@ -85,7 +86,7 @@ class KeyNotFoundError(LookupError):
 
 class AmbiguousKeyIdentityError(RuntimeError):
     """The same principal id resolves to two different key hashes across
-    ``API_KEYS_JSON`` and the application database (§3.3)."""
+    ``API_KEYS_JSON`` / ``API_KEYS_FILE`` and the application database (§3.3)."""
 
 
 def _maximally_restrictive_denied_columns() -> list[str]:
@@ -114,8 +115,8 @@ def _maximally_restrictive_denied_columns() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def bootstrap_from_env() -> None:
-    """Import ``API_KEYS_JSON`` into the (if empty) key table, and refuse
-    to proceed if any principal id is claimed by two different key hashes
+    """Import ``API_KEYS_JSON`` / ``API_KEYS_FILE`` into the (if empty) key
+    table, and refuse to proceed if any principal id is claimed by two different key hashes
     across the environment and the database. See module docstring.
 
     Called once from ``api/server.py``'s ``lifespan``, after
@@ -124,7 +125,7 @@ def bootstrap_from_env() -> None:
     Raises
     ------
     security.auth.ApiKeyConfigError
-        Propagated unchanged if ``API_KEYS_JSON`` itself is malformed —
+        Propagated unchanged if ``API_KEYS_JSON`` / ``API_KEYS_FILE`` is malformed —
         the existing fail-closed behaviour ``api/server.py`` already has
         for this, unchanged by this phase.
     AmbiguousKeyIdentityError
@@ -168,11 +169,11 @@ def bootstrap_from_env() -> None:
         if db_hashes and key_hash not in db_hashes:
             raise AmbiguousKeyIdentityError(
                 f"Principal id {principal.id!r} is claimed by both an "
-                "API_KEYS_JSON entry and a different application-database "
-                "key (different key_sha256 in each) -- refusing to start "
-                "rather than silently picking one. Either remove this id "
-                "from API_KEYS_JSON, or revoke the conflicting database "
-                "key and re-issue it under a different id."
+                "API_KEYS_JSON / API_KEYS_FILE entry and a different "
+                "application-database key (different key_sha256 in each) -- "
+                "refusing to start rather than silently picking one. Either "
+                "remove this id from there, or revoke the conflicting "
+                "database key and re-issue it under a different id."
             )
 
     invalidate_cache()
@@ -244,7 +245,7 @@ def _load_db_rows() -> dict[str, dict]:
 
 def get_active_principals() -> dict[str, Principal]:
     """``{key_sha256: Principal}`` for every currently-usable key, merged
-    from ``API_KEYS_JSON`` and the application database, cached for
+    from ``API_KEYS_JSON`` / ``API_KEYS_FILE`` and the application database, cached for
     ``cfg.settings.key_cache_ttl_seconds``.
 
     Merge rule when a key hash exists in both sources (only possible for a
@@ -276,7 +277,7 @@ def get_active_principals() -> dict[str, Principal]:
     try:
         env_principals = auth.load_api_keys()
     except ApiKeyConfigError as exc:
-        logger.error("API_KEYS_JSON could not be parsed while resolving keys: %s", exc)
+        logger.error("API keys could not be loaded while resolving keys: %s", exc)
         env_principals = {}
 
     merged: dict[str, Principal] = {}

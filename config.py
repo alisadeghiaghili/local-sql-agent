@@ -116,10 +116,27 @@ from typing import Any, Generator
 # ever missing from an environment (e.g. a minimal container image that
 # only sets real environment variables and has no .env file at all).
 # ---------------------------------------------------------------------------
-try:
-    from dotenv import load_dotenv
+#: The ``.env`` file python-dotenv loaded, and what it could not use in it
+#: (:func:`core.dotenv_check.scan_dotenv`). Empty path = no ``.env`` file.
+#: Set once, below; :meth:`Settings.validate` refuses to start on any problem
+#: because python-dotenv itself only prints a one-line warning to stderr.
+_dotenv_path: str = ""
+_dotenv_problems: list[DotenvProblem] = []
 
-    load_dotenv()
+try:
+    from dotenv import find_dotenv, load_dotenv
+
+    from core.dotenv_check import DotenvProblem, scan_dotenv
+
+    # find_dotenv() here, not inside load_dotenv(): it searches from the
+    # calling file's directory, and the scan must read the same file.
+    # PYTHON_DOTENV_DISABLED turns loading off, and with it the check.
+    if os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() not in (
+        "1", "true", "t", "yes", "y",
+    ):
+        _dotenv_path = find_dotenv()
+        _dotenv_problems = scan_dotenv(_dotenv_path)
+    load_dotenv(_dotenv_path or None)
 except ImportError:  # pragma: no cover - exercised only when dependency missing
     pass
 
@@ -1114,7 +1131,23 @@ class Settings:
     :func:`security.auth.load_api_keys`, per this module's
     read-through-``cfg.settings``-at-call-time convention. Empty (the
     default) means no caller can authenticate — see :attr:`auth_required`
-    for what that implies at startup."""
+    for what that implies at startup. A multi-line value only survives
+    ``.env`` wrapped in single quotes with no apostrophe inside, so for more
+    than one key prefer :attr:`api_keys_file`. Setting both is refused."""
+
+    api_keys_file: str = field(
+        default_factory=lambda: os.getenv("API_KEYS_FILE", "")
+    )
+    """Path to a file holding exactly what :attr:`api_keys_json` holds: the
+    JSON array of key objects, in any formatting, with no ``.env`` quoting
+    rules to trip over. Recommended location: ``project_config/api_keys.json``
+    (``project_config/`` is git-ignored). A relative path resolves against the
+    repository root, like ``PROJECT_CONFIG_DIR``, not the working directory.
+    Empty (the default) means unused. Read once per process, like an
+    environment variable, so edits need a restart. A missing or unreadable
+    file, invalid JSON, a repeated key inside one object, or both this and
+    :attr:`api_keys_json` being set is refused at startup. Read by
+    :func:`security.auth.load_api_keys`."""
 
     auth_required: bool = field(
         default_factory=lambda: os.getenv("AUTH_REQUIRED", "true").lower()
@@ -1127,8 +1160,9 @@ class Settings:
     that ``api/server.py``'s ``lifespan`` logs a ``WARNING`` for on
     *every* startup, not just the first, so a silently-disabled front
     door is never quiet in the logs. When ``True`` and :attr:`api_keys_json`
-    resolves to zero configured keys, ``lifespan`` raises ``RuntimeError``
-    instead of starting a server nobody could ever authenticate to."""
+    / :attr:`api_keys_file` resolve to zero configured keys, ``lifespan``
+    raises ``RuntimeError`` instead of starting a server nobody could ever
+    authenticate to."""
 
     app_docs_public: bool = field(
         default_factory=lambda: os.getenv("APP_DOCS_PUBLIC", "false").lower()
@@ -1484,6 +1518,12 @@ class Settings:
     def validate(self) -> None:
         """Raise ValueError if any required setting is missing or still a placeholder.
 
+        A ``.env`` line python-dotenv could not use (unparsable, a leftover
+        line of a broken multi-line value, or a variable assigned twice with
+        different values) is refused first, listing every such line by number
+        and variable name -- never by value -- because the settings read below
+        may be wrong for exactly that reason. See :mod:`core.dotenv_check`.
+
         Every warehouse connection string is checked by
         :func:`_check_warehouse_url`: ``db_connection_url`` (with
         ``db_password`` applied) when there is no ``datasources.yaml``,
@@ -1492,6 +1532,10 @@ class Settings:
         ``username_env`` / ``password_env`` variable is unset or empty is
         refused, naming the source and the variable.
         """
+        if _dotenv_problems:
+            from core.dotenv_check import format_problems
+
+            raise ValueError(format_problems(_dotenv_path, _dotenv_problems))
         placeholders = {
             "your_password_here", "your_server_here",
             "your_db_here", "change_me", "",

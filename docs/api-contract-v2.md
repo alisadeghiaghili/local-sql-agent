@@ -619,7 +619,11 @@ other transport are deliberately unsupported, so there is exactly one way
 in to reason about.
 
 Configuration is `API_KEYS_JSON`, a JSON array of
-`{"id", "name", "key_sha256", "denied_columns"?}` objects. `denied_columns`
+`{"id", "name", "key_sha256", "denied_columns"?}` objects — or, for the same
+array in a file with no `.env` quoting rules, `API_KEYS_FILE` (a path;
+relative paths resolve against the repository root; read once at start-up;
+set one of the two, not both). Both go through the same parser, which also
+refuses a field repeated inside one object. `denied_columns`
 is optional, and **omitting it is not the same as denying everything**: an
 entry with no `denied_columns` field gets no column restriction at all,
 the opposite of a key issued through the admin panel, which defaults to
@@ -643,12 +647,12 @@ python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
 ```
 
 It prints the raw key **once**, to stdout only — never to a file or log —
-plus the `API_KEYS_JSON` entry to paste into config.
+plus the entry to add to the `API_KEYS_FILE` array (or `API_KEYS_JSON`).
 
 ### 11.2 Fail closed
 
-`AUTH_REQUIRED` defaults to `true`. If it is `true` and `API_KEYS_JSON`
-resolves to zero configured keys, `api/server.py`'s `lifespan` raises
+`AUTH_REQUIRED` defaults to `true`. If it is `true` and `API_KEYS_FILE` /
+`API_KEYS_JSON` resolve to zero configured keys, `api/server.py`'s `lifespan` raises
 `RuntimeError` — the server refuses to start with a front door nobody could
 ever open, the same fail-closed precedent already applied to a placeholder
 `DB_CONNECTION_URL`.

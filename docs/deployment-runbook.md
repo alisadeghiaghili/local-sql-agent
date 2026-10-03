@@ -33,14 +33,15 @@ password manager share, or read aloud/typed by hand — never a group
 channel or a shared doc) so they can paste it into the web UI's "کلید API"
 field themselves; do not also collect it back into your own secrets
 manager unless you specifically intend to be able to act as that analyst.
-It also prints the `API_KEYS_JSON` array entry to paste into step 2.
+It also prints the array entry to add to your key file in step 2.
 If a key is lost, issue that analyst a new one; there is no way to recover
 the old one from `key_sha256` alone (that is the point — see
 `security/auth.py`'s module docstring).
 
 Repeat for every analyst who will use the UI, plus one more for any other
-real caller/integration, appending each entry to the same `API_KEYS_JSON`
-array (`[{"id": ...}, {"id": ...}]`).
+real caller/integration, appending each entry to the same array
+(`[{"id": ...}, {"id": ...}]`) — the file named by `API_KEYS_FILE` (step 2),
+or `API_KEYS_JSON` for a single key.
 
 ### 1.1 The admin key
 
@@ -72,7 +73,8 @@ python -m scripts.issue_api_key --id sec-1 --name "Security" --admin --security
 
 The script warns when it is asked for a combination that produces a
 partly-403 panel, so this is checkable at issue time rather than at first
-login. Both admin roles must be bootstrapped from `API_KEYS_JSON` this way:
+login. Both admin roles must be bootstrapped from `API_KEYS_FILE` /
+`API_KEYS_JSON` this way:
 the first admin of each kind comes from the environment, never from a web
 flow (§2.3).
 
@@ -93,7 +95,32 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   `DB_PASSWORD_*` variable per source.
 - `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_KEY` — the real LLM
   endpoint.
-- `API_KEYS_JSON` — the array from step 1 (every issued key's entry).
+- `API_KEYS_FILE` — the path of a file holding the array from step 1 (every
+  issued key's entry), pretty-printed as you like. Recommended:
+  `project_config/api_keys.json` (`project_config/` is git-ignored, and a
+  relative path resolves against the repository root, like
+  `PROJECT_CONFIG_DIR` below). Create it, then set
+  `API_KEYS_FILE=project_config/api_keys.json` in `.env`:
+
+  ```json
+  [
+    {"id": "analyst-1", "name": "Jane Analyst", "key_sha256": "<64 hex>"},
+    {"id": "admin-1", "name": "Admin", "key_sha256": "<64 hex>",
+     "admin": true, "operations": true, "security": true}
+  ]
+  ```
+
+  The file is read once at start-up, so **restart the server after editing
+  it** (the preflight below runs in its own process and always sees the
+  current file). A missing file, invalid JSON (the error gives the line and
+  column) or a field repeated inside one entry stops startup.
+  `API_KEYS_JSON` still works for a single key written on one line, but do
+  not set both: that is refused. A multi-line `API_KEYS_JSON` must be wrapped
+  in single quotes with no apostrophe anywhere inside it (a key named
+  `Ali's key` breaks it), and double quotes around the array break the JSON
+  — which is why the file is the recommended form. Either way, a `.env` line
+  python-dotenv cannot use is now refused at start-up with its line number
+  and variable name (never its value).
 - `PROJECT_CONFIG_DIR` — leave unset (defaults to `project_config/`, this
   deployment's real domain data) unless you deliberately mean to run
   against the sample `project_config.example/` template. If you do set it
@@ -147,8 +174,8 @@ changing anything persistent:
 
 - `VERIFY_API_KEY=<raw key from step 1>` — proves that *specific* key
   round-trips through real authentication, not just that some key is
-  configured. It is checked against `API_KEYS_JSON` and the application
-  database together, as the server does, so a key issued from the admin
+  configured. It is checked against `API_KEYS_FILE` / `API_KEYS_JSON` and the
+  application database together, as the server does, so a key issued from the admin
   panel works too.
 - `VERIFY_EXPECTED_ANALYSTS=<N>` — states how many concurrent analysts you
   actually expect behind the smallest configured key's bucket, so the
@@ -261,10 +288,15 @@ preflight in step 3 should have already caught the same problem — go back
 and re-run it. The two most common fail-closed exits, both intentional:
 
 - `Invalid configuration: ...` — a `Settings.validate()` failure (a
-  placeholder left in `.env`).
-- `AUTH_REQUIRED is true but no usable key is configured in API_KEYS_JSON
-  or the application database` — step 1/2 was skipped or the entry didn't
-  make it into `.env`.
+  placeholder left in `.env`, or a `.env` line python-dotenv could not use:
+  the message lists each by line number and variable name — a multi-line
+  `API_KEYS_JSON` that is not wrapped in single quotes is the usual one).
+- `Invalid API key configuration: ...` — `API_KEYS_FILE` is missing,
+  unreadable or not valid JSON, an entry is malformed, or both
+  `API_KEYS_FILE` and `API_KEYS_JSON` are set.
+- `AUTH_REQUIRED is true but no usable key is configured in API_KEYS_FILE,
+  API_KEYS_JSON or the application database` — step 1/2 was skipped or the
+  entry didn't make it into the key file or `.env`.
 
 Also confirm `System prompt loaded (N chars)` appears — a missing
 `<PROJECT_CONFIG_DIR>/system_prompt.md` is a packaging error, not a config one.

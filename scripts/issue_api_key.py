@@ -13,7 +13,7 @@ Prints the raw key to stdout **exactly once** — it is not recoverable
 afterwards, because only its SHA-256 hex digest is ever configured or
 stored (see ``security/auth.py``'s module docstring for why plain
 SHA-256, not bcrypt/argon2, is the correct primitive here). Also prints
-the ``API_KEYS_JSON`` entry to paste into that variable's array.
+the entry to paste into the array in ``API_KEYS_FILE`` (or ``API_KEYS_JSON``).
 
 The raw key is never written to a file or to any log — only to this
 process's own stdout, for the operator to copy immediately.
@@ -21,7 +21,7 @@ process's own stdout, for the operator to copy immediately.
 Why the output is laid out the way it is
 ----------------------------------------
 This script emits two strings, and they go to two different places: the
-raw key to a browser field, the JSON entry to ``.env``. Version 4.6.1
+raw key to a browser field, the JSON entry to the key file or ``.env``. Version 4.6.1
 added a 401 hint for operators who pasted the digest into the key field,
 on the reasoning that the JSON entry is "the conspicuous, copy-pasteable
 artefact". That reasoning was right and the fix was aimed one step too
@@ -42,8 +42,8 @@ that has not been switched to UTF-8.
 Capability flags
 ----------------
 :data:`_CAPABILITY_FLAGS` maps the three ``--`` flags to the
-``API_KEYS_JSON`` fields ``security/auth.py`` parses. All three have been
-parseable since the admin panel's phase 2, but only ``--admin`` was
+``API_KEYS_JSON`` / ``API_KEYS_FILE`` fields ``security/auth.py`` parses.
+All three have been parseable since the admin panel's phase 2, but only ``--admin`` was
 issuable here — so granting the other two meant hand-editing JSON, which
 is exactly the "raw key and digest get confused" territory this script
 exists to keep operators out of.
@@ -116,7 +116,9 @@ def build_entry(
     operations: bool = False,
     security: bool = False,
 ) -> dict:
-    """The ``API_KEYS_JSON`` array entry for *raw_key* -- never the raw key itself.
+    """The ``API_KEYS_FILE`` / ``API_KEYS_JSON`` array entry for *raw_key*.
+
+    Never the raw key itself.
 
     *admin*, *operations* and *security* grant the three capabilities
     ``security.auth._parse_api_keys`` understands
@@ -253,9 +255,11 @@ def main(argv: list[str] | None = None) -> int:
 
     _emit_key_block(raw_key)
     print()
-    print("  STEP 2 OF 2 -- add this entry to the API_KEYS_JSON array in .env,")
-    print("  then restart the server. This is the key's SHA-256 DIGEST, not")
-    print("  the key: pasting it into the browser gets a 401.")
+    print("  STEP 2 OF 2 -- add this entry to the JSON array in the file named")
+    print("  by API_KEYS_FILE (recommended, e.g. project_config/api_keys.json)")
+    print("  or to API_KEYS_JSON in .env, then restart the server. This is the")
+    print("  key's SHA-256 DIGEST, not the key: pasting it into the browser")
+    print("  gets a 401.")
     print()
     print(f"    {json.dumps(entry, ensure_ascii=False)}")
     print()

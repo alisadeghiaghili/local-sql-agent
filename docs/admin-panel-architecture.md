@@ -416,8 +416,8 @@ false: either revocation is not immediate, or every question pays a hop.
 
 ### 5.6 Revocation must be immediate
 
-`API_KEYS_JSON` is read at start-up today. A "disable" button that takes
-effect at the next restart is not a disable — "tomorrow morning" is not
+`API_KEYS_JSON` (or the file `API_KEYS_FILE` names) is read at start-up
+today. A "disable" button that takes effect at the next restart is not a disable — "tomorrow morning" is not
 an answer for a leaked key.
 
 Keys therefore move out of start-up configuration into the application

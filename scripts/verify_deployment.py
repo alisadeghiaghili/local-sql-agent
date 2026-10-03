@@ -355,15 +355,19 @@ def _verify_api_key_invocation() -> str:
 
 
 def _key_sources(merged: dict, env_keys: dict) -> str:
-    """``"1 from API_KEYS_JSON, 2 from the application database"``.
+    """``"1 from API_KEYS_FILE (keys.json), 2 from the application database"``.
 
-    A key present in both is counted under ``API_KEYS_JSON``; only hashes the
-    environment does not have are attributed to the application database.
+    The first part names the environment source in use (``API_KEYS_FILE`` with
+    its path, or ``API_KEYS_JSON``). A key present in both is counted under
+    it; only hashes the environment does not have are attributed to the
+    application database.
     """
+    from security.auth import api_keys_source
+
     from_env = len(merged.keys() & env_keys.keys())
     parts = []
     if from_env:
-        parts.append(f"{from_env} from API_KEYS_JSON")
+        parts.append(f"{from_env} from {api_keys_source()}")
     if len(merged) - from_env:
         parts.append(f"{len(merged) - from_env} from the application database")
     return ", ".join(parts)
@@ -378,15 +382,19 @@ def check_api_key_authenticates() -> CheckResult:
     so this FAILs here, before a real deploy attempt, instead of the server
     refusing to start on first launch with nobody watching. Like the server,
     it asks whether any key exists in the *merged* set
-    (:func:`appdb.key_store.get_active_principals`: ``API_KEYS_JSON`` plus
-    the application database), so a deployment whose keys were imported at
+    (:func:`appdb.key_store.get_active_principals`: ``API_KEYS_JSON`` or the
+    ``API_KEYS_FILE`` file, plus the application database), so a deployment whose keys were imported at
     first start or issued from the admin panel passes.
+
+    This script runs in its own process, so it reads ``API_KEYS_FILE`` as it is
+    now; a server already running keeps the copy it read at start-up and needs
+    a restart after the file is edited.
 
     This only reads. It never calls ``bootstrap_from_env`` and writes no key
     rows; opening the application database does create its tables when
     missing, exactly as the server's own startup would. If the database
     cannot be read (not configured, unreachable, driver missing) the check
-    falls back to ``API_KEYS_JSON`` alone, says so in the detail, and FAILs
+    falls back to the environment keys alone, says so in the detail, and FAILs
     only if that has no keys either.
 
     Beyond "at least one key is configured", this can optionally prove a
@@ -402,14 +410,19 @@ def check_api_key_authenticates() -> CheckResult:
     ``security.auth.resolve_principal`` the way a real caller's bearer
     token would.
     """
-    from security.auth import ApiKeyConfigError, load_api_keys, resolve_principal
+    from security.auth import (
+        ApiKeyConfigError,
+        api_keys_source,
+        load_api_keys,
+        resolve_principal,
+    )
 
     try:
         env_keys = load_api_keys()
     except ApiKeyConfigError as exc:
         return CheckResult(
             "API key authentication", "FAIL",
-            f"API_KEYS_JSON is invalid: {exc} -- the server would refuse to start",
+            f"API key configuration is invalid: {exc} -- the server would refuse to start",
         )
 
     if not cfg.settings.auth_required:
@@ -429,20 +442,22 @@ def check_api_key_authenticates() -> CheckResult:
         reason = " ".join(f"{type(exc).__name__}: {exc}".split())[:120]
         db_note = (
             f" (application database not readable: {reason}; "
-            "counted API_KEYS_JSON only)"
+            f"counted {api_keys_source()} only)"
         )
 
     if not keys:
         detail = (
             "AUTH_REQUIRED is true but there are no configured keys in "
-            "API_KEYS_JSON or the application database -- the server refuses "
-            "to start (see api/server.py's lifespan). Issue one with: python "
-            "-m scripts.issue_api_key --id analyst-1 --name \"Jane Analyst\", "
-            "then set API_KEYS_JSON, or issue one from the admin panel."
+            "API_KEYS_FILE, API_KEYS_JSON or the application database -- the "
+            "server refuses to start (see api/server.py's lifespan). Issue "
+            "one with: python -m scripts.issue_api_key --id analyst-1 --name "
+            "\"Jane Analyst\", then add its entry to the array in "
+            "API_KEYS_FILE (or set API_KEYS_JSON), or issue one from the "
+            "admin panel."
         )
         if env_keys:
             detail = (
-                "AUTH_REQUIRED is true but every key in API_KEYS_JSON is "
+                f"AUTH_REQUIRED is true but every key in {api_keys_source()} is "
                 "revoked or disabled in the application database, so there "
                 "are no configured keys the server would accept -- it refuses "
                 "to start (see api/server.py's lifespan)."

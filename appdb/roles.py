@@ -11,7 +11,7 @@ the storage, the route is the gate).
 
 Bootstrap and lockout
 ----------------------
-Both roles bootstrap from ``API_KEYS_JSON`` (never from a web flow —
+Both roles bootstrap from ``API_KEYS_JSON`` or ``API_KEYS_FILE`` (never from a web flow —
 ``docs/admin-panel-architecture.md`` §2.3), and this module cannot touch
 that: it only ever writes/deletes rows in
 :data:`appdb.models.admin_principal_roles`. :func:`revoke` therefore
@@ -52,8 +52,8 @@ class LastAdminError(RuntimeError):
 class EnvironmentGrantedRoleError(RuntimeError):
     """Refusing a revoke that this table cannot carry out.
 
-    A capability held via ``API_KEYS_JSON`` is unioned back into every
-    resolved principal by :func:`appdb.key_store.get_active_principals`,
+    A capability held via ``API_KEYS_JSON`` / ``API_KEYS_FILE`` is unioned
+    back into every resolved principal by :func:`appdb.key_store.get_active_principals`,
     which reads the environment on every load. Deleting a row here cannot
     remove it -- there may be no row at all -- so the delete would report
     success while the principal kept the capability, and the very next
@@ -61,7 +61,7 @@ class EnvironmentGrantedRoleError(RuntimeError):
 
     Silence was the wrong answer to that: the route returned
     ``{"granted": false}`` and the panel showed the revoke as done. The
-    correct fix is a restart with an edited ``API_KEYS_JSON``, which is
+    correct fix is a restart with an edited ``API_KEYS_JSON`` / ``API_KEYS_FILE``, which is
     the one thing the caller was not being told."""
 
 
@@ -70,7 +70,7 @@ def _now_iso() -> str:
 
 
 def _env_holders(capability: str) -> set[str]:
-    """Principal ids that hold *capability* via ``API_KEYS_JSON`` alone."""
+    """Principal ids that hold *capability* via the environment keys alone."""
     try:
         env_principals = auth.load_api_keys()
     except auth.ApiKeyConfigError:
@@ -135,9 +135,9 @@ def revoke(principal_id: str, capability: str) -> None:
         untouched in this case. Checked FIRST: when a principal is both
         the last holder and environment-granted, losing the capability
         entirely is the larger fact, and that error's own message already
-        points at ``API_KEYS_JSON`` and a restart.
+        points at ``API_KEYS_JSON`` / ``API_KEYS_FILE`` and a restart.
     EnvironmentGrantedRoleError
-        If *principal_id* holds *capability* through ``API_KEYS_JSON``
+        If *principal_id* holds *capability* through ``API_KEYS_JSON`` / ``API_KEYS_FILE``
         while someone else holds it too. Without this the delete below
         removes a row that may not exist, reports success, and leaves the
         principal holding the capability -- see that error's docstring.
@@ -148,15 +148,16 @@ def revoke(principal_id: str, capability: str) -> None:
             f"Refusing to revoke {capability!r} from {principal_id!r} -- "
             "they are the only remaining holder of this capability. "
             "Grant it to another principal first, or restore access "
-            "through API_KEYS_JSON and a restart if this was a mistake."
+            "through API_KEYS_JSON or API_KEYS_FILE and a restart if this "
+            "was a mistake."
         )
 
     if principal_id in _env_holders(capability):
         raise EnvironmentGrantedRoleError(
-            f"{principal_id!r} holds {capability!r} through API_KEYS_JSON, "
-            "not through a grant this table can remove -- revoking it here "
-            "would report success and change nothing. Remove the "
-            f"{capability!r} flag from that principal's API_KEYS_JSON entry "
+            f"{principal_id!r} holds {capability!r} through API_KEYS_JSON or "
+            "API_KEYS_FILE, not through a grant this table can remove -- "
+            "revoking it here would report success and change nothing. Remove the "
+            f"{capability!r} flag from that principal's entry in it "
             "and restart the server."
         )
 

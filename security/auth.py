@@ -18,7 +18,8 @@ Named API keys, not JWT/OIDC — see ``docs/api-contract-v2.md``'s
 authentication section for the rationale. A key is a high-entropy random
 token (``scripts/issue_api_key.py`` mints one with
 ``secrets.token_urlsafe(32)``); only its SHA-256 hex digest is ever
-stored (``API_KEYS_JSON``'s ``key_sha256`` field) or held in memory here.
+stored (the ``key_sha256`` field of ``API_KEYS_JSON`` / ``API_KEYS_FILE``)
+or held in memory here.
 Plain SHA-256 — not bcrypt/argon2 — is the correct primitive: those exist
 to slow brute-force guessing of a *low-entropy human password*, which is
 not what this is. Entropy is instead enforced structurally, once, at
@@ -39,6 +40,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Mapping
 
 import config as cfg
@@ -173,7 +175,8 @@ ANONYMOUS = Principal(id="anonymous", name="anonymous")
 
 
 class ApiKeyConfigError(ValueError):
-    """``API_KEYS_JSON`` is not valid JSON, or an entry is malformed."""
+    """The API key configuration (``API_KEYS_JSON`` or the ``API_KEYS_FILE``
+    file) is unreadable, not valid JSON, set twice, or an entry is malformed."""
 
 
 # Keyed on (id, key_sha256), not the entry's index, so reordering the array
@@ -185,7 +188,7 @@ _warned_missing_denied_columns_lock = threading.Lock()
 def _should_warn_missing_denied_columns(principal_id: str, key_sha256: str) -> bool:
     """Whether this key entry has not yet been warned about in this process.
 
-    ``load_api_keys`` re-parses ``API_KEYS_JSON`` on every call, including
+    ``load_api_keys`` re-parses the key text on every call, including
     every ``appdb.key_store`` cache refresh while serving, so warning per
     parse repeats the same lines indefinitely and buries real log output.
     The first call for an ``(id, key_sha256)`` pair returns ``True`` and
@@ -228,68 +231,115 @@ def _reset_denied_columns_warnings() -> None:
         _warned_missing_denied_columns.clear()
 
 
-def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
-    """Parse ``API_KEYS_JSON`` into ``{key_sha256_hex_lowercase: Principal}``.
+class _DuplicateJsonKeyError(ValueError):
+    """An object in the key JSON repeats a field name."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """``json.loads`` ``object_pairs_hook`` that refuses a repeated key.
+
+    ``json.loads`` keeps the last of two identical keys and says nothing, so
+    a pasted second ``"denied_columns"`` would silently replace the first on
+    a security ACL. Same refusal as ``core.yaml_loading.safe_load_strict``
+    for the YAML configuration.
+    """
+    out: dict[str, object] = {}
+    for key, value in pairs:
+        if key in out:
+            raise _DuplicateJsonKeyError(key)
+        out[key] = value
+    return out
+
+
+def _parse_api_keys(raw_json: str, source: str = "API_KEYS_JSON") -> dict[str, Principal]:
+    """Parse the API key JSON array into ``{key_sha256_hex_lowercase: Principal}``.
 
     Parameters
     ----------
     raw_json:
-        The raw ``API_KEYS_JSON`` string. Empty / whitespace-only returns
+        The raw JSON text, from ``API_KEYS_JSON`` or from the file named by
+        ``API_KEYS_FILE``. Empty / whitespace-only returns
         an empty mapping rather than raising — "no keys configured" is a
         valid (if, under ``AUTH_REQUIRED=true``, fatal-at-startup) state,
         not a parse error.
+    source:
+        What to call *raw_json* in error and warning messages, e.g.
+        ``"API_KEYS_JSON"`` or ``"API_KEYS_FILE (project_config/api_keys.json)"``
+        (see :func:`api_keys_source`).
 
     Raises
     ------
     ApiKeyConfigError
         If *raw_json* is present but not a JSON array of objects each
         carrying a well-formed ``id``, ``name``, and ``key_sha256`` — see
-        the per-field checks below. Every rejection here is deliberate:
+        the per-field checks below — or repeats a field name inside one
+        object. Every rejection here is deliberate:
         this is a security ACL, and guessing at a malformed operator's
         intent (coercing a bare string to a list, silently keeping the
         first of two colliding keys, ...) is how a config typo becomes a
         silent access-control bug instead of a startup failure someone
-        actually sees.
+        actually sees. Messages carry positions and field names, never the
+        text being parsed.
+
+    Examples
+    --------
+    >>> _parse_api_keys("")
+    {}
+    >>> _parse_api_keys('{"id": "a"}', "API_KEYS_FILE (keys.json)")
+    Traceback (most recent call last):
+        ...
+    security.auth.ApiKeyConfigError: API_KEYS_FILE (keys.json) must be a JSON array of key objects
+    >>> _parse_api_keys('[{"id": "a", "id": "b"}]')
+    Traceback (most recent call last):
+        ...
+    security.auth.ApiKeyConfigError: API_KEYS_JSON repeats the key 'id' inside one object -- the later value would silently win
     """
     if not raw_json or not raw_json.strip():
         return {}
 
     try:
-        entries = json.loads(raw_json)
+        entries = json.loads(raw_json, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc:
-        raise ApiKeyConfigError(f"API_KEYS_JSON is not valid JSON: {exc}") from exc
+        raise ApiKeyConfigError(
+            f"{source} is not valid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}"
+        ) from exc
+    except _DuplicateJsonKeyError as exc:
+        raise ApiKeyConfigError(
+            f"{source} repeats the key {exc.args[0]!r} inside one object -- "
+            "the later value would silently win"
+        ) from exc
 
     if not isinstance(entries, list):
-        raise ApiKeyConfigError("API_KEYS_JSON must be a JSON array of key objects")
+        raise ApiKeyConfigError(f"{source} must be a JSON array of key objects")
 
     keys: dict[str, Principal] = {}
     seen_ids: dict[str, int] = {}
     seen_hashes: dict[str, int] = {}
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            raise ApiKeyConfigError(f"API_KEYS_JSON[{i}] must be a JSON object")
+            raise ApiKeyConfigError(f"{source}[{i}] must be a JSON object")
         try:
             principal_id = entry["id"]
             name = entry["name"]
             key_sha256 = entry["key_sha256"]
         except KeyError as exc:
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}] is missing required field: {exc}"
+                f"{source}[{i}] is missing required field: {exc}"
             ) from exc
 
         if not isinstance(principal_id, str) or not principal_id:
-            raise ApiKeyConfigError(f"API_KEYS_JSON[{i}].id must be a non-empty string")
+            raise ApiKeyConfigError(f"{source}[{i}].id must be a non-empty string")
         if not isinstance(name, str) or not name:
-            raise ApiKeyConfigError(f"API_KEYS_JSON[{i}].name must be a non-empty string")
+            raise ApiKeyConfigError(f"{source}[{i}].name must be a non-empty string")
         if not isinstance(key_sha256, str) or not key_sha256:
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}].key_sha256 must be a non-empty string"
+                f"{source}[{i}].key_sha256 must be a non-empty string"
             )
 
         normalized_hash = key_sha256.strip().lower()
         if not _SHA256_HEX_RE.match(normalized_hash):
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}].key_sha256 must be a 64-character SHA-256 "
+                f"{source}[{i}].key_sha256 must be a 64-character SHA-256 "
                 "hex digest (hashlib.sha256(raw_key.encode()).hexdigest()) -- "
                 "never the raw key itself. Got a value of the wrong shape."
             )
@@ -314,12 +364,12 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
             # startup.
             if _should_warn_missing_denied_columns(principal_id, normalized_hash):
                 logger.warning(
-                    "API_KEYS_JSON[%d] (id=%r) has no denied_columns field -- "
+                    "%s[%d] (id=%r) has no denied_columns field -- "
                     "this principal gets NO column restriction. A panel-issued "
                     "key would default to deny-all; an env-configured key does "
                     "not. Set \"denied_columns\": [] explicitly to silence this "
                     "warning once the unrestricted access is intentional.",
-                    i, principal_id,
+                    source, i, principal_id,
                 )
         elif isinstance(raw_denied, list) and all(isinstance(c, str) for c in raw_denied):
             denied_columns = tuple(raw_denied)
@@ -330,7 +380,7 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
             # nothing, with no error anywhere). The operator must write a
             # JSON array of column-name strings.
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}].denied_columns must be a JSON array of "
+                f"{source}[{i}].denied_columns must be a JSON array of "
                 "column-name strings, e.g. [\"NationalID\", \"Phone\"] -- got "
                 f"{type(raw_denied).__name__}"
             )
@@ -350,7 +400,7 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
             is_admin = raw_admin
         else:
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}].admin must be a JSON boolean (true/false) "
+                f"{source}[{i}].admin must be a JSON boolean (true/false) "
                 f"-- got {type(raw_admin).__name__}"
             )
 
@@ -372,7 +422,7 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
                 continue
             if not isinstance(raw_value, bool):
                 raise ApiKeyConfigError(
-                    f"API_KEYS_JSON[{i}].{field_name} must be a JSON boolean "
+                    f"{source}[{i}].{field_name} must be a JSON boolean "
                     f"(true/false) -- got {type(raw_value).__name__}"
                 )
             if raw_value:
@@ -384,14 +434,14 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
 
         if principal_id in seen_ids:
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}].id {principal_id!r} duplicates the id "
+                f"{source}[{i}].id {principal_id!r} duplicates the id "
                 f"already used by entry {seen_ids[principal_id]} -- a "
                 "repeated id makes the audit trail ambiguous about who ran "
                 "a query"
             )
         if normalized_hash in seen_hashes:
             raise ApiKeyConfigError(
-                f"API_KEYS_JSON[{i}].key_sha256 duplicates the hash already "
+                f"{source}[{i}].key_sha256 duplicates the hash already "
                 f"used by entry {seen_hashes[normalized_hash]} ({principal_id!r} "
                 f"vs {keys[normalized_hash].id!r}) -- two principals sharing one "
                 "key hash means whichever is parsed last silently wins, "
@@ -408,15 +458,116 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
     return keys
 
 
-def load_api_keys() -> dict[str, Principal]:
-    """Parse ``cfg.settings.api_keys_json`` at call time.
+#: Repository root, used to resolve a *relative* ``API_KEYS_FILE`` the way
+#: ``PROJECT_CONFIG_DIR`` is (``knowledge.config_loader._REPO_ROOT``), not
+#: against the process's working directory.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
-    Reads through ``cfg.settings`` on every call (never cached), matching
-    this project's existing configuration contract so that
-    ``config.override_settings()`` patches are visible immediately — see
-    ``config.py``'s module docstring.
+# Read once per process, like an environment variable: an edit needs a
+# restart, and a key-cache refresh can never see a half-written file. Keyed on
+# the resolved path so a changed ``API_KEYS_FILE`` is read afresh.
+_api_keys_file_text: dict[Path, str] = {}
+_api_keys_file_lock = threading.Lock()
+
+
+def _reset_api_keys_file_cache() -> None:
+    """Forget every ``API_KEYS_FILE`` already read. For tests only."""
+    with _api_keys_file_lock:
+        _api_keys_file_text.clear()
+
+
+def _api_keys_file_path() -> Path | None:
+    """The resolved ``API_KEYS_FILE``, or ``None`` when it is unused."""
+    configured = cfg.settings.api_keys_file.strip()
+    if not configured:
+        return None
+    path = Path(configured)
+    return path if path.is_absolute() else _REPO_ROOT / path
+
+
+def api_keys_source() -> str:
+    """What the key configuration is called in messages, without reading it.
+
+    Returns
+    -------
+    str
+        ``"API_KEYS_FILE (<path as configured>)"`` when ``API_KEYS_FILE`` is
+        set, otherwise ``"API_KEYS_JSON"``.
+
+    Examples
+    --------
+    >>> import config
+    >>> with config.override_settings(api_keys_file=""):
+    ...     api_keys_source()
+    'API_KEYS_JSON'
+    >>> with config.override_settings(api_keys_file="project_config/api_keys.json"):
+    ...     api_keys_source()
+    'API_KEYS_FILE (project_config/api_keys.json)'
     """
-    return _parse_api_keys(cfg.settings.api_keys_json)
+    configured = cfg.settings.api_keys_file.strip()
+    return f"API_KEYS_FILE ({configured})" if configured else "API_KEYS_JSON"
+
+
+def _read_api_keys_file(path: Path) -> str:
+    """The text of the key file at *path*, read at most once per process.
+
+    Raises
+    ------
+    ApiKeyConfigError
+        If the file is missing, unreadable, or not UTF-8 text. The message
+        names the resolved path and never any file content. Only a
+        *successful* read is remembered.
+    """
+    with _api_keys_file_lock:
+        cached = _api_keys_file_text.get(path)
+        if cached is not None:
+            return cached
+        try:
+            # utf-8-sig: Windows editors and PowerShell's ``Out-File`` add a
+            # BOM that ``json.loads`` would reject on a str.
+            text = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError as exc:
+            # No ``str(exc)``: it quotes the offending bytes.
+            raise ApiKeyConfigError(
+                f"API_KEYS_FILE {path} is not valid UTF-8 text (byte offset {exc.start})"
+            ) from exc
+        except OSError as exc:
+            raise ApiKeyConfigError(
+                f"API_KEYS_FILE {path} could not be read: {exc.strerror or type(exc).__name__}"
+            ) from exc
+        _api_keys_file_text[path] = text
+        return text
+
+
+def load_api_keys() -> dict[str, Principal]:
+    """Parse the configured API keys at call time.
+
+    The key text comes from the file named by ``cfg.settings.api_keys_file``
+    when that is set, otherwise from ``cfg.settings.api_keys_json``; both set
+    is refused, because two sources would leave it unclear which one an
+    operator's edit was meant to change. ``API_KEYS_JSON`` is read through
+    ``cfg.settings`` on every call (never cached), matching this project's
+    existing configuration contract so that ``config.override_settings()``
+    patches are visible immediately — see ``config.py``'s module docstring.
+    The file is read once per process, like an environment variable: edit it
+    and restart.
+
+    Raises
+    ------
+    ApiKeyConfigError
+        Both sources set, the file unreadable, or the key text malformed —
+        see :func:`_parse_api_keys`.
+    """
+    path = _api_keys_file_path()
+    if path is None:
+        return _parse_api_keys(cfg.settings.api_keys_json)
+    if cfg.settings.api_keys_json.strip():
+        raise ApiKeyConfigError(
+            "Both API_KEYS_JSON and API_KEYS_FILE are set -- use one. Remove "
+            "API_KEYS_JSON from .env (or the environment) to keep the file, "
+            "or clear API_KEYS_FILE to keep API_KEYS_JSON."
+        )
+    return _parse_api_keys(_read_api_keys_file(path), api_keys_source())
 
 
 def load_all_principals() -> dict[str, Principal]:

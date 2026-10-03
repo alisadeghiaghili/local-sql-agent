@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+API keys can now be read from a JSON file, and a `.env` line python-dotenv cannot use stops startup with its line number instead of a one-line warning that is easy to miss.
+
+### Added
+
+- **`API_KEYS_FILE` reads the key array from a file.** Set it to a path (recommended: `project_config/api_keys.json`, which is git-ignored) and put there exactly what `API_KEYS_JSON` holds, formatted however you like, with none of `.env`'s quoting rules. A relative path resolves against the repository root, like `PROJECT_CONFIG_DIR`. The file is read once per process, like an environment variable, so edit it and restart. Setting both `API_KEYS_FILE` and `API_KEYS_JSON` is refused. A missing or unreadable file, a file that is not UTF-8, and invalid JSON (the message gives the line and column) are refused naming the path, never the content. Messages and the "no `denied_columns` field" warning now name the source, for example `API_KEYS_FILE (project_config/api_keys.json)[0] (id='x') ...`, and `verify_deployment.py`, the startup refusal and `issue_api_key.py` mention the file option.
+
+### Changed
+
+- **Unusable `.env` lines are refused at startup with line numbers and names.** python-dotenv skips a line it cannot parse with one line on stderr, so a pretty-printed `API_KEYS_JSON` without single quotes, or with an apostrophe in a value such as `"Ali's key"`, ended as "no usable key is configured". `Settings.validate()` now lists every unparsable line, every leftover line of a broken multi-line value (and the variable whose value was cut off at its first line break), and every variable assigned twice with different values (names and line numbers only, never values), and a byte-order mark at the start of the file that hides its first variable ("UTF-8 with BOM", which python-dotenv 1.2.2 as pinned in `requirements.lock` reads as part of the name; newer releases strip it) is named as such, so the server and the `Settings.validate()` check in `verify_deployment.py` fail with the cause. The same variable set twice to the same value is not flagged, and neither is a missing `.env`.
+- **A repeated field inside one key object is refused.** `json.loads` kept the last of two identical fields silently, so a pasted second `"denied_columns"` replaced the first. This applies to `API_KEYS_JSON` as well as the file. The startup refusal for a bad key configuration now begins `Invalid API key configuration:` instead of `Invalid API_KEYS_JSON:`, because the cause may be in the file.
+
+### Upgrading
+
+- **A `.env` that has an unparsable line, a leftover line, or a variable assigned twice with different values now stops startup.** Fix the lines the message names: wrap a multi-line `API_KEYS_JSON` in single quotes with no apostrophe inside, or delete the stale duplicate (the later one was the one in effect).
+- **To move keys to a file:** create `project_config/api_keys.json` containing the array, set `API_KEYS_FILE=project_config/api_keys.json`, remove `API_KEYS_JSON`, restart, and run `python scripts/verify_deployment.py`.
+
 ## [6.3.2] — 2026-10-03
 
 A key in `API_KEYS_JSON` with no `denied_columns` field is now warned about once, not every time the key list is read.
