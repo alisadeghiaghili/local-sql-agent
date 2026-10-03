@@ -23,6 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from appdb import key_store
 from config import override_settings
 from database.datasources import reset_datasources_cache
 from scripts.issue_api_key import build_entry, issue_key
@@ -115,6 +116,115 @@ class TestCheckApiKeyAuthenticates:
         wrong_key = issue_key()
         monkeypatch.setenv("VERIFY_API_KEY", wrong_key)
         with override_settings(auth_required=True, api_keys_json=json.dumps([entry])):
+            result = check_api_key_authenticates()
+        assert result.status == "FAIL"
+        assert "did not match" in result.detail
+
+    # -- keys in the application database ---------------------------------
+    # api/server.py asks "is any key usable" against API_KEYS_JSON merged with
+    # the application database, so this check has to as well. The autouse
+    # ``_fresh_app_db`` fixture gives each test an empty in-memory database.
+
+    @staticmethod
+    def _unreadable_app_db(monkeypatch, message: str = "connection refused") -> None:
+        def _boom():
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(key_store, "get_active_principals", _boom)
+
+    def test_passes_when_keys_exist_only_in_the_application_database(self, monkeypatch):
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        key_store.issue_key("analyst-db", "Analyst From Admin Panel")
+        with override_settings(auth_required=True, api_keys_json=""):
+            result = check_api_key_authenticates()
+        assert result.status == "PASS"
+        assert "1 key(s) configured" in result.detail
+        assert "1 from the application database" in result.detail
+        assert "not readable" not in result.detail
+
+    def test_detail_counts_both_sources(self, monkeypatch):
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        key_store.issue_key("analyst-db", "From DB")
+        entry = build_entry("analyst-env", "From Env", issue_key())
+        with override_settings(auth_required=True, api_keys_json=json.dumps([entry])):
+            result = check_api_key_authenticates()
+        assert result.status == "PASS"
+        assert "2 key(s) configured" in result.detail
+        assert "1 from API_KEYS_JSON, 1 from the application database" in result.detail
+
+    def test_does_not_import_environment_keys_into_the_database(self, monkeypatch):
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        entry = build_entry("analyst-env", "From Env", issue_key())
+        with override_settings(auth_required=True, api_keys_json=json.dumps([entry])):
+            assert check_api_key_authenticates().status == "PASS"
+        assert key_store.list_keys() == []
+
+    def test_env_key_revoked_in_the_database_does_not_count(self, monkeypatch):
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        raw_key = issue_key()
+        entry = build_entry("analyst-env", "From Env", raw_key)
+        with override_settings(auth_required=True, api_keys_json=json.dumps([entry])):
+            key_store.bootstrap_from_env()
+            key_store.revoke_key(entry["key_sha256"])
+            result = check_api_key_authenticates()
+        assert result.status == "FAIL"
+        assert "revoked or disabled" in result.detail
+
+    def test_unreadable_application_database_falls_back_to_env_keys(self, monkeypatch):
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        self._unreadable_app_db(monkeypatch)
+        entry = build_entry("analyst-1", "Analyst One", issue_key())
+        with override_settings(auth_required=True, api_keys_json=json.dumps([entry])):
+            result = check_api_key_authenticates()
+        assert result.status == "PASS"
+        assert "1 key(s) configured (1 from API_KEYS_JSON)" in result.detail
+        assert (
+            "(application database not readable: RuntimeError: connection "
+            "refused; counted API_KEYS_JSON only)"
+        ) in result.detail
+
+    def test_unreadable_application_database_and_no_env_keys_fails(self, monkeypatch):
+        self._unreadable_app_db(monkeypatch)
+        with override_settings(auth_required=True, api_keys_json=""):
+            result = check_api_key_authenticates()
+        assert result.status == "FAIL"
+        assert "no configured keys" in result.detail
+        assert "application database not readable" in result.detail
+
+    def test_unreadable_reason_is_kept_to_one_short_line(self, monkeypatch):
+        self._unreadable_app_db(monkeypatch, "first line\n" + "x" * 500)
+        with override_settings(auth_required=True, api_keys_json=""):
+            result = check_api_key_authenticates()
+        assert "\n" not in result.detail
+        assert len(result.detail) < 700
+
+    def test_invalid_api_keys_json_fails_even_with_database_keys(self):
+        key_store.issue_key("analyst-db", "From DB")
+        with override_settings(auth_required=True, api_keys_json="not json"):
+            result = check_api_key_authenticates()
+        assert result.status == "FAIL"
+        assert "API_KEYS_JSON is invalid" in result.detail
+
+    def test_auth_not_required_does_not_touch_the_application_database(self, monkeypatch):
+        self._unreadable_app_db(monkeypatch)
+        with override_settings(auth_required=False, api_keys_json=""):
+            result = check_api_key_authenticates()
+        assert result.status == "PASS"
+        assert "not readable" not in result.detail
+
+    def test_verify_api_key_matching_a_database_only_key_passes(self, monkeypatch):
+        raw_key, _entry = key_store.issue_key("analyst-db", "Analyst From Admin Panel")
+        monkeypatch.setenv("VERIFY_API_KEY", raw_key)
+        with override_settings(auth_required=True, api_keys_json=""):
+            result = check_api_key_authenticates()
+        assert result.status == "PASS"
+        assert "analyst-db" in result.detail
+        assert "1 from the application database" in result.detail
+
+    def test_verify_api_key_not_in_either_source_fails(self, monkeypatch):
+        key_store.issue_key("analyst-db", "From DB")
+        monkeypatch.setenv("VERIFY_API_KEY", issue_key())
+        with override_settings(auth_required=True, api_keys_json=""):
             result = check_api_key_authenticates()
         assert result.status == "FAIL"
         assert "did not match" in result.detail

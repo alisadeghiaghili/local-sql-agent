@@ -70,6 +70,8 @@ try:
 except ImportError:
     sys.exit("PyYAML is required: pip install pyyaml")
 
+from core.yaml_loading import safe_load_strict
+
 console = Console()
 logger  = logging.getLogger(__name__)
 
@@ -291,7 +293,7 @@ def _validate_yaml_str(yaml_str: str, filename: str) -> list[str]:
         model = model_map.get(filename)
         if model is None:
             return []
-        raw = yaml.safe_load(yaml_str) or {}
+        raw = safe_load_strict(yaml_str) or {}
         model.model_validate(raw)
         return []
     except Exception as exc:  # noqa: BLE001

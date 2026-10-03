@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+A configuration file that repeats a key is now refused instead of silently losing the first one, and the deployment check counts API keys the way the server does.
+
+### Fixed
+
+- **A duplicate key in a YAML config file is refused.** `yaml.safe_load` kept the last of two identical keys without a word, so a second `datasources:` heading dropped the first block, a whole data source, with no error. Every config file is now read so that a key written twice in one mapping fails with its name and both line numbers, for example `[datasources.yaml] is not valid YAML: duplicate key 'datasources' (first on line 12, again on line 21)`. An explicit key that overrides one brought in by a merge key (`<<: *anchor`) is still allowed.
+- **`verify_deployment.py` counts application-database keys.** The API key check counted only `API_KEYS_JSON`, so it failed on a deployment whose keys live in the application database (imported at first start, or issued from the admin panel) even though the server starts. It now counts the same merged set the server does, says how many keys came from each place, and resolves `VERIFY_API_KEY` against it. If the database cannot be read it counts `API_KEYS_JSON` only and says so; it fails only when that has no keys either.
+
+### Upgrading
+
+- **A config file that repeats a key is now refused,** naming the key and both lines. A duplicate in `datasources.yaml` or `schema.yaml` stops the server at startup; one in the other files fails when that file is first read, and `python scripts/verify_deployment.py` reports it before then. `relationships.yaml` is optional and is skipped with a warning naming the duplicate, as with any other read error. Remove the duplicate; the later one was the one in effect, so keep that block's content if it is what you meant.
+
 ## [6.3.0] — 2026-10-02
 
 A warehouse connection is now described in `datasources.yaml`, and `.env`
