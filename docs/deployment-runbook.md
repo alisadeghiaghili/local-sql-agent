@@ -147,7 +147,9 @@ changing anything persistent:
 
 - `VERIFY_API_KEY=<raw key from step 1>` — proves that *specific* key
   round-trips through real authentication, not just that some key is
-  configured.
+  configured. It is checked against `API_KEYS_JSON` and the application
+  database together, as the server does, so a key issued from the admin
+  panel works too.
 - `VERIFY_EXPECTED_ANALYSTS=<N>` — states how many concurrent analysts you
   actually expect behind the smallest configured key's bucket, so the
   rate-limit check reasons about your real deployment shape instead of
@@ -260,8 +262,9 @@ and re-run it. The two most common fail-closed exits, both intentional:
 
 - `Invalid configuration: ...` — a `Settings.validate()` failure (a
   placeholder left in `.env`).
-- `AUTH_REQUIRED is true but API_KEYS_JSON has no configured keys` —
-  step 1/2 was skipped or the entry didn't make it into `.env`.
+- `AUTH_REQUIRED is true but no usable key is configured in API_KEYS_JSON
+  or the application database` — step 1/2 was skipped or the entry didn't
+  make it into `.env`.
 
 Also confirm `System prompt loaded (N chars)` appears — a missing
 `<PROJECT_CONFIG_DIR>/system_prompt.md` is a packaging error, not a config one.

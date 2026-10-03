@@ -354,30 +354,58 @@ def _verify_api_key_invocation() -> str:
     return "VERIFY_API_KEY='<raw key>' python -m scripts.verify_deployment"
 
 
+def _key_sources(merged: dict, env_keys: dict) -> str:
+    """``"1 from API_KEYS_JSON, 2 from the application database"``.
+
+    A key present in both is counted under ``API_KEYS_JSON``; only hashes the
+    environment does not have are attributed to the application database.
+    """
+    from_env = len(merged.keys() & env_keys.keys())
+    parts = []
+    if from_env:
+        parts.append(f"{from_env} from API_KEYS_JSON")
+    if len(merged) - from_env:
+        parts.append(f"{len(merged) - from_env} from the application database")
+    return ", ".join(parts)
+
+
 def check_api_key_authenticates() -> CheckResult:
     """An API key is configured, and (fail-closed) starting the server would
     not immediately refuse to run.
 
-    Mirrors ``api/server.py``'s own ``lifespan`` startup gate exactly — see
-    that function's "Phase 8: fail closed on authentication config" comment
-    — so this FAILs here, before a real deploy attempt, instead of the
-    server refusing to start on first launch with nobody watching.
+    Mirrors ``api/server.py``'s own ``lifespan`` startup gate -- see that
+    function's "Phase 8: fail closed on authentication config" comment --
+    so this FAILs here, before a real deploy attempt, instead of the server
+    refusing to start on first launch with nobody watching. Like the server,
+    it asks whether any key exists in the *merged* set
+    (:func:`appdb.key_store.get_active_principals`: ``API_KEYS_JSON`` plus
+    the application database), so a deployment whose keys were imported at
+    first start or issued from the admin panel passes.
+
+    This only reads. It never calls ``bootstrap_from_env`` and writes no key
+    rows; opening the application database does create its tables when
+    missing, exactly as the server's own startup would. If the database
+    cannot be read (not configured, unreachable, driver missing) the check
+    falls back to ``API_KEYS_JSON`` alone, says so in the detail, and FAILs
+    only if that has no keys either.
 
     Beyond "at least one key is configured", this can optionally prove a
     *specific* raw key actually authenticates end-to-end: set
     ``VERIFY_API_KEY`` (the raw token, e.g. one printed once by
-    ``scripts/issue_api_key.py``) in the environment running this script
-    (never persisted anywhere -- read once, used once, discarded with the
-    process). Without it, the check still PASSes on "at least one key is
-    configured and AUTH_REQUIRED's fail-closed gate would not trip", but
-    cannot prove any *specific* key actually round-trips through
+    ``scripts/issue_api_key.py`` or by the admin panel) in the environment
+    running this script (never persisted anywhere -- read once, used once,
+    discarded with the process). It is resolved against the same merged set
+    the server uses, so a key that lives only in the application database
+    can be proven too. Without it, the check still PASSes on "at least one
+    key is configured and AUTH_REQUIRED's fail-closed gate would not trip",
+    but cannot prove any *specific* key actually round-trips through
     ``security.auth.resolve_principal`` the way a real caller's bearer
     token would.
     """
     from security.auth import ApiKeyConfigError, load_api_keys, resolve_principal
 
     try:
-        keys = load_api_keys()
+        env_keys = load_api_keys()
     except ApiKeyConfigError as exc:
         return CheckResult(
             "API key authentication", "FAIL",
@@ -391,22 +419,44 @@ def check_api_key_authenticates() -> CheckResult:
             "(every startup logs a WARNING for this; do not use in production)",
         )
 
-    if not keys:
-        return CheckResult(
-            "API key authentication", "FAIL",
-            "AUTH_REQUIRED is true but API_KEYS_JSON has no configured keys -- "
-            "the server refuses to start (see api/server.py's lifespan). Issue "
-            "one with: python -m scripts.issue_api_key --id analyst-1 --name "
-            "\"Jane Analyst\", then set API_KEYS_JSON.",
+    keys = env_keys
+    db_note = ""
+    try:
+        from appdb.key_store import get_active_principals
+
+        keys = get_active_principals()
+    except Exception as exc:  # noqa: BLE001 - any failure reading the app DB degrades to env-only
+        reason = " ".join(f"{type(exc).__name__}: {exc}".split())[:120]
+        db_note = (
+            f" (application database not readable: {reason}; "
+            "counted API_KEYS_JSON only)"
         )
+
+    if not keys:
+        detail = (
+            "AUTH_REQUIRED is true but there are no configured keys in "
+            "API_KEYS_JSON or the application database -- the server refuses "
+            "to start (see api/server.py's lifespan). Issue one with: python "
+            "-m scripts.issue_api_key --id analyst-1 --name \"Jane Analyst\", "
+            "then set API_KEYS_JSON, or issue one from the admin panel."
+        )
+        if env_keys:
+            detail = (
+                "AUTH_REQUIRED is true but every key in API_KEYS_JSON is "
+                "revoked or disabled in the application database, so there "
+                "are no configured keys the server would accept -- it refuses "
+                "to start (see api/server.py's lifespan)."
+            )
+        return CheckResult("API key authentication", "FAIL", detail + db_note)
 
     raw_key = os.environ.get("VERIFY_API_KEY", "").strip()
     if not raw_key:
         return CheckResult(
             "API key authentication", "PASS",
-            f"{len(keys)} key(s) configured, AUTH_REQUIRED=true -- the server "
-            "will start. To also prove a specific key authenticates end-to-end, "
-            f"re-run with VERIFY_API_KEY set: {_verify_api_key_invocation()}",
+            f"{len(keys)} key(s) configured ({_key_sources(keys, env_keys)}), "
+            "AUTH_REQUIRED=true -- the server will start. To also prove a "
+            "specific key authenticates end-to-end, re-run with VERIFY_API_KEY "
+            f"set: {_verify_api_key_invocation()}{db_note}",
         )
 
     principal = resolve_principal(f"Bearer {raw_key}", keys)
@@ -415,11 +465,14 @@ def check_api_key_authenticates() -> CheckResult:
             "API key authentication", "FAIL",
             "VERIFY_API_KEY was set but did not match any configured key's "
             "SHA-256 digest -- this raw key would get a 401 from the real "
-            "server. Re-check it was copied correctly, or issue a fresh one.",
+            "server. Re-check it was copied correctly, or issue a fresh one."
+            f"{db_note}",
         )
     return CheckResult(
         "API key authentication", "PASS",
-        f"VERIFY_API_KEY authenticated as principal '{principal.id}' ({principal.name})",
+        f"VERIFY_API_KEY authenticated as principal '{principal.id}' "
+        f"({principal.name}); {len(keys)} key(s) configured "
+        f"({_key_sources(keys, env_keys)}){db_note}",
     )
 
 
