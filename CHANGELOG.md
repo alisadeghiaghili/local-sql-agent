@@ -7,11 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [6.4.1] — 2026-10-03
+
 python-dotenv moves to 1.2.4 so a `.env` saved with a byte-order mark loads its first variable.
 
 ### Changed
 
-- **python-dotenv is 1.2.4 in `requirements.lock` and `>=1.2.3` in `requirements.txt` and `webapp/requirements.txt`.** Releases from 1.2.3 on strip a leading UTF-8 byte-order mark themselves, where 1.2.2 read it as part of the first variable's name and silently lost that variable. Windows editors often save a `.env` that way, so a `.env` saved as UTF-8 with BOM now loads its first variable instead of losing it, and the startup refusal for a byte-order mark added in 6.4.0 no longer fires on a pinned install (it still names the cause on an older python-dotenv).
+- **python-dotenv is 1.2.4 in `requirements.lock` and `>=1.2.3` in `requirements.txt` and `webapp/requirements.txt` (PR #144).** Releases from 1.2.3 on strip a leading UTF-8 byte-order mark themselves, where 1.2.2 read it as part of the first variable's name and silently lost that variable. Windows editors often save a `.env` that way, so a `.env` saved as UTF-8 with BOM now loads its first variable instead of losing it, and the startup refusal for a byte-order mark added in 6.4.0 no longer fires on a pinned install (it still names the cause on an older python-dotenv).
 
 ### Upgrading
 
