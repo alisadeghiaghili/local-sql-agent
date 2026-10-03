@@ -204,7 +204,7 @@ class TestCheckApiKeyAuthenticates:
         with override_settings(auth_required=True, api_keys_json="not json"):
             result = check_api_key_authenticates()
         assert result.status == "FAIL"
-        assert "API_KEYS_JSON is invalid" in result.detail
+        assert "API key configuration is invalid: API_KEYS_JSON is not valid JSON" in result.detail
 
     def test_auth_not_required_does_not_touch_the_application_database(self, monkeypatch):
         self._unreadable_app_db(monkeypatch)

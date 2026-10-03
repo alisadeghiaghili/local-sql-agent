@@ -207,3 +207,21 @@ def _reset_denied_columns_warnings_between_tests() -> Iterator[None]:
     _reset_denied_columns_warnings()
     yield
     _reset_denied_columns_warnings()
+
+
+@pytest.fixture(autouse=True)
+def _reset_api_keys_file_cache_between_tests() -> Iterator[None]:
+    """Start every test with no ``API_KEYS_FILE`` remembered as already read.
+
+    ``security.auth`` reads that file once per process, keyed on its resolved
+    path, so a test that edits a file at a path an earlier test already read
+    (``tmp_path`` names repeat across parametrised cases, and the repo-relative
+    case reuses one path) would see the earlier text and pass or fail by run
+    order.
+    """
+    from security.auth import _reset_api_keys_file_cache
+
+    _reset_api_keys_file_cache()
+    yield
+    _reset_api_keys_file_cache()
+

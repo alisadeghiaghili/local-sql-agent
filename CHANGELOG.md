@@ -7,6 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+API keys can now be read from a JSON file, so a multi-line key array no longer has to survive `.env`'s quoting rules.
+
+### Added
+
+- **`API_KEYS_FILE` reads the key array from a file.** Set it to a path (recommended: `project_config/api_keys.json`, which is git-ignored) and put there exactly what `API_KEYS_JSON` holds, formatted however you like, with none of `.env`'s quoting rules. A relative path resolves against the repository root, like `PROJECT_CONFIG_DIR`. The file is read once per process, like an environment variable, so edit it and restart. Setting both `API_KEYS_FILE` and `API_KEYS_JSON` is refused. A missing or unreadable file, a file that is not UTF-8, and invalid JSON (the message gives the line and column) are refused naming the path, never the content. Messages and the "no `denied_columns` field" warning now name the source, for example `API_KEYS_FILE (project_config/api_keys.json)[0] (id='x') ...`, and `verify_deployment.py`, the startup refusal and `issue_api_key.py` mention the file option.
+
+### Changed
+
+- **A repeated field inside one key object is refused.** `json.loads` kept the last of two identical fields silently, so a pasted second `"denied_columns"` replaced the first. This applies to `API_KEYS_JSON` as well as the file. The startup refusal for a bad key configuration now begins `Invalid API key configuration:` instead of `Invalid API_KEYS_JSON:`, because the cause may be in the file.
+
+### Upgrading
+
+- **To move keys to a file:** create `project_config/api_keys.json` containing the array, set `API_KEYS_FILE=project_config/api_keys.json`, remove `API_KEYS_JSON`, restart, and run `python scripts/verify_deployment.py`.
+
 ## [6.3.2] — 2026-10-03
 
 A key in `API_KEYS_JSON` with no `denied_columns` field is now warned about once, not every time the key list is read.

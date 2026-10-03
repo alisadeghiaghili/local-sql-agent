@@ -66,8 +66,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Resolve ``request.state.principal`` from ``Authorization: Bearer <key>``.
 
     Never rejects a request itself — see module docstring. A malformed
-    ``API_KEYS_JSON`` (only reachable if the fail-closed startup check in
-    ``api/server.py``'s ``lifespan`` was bypassed, e.g. a test that
+    ``API_KEYS_JSON`` / ``API_KEYS_FILE`` (only reachable if the fail-closed
+    startup check in ``api/server.py``'s ``lifespan`` was bypassed, e.g. a test that
     exercises this middleware directly) is logged and treated as "no
     keys configured" rather than raising mid-request.
 
@@ -111,7 +111,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:
             keys = load_all_principals()
         except ApiKeyConfigError as exc:
-            logger.error("API_KEYS_JSON could not be parsed at request time: %s", exc)
+            logger.error("API keys could not be loaded at request time: %s", exc)
             return None
         return resolve_principal(request.headers.get("authorization"), keys)
 
@@ -146,8 +146,8 @@ def _unauthenticated_message(request: Request) -> str:
     looks like a SHA-256 digest.
 
     ``scripts/issue_api_key.py`` prints two things: the raw key, and an
-    ``API_KEYS_JSON`` entry containing that key's ``key_sha256``. The
-    entry is the conspicuous, copy-pasteable artefact -- it is what goes
+    ``API_KEYS_JSON`` / ``API_KEYS_FILE`` entry containing that key's
+    ``key_sha256``. The entry is the conspicuous, copy-pasteable artefact -- it is what goes
     into configuration, and it is the thing still on screen after the
     "copy this now" line has scrolled past -- so pasting its *hash* into
     the key field is an easy and repeatable mistake, and one this system
@@ -173,9 +173,9 @@ def _unauthenticated_message(request: Request) -> str:
     if token and _SHA256_HEX_RE.match(token.strip().lower()):
         return (
             f"{base} The value presented looks like a SHA-256 digest. "
-            "The digest is what belongs in API_KEYS_JSON's key_sha256 "
-            "field; what a client sends is the raw key that "
-            "scripts/issue_api_key.py printed once, above that entry."
+            "The digest is what belongs in the key_sha256 field of "
+            "API_KEYS_JSON / API_KEYS_FILE; what a client sends is the raw "
+            "key that scripts/issue_api_key.py printed once, above that entry."
         )
     return base
 

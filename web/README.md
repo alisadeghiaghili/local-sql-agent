@@ -135,7 +135,7 @@ tools. Instead:
   **deliberately does not clear it**. The raw key is printed exactly once
   by `scripts/issue_api_key.py` and cannot be recovered, and a 401 is not
   always the key's fault — a server restarted with a different
-  `API_KEYS_JSON`, or an application database briefly unreachable,
+  `API_KEYS_JSON` / `API_KEYS_FILE`, or an application database briefly unreachable,
   produces one from a perfectly good key. Clearing it turned a transient
   server condition into "find that 43-character string again". Clearing is
   now only ever deliberate, via "حذف کلید". A `429` is shown as a

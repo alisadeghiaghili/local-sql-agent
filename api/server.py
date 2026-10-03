@@ -178,16 +178,16 @@ async def lifespan(app: FastAPI):
     # Mirrors the db_connection_url precedent immediately above: a broken
     # or absent auth configuration must stop the server from starting at
     # all, not be discovered later as every caller gets a 401 nobody can
-    # fix without a redeploy. This first pass only parses API_KEYS_JSON
-    # itself (fail fast on malformed JSON before touching the application
+    # fix without a redeploy. This first pass only parses API_KEYS_JSON /
+    # API_KEYS_FILE (fail fast on malformed JSON before touching the application
     # database at all); the "are there ANY usable keys" check below runs
     # after the application-database keys are known too (admin panel
-    # phase 2), since an all-database-issued key set with an empty
-    # API_KEYS_JSON is a legitimate deployment shape, not a misconfiguration.
+    # phase 2), since an all-database-issued key set with no environment
+    # keys is a legitimate deployment shape, not a misconfiguration.
     try:
         load_api_keys()
     except ApiKeyConfigError as exc:
-        raise RuntimeError(f"Invalid API_KEYS_JSON: {exc}") from exc
+        raise RuntimeError(f"Invalid API key configuration: {exc}") from exc
 
     if not cfg.settings.auth_required:
         # Logged on EVERY startup (not deduplicated) -- a deliberately
@@ -244,21 +244,22 @@ async def lifespan(app: FastAPI):
     try:
         bootstrap_from_env()
     except ApiKeyConfigError as exc:
-        raise RuntimeError(f"Invalid API_KEYS_JSON: {exc}") from exc
+        raise RuntimeError(f"Invalid API key configuration: {exc}") from exc
     except AmbiguousKeyIdentityError as exc:
         raise RuntimeError(str(exc)) from exc
 
     # Now that both sources have been reconciled, "are there any keys at
     # all" is asked against the merged set -- an all-database-issued
-    # deployment with an empty API_KEYS_JSON must not be refused startup
+    # deployment with no environment keys must not be refused startup
     # just because the environment alone has nothing configured.
     if cfg.settings.auth_required and not get_active_principals():
         raise RuntimeError(
             "AUTH_REQUIRED is true but no usable key is configured in "
-            "API_KEYS_JSON or the application database -- refusing to "
-            "start a server that requires authentication nobody could "
-            "ever satisfy. Set API_KEYS_JSON (see scripts/issue_api_key.py) "
-            "or explicitly set AUTH_REQUIRED=false."
+            "API_KEYS_FILE, API_KEYS_JSON or the application database -- "
+            "refusing to start a server that requires authentication nobody "
+            "could ever satisfy. Set API_KEYS_FILE (a JSON array in a file, "
+            "e.g. project_config/api_keys.json) or API_KEYS_JSON (see "
+            "scripts/issue_api_key.py), or explicitly set AUTH_REQUIRED=false."
         )
 
     if not _PROMPT_PATH.exists():

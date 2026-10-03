@@ -246,6 +246,7 @@ python -m scripts.verify_deployment
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
 | `API_KEYS_JSON` | *(empty)* | JSON array of `{"id","name","key_sha256","denied_columns"?,"admin"?,"operations"?,"security"?}` — see [Authentication](#authentication-phase-8) |
+| `API_KEYS_FILE` | *(empty)* | Path to a file holding the same JSON array as `API_KEYS_JSON` (any formatting; recommended: `project_config/api_keys.json`, git-ignored). Relative paths resolve against the repository root. Read once at start-up — restart after editing. Set this **or** `API_KEYS_JSON`, not both |
 | `AUTH_REQUIRED` | `true` | Fail-closed auth gate; `false` is a logged escape hatch |
 | `APP_DOCS_PUBLIC` | `false` | Serve `/docs` `/redoc` `/openapi.json` without credentials |
 | `PROJECT_CONFIG_DIR` | `project_config` | Where the domain YAML lives. No silent fallback to the example directory |
@@ -539,8 +540,10 @@ deliberately not supported — one way in is one thing to reason about.
   dependency; what auth actually needs to provide is a principal identity to
   key the cache on, own a session, and name in the audit trail. See
   `docs/api-contract-v2.md`'s authentication section for the full rationale.
-- **Never store raw keys:** `API_KEYS_JSON` holds only each key's SHA-256 hex
-  digest (`security/auth.py`). Issue a new key with `python -m
+- **Never store raw keys:** `API_KEYS_JSON` (or the file `API_KEYS_FILE`
+  names — recommended for more than one key, since a multi-line value in
+  `.env` must be wrapped in single quotes and cannot contain an apostrophe)
+  holds only each key's SHA-256 hex digest (`security/auth.py`). Issue a new key with `python -m
   scripts.issue_api_key --id <id> --name <name>` — it prints the raw key
   **once**, never to a file or log. Add `--admin`, `--operations`,
   `--security`, or `--full-admin` for all three, to grant the admin

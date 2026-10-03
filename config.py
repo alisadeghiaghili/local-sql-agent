@@ -1114,7 +1114,23 @@ class Settings:
     :func:`security.auth.load_api_keys`, per this module's
     read-through-``cfg.settings``-at-call-time convention. Empty (the
     default) means no caller can authenticate — see :attr:`auth_required`
-    for what that implies at startup."""
+    for what that implies at startup. A multi-line value only survives
+    ``.env`` wrapped in single quotes with no apostrophe inside, so for more
+    than one key prefer :attr:`api_keys_file`. Setting both is refused."""
+
+    api_keys_file: str = field(
+        default_factory=lambda: os.getenv("API_KEYS_FILE", "")
+    )
+    """Path to a file holding exactly what :attr:`api_keys_json` holds: the
+    JSON array of key objects, in any formatting, with no ``.env`` quoting
+    rules to trip over. Recommended location: ``project_config/api_keys.json``
+    (``project_config/`` is git-ignored). A relative path resolves against the
+    repository root, like ``PROJECT_CONFIG_DIR``, not the working directory.
+    Empty (the default) means unused. Read once per process, like an
+    environment variable, so edits need a restart. A missing or unreadable
+    file, invalid JSON, a repeated key inside one object, or both this and
+    :attr:`api_keys_json` being set is refused at startup. Read by
+    :func:`security.auth.load_api_keys`."""
 
     auth_required: bool = field(
         default_factory=lambda: os.getenv("AUTH_REQUIRED", "true").lower()
@@ -1127,8 +1143,9 @@ class Settings:
     that ``api/server.py``'s ``lifespan`` logs a ``WARNING`` for on
     *every* startup, not just the first, so a silently-disabled front
     door is never quiet in the logs. When ``True`` and :attr:`api_keys_json`
-    resolves to zero configured keys, ``lifespan`` raises ``RuntimeError``
-    instead of starting a server nobody could ever authenticate to."""
+    / :attr:`api_keys_file` resolve to zero configured keys, ``lifespan``
+    raises ``RuntimeError`` instead of starting a server nobody could ever
+    authenticate to."""
 
     app_docs_public: bool = field(
         default_factory=lambda: os.getenv("APP_DOCS_PUBLIC", "false").lower()
