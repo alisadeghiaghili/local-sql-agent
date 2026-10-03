@@ -188,3 +188,22 @@ def _fresh_app_db() -> Iterator[None]:
     finally:
         dispose_app_engine()
         invalidate_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_denied_columns_warnings_between_tests() -> Iterator[None]:
+    """Start every test with no key entry recorded as already warned about.
+
+    ``security.auth`` warns about an ``API_KEYS_JSON`` entry without a
+    ``denied_columns`` field once per process, not once per parse (the
+    parse repeats on every key-cache refresh). That record is module-level,
+    so without this reset whichever test first parses a given ``(id,
+    key_sha256)`` would consume the warning and a later test asserting on it
+    (``tests/security_audit/test_residual_hardening.py``, ``tests/test_auth.py``,
+    ``tests/test_verify_deployment.py``) would pass or fail by run order.
+    """
+    from security.auth import _reset_denied_columns_warnings
+
+    _reset_denied_columns_warnings()
+    yield
+    _reset_denied_columns_warnings()

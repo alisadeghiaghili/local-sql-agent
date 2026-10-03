@@ -13,6 +13,7 @@ own manual usage instead, not a unit test.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sys
@@ -228,6 +229,26 @@ class TestCheckApiKeyAuthenticates:
             result = check_api_key_authenticates()
         assert result.status == "FAIL"
         assert "did not match" in result.detail
+
+    def test_each_missing_denied_columns_warning_is_logged_once(self, monkeypatch, caplog):
+        """The check parses ``API_KEYS_JSON`` itself and again through
+        ``get_active_principals``; it used to print every warning twice."""
+        monkeypatch.delenv("VERIFY_API_KEY", raising=False)
+        entries = [
+            build_entry("analyst-1", "One", issue_key()),
+            build_entry("analyst-2", "Two", issue_key()),
+        ]
+        with caplog.at_level(logging.WARNING, logger="security.auth"), \
+                override_settings(auth_required=True, api_keys_json=json.dumps(entries)):
+            result = check_api_key_authenticates()
+        assert result.status == "PASS"
+        warnings = [
+            r.getMessage() for r in caplog.records
+            if "has no denied_columns field" in r.getMessage()
+        ]
+        assert len(warnings) == 2
+        assert "id='analyst-1'" in warnings[0]
+        assert "id='analyst-2'" in warnings[1]
 
 
 # ---------------------------------------------------------------------------

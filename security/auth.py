@@ -37,6 +37,7 @@ import hmac
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Mapping
 
@@ -175,6 +176,58 @@ class ApiKeyConfigError(ValueError):
     """``API_KEYS_JSON`` is not valid JSON, or an entry is malformed."""
 
 
+# Keyed on (id, key_sha256), not the entry's index, so reordering the array
+# does not re-warn but a new key, or a new hash under the same id, does.
+_warned_missing_denied_columns: set[tuple[str, str]] = set()
+_warned_missing_denied_columns_lock = threading.Lock()
+
+
+def _should_warn_missing_denied_columns(principal_id: str, key_sha256: str) -> bool:
+    """Whether this key entry has not yet been warned about in this process.
+
+    ``load_api_keys`` re-parses ``API_KEYS_JSON`` on every call, including
+    every ``appdb.key_store`` cache refresh while serving, so warning per
+    parse repeats the same lines indefinitely and buries real log output.
+    The first call for an ``(id, key_sha256)`` pair returns ``True`` and
+    records it; later calls return ``False``.
+
+    Parameters
+    ----------
+    principal_id:
+        The entry's ``id``.
+    key_sha256:
+        The entry's normalized (stripped, lowercase) ``key_sha256``.
+
+    Returns
+    -------
+    bool
+        ``True`` exactly once per distinct pair.
+
+    Examples
+    --------
+    >>> _reset_denied_columns_warnings()
+    >>> _should_warn_missing_denied_columns("a", "0" * 64)
+    True
+    >>> _should_warn_missing_denied_columns("a", "0" * 64)
+    False
+    >>> _should_warn_missing_denied_columns("a", "1" * 64)
+    True
+    >>> _reset_denied_columns_warnings()
+    """
+    pair = (principal_id, key_sha256)
+    with _warned_missing_denied_columns_lock:
+        if pair in _warned_missing_denied_columns:
+            return False
+        _warned_missing_denied_columns.add(pair)
+        return True
+
+
+def _reset_denied_columns_warnings() -> None:
+    """Forget every key already warned about. For tests only."""
+    with _warned_missing_denied_columns_lock:
+        _warned_missing_denied_columns.clear()
+
+
 def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
     """Parse ``API_KEYS_JSON`` into ``{key_sha256_hex_lowercase: Principal}``.
 
@@ -256,15 +309,18 @@ def _parse_api_keys(raw_json: str) -> dict[str, Principal]:
             # rather than deciding against it, would have no way to find
             # out short of reading this source file. An entry that writes
             # `"denied_columns": []` has made the decision explicitly and
-            # does NOT warn -- see the branch below.
-            logger.warning(
-                "API_KEYS_JSON[%d] (id=%r) has no denied_columns field -- "
-                "this principal gets NO column restriction. A panel-issued "
-                "key would default to deny-all; an env-configured key does "
-                "not. Set \"denied_columns\": [] explicitly to silence this "
-                "warning once the unrestricted access is intentional.",
-                i, principal_id,
-            )
+            # does NOT warn -- see the branch below. Once per key per
+            # process: this runs on every key-cache refresh, not just at
+            # startup.
+            if _should_warn_missing_denied_columns(principal_id, normalized_hash):
+                logger.warning(
+                    "API_KEYS_JSON[%d] (id=%r) has no denied_columns field -- "
+                    "this principal gets NO column restriction. A panel-issued "
+                    "key would default to deny-all; an env-configured key does "
+                    "not. Set \"denied_columns\": [] explicitly to silence this "
+                    "warning once the unrestricted access is intentional.",
+                    i, principal_id,
+                )
         elif isinstance(raw_denied, list) and all(isinstance(c, str) for c in raw_denied):
             denied_columns = tuple(raw_denied)
         else:
