@@ -13,11 +13,13 @@ repository's own ``.env``: files are written to ``tmp_path``, and
 from __future__ import annotations
 
 import asyncio
+import io
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from dotenv.parser import parse_stream
 
 import config
 from config import override_settings
@@ -149,21 +151,54 @@ class TestReassignedVariables:
         assert SECRET not in format_problems(".env", problems)
 
 
+def _parser_keeps_bom() -> bool:
+    """Whether the installed python-dotenv leaves a leading BOM on the first name.
+
+    1.2.2 (pinned in requirements.lock) does, so the variable is lost; newer
+    releases strip it themselves. The BOM tests derive what to expect from
+    this instead of assuming one behaviour.
+    """
+    first = next(iter(parse_stream(io.StringIO("\ufeffA=1\n"))))
+    return first.key is not None and first.key.startswith("\ufeff")
+
+
+PARSER_KEEPS_BOM = _parser_keeps_bom()
+
+
+def _bom_if_kept(name: str) -> list[tuple[str, int, str | None]]:
+    """The ``bom`` problem expected for a first assignment *name*, if any."""
+    return [("bom", 1, name)] if PARSER_KEEPS_BOM else []
+
+
+def _triples(problems: list[DotenvProblem]) -> list[tuple[str, int, str | None]]:
+    return [(p.kind, p.line, p.name) for p in problems]
+
+
 class TestByteOrderMark:
-    """A "UTF-8 with BOM" file: python-dotenv reads the first name as U+FEFF + NAME."""
+    """A "UTF-8 with BOM" file, on whichever python-dotenv is installed.
+
+    Where the parser keeps the mark the first variable is read as U+FEFF +
+    NAME and is reported; where it strips the mark nothing is lost and
+    nothing is reported.
+    """
 
     BOM = "\ufeff"
 
-    def test_a_valid_first_line_gives_exactly_one_bom_problem_naming_the_variable(self, tmp_path):
+    def test_a_valid_first_line_gives_one_bom_problem_naming_the_variable(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\nDB_HOST=localhost\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, "OPENAI_MODEL")]
+        assert _triples(problems) == _bom_if_kept("OPENAI_MODEL")
 
-    def test_the_message_names_the_cause_and_the_fix(self, tmp_path):
-        problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\n")
-        assert problems[0].message == (
+    def test_the_message_names_the_cause_and_the_fix(self):
+        assert DotenvProblem("bom", 1, "OPENAI_MODEL").message == (
             "line 1: the file starts with a byte-order mark (BOM), so the first "
             "variable (OPENAI_MODEL) is read under the wrong name -- "
             "save .env as UTF-8 without BOM"
+        )
+
+    def test_the_message_omits_the_name_when_there_is_none(self):
+        assert DotenvProblem("bom", 1).message == (
+            "line 1: the file starts with a byte-order mark (BOM), so the first "
+            "variable is read under the wrong name -- save .env as UTF-8 without BOM"
         )
 
     def test_the_first_binding_is_not_also_an_invalid_name(self, tmp_path):
@@ -171,12 +206,13 @@ class TestByteOrderMark:
         assert "invalid_name" not in [p.kind for p in problems]
 
     def test_a_bom_before_a_comment_loses_nothing_and_is_not_reported(self, tmp_path):
-        # python-dotenv glues the mark to the comment and keeps a None-valued
-        # "\ufeff" key that load_dotenv ignores; OPENAI_MODEL is read fine.
+        # Where the mark stays it glues to the comment and becomes a
+        # None-valued "\ufeff" key that load_dotenv ignores.
         assert _scan(tmp_path, f"{self.BOM}# settings\nOPENAI_MODEL=x\n") == []
 
     def test_a_bom_before_a_blank_line_loses_nothing_and_is_not_reported(self, tmp_path):
-        # The mark attaches to the blank line, not to the assignment below it.
+        # Where the mark stays it attaches to the blank line, not to the
+        # assignment below it.
         assert _scan(tmp_path, f"{self.BOM}\nOPENAI_MODEL=x\n") == []
         assert _scan(tmp_path, f"{self.BOM}\r\n\r\nOPENAI_MODEL=x\r\n") == []
 
@@ -186,36 +222,41 @@ class TestByteOrderMark:
     def test_a_bom_before_a_bare_name_loses_nothing_and_is_not_reported(self, tmp_path):
         assert _scan(tmp_path, f"{self.BOM}FLAG\nA=1\n") == []
 
-    def test_what_python_dotenv_does_matches_what_is_reported(self, tmp_path):
-        # The reason for the rule: the variable is lost exactly when "bom" is reported.
+    def test_a_problem_is_reported_exactly_when_python_dotenv_loses_the_variable(self, tmp_path):
         from dotenv import dotenv_values
 
-        for text, lost in [
-            (f"{self.BOM}A=1\n", True),
-            (f"{self.BOM}# c\nA=1\n", False),
-            (f"{self.BOM}\nA=1\n", False),
-            (f"{self.BOM}   A=1\n", True),
-        ]:
+        for text in (
+            f"{self.BOM}A=1\n",
+            f"{self.BOM}A=1\r\nB=2\r\n",
+            f"{self.BOM}# c\nA=1\n",
+            f"{self.BOM}\nA=1\n",
+            f"{self.BOM}   A=1\n",
+        ):
             path = tmp_path / ".env"
             path.write_text(text, encoding="utf-8", newline="")
-            assert ("A" not in dotenv_values(path) or dotenv_values(path)["A"] is None) is lost
-            assert [p.kind for p in scan_dotenv(path)].count("bom") == int(lost)
+            lost = dotenv_values(path).get("A") != "1"
+            reported = [p.kind for p in scan_dotenv(path)].count("bom")
+            assert reported == int(lost), text
 
     def test_a_bom_before_an_invalid_name_is_an_invalid_name_not_a_bom(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}my-var=1\nB=2\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("invalid_name", 1, None)]
+        assert _triples(problems) == [("invalid_name", 1, None)]
 
-    def test_a_bom_before_whitespace_then_a_name_is_both(self, tmp_path):
-        # python-dotenv rejects the line, so A is lost; both causes are named.
+    def test_a_bom_before_whitespace_then_a_name(self, tmp_path):
+        # Where the mark stays python-dotenv rejects the line, so A is lost
+        # and both causes are named; where it is stripped the line is fine.
         problems = _scan(tmp_path, f"{self.BOM}   A=1\nB=2\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [
-            ("bom", 1, "A"),
-            ("unparsable", 1, "A"),
-        ]
+        expected = [("bom", 1, "A"), ("unparsable", 1, "A")] if PARSER_KEEPS_BOM else []
+        assert _triples(problems) == expected
+
+    def test_a_second_bom_is_still_a_bom_on_every_release(self, tmp_path):
+        # Releases that strip the mark strip one; the other is in the name.
+        problems = _scan(tmp_path, f"{self.BOM}{self.BOM}A=1\n")
+        assert _triples(problems) == [("bom", 1, "A")]
 
     def test_crlf_changes_nothing(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\r\nDB_HOST=localhost\r\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, "OPENAI_MODEL")]
+        assert _triples(problems) == _bom_if_kept("OPENAI_MODEL")
 
     def test_later_problems_are_still_reported_on_their_own_lines(self, tmp_path):
         text = (
@@ -227,8 +268,7 @@ class TestByteOrderMark:
             "HOST=two\n"
         )
         problems = _scan(tmp_path, text)
-        assert [(p.kind, p.line, p.name) for p in problems] == [
-            ("bom", 1, "OPENAI_MODEL"),
+        assert _triples(problems) == _bom_if_kept("OPENAI_MODEL") + [
             ("unparsable", 2, "API_KEYS_JSON"),
             ("invalid_name", 4, None),
             ("reassigned", 5, "HOST"),
@@ -236,30 +276,28 @@ class TestByteOrderMark:
 
     def test_the_same_with_crlf_keeps_physical_line_numbers(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}A=1\r\n\r\nBAD='open\r\nB=2\r\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [
-            ("bom", 1, "A"),
-            ("unparsable", 3, "BAD"),
-        ]
+        assert _triples(problems) == _bom_if_kept("A") + [("unparsable", 3, "BAD")]
 
-    def test_an_unparsable_first_line_is_reported_as_both(self, tmp_path):
+    def test_line_numbers_are_physical_after_a_bom_and_blank_lines(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}\n\nBAD='open\nB=2\n")
+        assert _triples(problems) == [("unparsable", 3, "BAD")]
+
+    def test_an_unparsable_first_line_keeps_its_name(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}BAD='open\nB=2\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [
-            ("bom", 1, "BAD"),
-            ("unparsable", 1, "BAD"),
-        ]
+        assert _triples(problems) == _bom_if_kept("BAD") + [("unparsable", 1, "BAD")]
 
     def test_a_comment_first_bom_file_still_reports_its_later_problems(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}# c\nA=1\nBAD='open\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("unparsable", 3, "BAD")]
+        assert _triples(problems) == [("unparsable", 3, "BAD")]
 
     def test_a_bom_in_the_middle_of_the_file_is_not_a_byte_order_mark(self, tmp_path):
         problems = _scan(tmp_path, f"A=1\n{self.BOM}B=2\n")
         assert [(p.kind, p.line) for p in problems] == [("invalid_name", 2)]
 
-    def test_the_value_is_never_in_the_message(self, tmp_path):
+    def test_the_value_is_never_in_a_message(self, tmp_path):
         problems = _scan(tmp_path, f"{self.BOM}DB_PASSWORD={SECRET}\n")
-        assert [p.kind for p in problems] == ["bom"]
-        assert SECRET not in problems[0].message
+        assert _triples(problems) == _bom_if_kept("DB_PASSWORD")
+        assert SECRET not in "".join(_messages(problems))
         assert SECRET not in format_problems(".env", problems)
 
     def test_the_same_file_without_the_bom_is_clean(self, tmp_path):
@@ -267,10 +305,10 @@ class TestByteOrderMark:
 
     def test_without_a_bom_the_first_line_is_checked_as_before(self, tmp_path):
         problems = _scan(tmp_path, "my-var=1\nB=2\n")
-        assert [(p.kind, p.line, p.name) for p in problems] == [("invalid_name", 1, None)]
+        assert _triples(problems) == [("invalid_name", 1, None)]
 
-    def test_it_is_listed_with_the_other_problems(self, tmp_path):
-        out = format_problems(".env", _scan(tmp_path, f"{self.BOM}A=1\n"))
+    def test_it_is_listed_with_the_other_problems(self):
+        out = format_problems(".env", [DotenvProblem("bom", 1, "A")])
         assert "  - line 1: the file starts with a byte-order mark (BOM)" in out
         assert "BOM" in out.splitlines()[-1]
 

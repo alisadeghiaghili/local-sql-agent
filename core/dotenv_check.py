@@ -69,10 +69,11 @@ class DotenvProblem:
         a multi-line value that was not wrapped in single quotes),
         ``"reassigned"`` (same name assigned more than
         once with different values), ``"bom"`` (the file starts with a
-        byte-order mark glued to its first assignment, so python-dotenv sets
-        a variable whose name begins with U+FEFF and the real name is
-        missing; a mark before a comment or blank line loses nothing and is
-        not reported) or ``"unreadable"`` (the file itself
+        byte-order mark that python-dotenv left glued to its first
+        assignment, so it sets a variable whose name begins with U+FEFF and
+        the real name is missing; releases that strip the mark themselves,
+        and a mark before a comment or blank line, lose nothing and are not
+        reported) or ``"unreadable"`` (the file itself
         could not be read).
     line:
         1-based line the problem starts on; the first assignment for
@@ -154,24 +155,32 @@ def _unparsable(string: str, line: int) -> DotenvProblem:
 
 
 def _bom_problems(binding: Binding) -> list[DotenvProblem] | None:
-    """What a byte-order mark glued to the file's first binding amounts to.
+    """What a byte-order mark python-dotenv left on the first binding amounts to.
 
-    python-dotenv reads ``\\ufeffNAME=value`` as a variable named
+    Older python-dotenv releases (1.2.2 among them) open the file as plain
+    utf-8 and read ``\\ufeffNAME=value`` as a variable named
     ``"\\ufeffNAME"``, so ``NAME`` is lost. That is one problem with one
     cause, so the line is reported as the byte-order mark and not also as an
     invalid name. A line python-dotenv rejects outright is still reported as
-    unparsable.
+    unparsable. Newer releases strip the mark themselves; the decision is
+    made from what the parser returned, never from the raw text, so they
+    report nothing here.
 
     A byte-order mark in front of a comment, a blank line or a bare name
     loses nothing (python-dotenv keeps a ``None``-valued ``"\\ufeff"`` key
-    that ``load_dotenv`` ignores): that is ``[]``. ``None`` means the line is
-    wrong for another reason and gets the ordinary checks.
+    that ``load_dotenv`` ignores): that is ``[]``. ``None`` means the parser
+    left no mark on this binding, or the line is wrong for another reason,
+    and it gets the ordinary checks.
     """
-    string = binding.original.string[len(_BOM):]
     if binding.error:
-        unparsable = _unparsable(string, 1)
+        if not binding.original.string.startswith(_BOM):
+            return None
+        unparsable = _unparsable(binding.original.string.lstrip(_BOM), 1)
         return [DotenvProblem("bom", 1, unparsable.name), unparsable]
-    name = (binding.key or "")[len(_BOM):]
+    key = binding.key or ""
+    if not key.startswith(_BOM):
+        return None
+    name = key.lstrip(_BOM)
     valid = bool(_VALID_NAME_RE.match(name))
     if valid and binding.value is not None:
         return [DotenvProblem("bom", 1, name)]
@@ -182,7 +191,7 @@ def _bom_problems(binding: Binding) -> list[DotenvProblem] | None:
 
 def _scan_text(text: str) -> Iterator[DotenvProblem]:
     bindings = list(parse_stream(io.StringIO(text)))
-    if text.startswith(_BOM) and bindings:
+    if bindings:
         # The BOM is not a line: the first binding is still line 1.
         reported = _bom_problems(bindings[0])
         if reported is not None:
