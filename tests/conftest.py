@@ -225,3 +225,17 @@ def _reset_api_keys_file_cache_between_tests() -> Iterator[None]:
     yield
     _reset_api_keys_file_cache()
 
+
+@pytest.fixture(autouse=True)
+def _ignore_real_dotenv_problems(monkeypatch) -> None:
+    """Keep a developer's own ``.env`` from changing what a test sees.
+
+    ``config`` records at import what python-dotenv could not use in the
+    ``.env`` it loaded, and ``Settings.validate()`` refuses on it. A real
+    ``.env`` with a stray line would then fail every test that validates
+    settings, for a reason that has nothing to do with the test. Tests of the
+    check itself set this state explicitly (``tests/test_dotenv_check.py``).
+    """
+    import config
+
+    monkeypatch.setattr(config, "_dotenv_problems", [])

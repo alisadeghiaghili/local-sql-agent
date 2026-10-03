@@ -7,7 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-API keys can now be read from a JSON file, so a multi-line key array no longer has to survive `.env`'s quoting rules.
+API keys can now be read from a JSON file, and a `.env` line python-dotenv cannot use stops startup with its line number instead of a one-line warning that is easy to miss.
 
 ### Added
 
@@ -15,10 +15,12 @@ API keys can now be read from a JSON file, so a multi-line key array no longer h
 
 ### Changed
 
+- **Unusable `.env` lines are refused at startup with line numbers and names.** python-dotenv skips a line it cannot parse with one line on stderr, so a pretty-printed `API_KEYS_JSON` without single quotes, or with an apostrophe in a value such as `"Ali's key"`, ended as "no usable key is configured". `Settings.validate()` now lists every unparsable line, every leftover line of a broken multi-line value (and the variable whose value was cut off at its first line break), and every variable assigned twice with different values (names and line numbers only, never values), so the server and the `Settings.validate()` check in `verify_deployment.py` fail with the cause. The same variable set twice to the same value is not flagged, and neither is a missing `.env`.
 - **A repeated field inside one key object is refused.** `json.loads` kept the last of two identical fields silently, so a pasted second `"denied_columns"` replaced the first. This applies to `API_KEYS_JSON` as well as the file. The startup refusal for a bad key configuration now begins `Invalid API key configuration:` instead of `Invalid API_KEYS_JSON:`, because the cause may be in the file.
 
 ### Upgrading
 
+- **A `.env` that has an unparsable line, a leftover line, or a variable assigned twice with different values now stops startup.** Fix the lines the message names: wrap a multi-line `API_KEYS_JSON` in single quotes with no apostrophe inside, or delete the stale duplicate (the later one was the one in effect).
 - **To move keys to a file:** create `project_config/api_keys.json` containing the array, set `API_KEYS_FILE=project_config/api_keys.json`, remove `API_KEYS_JSON`, restart, and run `python scripts/verify_deployment.py`.
 
 ## [6.3.2] — 2026-10-03

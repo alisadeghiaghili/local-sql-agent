@@ -118,7 +118,9 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   not set both: that is refused. A multi-line `API_KEYS_JSON` must be wrapped
   in single quotes with no apostrophe anywhere inside it (a key named
   `Ali's key` breaks it), and double quotes around the array break the JSON
-  — which is why the file is the recommended form.
+  — which is why the file is the recommended form. Either way, a `.env` line
+  python-dotenv cannot use is now refused at start-up with its line number
+  and variable name (never its value).
 - `PROJECT_CONFIG_DIR` — leave unset (defaults to `project_config/`, this
   deployment's real domain data) unless you deliberately mean to run
   against the sample `project_config.example/` template. If you do set it
@@ -286,7 +288,9 @@ preflight in step 3 should have already caught the same problem — go back
 and re-run it. The two most common fail-closed exits, both intentional:
 
 - `Invalid configuration: ...` — a `Settings.validate()` failure (a
-  placeholder left in `.env`).
+  placeholder left in `.env`, or a `.env` line python-dotenv could not use:
+  the message lists each by line number and variable name — a multi-line
+  `API_KEYS_JSON` that is not wrapped in single quotes is the usual one).
 - `Invalid API key configuration: ...` — `API_KEYS_FILE` is missing,
   unreadable or not valid JSON, an entry is malformed, or both
   `API_KEYS_FILE` and `API_KEYS_JSON` are set.
