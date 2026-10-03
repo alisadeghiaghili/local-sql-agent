@@ -117,12 +117,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-import yaml
 from sqlalchemy import func, select
 
 import config as cfg
 from appdb.engine import get_app_engine
 from appdb.models import config_bundle_versions
+from core.yaml_loading import safe_load_strict
 from security.auth import OPERATIONS_CAPABILITY, SECURITY_CAPABILITY
 
 #: The nine ``project_config/*.yaml`` files this module versions as one
@@ -534,7 +534,7 @@ def _schema_table_columns(schema_yaml_text: str) -> dict[str, set[str]]:
 
     if not schema_yaml_text.strip():
         return {}
-    parsed = SchemaConfig.model_validate(yaml.safe_load(schema_yaml_text) or {})
+    parsed = SchemaConfig.model_validate(safe_load_strict(schema_yaml_text) or {})
     return {
         name: set(table.columns or {})
         for name, table in parsed.tables.items()
@@ -743,7 +743,7 @@ def propose_or_apply(
         if "schema.yaml" in files and new_content["schema.yaml"].strip():
             from schema_data.registry import SchemaConfig, check_allowlist_structural_invariants
 
-            parsed = SchemaConfig.model_validate(yaml.safe_load(new_content["schema.yaml"]) or {})
+            parsed = SchemaConfig.model_validate(safe_load_strict(new_content["schema.yaml"]) or {})
             table_columns = {
                 name: t.columns for name, t in parsed.tables.items() if t.columns
             }

@@ -89,11 +89,11 @@ def _load_from_yaml(path: Path) -> dict[tuple[str, str], list[str]]:
     Each entry must have ``from_table``, ``to_table``, and ``join_hint``.
     Missing keys are logged and skipped.
     """
-    import yaml  # deferred: keeps module importable without pyyaml at top-level
+    from core.yaml_loading import safe_load_strict  # deferred: keeps module importable without pyyaml at top-level
 
     mapping: MutableMapping[tuple[str, str], list[str]] = defaultdict(list)
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = safe_load_strict(path.read_text(encoding="utf-8")) or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("Cannot read %s: %s", path, exc)
         return {}

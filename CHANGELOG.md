@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+A configuration file that repeats a key is now refused instead of silently losing the first one.
+
+### Fixed
+
+- **A duplicate key in a YAML config file is refused.** `yaml.safe_load` kept the last of two identical keys without a word, so a second `datasources:` heading dropped the first block, a whole data source, with no error. Every config file is now read so that a key written twice in one mapping fails with its name and both line numbers, for example `[datasources.yaml] is not valid YAML: duplicate key 'datasources' (first on line 12, again on line 21)`. An explicit key that overrides one brought in by a merge key (`<<: *anchor`) is still allowed.
+
+### Upgrading
+
+- **A config file that had a duplicate key now fails at startup,** naming the key and both lines. Remove the duplicate; the later one was the one in effect, so keep that block's content if it is what you meant.
+
 ## [6.3.0] — 2026-10-02
 
 A warehouse connection is now described in `datasources.yaml`, and `.env`

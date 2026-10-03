@@ -88,6 +88,8 @@ from pydantic import (
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
+from core.yaml_loading import safe_load_strict
+
 if TYPE_CHECKING:
     from config import Settings
 
@@ -503,7 +505,7 @@ def validate_datasources_yaml_text(text: str) -> DataSourcesConfig:
     ValueError: [datasources.yaml] validation error at 'datasources -> main -> url_env': ...
     """
     try:
-        raw = yaml.safe_load(text)
+        raw = safe_load_strict(text)
     except yaml.YAMLError as exc:
         raise ValueError(f"[{DATASOURCES_FILENAME}] is not valid YAML: {exc}") from exc
     return _validate_raw(raw)

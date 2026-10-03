@@ -87,6 +87,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
+from core.yaml_loading import safe_load_strict
 from knowledge.config_loader import ConfigNotFoundError, load_yaml
 
 __all__ = [
@@ -598,7 +599,7 @@ def validate_schema_yaml_text(text: str) -> SchemaConfig:
     ValueError: [schema.yaml] validation error at 'relationships -> 0 -> join_sql': Field required
     """
     try:
-        raw = yaml.safe_load(text) or {}
+        raw = safe_load_strict(text) or {}
     except yaml.YAMLError as exc:
         raise ValueError(f"[schema.yaml] {exc}") from exc
     return _validate_schema_raw(raw)

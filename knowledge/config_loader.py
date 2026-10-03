@@ -25,6 +25,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationError, field_validator
 
+from core.yaml_loading import safe_load_strict
+
 logger = logging.getLogger(__name__)
 
 #: Repository root, used to resolve a *relative* ``PROJECT_CONFIG_DIR``
@@ -87,14 +89,21 @@ def load_yaml(path: Path) -> dict:
     ------
     ConfigNotFoundError
         If the file does not exist.
+    ValueError
+        If the file is not valid YAML, or repeats a key in one mapping.
     """
     if not path.exists():
         raise ConfigNotFoundError(
             f"{path} not found. "
             f"Copy from project_config.example/ and fill in your data."
         )
-    with path.open(encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return safe_load_strict(fh) or {}
+    except yaml.YAMLError as exc:
+        # Same prefix validate_yaml_text puts on the in-memory path, so the
+        # operator sees the file name whichever way the file was read.
+        raise ValueError(f"[{path.name}] {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +324,7 @@ def validate_yaml_text(filename: str, text: str, model: type[BaseModel]) -> Base
     ValueError: [metrics.yaml] validation error at 'metrics': Input should be a valid dictionary
     """
     try:
-        raw = yaml.safe_load(text) or {}
+        raw = safe_load_strict(text) or {}
     except yaml.YAMLError as exc:
         raise ValueError(f"[{filename}] {exc}") from exc
     return _validate_raw(filename, raw, model)
