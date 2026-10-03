@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
 
-from dotenv.parser import parse_stream
+from dotenv.parser import Binding, parse_stream
 
 __all__ = ["DotenvProblem", "format_problems", "scan_dotenv"]
 
@@ -45,7 +45,13 @@ _ASSIGNED_NAME_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*="
 
 _NEWLINE_RE = re.compile(r"\r\n|\n|\r")
 
-Kind = Literal["unparsable", "invalid_name", "cut_off", "reassigned", "unreadable"]
+#: What "UTF-8 with BOM" puts at the start of a file. python-dotenv opens the
+#: file as plain utf-8, so it stays in the text, glued to the first name.
+_BOM = "\ufeff"
+
+Kind = Literal[
+    "unparsable", "invalid_name", "cut_off", "reassigned", "bom", "unreadable"
+]
 
 
 @dataclass(frozen=True)
@@ -62,14 +68,18 @@ class DotenvProblem:
         ``[`` or ``{`` and is followed by such a leftover line: the start of
         a multi-line value that was not wrapped in single quotes),
         ``"reassigned"`` (same name assigned more than
-        once with different values) or ``"unreadable"`` (the file itself
+        once with different values), ``"bom"`` (the file starts with a
+        byte-order mark, so python-dotenv reads the first variable under a
+        name that begins with U+FEFF) or ``"unreadable"`` (the file itself
         could not be read).
     line:
         1-based line the problem starts on; the first assignment for
-        ``"reassigned"``; ``0`` for ``"unreadable"``.
+        ``"reassigned"``; always ``1`` for ``"bom"``; ``0`` for
+        ``"unreadable"``.
     name:
         The variable name when one is known; never the value, and never the
-        text of an invalid name.
+        text of an invalid name. For ``"bom"`` it is the first variable's name
+        without the byte-order mark.
     lines:
         Every line that assigns *name*, in file order. Only for
         ``"reassigned"``; the last one is the value that wins.
@@ -82,6 +92,8 @@ class DotenvProblem:
     'line 1: API_KEYS_JSON ends at the line break, so the lines after it are not part of its value'
     >>> DotenvProblem("reassigned", 2, "DB_HOST", (2, 9)).message
     'DB_HOST is assigned on lines 2 and 9 with different values; the last one (line 9) wins'
+    >>> DotenvProblem("bom", 1, "OPENAI_MODEL").message
+    'line 1: the file starts with a byte-order mark (BOM), so the first variable (OPENAI_MODEL) is read under the wrong name -- save .env as UTF-8 without BOM'
     """
 
     kind: Kind
@@ -105,6 +117,13 @@ class DotenvProblem:
                 f"line {self.line}: {self.name} ends at the line break, so the "
                 "lines after it are not part of its value"
             )
+        if self.kind == "bom":
+            which = f" ({self.name})" if self.name else ""
+            return (
+                f"line {self.line}: the file starts with a byte-order mark (BOM), "
+                f"so the first variable{which} is read under the wrong name -- "
+                "save .env as UTF-8 without BOM"
+            )
         if self.kind == "reassigned":
             *head, last = self.lines
             where = ", ".join(str(n) for n in head)
@@ -127,12 +146,43 @@ def _start_line(string: str, line: int) -> int:
     return line + len(_NEWLINE_RE.findall(leading))
 
 
-def _scan_stream(stream: io.TextIOBase) -> Iterator[DotenvProblem]:
+def _unparsable(string: str, line: int) -> DotenvProblem:
+    match = _ASSIGNED_NAME_RE.match(string)
+    return DotenvProblem("unparsable", line, match.group(1) if match else None)
+
+
+def _bom_problems(binding: Binding | None) -> Iterator[DotenvProblem]:
+    """What the byte-order mark and the line it is glued to amount to.
+
+    python-dotenv reads ``\\ufeffNAME=value`` as a variable named
+    ``"\\ufeffNAME"``. That is one problem with one cause, so the line is
+    reported as the byte-order mark and not also as an invalid name. A line
+    python-dotenv rejects outright is still reported as unparsable.
+    """
+    if binding is None:
+        yield DotenvProblem("bom", 1)
+        return
+    string = binding.original.string[len(_BOM):]
+    if binding.error:
+        unparsable = _unparsable(string, 1)
+        yield DotenvProblem("bom", 1, unparsable.name)
+        yield unparsable
+        return
+    name = (binding.key or "")[len(_BOM):]
+    yield DotenvProblem("bom", 1, name if _VALID_NAME_RE.match(name) else None)
+
+
+def _scan_text(text: str) -> Iterator[DotenvProblem]:
+    bindings = list(parse_stream(io.StringIO(text)))
+    if text.startswith(_BOM):
+        # The BOM is not a line: the first binding is still line 1.
+        yield from _bom_problems(bindings[0] if bindings else None)
+        bindings = bindings[1:]
     assigned: dict[str, list[tuple[int, str]]] = {}
     # The assignment just before the current binding, if its value is only an
     # opening bracket: python-dotenv stops an unquoted value at the line break.
     opener: tuple[int, str] | None = None  # (line, name)
-    for binding in parse_stream(stream):
+    for binding in bindings:
         line = _start_line(binding.original.string, binding.original.line)
         invalid_name = binding.key is not None and not _VALID_NAME_RE.match(binding.key)
         before, opener = opener, None
@@ -140,8 +190,7 @@ def _scan_stream(stream: io.TextIOBase) -> Iterator[DotenvProblem]:
             if before is not None:
                 yield DotenvProblem("cut_off", *before)
             if binding.error:
-                match = _ASSIGNED_NAME_RE.match(binding.original.string)
-                yield DotenvProblem("unparsable", line, match.group(1) if match else None)
+                yield _unparsable(binding.original.string, line)
             else:
                 yield DotenvProblem("invalid_name", line)
         elif binding.key is not None and binding.value is not None:
@@ -187,7 +236,7 @@ def scan_dotenv(path: str | Path) -> list[DotenvProblem]:
     try:
         # utf-8 with universal newlines: exactly how python-dotenv opens it.
         with open(path, encoding="utf-8") as stream:
-            return list(_scan_stream(stream))
+            return list(_scan_text(stream.read()))
     except (OSError, UnicodeDecodeError):
         # Never echo the exception: a decode error quotes the offending bytes.
         return [DotenvProblem("unreadable", 0)]
@@ -223,7 +272,7 @@ def format_problems(path: str | Path, problems: list[DotenvProblem]) -> str:
     lines.append(
         "Likely causes: a multi-line value (such as a pretty-printed API_KEYS_JSON) "
         "must be wrapped in single quotes and must not contain an apostrophe; "
-        "double quotes around JSON break it; the same variable is set twice. "
+        "double quotes around JSON break it; the same variable is set twice; the file was saved as UTF-8 with a BOM. "
         "For API keys, put the JSON array in a file and set API_KEYS_FILE "
         "(e.g. project_config/api_keys.json) instead of API_KEYS_JSON. "
         "Fix the lines above and restart."

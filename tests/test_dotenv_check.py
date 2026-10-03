@@ -149,6 +149,100 @@ class TestReassignedVariables:
         assert SECRET not in format_problems(".env", problems)
 
 
+class TestByteOrderMark:
+    """A "UTF-8 with BOM" file: python-dotenv reads the first name as U+FEFF + NAME."""
+
+    BOM = "\ufeff"
+
+    def test_a_valid_first_line_gives_exactly_one_bom_problem_naming_the_variable(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\nDB_HOST=localhost\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, "OPENAI_MODEL")]
+
+    def test_the_message_names_the_cause_and_the_fix(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\n")
+        assert problems[0].message == (
+            "line 1: the file starts with a byte-order mark (BOM), so the first "
+            "variable (OPENAI_MODEL) is read under the wrong name -- "
+            "save .env as UTF-8 without BOM"
+        )
+
+    def test_the_first_binding_is_not_also_an_invalid_name(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}A=1\nB=2\n")
+        assert "invalid_name" not in [p.kind for p in problems]
+
+    def test_a_first_line_that_is_no_valid_name_omits_it_from_the_message(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}my-var=1\nB=2\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, None)]
+        assert problems[0].message == (
+            "line 1: the file starts with a byte-order mark (BOM), so the first "
+            "variable is read under the wrong name -- save .env as UTF-8 without BOM"
+        )
+
+    def test_a_comment_first_line_names_no_variable(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}# settings\nA=1\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, None)]
+
+    def test_a_file_that_is_only_a_bom_is_reported(self, tmp_path):
+        assert [(p.kind, p.name) for p in _scan(tmp_path, self.BOM)] == [("bom", None)]
+
+    def test_crlf_changes_nothing(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}OPENAI_MODEL=x\r\nDB_HOST=localhost\r\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [("bom", 1, "OPENAI_MODEL")]
+
+    def test_later_problems_are_still_reported_on_their_own_lines(self, tmp_path):
+        text = (
+            f"{self.BOM}OPENAI_MODEL=x\n"
+            "API_KEYS_JSON='[\n"
+            '  {"id": "a", "name": "Ali\'s key"}\n'
+            "]'\n"
+            "HOST=one\n"
+            "HOST=two\n"
+        )
+        problems = _scan(tmp_path, text)
+        assert [(p.kind, p.line, p.name) for p in problems] == [
+            ("bom", 1, "OPENAI_MODEL"),
+            ("unparsable", 2, "API_KEYS_JSON"),
+            ("invalid_name", 4, None),
+            ("reassigned", 5, "HOST"),
+        ]
+
+    def test_the_same_with_crlf_keeps_physical_line_numbers(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}A=1\r\n\r\nBAD='open\r\nB=2\r\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [
+            ("bom", 1, "A"),
+            ("unparsable", 3, "BAD"),
+        ]
+
+    def test_an_unparsable_first_line_is_reported_as_both(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}BAD='open\nB=2\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [
+            ("bom", 1, "BAD"),
+            ("unparsable", 1, "BAD"),
+        ]
+
+    def test_a_bom_in_the_middle_of_the_file_is_not_a_byte_order_mark(self, tmp_path):
+        problems = _scan(tmp_path, f"A=1\n{self.BOM}B=2\n")
+        assert [(p.kind, p.line) for p in problems] == [("invalid_name", 2)]
+
+    def test_the_value_is_never_in_the_message(self, tmp_path):
+        problems = _scan(tmp_path, f"{self.BOM}DB_PASSWORD={SECRET}\n")
+        assert [p.kind for p in problems] == ["bom"]
+        assert SECRET not in problems[0].message
+        assert SECRET not in format_problems(".env", problems)
+
+    def test_the_same_file_without_the_bom_is_clean(self, tmp_path):
+        assert _scan(tmp_path, "OPENAI_MODEL=x\nDB_HOST=localhost\n") == []
+
+    def test_without_a_bom_the_first_line_is_checked_as_before(self, tmp_path):
+        problems = _scan(tmp_path, "my-var=1\nB=2\n")
+        assert [(p.kind, p.line, p.name) for p in problems] == [("invalid_name", 1, None)]
+
+    def test_it_is_listed_with_the_other_problems(self, tmp_path):
+        out = format_problems(".env", _scan(tmp_path, f"{self.BOM}A=1\n"))
+        assert "  - line 1: the file starts with a byte-order mark (BOM)" in out
+        assert "BOM" in out.splitlines()[-1]
+
+
 class TestNothingToReport:
     def test_values_are_never_in_any_message(self, tmp_path):
         text = (
