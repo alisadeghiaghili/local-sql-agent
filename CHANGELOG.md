@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI now tests the pinned dependency set that deployments install, as well as the newest releases.** The `test` job in `.github/workflows/ci.yml` gained a `deps` matrix dimension: the existing legs still install `requirements.txt` (floors only, so the newest releases, which warns early when an upstream release breaks us), and a second set of legs, named `<os> / Python <version> / locked deps`, install `requirements.lock` across the same three operating systems and Python 3.11, 3.12 and 3.13 (every pin has a wheel on all nine combinations). They run the same suite, doctests and offline evaluation run; `webapp/requirements.txt` and pytest are installed under the lock as a constraint so nothing can move a pin. Until now CI never ran the tree a deployment installs (sqlglot, whose AST `security/sql_guard.py` decides from, is pinned at 30.18.0 while CI ran 30.21.0). The existing check names are unchanged; the pip-audit, coverage and upload steps still run once, on the Linux 3.12 floors leg.
+
 ## [6.6.1] — 2026-10-04
 
 A template for the `API_KEYS_FILE` key array.
