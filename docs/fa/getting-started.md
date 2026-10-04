@@ -456,6 +456,11 @@ API_KEYS_JSON=[{"id":"analyst-1","name":"...","key_sha256":"<64 هگز>"}]
 دوست دارید. مسیر پیشنهادی `project_config/api_keys.json` است؛ پوشهٔ
 `project_config/` در git نادیده گرفته می‌شود، پس هش کلیدها وارد مخزن نمی‌شوند.
 
+قالب آماده در `project_config.example/api_keys.example.json` هست: آن را به
+`project_config/api_keys.json` کپی کنید و `key_sha256` هر ورودی را با
+هشی که `scripts/issue_api_key.py` چاپ می‌کند عوض کنید. تا مقدار نمونه‌ای
+(`<64-hex-char digest ...>`) در فایل مانده، سرور بالا نمی‌آید.
+
 ```json
 [
   {"id": "admin-1", "name": "ادمین", "key_sha256": "<64 هگز>",

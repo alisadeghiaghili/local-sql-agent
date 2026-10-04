@@ -24,6 +24,7 @@ and comments explaining every field.
 | `metrics.yaml` | Metric name → SQL expression mapping | `METRICS` |
 | `schema.yaml` | Warehouse tables/columns/relationships — also the SQL guard's table/column allowlist | `TABLE_DESCRIPTIONS`, `TABLE_COLUMNS`, `RELATIONSHIPS` |
 | `datasources.example.yaml` | **Optional**, and *not* loaded under this name — template for `project_config/datasources.yaml`, which lists more than one warehouse data source (different servers). Absent entirely (the default): one source, `DB_CONNECTION_URL`, unchanged from every earlier release. See `docs/design/DATASOURCES.md` | `database.datasources` |
+| `api_keys.example.json` | **Optional**, and *not* loaded under this name — template for `project_config/api_keys.json`, the file `API_KEYS_FILE` names: the API key array with every field an entry accepts (`id`, `name`, `key_sha256`, `denied_columns`, `admin`, `operations`, `security`). Copy it, then replace each `key_sha256` with the digest `scripts/issue_api_key.py` prints; the server refuses to start while a placeholder digest is left in. See `docs/deployment-runbook.md` | `API_KEYS_FILE` |
 | `relationships.yaml` | Explicit join paths between tables, for `database.relationship_map` | (loaded directly, not through `knowledge.config_loader`) |
 | `retrieval_hints.yaml` | Retrieval-ranking overrides (always-include terms, boosts) | consumed by `schema_data.retriever` |
 | `memory_policy.yaml` | Session-memory retention policy | consumed by `session.*` |

@@ -99,8 +99,14 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   issued key's entry), pretty-printed as you like. Recommended:
   `project_config/api_keys.json` (`project_config/` is git-ignored, and a
   relative path resolves against the repository root, like
-  `PROJECT_CONFIG_DIR` below). Create it, then set
-  `API_KEYS_FILE=project_config/api_keys.json` in `.env`:
+  `PROJECT_CONFIG_DIR` below). Create it by copying the template,
+  `cp project_config.example/api_keys.example.json project_config/api_keys.json`,
+  replace each `key_sha256` with the digest `scripts/issue_api_key.py` printed
+  (an entry still holding the template's placeholder stops startup with
+  `key_sha256 must be a 64-character SHA-256 hex digest`), and set
+  `API_KEYS_FILE=project_config/api_keys.json` in `.env`. The template has
+  the shape below, and `denied_columns` takes column names as they appear in
+  `schema.yaml` (`"NationalID"`, not `Customer.NationalID`):
 
   ```json
   [

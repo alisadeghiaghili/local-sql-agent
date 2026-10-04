@@ -253,6 +253,62 @@ class TestRefusals:
 
 
 # ---------------------------------------------------------------------------
+# The committed template
+# ---------------------------------------------------------------------------
+
+#: Every field ``security.auth._parse_api_keys`` reads from an entry.
+_PARSED_FIELDS = {
+    "id", "name", "key_sha256", "denied_columns", "admin", "operations", "security",
+}
+
+_TEMPLATE = Path(__file__).resolve().parent.parent / "project_config.example" / "api_keys.example.json"
+
+
+class TestTemplateFile:
+    """``project_config.example/api_keys.example.json`` is copied, then edited."""
+
+    def test_it_is_a_json_array_of_entries_using_only_parsed_fields(self):
+        entries = json.loads(_TEMPLATE.read_text(encoding="utf-8"))
+        assert isinstance(entries, list) and len(entries) >= 2
+        for entry in entries:
+            assert set(entry) <= _PARSED_FIELDS, set(entry) - _PARSED_FIELDS
+            assert {"id", "name", "key_sha256"} <= set(entry)
+
+    def test_the_two_entries_together_show_every_parsed_field(self):
+        entries = json.loads(_TEMPLATE.read_text(encoding="utf-8"))
+        assert set().union(*entries) == _PARSED_FIELDS
+
+    def test_it_is_refused_as_it_stands(self, tmp_path):
+        # A copy with no digest replaced must never start a server.
+        copy = _write(tmp_path / "api_keys.json", _TEMPLATE.read_text(encoding="utf-8"))
+        with override_settings(api_keys_file=str(copy), api_keys_json=""):
+            with pytest.raises(ApiKeyConfigError) as excinfo:
+                load_api_keys()
+        text = str(excinfo.value)
+        assert f"API_KEYS_FILE ({copy})[0].key_sha256 must be a 64-character SHA-256" in text
+
+    def test_it_loads_once_each_digest_is_replaced(self, tmp_path):
+        entries = json.loads(_TEMPLATE.read_text(encoding="utf-8"))
+        for entry, raw_key in zip(entries, ("a" * 40, "b" * 40)):
+            entry["key_sha256"] = _sha256(raw_key)
+        copy = _write(tmp_path / "api_keys.json", json.dumps(entries))
+        with override_settings(api_keys_file=str(copy), api_keys_json=""):
+            keys = load_api_keys()
+        analyst, admin = keys[_sha256("a" * 40)], keys[_sha256("b" * 40)]
+        assert analyst.denied_columns and not analyst.capabilities
+        assert admin.is_admin and admin.is_operations and admin.is_security
+
+    def test_the_template_is_not_where_the_server_reads_keys(self, monkeypatch):
+        # The recommended path is project_config/api_keys.json, and no path is
+        # configured by default, so the template is only ever read when
+        # someone points API_KEYS_FILE at a copy of it.
+        monkeypatch.delenv("API_KEYS_FILE", raising=False)
+        assert config.Settings().api_keys_file == ""
+        assert _TEMPLATE.parent.name == "project_config.example"
+        assert _TEMPLATE.name != "api_keys.json"
+
+
+# ---------------------------------------------------------------------------
 # Messages name their source
 # ---------------------------------------------------------------------------
 
