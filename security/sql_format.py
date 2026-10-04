@@ -315,7 +315,15 @@ class _Layout:
             if not isinstance(n, exp.SetOperation):
                 branches.append(n)
                 return
-            _require_only(n, {"this", "expression", "distinct", "with_", "with"})
+            # ``ORDER BY`` and ``OFFSET`` / ``FETCH`` written after the last
+            # branch apply to the whole chain. Where sqlglot stores them
+            # differs by release: older ones put them on the last branch,
+            # newer ones on the outermost set operation. Only that outermost
+            # node may carry them here.
+            allowed = {"this", "expression", "distinct", "with_", "with"}
+            if n is node:
+                allowed |= {"order", "offset", "limit"}
+            _require_only(n, allowed)
             if isinstance(n.expression, exp.SetOperation):
                 # A right-nested chain only comes from parentheses, which
                 # parse as Subquery; anything else is not ours to flatten.
@@ -334,12 +342,19 @@ class _Layout:
             branches.append(n.expression)
 
         spine(node)
+        modifiers = ("order", "offset", "limit")
+        if node.args.get("limit") and not isinstance(node.args["limit"], exp.Fetch):
+            raise _Unsupported("row limit on a set operation")
+        if any(node.args.get(name) for name in modifiers) and any(
+            branches[-1].args.get(name) for name in modifiers
+        ):
+            raise _Unsupported("ordering written twice")
         lines = self._with(with_)
         for i, branch in enumerate(branches):
             if i:
                 lines.append(operators[i - 1])
             lines.extend(self._branch(branch))
-        return lines
+        return lines + self._ordering(node)
 
     def _branch(self, node: exp.Expression) -> list[str]:
         """Lay out one branch of a set operation."""
@@ -370,6 +385,12 @@ class _Layout:
         group = node.args.get("group")
         if group:
             _require_only(group, {"expressions"})
+            # Newer sqlglot releases keep ``ROLLUP`` / ``CUBE`` / ``GROUPING
+            # SETS`` among the group items, older ones in their own argument
+            # (rejected above); either way they are not laid out here.
+            for item in group.expressions:
+                if isinstance(item, (exp.Rollup, exp.Cube, exp.GroupingSets)):
+                    raise _Unsupported(type(item).__name__)
             lines.append("GROUP BY")
             lines.extend(self._item_list(group.expressions, alias_items=False))
 
@@ -377,6 +398,14 @@ class _Layout:
         if having:
             lines.extend(self._condition("HAVING", having.this))
 
+        return lines + self._ordering(node)
+
+    def _ordering(self, node: exp.Expression) -> list[str]:
+        """Lay out the ``ORDER BY`` and ``OFFSET`` / ``FETCH`` lines of *node*.
+
+        *node* is a ``SELECT`` or a set operation; ``[]`` when it has none.
+        """
+        lines: list[str] = []
         order = node.args.get("order")
         if order:
             _require_only(order, {"expressions"})
