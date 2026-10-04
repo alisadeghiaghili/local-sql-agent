@@ -19,6 +19,12 @@
 # alter security behaviour without a single line of this repository
 # changing.
 #
+# CI tests both this pinned set and the newest releases the floors in
+# requirements.txt allow: every OS / Python leg of .github/workflows/ci.yml
+# runs once from this file (the tree deployments install) and once from
+# requirements.txt (the early warning that an upstream release has broken
+# us), and the build's dependency audit covers this file.
+#
 # Provenance: generated via `pip freeze` against this project's current,
 # already-installed development environment (Windows, CPython 3.13),
 # filtered down to requirements.txt's own packages plus the transitive
