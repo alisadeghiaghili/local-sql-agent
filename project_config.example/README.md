@@ -62,6 +62,14 @@ a table that exists, with the same shape, in each of those sources. Run
 values worked out from the databases and written to
 `schema.with_datasources.yaml` next to `schema.yaml` for review.
 
+With several sources, each question is also routed to **one** source before
+its prompt is built, and the model is shown that source's tables only.
+`datasources.yaml` can help it with `description:` (printed above the
+source's tables) and `keywords:` (words or phrases that mark a question as
+being about the source); see the template and "Choosing a source per
+question" in `docs/design/DATASOURCES.md`. `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+then applies to each source's prompt separately.
+
 ## What happens if project_config/ is missing?
 
 Importing `knowledge.*` and `schema_data.*` modules will succeed.

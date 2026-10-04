@@ -53,6 +53,13 @@ everything, on top of :func:`~observability.audit.save_audit_record`
 already swallowing its own I/O errors — a broken audit trail must never
 fail a user's query.
 
+With several data sources configured, the audit record also carries
+``datasource_selection`` -- which source the question was routed to, why,
+the fallback order, and whether the model's ``OUT_OF_SCOPE`` made the
+request retry on the next source (see :mod:`llm.source_routing`); ``None``
+with one source, and for a request served from the cache (no selection
+ran).
+
 ``request_id`` is always the id ``api/middleware.py``'s
 ``RequestIDMiddleware`` stamped on ``request.state`` (see
 ``api/server.py``), so the audit record, the ``X-Request-ID`` response
@@ -99,6 +106,7 @@ from database.errors import classify_database_error
 from database.routing import target_datasource_or_none
 from llm.base import LLMBackend
 from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
+from llm.source_routing import SourceRouting, generate_with_source_fallback
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record
 from llm.interpret import format_numbers, interpret_rows
@@ -310,6 +318,12 @@ def run_query(
     audit_llm: dict[str, Any] | None = None
     audit_error_code: str | None = None
     audit_error_message: str | None = None
+    # How the data source was chosen (several sources only); set from the
+    # result, or from the exception that ended the request.
+    audit_selection: dict[str, Any] | None = None
+    # Where mode="sql" reports its selection (see _safe_generate_sql_only),
+    # including when it raises.
+    selection_sink: dict[str, Any] = {}
     # T0 only when this exact call was served from cache; every other
     # path today is the single-shot LLM pipeline, T2. T1 (template) and
     # T3 (agent) are not reachable yet -- they land in a later phase, per
@@ -340,7 +354,9 @@ def run_query(
         if mode == "sql":
             sql, llm_meta = _safe_generate_sql_only(
                 _agent, question, system_prompt, timer, denied_columns=denied_columns,
+                selection_sink=selection_sink,
             )
+            audit_selection = _selection_or_none(selection_sink.get("selection"))
             audit_sql = sql
             audit_guard["tables_touched"] = _touched_or_none(sql)
             # ensure_top is never applied in this mode (no execution, no
@@ -348,7 +364,9 @@ def run_query(
             audit_llm = _llm_status_block(
                 llm_meta, _agent._backend,
                 finish_reason=finish_reason_from_meta(llm_meta),
-                static_prefix_tokens=static_prefix_tokens,
+                static_prefix_tokens=_prefix_tokens_for(
+                    system_prompt, audit_selection, static_prefix_tokens,
+                ),
             )
             return QueryResponse(
                 question=question,
@@ -371,6 +389,7 @@ def run_query(
         )
         rows: list[dict] = df.to_dict(orient="records")
 
+        audit_selection = _selection_or_none(getattr(result, "datasource_selection", None))
         audit_sql = result.sql
         audit_row_count = len(rows)
         audit_columns = [str(c) for c in df.columns]
@@ -380,7 +399,9 @@ def run_query(
             result.llm_meta, _agent._backend,
             finish_reason=finish_reason_from_meta(result.llm_meta),
             corrections=max(result.attempt - 1, 0),
-            static_prefix_tokens=static_prefix_tokens,
+            static_prefix_tokens=_prefix_tokens_for(
+                system_prompt, audit_selection, static_prefix_tokens,
+            ),
         )
 
         interpretation: str | None = None
@@ -434,8 +455,15 @@ def run_query(
             finish_reason = finish_reason_from_meta(getattr(exc, "llm_meta", None))
         else:
             finish_reason = "error"
+        audit_selection = (
+            _selection_or_none(getattr(exc, "datasource_selection", None))
+            or _selection_or_none(selection_sink.get("selection"))
+        )
         audit_llm = _llm_status_block_for_error(
-            exc, _agent._backend, finish_reason, static_prefix_tokens=static_prefix_tokens,
+            exc, _agent._backend, finish_reason,
+            static_prefix_tokens=_prefix_tokens_for(
+                system_prompt, audit_selection, static_prefix_tokens,
+            ),
         )
 
         # The guard (or, for an execution failure, validate_sql earlier in
@@ -473,6 +501,7 @@ def run_query(
             columns=audit_columns,
             principal_id=principal.id if principal is not None else None,
             datasource=target_datasource_or_none(audit_sql, cfg.settings.sql_dialect),
+            datasource_selection=audit_selection,
         )
 
 
@@ -491,6 +520,33 @@ def _columns_from_rows(rows: list[dict] | None) -> list[str] | None:
     if not rows:
         return None
     return [str(c) for c in rows[0].keys()]
+
+
+def _selection_or_none(value: object) -> dict[str, Any] | None:
+    """*value* if it is a data-source selection block, else ``None``.
+
+    The block comes from :meth:`llm.source_routing.SourceRouting.audit`
+    through a result or an exception attribute. Anything else -- the
+    attribute missing, or a test double that answers every attribute --
+    is not a selection and is not written to the audit record.
+    """
+    return value if isinstance(value, dict) and value else None
+
+
+def _prefix_tokens_for(
+    system_prompt: str, selection: dict[str, Any] | None, default: int,
+) -> int:
+    """The static-prefix estimate for the source the answer came from.
+
+    With several data sources each source has its own prefix, so the
+    ``prefix_cache_hit`` ratio in the audit ``llm`` block is measured
+    against the chosen source's, not the whole schema's. *default* (the
+    whole-schema estimate computed once per request) is returned when no
+    source was chosen -- every single-source request.
+    """
+    if selection is None:
+        return default
+    return static_prefix_token_estimate(system_prompt, selection["chosen"])
 
 
 def _touched_or_none(sql: str) -> list[str] | None:
@@ -645,8 +701,13 @@ def _carry_exception_meta(src: Exception, dst: NLQError) -> None:
         :class:`~security.sql_guard.CorrectableRejection` that never
         passed the guard. Lets a caller report the honest count instead
         of assuming the full correction budget was always spent.
+    ``datasource_selection``
+        Set by ``SQLAgent.run`` (and :func:`_safe_generate_sql_only`) when
+        several data sources are configured -- how the source was chosen
+        and whether the request retried on another, so the audit record of
+        a failed request still says which source's tables the model saw.
     """
-    for attr in ("llm_meta", "candidate_sql", "injected_top", "attempt"):
+    for attr in ("llm_meta", "candidate_sql", "injected_top", "attempt", "datasource_selection"):
         value = getattr(src, attr, None)
         if value is not None:
             setattr(dst, attr, value)
@@ -667,6 +728,7 @@ def _write_audit(
     columns: list[str] | None,
     principal_id: str | None = None,
     datasource: str | None = None,
+    datasource_selection: dict[str, Any] | None = None,
 ) -> None:
     """Build and persist one :class:`~observability.audit.AuditRecord`.
 
@@ -702,6 +764,7 @@ def _write_audit(
             columns=columns,
             principal_id=principal_id,
             datasource=datasource,
+            datasource_selection=datasource_selection,
         )
         save_audit_record(record)
     except Exception:  # noqa: BLE001 — auditing must never fail a user's query
@@ -715,8 +778,17 @@ def _write_audit(
 def _safe_generate_sql_only(
     agent: SQLAgent, question: str, system_prompt: str, timer: StageTimer,
     *, denied_columns: tuple[str, ...] | None = None,
+    selection_sink: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Generate SQL without executing it (``mode="sql"``), translating errors.
+
+    With several data sources configured the question is routed to one
+    first and, as in :meth:`~llm.sql_agent.SQLAgent.run`, an
+    ``OUT_OF_SCOPE`` answer is retried once on the next candidate source
+    (:mod:`llm.source_routing`). The selection is written to
+    ``selection_sink["selection"]`` (when a sink is given), whether the
+    call answered or raised; there is no selection, and no retry, with one
+    source.
 
     Routed via ``agent._router.generate_for_task(TaskType.SQL_GENERATION,
     ...)`` — the same task-based chain, fallback, and governance machinery
@@ -796,7 +868,16 @@ def _safe_generate_sql_only(
     with timer.stage("plan"):
         context = ContextRetriever.retrieve(question)
     with timer.stage("prompt"):
-        segments = build_prompt_segments(question, system_prompt, context)
+        routing = SourceRouting.plan(
+            question, context,
+            build=lambda source: build_prompt_segments(
+                question, system_prompt, context, source=source,
+            ),
+        )
+        segments = (
+            routing.segments if routing is not None
+            else build_prompt_segments(question, system_prompt, context)
+        )
 
     try:
         # The "llm" stage still records its elapsed time when the call
@@ -804,13 +885,20 @@ def _safe_generate_sql_only(
         # docstring), and any ``llm_meta`` a backend attached to the
         # exception survives the unwrap below, since that is the very same
         # exception object the backend raised.
-        with timer.stage("llm"):
-            try:
-                route_result = agent._router.generate_for_task(
-                    TaskType.SQL_GENERATION, segments
-                )
-            except Exception as exc:  # noqa: BLE001 - unwrapped, then translated below
-                raise exc.__cause__ or exc
+        try:
+            with timer.stage("llm"):
+                try:
+                    route_result, _replaced = generate_with_source_fallback(
+                        lambda s: agent._router.generate_for_task(TaskType.SQL_GENERATION, s),
+                        routing, segments,
+                    )
+                except Exception as exc:  # noqa: BLE001 - unwrapped, then translated below
+                    raise exc.__cause__ or exc
+        finally:
+            # Reported whether the call answered or raised, so the audit
+            # record of a failed request still says which source was tried.
+            if selection_sink is not None and routing is not None:
+                selection_sink["selection"] = routing.audit()
         raw, llm_meta = route_result.text or "", route_result.meta
     except ValueError as exc:
         if str(exc) == "OUT_OF_SCOPE":

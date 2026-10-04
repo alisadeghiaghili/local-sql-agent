@@ -111,11 +111,15 @@ def generate_sql(question: str, system_prompt: str) -> str:
     from prompt_engine.builder import PromptBuilder
     from security.sql_guard import clean_sql, ensure_top, validate_sql
 
+    from llm.source_routing import choose_source
+
     context = ContextRetriever.retrieve(question)
     prompt = PromptBuilder.build(
         question=question,
         system_prompt=system_prompt,
         context=context,
+        # None (nothing changes) unless several data sources are configured.
+        source=choose_source(question, context),
     )
     backend = build_backend(model=cfg.settings.openai_model)
     raw = backend.generate(prompt)

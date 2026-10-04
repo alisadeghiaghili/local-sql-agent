@@ -26,6 +26,18 @@ re-assembles prompt content per question. It picks one of two paths via
   matched go into the prompt. Used automatically once the knowledge base
   grows past ``cfg.settings.prompt_retrieval_token_budget``.
 
+One data source per prompt
+--------------------------
+With several data sources configured, every method takes the ``source`` a
+question was routed to (:mod:`retrieval.source_selector`) and describes
+that source alone: its tables, the relationships between them, and the
+few-shot examples that can run there. The path is chosen per source: the
+static prefix when that source's prefix fits the token budget, otherwise
+retrieval restricted to its tables -- and when retrieval finds no table,
+every table *of that source* is shown, never every table of the
+deployment. ``source=None`` (every single-source deployment) changes
+nothing.
+
 Typical usage::
 
     from retrieval.context_retriever import ContextRetriever
@@ -42,6 +54,7 @@ Typical usage::
 from __future__ import annotations
 
 from core.models import RetrievalContext
+from prompt_engine.source_scope import examples_for_source, scoped_source
 from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
 from prompt_engine.templates import PROMPT_TEMPLATE, SUFFIX_TEMPLATE
 from prompt_engine.untrusted import UNTRUSTED_INSTRUCTION, fence_untrusted
@@ -114,6 +127,7 @@ class PromptBuilder:
         *,
         session_context: str = "",
         resolved_values: dict[str, list[str]] | None = None,
+        source: str | None = None,
     ) -> str:
         """Build a complete prompt string for the LLM backend.
 
@@ -157,11 +171,23 @@ class PromptBuilder:
             ``prompt_engine/templates.py``'s ``SUFFIX_TEMPLATE`` comment.
             ``None`` (the default) renders an empty section, byte-identical
             to a prompt built before this parameter existed.
+        source:
+            The data source the question was routed to. With several
+            sources configured the prompt describes only that source (see
+            the module docstring); ``None`` (the default, and the only
+            value that does anything with one source) describes the whole
+            schema, as before.
 
         Returns
         -------
         str
             A ready-to-send prompt string.
+
+        Raises
+        ------
+        ValueError
+            If several sources are configured and *source* is not one of
+            them.
 
         Examples
         --------
@@ -216,14 +242,17 @@ class PromptBuilder:
         """
         if context is None:
             context = RetrievalContext()
-        if should_use_static_prefix(system_prompt):
+        source = scoped_source(source)
+        if should_use_static_prefix(system_prompt, source):
             return PromptBuilder.build_static(
                 question, system_prompt, context,
                 session_context=session_context, resolved_values=resolved_values,
+                source=source,
             )
         return PromptBuilder._build_retrieval(
             question, system_prompt, context,
             session_context=session_context, resolved_values=resolved_values,
+            source=source,
         )
 
     @staticmethod
@@ -234,6 +263,7 @@ class PromptBuilder:
         *,
         session_context: str = "",
         resolved_values: dict[str, list[str]] | None = None,
+        source: str | None = None,
     ) -> str:
         """Static-prefix path: cached prefix + a small variable suffix.
 
@@ -247,7 +277,7 @@ class PromptBuilder:
 
         Parameters
         ----------
-        question, system_prompt, context, session_context, resolved_values:
+        question, system_prompt, context, session_context, resolved_values, source:
             As in :meth:`build`.
 
         Returns
@@ -265,7 +295,7 @@ class PromptBuilder:
         >>> "تالار پتروشیمی" in p1
         True
         """
-        prefix = build_static_prefix(system_prompt)
+        prefix = build_static_prefix(system_prompt, source)
         filters = "\n".join(f"{key}: {value}" for key, value in context.filters.items())
         suffix = SUFFIX_TEMPLATE.format(
             filters=filters,
@@ -283,6 +313,7 @@ class PromptBuilder:
         *,
         session_context: str = "",
         resolved_values: dict[str, list[str]] | None = None,
+        source: str | None = None,
     ) -> str:
         """Retrieval-fallback path: only the retrieved tables/rules/examples.
 
@@ -291,17 +322,34 @@ class PromptBuilder:
         economical (see module docstring). Kept fully functional — it is
         not dead code, it is the scaling path for later phases with a
         bigger schema.
+
+        With a *source* (several data sources configured) the retrieved
+        tables are narrowed to that source's, and when none are left --
+        retrieval found nothing, or only tables of other sources -- every
+        table of the source is shown instead of every table of the
+        deployment. The relationships are then those between the tables
+        shown (``context.relationships`` was computed over tables of every
+        source), and the examples are those of ``context.examples`` whose
+        SQL can run on the source.
         """
         selected_tables = context.selected_tables
-
-        schema_context = SchemaRegistry.build_schema_context(selected_tables)
-
         relationships = "\n".join(context.relationships)
+        retrieved_examples = context.examples
+
+        if source is None:
+            schema_context = SchemaRegistry.build_schema_context(selected_tables)
+        else:
+            in_source = set(SchemaRegistry.tables_for_source(source))
+            kept = [t for t in selected_tables if t in in_source]
+            shown = kept or SchemaRegistry.tables_for_source(source)
+            schema_context = SchemaRegistry.build_schema_context(shown, source=source)
+            relationships = "\n".join(SchemaRegistry.get_relationships(shown))
+            retrieved_examples = examples_for_source(retrieved_examples, source)
 
         rules = "\n\n".join(context.business_rules)
 
         examples = []
-        for item in context.examples:
+        for item in retrieved_examples:
             examples.append(
                 f"""Question:\n{item['question']}\n\nSQL:\n{item['sql']}"""
             )

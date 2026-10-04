@@ -54,6 +54,11 @@ from llm.router import (
     build_prompt_segments,
 )
 from llm.interpret import interpret_rows
+from llm.source_routing import (
+    SourceRouting,
+    continuity_audit,
+    generate_with_source_fallback,
+)
 from llm.sql_agent import MAX_CORRECTION_ATTEMPTS
 from observability.audit import AuditRecord, save_audit_record
 from observability.llm_status import (
@@ -242,6 +247,9 @@ class _GenOutcome:
     tier: str | None = "T2"
     corrections: int = 0
     result_columns: list[str] = field(default_factory=list)
+    datasource_selection: dict[str, Any] | None = None
+    """How the data source was chosen (several sources only) -- the audit
+    record's ``datasource_selection``; see :mod:`llm.source_routing`."""
 
 
 def _infer_type(series: "pd.Series") -> str:
@@ -417,6 +425,7 @@ class TurnEngine:
             previous_memory = record.memory_for(previous_turn.turn_id if previous_turn else None)
             basis_decision = classify_basis(question, previous_turn, previous_memory)
             context = ContextRetriever.retrieve(question)
+            previous_source = _previous_turn_source(previous_turn, previous_memory)
 
         # Overridden filter on a refinement (confirmed root cause): an assumption
         # override that changes a filter this §2 CTE refinement inherited
@@ -470,8 +479,14 @@ class TurnEngine:
                     session_context_text, timer, assumption_overrides, denied_columns,
                     effective_memory_entries,
                     demoted_from_cte_override=demoted_from_cte_override,
+                    previous_source=previous_source,
                 )
             )
+        if basis_decision.kind == "refines" and basis_decision.composition == "cte":
+            # A §2 refinement composes over the previous turn's SQL, so it
+            # reads what that statement read: it stays on that source with
+            # no selection of its own.
+            outcome.datasource_selection = continuity_audit(previous_source)
         if mem_warnings:
             outcome.warnings = list(outcome.warnings) + mem_warnings
         # "The analyst must never be silently misled" (2026 hall-filter
@@ -550,11 +565,17 @@ class TurnEngine:
             sql=outcome.sql,
             injected_top=outcome.guard.injected_top if outcome.guard else None,
             row_count=outcome.result.row_count if outcome.result else 0,
+            # The source this turn was answered from, for the next turn's
+            # selection (None with one source, and for a turn with no SQL).
+            datasource=(
+                outcome.datasource_selection["chosen"]
+                if outcome.datasource_selection and outcome.sql else None
+            ),
         )
         record.turns.append(turn)
         record.memory[turn_id] = memory
 
-        self._write_audit(req_id, turn)
+        self._write_audit(req_id, turn, outcome.datasource_selection)
         return turn
 
     # ------------------------------------------------------------------
@@ -768,6 +789,7 @@ class TurnEngine:
         memory_entries: dict[str, MemoryEntry] | None = None,
         *,
         demoted_from_cte_override: bool = False,
+        previous_source: str | None = None,
     ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object], list[str]]:
         is_carry_forward = basis_decision.kind == "refines"
         merged_filters: dict[str, object] = dict(basis_decision.inherited_filters)
@@ -871,14 +893,34 @@ class TurnEngine:
             # its own "use exactly as provided" instruction either way).
             resolved_values=context.resolved_values,
         )
-        segments = build_prompt_segments(
-            question, system_prompt, ctx, session_context=session_context_text,
+        # Several data sources: route the question to one first, so the
+        # prompt describes only that source (llm/source_routing.py). A
+        # follow-up turn (one `session.refinement` classed as refining the
+        # previous question) starts from the previous turn's source; a
+        # fresh question is judged on its own. `context` is the retrieval
+        # over the whole schema, before the session's filters are merged in.
+        routing = SourceRouting.plan(
+            question, context,
+            build=lambda source: build_prompt_segments(
+                question, system_prompt, ctx,
+                session_context=session_context_text, source=source,
+            ),
+            previous_source=previous_source if is_carry_forward else None,
+        )
+        segments = (
+            routing.segments if routing is not None
+            else build_prompt_segments(
+                question, system_prompt, ctx, session_context=session_context_text,
+            )
         )
 
         outcome = self._generate_validate_execute(
             segments, system_prompt, timer, denied_columns=denied_columns,
             filters_to_enforce=filters_to_enforce, token_tier_filters=token_tier_filters,
+            routing=routing,
         )
+        if routing is not None:
+            outcome.datasource_selection = routing.audit()
         return outcome, resolved_question, ambiguity_block, merged_filters, mem_warnings
 
     def _generate_validate_execute(
@@ -886,7 +928,16 @@ class TurnEngine:
         *, denied_columns: tuple[str, ...] | None = None,
         filters_to_enforce: dict[str, str] | None = None,
         token_tier_filters: dict[str, tuple[str, ...]] | None = None,
+        routing: SourceRouting | None = None,
     ) -> _GenOutcome:
+        """Generate, validate and execute, correcting within the retry budget.
+
+        With *routing* (several data sources) every round keeps the chosen
+        source's prompt prefix, and an ``OUT_OF_SCOPE`` answer is retried
+        once on the next candidate source -- one extra model call outside
+        the correction budget, dropping the correction history, which
+        describes the other source's tables. See :mod:`llm.source_routing`.
+        """
         static_prefix_tokens = static_prefix_token_estimate(system_prompt)
         last_error: str | None = None
         last_sql: str | None = None
@@ -922,10 +973,25 @@ class TurnEngine:
 
             try:
                 with timer.stage("llm"):
-                    route_result = self._router.generate_for_task(TaskType.SQL_GENERATION, gen_segments)
+                    route_result, replaced = generate_with_source_fallback(
+                        lambda s: self._router.generate_for_task(TaskType.SQL_GENERATION, s),
+                        routing, gen_segments,
+                    )
             except Exception as exc:  # noqa: BLE001
                 code, message = _classify_router_failure(exc)
                 return _GenOutcome(error=TurnErrorInfo(code=code, message=message), tier=None)
+
+            if replaced is not None:
+                # The retry on the next source answered: from here on this
+                # request is that source's, prefix included, and nothing
+                # learned about the other source's tables carries over.
+                segments = replaced
+                last_sql = None
+                pending_filter_correction = None
+            if routing is not None:
+                # Each source has its own prefix; the cache-hit ratio is
+                # measured against the one actually in use.
+                static_prefix_tokens = static_prefix_token_estimate(system_prompt, routing.current)
 
             raw = route_result.text or ""
             llm_status = build_llm_status(
@@ -1149,8 +1215,15 @@ class TurnEngine:
         except Exception:  # noqa: BLE001 - see docstring
             return None
 
-    def _write_audit(self, request_id: str, turn: Turn) -> None:
+    def _write_audit(
+        self, request_id: str, turn: Turn,
+        datasource_selection: dict[str, Any] | None = None,
+    ) -> None:
         """Build and persist exactly one :class:`AuditRecord` for *turn*.
+
+        *datasource_selection* is the turn's :mod:`llm.source_routing`
+        block (``None`` with one data source, and for a turn that never
+        reached generation).
 
         Never raises — mirrors ``api.runner._write_audit``.
         """
@@ -1182,6 +1255,7 @@ class TurnEngine:
                 config_version_id=self._active_config_version_id_or_none(),
                 assumptions=assumptions,
                 datasource=target_datasource_or_none(turn.sql, cfg.settings.sql_dialect),
+                datasource_selection=datasource_selection,
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn
@@ -1191,6 +1265,26 @@ class TurnEngine:
 # ---------------------------------------------------------------------------
 # Small free functions
 # ---------------------------------------------------------------------------
+
+
+def _previous_turn_source(
+    previous_turn: Turn | None, previous_memory: TurnMemory | None,
+) -> str | None:
+    """The data source the previous turn was answered from, or ``None``.
+
+    What :class:`~session.store.TurnMemory` recorded; for a turn stored
+    before that field existed, the source its SQL routes to. ``None`` when
+    there was no previous turn or it produced no SQL.
+    """
+    import database.datasources as datasources
+
+    if previous_turn is None or not previous_turn.sql:
+        return None
+    if len(datasources.datasource_names()) < 2:
+        return None  # one source: there is nothing to continue
+    if previous_memory is not None and previous_memory.datasource:
+        return previous_memory.datasource
+    return target_datasource_or_none(previous_turn.sql, cfg.settings.sql_dialect)
 
 
 def _apply_overrides(assumptions, overrides: dict[str, str] | None):

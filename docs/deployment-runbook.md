@@ -757,6 +757,55 @@ three-part name.
    panel's versioned config bundle covers — a change to it needs a
    restart, the same as changing `DB_CONNECTION_URL` always did.
 
+**Choosing a source per question (several sources only).** With more than
+one source each question is first routed to **one** source, and the model is
+shown that source's tables only (the whole schema of that source, with the
+tables it shares with other sources). Nothing changes with one source. Two
+optional keys in `datasources.yaml` help, and both are only about what the
+model sees, never about where a statement runs:
+
+```yaml
+datasources:
+  sales:
+    description: Sales warehouse           # printed above this source's schema block
+    keywords: [revenue, invoice, فروش]     # whole words or phrases that mark a question
+  inventory:
+    description: Inventory warehouse
+    keywords: [stock level, reorder, موجودی, انبار]
+```
+
+- `keywords` match the question as whole words, after Persian/Arabic letter
+  folding, digit folding, ZWNJ removal and case folding; `stock` does not
+  match `stockholder`, and a plural or a prefixed form is another word, so
+  list each form you expect. A list of non-empty strings with no repeats;
+  anything else stops the server at start-up with the source's name.
+- Without a keyword hit the choice follows the conversation (a follow-up
+  question stays on the previous question's source), then the tables the
+  retrieval layer finds for the question, then the default source. If the
+  model answers `OUT_OF_SCOPE`, the request is retried **once** with the next
+  candidate source (one extra model call at most), so a wrong guess costs a
+  call rather than an answer. See `docs/design/DATASOURCES.md`, "Choosing a
+  source per question".
+- **The token budget now applies per source.**
+  `PROMPT_RETRIEVAL_TOKEN_BUDGET` (default 6000, unchanged) is compared with
+  each source's own prompt-prefix estimate, not the sum: a source under it
+  uses its cacheable static prefix (fast warm requests through the model
+  server's prefix cache), a source over it uses retrieval restricted to its
+  tables. The server logs one line per source at start-up:
+  `Prompt path for data source 'sales': static prefix (cacheable) -- 26
+  table(s), static prefix estimate 5100 tokens, PROMPT_RETRIEVAL_TOKEN_BUDGET
+  6000 (per source)`. To size the budget, read those estimates and remember
+  that the estimator (`len(text) // 4`) **undercounts Persian text by roughly
+  15%**: the real prompt of a source whose estimate is 5,100 is about 5,900
+  tokens. Set the budget to at least the largest estimate you want on the
+  static path, leave room for the question and the answer in the model's
+  context window, and prefer moving tables to another source over raising the
+  budget until a very large prompt is slow to prefill.
+- Each audit record carries `datasource_selection` (`chosen`, `reason`,
+  `candidates`, `fallback_from`); `grep` the audit log for
+  `"fallback_from": "` followed by a name to find the questions that needed
+  the retry, which usually means a keyword is missing.
+
 **Reading with `WITH (NOLOCK)`.** If the DBA requires every table read by
 this application to carry `WITH (NOLOCK)`, set `nolock: true` on that
 source (both the structured and the `url_env` form accept it; it defaults

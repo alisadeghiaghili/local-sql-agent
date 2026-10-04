@@ -906,6 +906,36 @@ def _table_sources_if_several() -> dict[str, tuple[str, ...]]:
     return table_datasource_sets()
 
 
+def _require_known_source(source: str) -> None:
+    """Raise :class:`ValueError` unless *source* is a configured data source."""
+    from database.datasources import datasource_names
+
+    known = datasource_names()
+    if source not in known:
+        raise ValueError(
+            f"unknown data source {source!r}; configured: {sorted(known)}"
+        )
+
+
+def _source_heading(source: str) -> str:
+    """``Data source: <name> -- <description>`` (just the name without one).
+
+    Examples
+    --------
+    >>> from unittest.mock import patch
+    >>> with patch("database.datasources.datasource_descriptions",
+    ...            return_value={"sales": "Sales\\n  warehouse", "stock": ""}):
+    ...     _source_heading("sales"), _source_heading("stock")
+    ('Data source: sales \u2014 Sales warehouse', 'Data source: stock')
+    """
+    from database.datasources import datasource_descriptions
+
+    # One line, whatever the YAML scalar was (a folded or block scalar may
+    # carry line breaks).
+    description = " ".join(datasource_descriptions().get(source, "").split())
+    return f"Data source: {source} \u2014 {description}" if description else f"Data source: {source}"
+
+
 class SchemaRegistry:
     """Stateless registry that renders schema and relationship data.
 
@@ -925,7 +955,41 @@ class SchemaRegistry:
     """
 
     @staticmethod
-    def build_schema_context(selected_tables) -> str:
+    def tables_for_source(source: str | None) -> list[str]:
+        """The queryable tables of data source *source*, in ``schema.yaml`` order.
+
+        A table that lives in several sources is in each source's list.
+
+        Parameters
+        ----------
+        source:
+            A configured data source name. ``None`` means no restriction,
+            and so does any value while only one source is configured:
+            every table is returned.
+
+        Returns
+        -------
+        list[str]
+
+        Raises
+        ------
+        ValueError
+            If several sources are configured and *source* is not one of
+            them.
+
+        Examples
+        --------
+        >>> SchemaRegistry.tables_for_source(None) == list(get_table_columns())
+        True
+        """
+        table_sources = _table_sources_if_several()
+        if source is None or not table_sources:
+            return list(get_table_columns())
+        _require_known_source(source)
+        return [name for name in get_table_columns() if source in table_sources[name]]
+
+    @staticmethod
+    def build_schema_context(selected_tables, *, source: str | None = None) -> str:
         """Render a structured schema block for the given tables.
 
         Parameters
@@ -934,8 +998,20 @@ class SchemaRegistry:
             An iterable of table-name strings, **or** ``None``, **or** an
             empty sequence (``()``, ``[]``).  When the value is falsy
             (``None``, empty list, empty tuple), *all* known tables are
-            included.  Table names not present in
-            :func:`get_table_columns` are silently skipped.
+            included (all tables of *source*, when one is given).  Table
+            names not present in :func:`get_table_columns` are silently
+            skipped.
+        source:
+            Render the block for one data source (only meaningful with
+            several sources configured; ignored otherwise, so a
+            single-source deployment renders exactly what it always has).
+            Tables that do not live in *source* are left out, a table in
+            several sources is shown once with no ``Data source:`` line,
+            the closing cross-source rule is dropped (the model sees one
+            source, so there is nothing to combine wrongly), and the block
+            opens with ``Data source: <name> — <description>`` (just the
+            name when ``datasources.yaml`` gives no description). ``None``
+            (the default) renders every table as before.
 
         Returns
         -------
@@ -977,9 +1053,18 @@ class SchemaRegistry:
         table_schemas = get_table_schema_qualifiers()
         table_sources = _table_sources_if_several()
 
+        # One source's block: its tables only, announced once at the top
+        # instead of on every table.
+        scoped_source = source if table_sources else None
+        in_source: set[str] | None = None
+        if scoped_source is not None:
+            in_source = set(SchemaRegistry.tables_for_source(scoped_source))
+
         # None or empty sequence → include everything
         if not selected_tables:
             selected_tables = list(table_columns.keys())
+        if in_source is not None:
+            selected_tables = [t for t in selected_tables if t in in_source]
 
         # How many queryable keys share each bare name -- a table whose
         # bare name is unique needs no disambiguating "Reference as:" line
@@ -993,6 +1078,8 @@ class SchemaRegistry:
 
         lines = []
         shown_source_sets: set[tuple[str, ...]] = set()
+        if scoped_source is not None:
+            lines.extend([_source_heading(scoped_source), ""])
 
         for table_name in selected_tables:
             if table_name not in table_columns:
@@ -1004,7 +1091,7 @@ class SchemaRegistry:
 
             lines.append(f"Table: {table_name}")
 
-            if table_sources:
+            if table_sources and scoped_source is None:
                 sources = table_sources[table_name]
                 shown_source_sets.add(sources)
                 lines.append(f"Data source: {', '.join(sources)}")

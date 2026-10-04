@@ -272,6 +272,13 @@ async def lifespan(app: FastAPI):
     admin_ops_routes._system_prompt = _system_prompt
     logger.info("System prompt loaded (%d chars)", len(_system_prompt))
 
+    # With several data sources the token budget is applied per source:
+    # say, once, what each source's prompt estimate is and which path it
+    # takes. Silent (and a no-op) with one source.
+    from prompt_engine.static_prefix import log_prompt_paths
+
+    log_prompt_paths(_system_prompt)
+
     # ── §9/§10: retention purge, once at start-up (no second daemon thread) ─
     # Permanently deletes any persisted session past session_retention_days
     # since its last activity. A no-op when session persistence is disabled

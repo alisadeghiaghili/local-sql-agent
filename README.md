@@ -194,6 +194,10 @@ cp .env.example .env
 # source each schema.yaml table lives in and writes the `datasource:` lines
 # (a list, `[A, B]`, for a table that exists in several) to
 # schema.with_datasources.yaml for you to review.
+# With several sources each question is routed to one of them and the model
+# sees only that source's tables: give each source `description:` and
+# `keywords:` in datasources.yaml (see "Choosing a source per question" in
+# docs/design/DATASOURCES.md); PROMPT_RETRIEVAL_TOKEN_BUDGET then applies per source.
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
@@ -394,6 +398,7 @@ local-sql-agent/
 │   ├── rule_retriever.py     #   business rule injection
 │   ├── value_resolver.py     #   resolves a named value against the warehouse
 │   ├── dimension_vocabulary.py  # prefetched vocabulary + background refresh
+│   ├── source_selector.py    #   which data source a question is about (several sources)
 │   └── example_retriever.py  #   tag-scored few-shot selection
 ├── schema_data/              # Schema registry, populated from schema.yaml
 │   ├── registry.py           #   SchemaRegistry + LRU cache
@@ -402,11 +407,13 @@ local-sql-agent/
 │   └── retriever.py          #   TF-IDF bigram fallback engine
 ├── prompt_engine/
 │   ├── builder.py            #   PromptBuilder.build()
-│   ├── static_prefix.py      #   the byte-identical, KV-cacheable prefix
+│   ├── static_prefix.py      #   the byte-identical, KV-cacheable prefix (one per data source)
+│   ├── source_scope.py       #   narrow a prompt's examples to one data source
 │   └── templates.py          #   PROMPT_TEMPLATE
 ├── llm/
 │   ├── sql_agent.py          #   generate → clean → auto-correct loop
 │   ├── router.py             #   task → endpoint routing, fallback
+│   ├── source_routing.py     #   per-question data source + the single OUT_OF_SCOPE retry
 │   ├── providers.py          #   OpenAI-compatible provider (retries + back-off)
 │   └── base.py               #   LLMBackend ABC
 ├── security/

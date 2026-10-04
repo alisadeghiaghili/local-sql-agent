@@ -19,6 +19,7 @@ environment (``.env``), named by ``password_env``::
     datasources:
       sales:
         description: Sales warehouse
+        keywords: [revenue, invoice]  # steers a question to this source
         host: 10.0.0.5
         database: SalesDW
         username: nlq_reader
@@ -48,6 +49,13 @@ be a list (``[sales, inventory]``) for a table that exists, with the
 same shape, in each of those sources. The source a query runs on is
 derived from the tables it references (see :mod:`database.routing`),
 never chosen by the model.
+
+With several sources, a question is first routed to one of them so that
+the model is shown only that source's tables (:mod:`retrieval.source_selector`).
+``description`` is printed above that source's schema block, and
+``keywords`` -- whole words or phrases that mark a question as being about
+the source -- are the strongest routing signal. Neither affects where a
+statement runs.
 
 Without ``datasources.yaml``
 ----------------------------
@@ -90,6 +98,7 @@ from pydantic import (
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
+from core.persian import normalize_for_matching
 from core.yaml_loading import safe_load_strict
 
 if TYPE_CHECKING:
@@ -113,6 +122,8 @@ __all__ = [
     "get_datasource",
     "get_datasources",
     "datasource_nolock",
+    "datasource_keywords",
+    "datasource_descriptions",
     "table_datasources",
     "table_datasource_sets",
     "pick_datasource",
@@ -250,7 +261,19 @@ class DataSourceDefinition(BaseModel):
     Attributes
     ----------
     description:
-        Free text shown to operators (``/health``, the admin panel).
+        Free text shown to operators (``/health``, the admin panel). With
+        several sources it is also printed once above the schema block of
+        a prompt built for this source (``Data source: sales -- Sales
+        warehouse``), so the model is told what the tables are.
+    keywords:
+        Optional words or phrases, Persian or English, that mark a
+        question as being about this source (``["stock", "warehouse"]``).
+        They only matter with several sources, where
+        :mod:`retrieval.source_selector` matches them against the question
+        (whole phrases, after the same character folding the retrieval
+        layer uses) to pick the source before the prompt is built. Must be
+        a list of non-empty strings with no repeats (two spellings that
+        fold to the same text count as a repeat).
     dialect:
         Optional sqlglot dialect key. Must equal ``SQL_DIALECT`` when set.
     application_name:
@@ -299,11 +322,14 @@ class DataSourceDefinition(BaseModel):
     False
     >>> DataSourceDefinition(url_env="DB_URL_MAIN", nolock=True).nolock
     True
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", keywords=["stock", " Stock level "]).keywords
+    ['stock', 'Stock level']
     """
 
     model_config = {"extra": "forbid"}
 
     description: str = ""
+    keywords: list[str] = Field(default_factory=list)
     dialect: str | None = None
     application_name: str | None = None
 
@@ -369,6 +395,35 @@ class DataSourceDefinition(BaseModel):
                 "login, path or ',port'; the port has its own field)"
             )
         return value
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _keywords_are_distinct_phrases(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError(
+                "keywords must be a list of words or phrases, not "
+                f"{type(value).__name__} ({value!r})"
+            )
+        cleaned: list[str] = []
+        seen: dict[str, str] = {}
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"keywords[{index}] must be a string, not "
+                    f"{type(item).__name__} ({item!r})"
+                )
+            phrase = item.strip()
+            folded = normalize_for_matching(phrase)
+            if not folded:
+                raise ValueError(f"keywords[{index}] must not be empty")
+            if folded in seen:
+                raise ValueError(
+                    f"keywords lists {phrase!r} twice (it folds to the same "
+                    f"text as {seen[folded]!r})"
+                )
+            seen[folded] = phrase
+            cleaned.append(phrase)
+        return cleaned
 
     @field_validator("nolock", mode="before")
     @classmethod
@@ -528,6 +583,13 @@ def validate_datasources_yaml_text(text: str) -> DataSourcesConfig:
     ... )
     >>> cfg.datasources["main"].host
     'db1'
+    >>> validate_datasources_yaml_text(
+    ...     "datasources:\\n  main:\\n    url_env: DB_URL_MAIN\\n"
+    ...     "    keywords: [stock, STOCK]\\n"
+    ... )
+    Traceback (most recent call last):
+        ...
+    ValueError: [datasources.yaml] validation error at 'datasources -> main -> keywords': keywords lists 'STOCK' twice (it folds to the same text as 'stock')
     >>> validate_datasources_yaml_text(
     ...     "datasources:\\n  main:\\n    url_env: mssql://u:p@h/db\\n"
     ... )
@@ -853,6 +915,10 @@ class DataSource:
         Value stamped on the connection so a DBA can identify the session.
     description:
         Operator-facing description.
+    keywords:
+        Phrases that mark a question as being about this source (see
+        :attr:`DataSourceDefinition.keywords`); empty for the single-source
+        fallback.
     nolock:
         Whether queries on this source are rewritten to read every table
         ``WITH (NOLOCK)`` (:mod:`database.table_hints`); read by
@@ -876,6 +942,7 @@ class DataSource:
     application_name: str
     description: str = ""
     nolock: bool = False
+    keywords: tuple[str, ...] = ()
 
     def __repr__(self) -> str:  # never print the connection string
         return f"DataSource(name={self.name!r}, url_env={self.url_env!r}, dialect={self.dialect!r})"
@@ -994,6 +1061,7 @@ def get_datasource(name: str | None = None, settings: "Settings | None" = None) 
         ),
         description=definition.description,
         nolock=definition.nolock,
+        keywords=tuple(definition.keywords),
     )
 
 
@@ -1040,6 +1108,81 @@ def datasource_nolock(name: str | None = None, settings: "Settings | None" = Non
         return False
     definition = config.datasources.get(config.default_name if name is None else name)
     return definition is not None and definition.nolock
+
+
+def datasource_keywords(settings: "Settings | None" = None) -> dict[str, tuple[str, ...]]:
+    """Return ``{source: keywords}`` for every configured source, default first.
+
+    Read from the definitions alone, like :func:`datasource_nolock`, so it
+    never touches a source's credentials.
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        The phrases each source lists under ``keywords:`` (``()`` when it
+        lists none). The single-source fallback is ``{"default": ()}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_keywords()
+    {'default': ()}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ()}
+    return {
+        name: tuple(config.datasources[name].keywords)
+        for name in datasource_names(settings)
+    }
+
+
+def datasource_descriptions(settings: "Settings | None" = None) -> dict[str, str]:
+    """Return ``{source: description}`` for every configured source, default first.
+
+    Read from the definitions alone, so it never touches a source's
+    credentials. A source with no ``description:`` maps to ``""``.
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, str]
+        The single-source fallback is ``{"default": ""}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_descriptions()
+    {'default': ''}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ""}
+    return {
+        name: config.datasources[name].description.strip()
+        for name in datasource_names(settings)
+    }
 
 
 # ---------------------------------------------------------------------------

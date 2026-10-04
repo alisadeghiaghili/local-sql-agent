@@ -62,6 +62,11 @@ class TurnMemory:
     sql: str | None = None
     injected_top: int | None = None
     row_count: int = 0
+    datasource: str | None = None
+    """The data source the turn was answered from, when several are
+    configured (``None`` with one source, or when the turn produced no
+    SQL). Read by the next turn's source selection
+    (:mod:`retrieval.source_selector`): a follow-up stays on it."""
 
 
 @dataclass

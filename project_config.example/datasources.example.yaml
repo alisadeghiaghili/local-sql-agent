@@ -71,7 +71,31 @@
 #                           percent-encoded by hand (@ becomes %40).
 #
 #   Fields for either form:
-#     description         : (optional) free text shown to operators.
+#     description         : (optional) free text shown to operators. With
+#                           several sources it is also printed once above the
+#                           schema block of a prompt built for this source
+#                           ("Data source: sales -- Sales warehouse"), so the
+#                           model is told what the tables are. Say what the
+#                           source holds, in a sentence.
+#     keywords            : (optional) a list of words or phrases, Persian or
+#                           English, that mark a question as being about this
+#                           source. Only used with several sources: each
+#                           question is routed to ONE source before its prompt
+#                           is built, and the model is then shown only that
+#                           source's tables. A keyword counts when it appears in
+#                           the question as whole words, after the same
+#                           folding the rest of the application applies
+#                           (Arabic ي/ك = ی/ک, Persian and Arabic digits =
+#                           0-9, ZWNJ removed, upper/lower case ignored): "stock"
+#                           does not match "stockholder", and a plural or a
+#                           prefixed form is another word, so list each form you
+#                           expect. The source with more distinct matching
+#                           keywords wins; when none or several tie, the tables
+#                           retrieval finds decide (then the default source).
+#                           A list of non-empty strings with no repeats (two
+#                           spellings that fold to the same text are a
+#                           repeat); anything else is refused at start-up.
+#                           Leave it out and routing relies on the tables alone.
 #     dialect             : (optional) must equal this deployment's
 #                           SQL_DIALECT if set at all -- mixed dialects
 #                           across sources are not supported yet. Leave it
@@ -116,6 +140,7 @@ default: sales
 datasources:
   sales:
     description: Sales warehouse
+    keywords: [revenue, sales, invoice, فروش, درآمد]
     host: 10.0.0.5
     # port: 1433
     database: SalesDW
@@ -130,6 +155,7 @@ datasources:
   # A second database on the same server: its own source, its own pool.
   inventory:
     description: Inventory warehouse
+    keywords: [stock, stock level, warehouse, reorder, موجودی, انبار]
     host: 10.0.0.5
     database: InventoryDW
     username: nlq_reader

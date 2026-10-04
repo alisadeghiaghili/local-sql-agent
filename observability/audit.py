@@ -257,6 +257,22 @@ class AuditRecord:
         always writes ``"default"`` here once a query runs -- an additive
         field: a record written before it existed simply has no key for
         it, and every reader here treats that exactly like ``None``.
+    datasource_selection:
+        How the data source was chosen before the prompt was built, when
+        more than one is configured (:mod:`llm.source_routing`):
+        ``{"chosen": str, "reason": str, "candidates": [str, ...],
+        "fallback_from": str | None}``. ``chosen`` is the source whose
+        tables the model last saw; ``reason`` is the signal that ordered
+        the candidates (``"keyword"``, ``"session"``, ``"retrieval"`` or
+        ``"default"``); ``candidates`` is every source in fallback order;
+        ``fallback_from`` names the source that answered ``OUT_OF_SCOPE``
+        when the request retried on the next one, else ``None``. Names
+        sources and a reason, never question text. ``None`` for a
+        deployment with one data source (and for a cache hit, where no
+        selection ran). Distinct from :attr:`datasource`, which is where
+        the *generated SQL* routes: the two differ when the model wrote a
+        statement over tables the guard routes elsewhere, and the guard
+        and router are authoritative. Additive, like :attr:`datasource`.
 
     Raises
     ------
@@ -318,6 +334,7 @@ class AuditRecord:
     config_version_id: int | None = None
     assumptions: list[dict[str, Any]] | None = None
     datasource: str | None = None
+    datasource_selection: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -359,6 +376,7 @@ class AuditRecord:
             "config_version_id": self.config_version_id,
             "assumptions":    self.assumptions,
             "datasource":     self.datasource,
+            "datasource_selection": self.datasource_selection,
         }
 
 

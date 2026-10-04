@@ -514,11 +514,15 @@ def make_live_structured_generator(backend: LLMBackend, system_prompt: str) -> G
     'SELECT 1'
     """
     from llm.router import build_prompt_segments
+    from llm.source_routing import choose_source
     from llm.structured_schema import SQL_GENERATION_SCHEMA, sql_from_structured
 
     def _generate(question: str) -> str:
         context = ContextRetriever.retrieve(question)
-        segments = build_prompt_segments(question, system_prompt, context)
+        segments = build_prompt_segments(
+            question, system_prompt, context,
+            source=choose_source(question, context),
+        )
         obj, _meta = backend.generate_structured(segments, SQL_GENERATION_SCHEMA)
         sql = sql_from_structured(obj)  # raises ValueError("OUT_OF_SCOPE") if flagged
         return clean_sql(sql)
@@ -590,9 +594,14 @@ def measure_prefix_cache(
     from prompt_engine.static_prefix import static_prefix_token_estimate
     from prompt_engine.builder import PromptBuilder
 
+    from llm.source_routing import choose_source
+
     context = ContextRetriever.retrieve(question)
-    prompt = PromptBuilder.build(question=question, system_prompt=system_prompt, context=context)
-    static_prefix_tokens = static_prefix_token_estimate(system_prompt)
+    source = choose_source(question, context)
+    prompt = PromptBuilder.build(
+        question=question, system_prompt=system_prompt, context=context, source=source,
+    )
+    static_prefix_tokens = static_prefix_token_estimate(system_prompt, source)
 
     def _one_call() -> dict[str, object]:
         start = time.perf_counter()
@@ -647,6 +656,7 @@ def make_live_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
     >>> generate("how many customers?")
     'SELECT 1'
     """
+    from llm.source_routing import choose_source
 
     def _generate(question: str) -> str:
         context = ContextRetriever.retrieve(question)
@@ -654,6 +664,8 @@ def make_live_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
             question=question,
             system_prompt=system_prompt,
             context=context,
+            # None (nothing changes) unless several data sources are configured.
+            source=choose_source(question, context),
         )
         raw = backend.generate(prompt)
         return clean_sql(raw)
