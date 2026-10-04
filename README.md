@@ -198,6 +198,8 @@ cp .env.example .env
 # sees only that source's tables: give each source `description:` and
 # `keywords:` in datasources.yaml (see "Choosing a source per question" in
 # docs/design/DATASOURCES.md); PROMPT_RETRIEVAL_TOKEN_BUDGET then applies per source.
+# `python scripts/prompt_budget.py` shows each source's prompt size in real tokens
+# (it asks the model; --no-model skips that) and the budget to set.
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
@@ -444,6 +446,7 @@ local-sql-agent/
 │   ├── verify_deployment.py  #   pre-flight check for the four things that stop a week
 │   ├── issue_api_key.py      #   mint a new API key
 │   ├── assign_datasources.py #   write each schema.yaml table's datasource: from the databases
+│   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis
 │   ├── analyze_misses.py     #   offline retrieval miss diagnostics
 │   └── release_notes.py      #   version, summary and notes for the release workflow

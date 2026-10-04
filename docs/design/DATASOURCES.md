@@ -319,8 +319,75 @@ Prompt path for data source 'sales': static prefix (cacheable) -- 26 table(s), s
 no tokenizer behind it. For English it is close; **for Persian it
 undercounts by roughly 15%**: measured on a whole-schema prompt whose
 descriptions are mostly Persian, the model's real `prompt_tokens` were about
-1.14 times the estimate. Choose the budget from the logged estimates like
-this:
+1.14 times the estimate. Rather than working it out from the logged
+estimates, run the operator script from the repository root, with the
+server's environment active:
+
+```
+python scripts/prompt_budget.py
+```
+
+It builds each source's static prefix exactly as the server does (same
+system prompt, same `build_static_prefix(system_prompt, source)`), and for
+each source prints the characters, the table count, the estimate, the path
+it takes under the current budget and, by default, the model's **real**
+token count and the real/estimate ratio. It then recommends a budget and
+prints the `.env` line to set, with each source's path now and with it:
+
+```
+  source     tables  chars  estimate  real tokens  real/est  path now
+  sales          26  20400      5100         5810      1.14  static prefix
+  inventory      11   9100      2275         2590      1.14  static prefix
+  ...
+PROMPT_RETRIEVAL_TOKEN_BUDGET=6000
+  = the largest estimate that fits (5100) plus 10% headroom, rounded up to a multiple of 500; ...
+```
+
+(The numbers are an illustration.) How it gets and uses them:
+
+- **Real tokens.** The prefix is sent to the model endpoint as one chat
+  completion with `max_tokens=1`, and `usage.prompt_tokens` is read back. The
+  endpoint is the one the router uses for SQL generation (the first endpoint of
+  the `sql_generation` route in `LLM_ROUTES`, else the default `OPENAI_*`
+  endpoint), and the request body, headers and `LLM_EXTRA_BODY` are the
+  application's own, so the count is what production sends. An endpoint that
+  is not trusted is sent nothing unless `LLM_ALLOW_REMOTE` is true, as for any
+  routed call. **This warms the model server's prefix cache for each source**
+  (the prefix is prefilled once; a cold prefill of a large prefix can take a
+  minute, so `--timeout` defaults to 300 seconds). If the endpoint cannot be
+  reached or returns no `usage`, that source's count is shown as `unavailable`
+  and the fit check uses `estimate x 1.15` (or the largest ratio measured on
+  another source), labelled as such. `--no-model` never contacts the endpoint.
+- **Context length.** `--context-length N`, else `max_model_len` (vLLM) or
+  `context_length` / `context_window` from `GET {base}/models` for the
+  configured model, else unknown (no fit check). A server that divides its
+  context between parallel slots may accept less per request than it reports:
+  pass the per-request figure.
+- **Fit check** (known context length only), per source: real tokens + the
+  room for what follows the prefix (`--question-room`, default 2000) +
+  `LLM_NUM_PREDICT` must not exceed the context length. The default room is
+  the fixed suffix text (about 210 tokens), a question of up to 1000
+  characters (about 250 tokens, 290 in Persian), the last
+  `SESSION_PROMPT_TURNS` (3) turns of the conversation (a question, its SQL and
+  column names: up to about 450 tokens each) and a few hundred tokens of
+  detected filters and resolved values; raise it for longer conversations. A
+  source that does not fit is **left out of the recommendation** and warned
+  about: it should stay on the retrieval path.
+- **Recommended budget** = the largest estimate among the sources that fit,
+  times `1 + --headroom/100` (default 10%), rounded up to a multiple of
+  `--round` (default 500). It is in the estimator's units because that is
+  what the gate compares; the Persian undercount is covered by the fit check,
+  not by the budget. The headroom is for growth: tables, rules or examples
+  added later do not quietly flip a source to retrieval. The budget is one
+  number for every source, so if an excluded source's estimate is not above
+  it, that source would take the static path and overflow the context: the
+  script says so and gives the budget range that would work, if there is one.
+- **Output and exit codes.** A table, or `--json` for one JSON document. No
+  API key or URL credential is ever printed. Exit 0 normally; 1 when the
+  context length is known and a source cannot fit it even alone; 2 when
+  configuration cannot be loaded or an option is invalid.
+
+The same reasoning, by hand, from the logged estimates:
 
 1. A source stays on the static path when `budget >= its estimate`. Its real
    size is then about `estimate x 1.15` for Persian-heavy text, plus the

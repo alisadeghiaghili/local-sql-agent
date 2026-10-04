@@ -68,7 +68,9 @@ its prompt is built, and the model is shown that source's tables only.
 source's tables) and `keywords:` (words or phrases that mark a question as
 being about the source); see the template and "Choosing a source per
 question" in `docs/design/DATASOURCES.md`. `PROMPT_RETRIEVAL_TOKEN_BUDGET`
-then applies to each source's prompt separately.
+then applies to each source's prompt separately; run
+`python scripts/prompt_budget.py` from the repository root to see what each
+source's prompt costs in real tokens and which budget to set.
 
 ## What happens if project_config/ is missing?
 

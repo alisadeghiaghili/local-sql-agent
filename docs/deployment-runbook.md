@@ -801,6 +801,21 @@ datasources:
   static path, leave room for the question and the answer in the model's
   context window, and prefer moving tables to another source over raising the
   budget until a very large prompt is slow to prefill.
+  **`python scripts/prompt_budget.py` does this sizing for you.** Run it from
+  the repository root with the server's environment active: it builds each
+  source's prefix as the server does, asks the model endpoint for the real
+  `prompt_tokens` (one chat completion per source with `max_tokens=1`;
+  `--no-model` skips it, `--timeout` allows for a slow cold prefill), reads the
+  context length from `GET /models` (or `--context-length N`), checks that
+  each source's real tokens + `--question-room` (default 2000) +
+  `LLM_NUM_PREDICT` fit it, and prints the `PROMPT_RETRIEVAL_TOKEN_BUDGET=`
+  line to put in `.env` (largest estimate that fits, plus `--headroom`, default
+  10%, rounded up to a multiple of `--round`, default 500) with each source's
+  path now and after. A source that cannot fit is left out of the
+  recommendation and must stay on the retrieval path (exit code 1). Counting
+  real tokens warms the model server's prefix cache for each source, so run it
+  before opening the service to users rather than during a busy hour. See
+  `docs/design/DATASOURCES.md`, "One path per source, and the token budget".
 - Each audit record carries `datasource_selection` (`chosen`, `reason`,
   `candidates`, `fallback_from`); `grep` the audit log for
   `"fallback_from": "` followed by a name to find the questions that needed
