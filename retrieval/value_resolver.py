@@ -75,6 +75,12 @@ user input is a **bound parameter** value, passed through
 ``tests/test_value_resolver.py::TestResolveValueInjection`` for the
 byte-identical-SQL-text proof this design exists to satisfy.
 
+Data sources: the lookup is one single-table statement, routed by
+:func:`database.routing.resolve_datasource` like any other. A table listed
+under several sources (``datasource: [A, B]``) is looked up on the default
+source when it lives there, else on the first listed source in
+``datasources.yaml`` order -- one copy of a replicated dimension, not each.
+
 If a requested target (table or column) is not in the allowlist, or is in
 the calling :class:`~security.auth.Principal`'s ``denied_columns``,
 resolution is refused for that column *before* any SQL is built at all --

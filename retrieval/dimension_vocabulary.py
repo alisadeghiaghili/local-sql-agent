@@ -105,6 +105,16 @@ guarantees:
 ``conftest.py`` uses to turn the trigger off globally, for both ``tests/``
 and ``eval/tests`` -- see "Test isolation" below.
 
+Data sources
+------------
+A prefetch is one single-table statement, so it runs on the source
+:func:`database.routing.resolve_datasource` picks for that table: its only
+source, or -- for a table listed under several sources
+(``datasource: [A, B]``) -- the default source when the table lives there,
+else the first listed source in ``datasources.yaml`` order. A replicated
+dimension is therefore read from one copy, not from each; the copies are
+the same table by declaration.
+
 Test isolation -- no test may reach a real database because of this
 ------------------------------------------------------------------------
 The root ``conftest.py``'s existing ``_no_real_database`` autouse fixture

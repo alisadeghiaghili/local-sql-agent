@@ -1040,12 +1040,14 @@ def _resolve_star_tables(
 
 
 def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) -> None:
-    """Refuse a query whose tables live in more than one data source.
+    """Refuse a query no single data source can run.
 
     Every table has already passed the allowlist when this runs. The
-    mapping comes from ``schema.yaml`` via :mod:`database.routing`; with a
-    single data source (the default deployment) every table maps to it and
-    this never raises.
+    rule is :func:`database.routing.choose_datasource` -- the same one the
+    executor routes with: the sources that have every table, where a table
+    listed under several sources counts for each. With a single data
+    source (the default deployment) every table maps to it and this never
+    raises.
 
     A :class:`CorrectableRejection` with ``is_refusal`` set, the same shape
     as the unknown-table rejection: a retry can plausibly answer from one
@@ -1060,15 +1062,14 @@ def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) 
     if len(tables) < 2:
         return
 
-    from database.routing import CrossDatasourceError, group_tables_by_datasource
+    from database.routing import CrossDatasourceError, choose_datasource
 
-    groups = group_tables_by_datasource(tables)
-    if len(groups) > 1:
-        exc = CorrectableRejection(
-            str(CrossDatasourceError(groups)), reason="cross_datasource",
-        )
+    try:
+        choose_datasource(tables)
+    except CrossDatasourceError as err:
+        exc = CorrectableRejection(str(err), reason="cross_datasource")
         exc.is_refusal = True
-        raise exc
+        raise exc from None
 
 
 def clean_sql(raw: str) -> str:

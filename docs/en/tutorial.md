@@ -82,6 +82,8 @@ CACHE_MAX_SIZE=256
 
 `DB_CONNECTION_URL` above is the whole story for one warehouse connection, which is what most deployments need. Querying more than one database — a second SQL Server instance, an archive kept on its own box — is also supported: add `project_config/datasources.yaml` (copy `project_config.example/datasources.example.yaml`) describing each source's host, database and login, with the raw password in one `DB_PASSWORD_*` environment variable per source, instead of a single `DB_CONNECTION_URL`. `DB_PASSWORD` is the raw password for `DB_CONNECTION_URL` (no URL encoding; leave it out of the URL). See `docs/design/DATASOURCES.md` and `docs/deployment-runbook.md` §16.
 
+With several sources, each table in `schema.yaml` says where it lives with `datasource: <name>`; a table with none runs on the default source. A table that exists, with the same shape, in more than one source (a replicated date dimension, say) takes a list: `datasource: [Sales, Inventory]`. Not sure which table is where? `python scripts/assign_datasources.py` reads each source's table list, writes `schema.with_datasources.yaml` next to `schema.yaml` with those lines filled in (it never changes `schema.yaml` itself) and reports the tables found nowhere and the columns `schema.yaml` lists that the database does not have; review the file, then replace `schema.yaml` with it.
+
 ### Model availability
 
 Start with a model the endpoint already serves (e.g. `gpt-oss-20:F16`). Pick a larger model only if you see the engine producing wrong table names or malformed SQL on your real questions.
@@ -927,7 +929,7 @@ open htmlcov/index.html
 | `EXPORT_DIR` | `exports` | Export directory — auto-created on first use |
 | `DEFAULT_TOP_N` | `100` | Fallback `TOP n` when model omits it |
 
-Querying more than one database at once? `DB_CONNECTION_URL` above covers exactly one. `project_config/datasources.yaml` (optional; absent means the single-source table above, unchanged) describes each source's connection (host, database, driver, login) and names the `DB_PASSWORD_<NAME>` environment variable holding its raw password; the older `url_env` form still works. Two databases on one server are two sources. See `docs/design/DATASOURCES.md`.
+Querying more than one database at once? `DB_CONNECTION_URL` above covers exactly one. `project_config/datasources.yaml` (optional; absent means the single-source table above, unchanged) describes each source's connection (host, database, driver, login) and names the `DB_PASSWORD_<NAME>` environment variable holding its raw password; the older `url_env` form still works. Two databases on one server are two sources. A table's `datasource:` in `schema.yaml` names its source, or lists several for a table that exists in each of them (`datasource: [Sales, Inventory]`); `python scripts/assign_datasources.py` works the values out from the databases and writes them to `schema.with_datasources.yaml` for review. See `docs/design/DATASOURCES.md`.
 
 All settings are read at startup via `config.py → Settings`. To override in tests:
 

@@ -429,7 +429,9 @@ class TestExtractTouchedTablesAndRouting:
 
         with patch.multiple(
             "database.routing",
-            table_datasources=lambda: {"sales.Customer": "main", "ref.Customer": "archive"},
+            table_datasource_sets=lambda: {
+                "sales.Customer": ("main",), "ref.Customer": ("archive",),
+            },
             default_datasource_name=lambda: "main",
         ):
             groups = group_tables_by_datasource(["sales.Customer", "ref.Customer"])

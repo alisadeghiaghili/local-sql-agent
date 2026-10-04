@@ -18,6 +18,22 @@ anybody can search for. :func:`check_schema_drift` reports three sets:
 * **type_changed** — a column present on both sides whose live type has
   changed since the last time this check ran.
 
+A fourth finding concerns data sources, not columns:
+
+* **misplaced_tables** — a table every one of whose ``schema.yaml``
+  columns is missing from a data source it is assigned to (its
+  ``datasource:``, or the default source when it has none), but which
+  another configured source does have. Each entry carries a ``hint``
+  such as ``Future_Dim.Broker: not in Auction_DM, found in Future_DM — set
+  datasource: Future_DM``. Only with more than one configured source;
+  costs one ``INFORMATION_SCHEMA.TABLES`` query per source that has to be
+  asked (:func:`database.catalogue.list_tables`), and only when such a
+  table exists.
+
+A table listed under several sources (``datasource: [A, B]``) is checked
+in EACH of them. A column missing from one copy is reported as
+``Table.Column [A]`` so the two copies stay apart.
+
 It never writes to ``schema.yaml``, and it never applies anything —
 applying a ``schema.yaml`` change is a security-admin action through
 phase 3's propose-and-approve flow (:mod:`appdb.config_versions`); this
@@ -89,7 +105,16 @@ def _normalise_type(sa_type: Any) -> str:
 
 @dataclass(frozen=True)
 class SchemaDriftReport:
-    """The outcome of one :func:`check_schema_drift` call."""
+    """The outcome of one :func:`check_schema_drift` call.
+
+    ``misplaced_tables`` holds one dict per table found in a different data
+    source than the one ``schema.yaml`` assigns it to: ``table``,
+    ``assigned`` (its configured sources), ``missing_from`` (the assigned
+    sources where every column is missing), ``found_in`` (the sources that
+    have it), ``suggested_datasource`` (a name, or a list of names, to put
+    under the table's ``datasource:``) and ``hint`` (the one-line sentence
+    an operator reads).
+    """
 
     checked_at: str
     schemas_scanned: tuple[str, ...]
@@ -98,6 +123,7 @@ class SchemaDriftReport:
     type_changed: tuple[dict[str, str], ...]
     unverifiable_tables: tuple[str, ...]
     baseline_available: bool
+    misplaced_tables: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -108,7 +134,24 @@ class SchemaDriftReport:
             "type_changed": list(self.type_changed),
             "unverifiable_tables": list(self.unverifiable_tables),
             "baseline_available": self.baseline_available,
+            "misplaced_tables": list(self.misplaced_tables),
         }
+
+
+@dataclass(frozen=True)
+class _SourceScan:
+    """What :func:`_scan` found on one data source.
+
+    ``source`` is ``None`` for an injected engine (every table, no source
+    name). ``tables`` are the ``schema.yaml`` tables expected on this
+    source; ``verifiable`` the subset whose schema was actually scanned.
+    """
+
+    source: str | None
+    tables: frozenset[str]
+    schemas_scanned: tuple[str, ...]
+    live: dict[tuple[str, str], dict[str, str]]
+    verifiable: frozenset[str]
 
 
 def _load_baseline() -> dict[str, str] | None:
@@ -224,29 +267,30 @@ def _scan(
 def _scan_every_datasource(
     table_columns: dict[str, dict[str, str]],
     table_schemas: dict[str, str],
-) -> tuple[list[str], dict[tuple[str, str], dict[str, str]], set[str]]:
+    assignments: dict[str, tuple[str, ...]],
+    names: tuple[str, ...],
+) -> list[_SourceScan]:
     """Run :func:`_scan` once per data source, on that source's own tables.
 
     With one data source this is exactly one :func:`_scan` over every
     table. With several, each source's tables are checked against that
-    source's own server, and ``schemas_scanned`` entries are prefixed
+    source's own server -- a table listed under several sources is checked
+    on each of them -- and ``schemas_scanned`` entries are prefixed
     ``source/`` so a reader can tell the servers apart. A source whose
     engine cannot be built is logged and its tables are reported as
     unverifiable rather than failing the whole report.
     """
     from database.connection import get_engine
-    from database.datasources import datasource_names, table_datasources
 
-    names = datasource_names()
     if len(names) == 1:
-        return _scan(get_engine(names[0]), table_columns, table_schemas)
+        scanned, live, verifiable = _scan(get_engine(names[0]), table_columns, table_schemas)
+        return [_SourceScan(
+            None, frozenset(table_columns), tuple(scanned), live, frozenset(verifiable),
+        )]
 
-    assignments = table_datasources()
-    schemas_scanned: list[str] = []
-    live: dict[tuple[str, str], dict[str, str]] = {}
-    verifiable: set[str] = set()
+    scans: list[_SourceScan] = []
     for name in names:
-        subset = {t: c for t, c in table_columns.items() if assignments.get(t) == name}
+        subset = {t: c for t, c in table_columns.items() if name in assignments[t]}
         if not subset:
             continue
         try:
@@ -255,11 +299,96 @@ def _scan_every_datasource(
             logger.warning("schema_data.drift: data source %r unavailable: %s", name, exc)
             continue
         scanned, source_live, source_verifiable = _scan(engine, subset, table_schemas)
-        schemas_scanned.extend(f"{name}/{schema}" for schema in scanned)
-        for live_key, columns in source_live.items():
-            live.setdefault(live_key, {}).update(columns)
-        verifiable |= source_verifiable
-    return sorted(schemas_scanned), live, verifiable
+        scans.append(_SourceScan(
+            name, frozenset(subset), tuple(f"{name}/{schema}" for schema in scanned),
+            source_live, frozenset(source_verifiable),
+        ))
+    return scans
+
+
+def _find_misplaced_tables(
+    scans: list[_SourceScan],
+    table_columns: dict[str, dict[str, str]],
+    table_schemas: dict[str, str],
+    assignments: dict[str, tuple[str, ...]],
+    names: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Tables whose columns are all missing from an assigned source but that exist in another.
+
+    A table is a candidate on source ``s`` when ``s`` is one of its
+    assigned sources, its schema was scanned there, and none of its
+    ``schema.yaml`` columns exist there. The other sources are then asked
+    (one ``INFORMATION_SCHEMA.TABLES`` query each, at most once per call
+    and only if there is a candidate) whether they have the table.
+    """
+    from database.catalogue import default_schema, list_tables, table_location
+    from database.connection import get_engine
+
+    # Per table: the assigned sources where its columns are all missing,
+    # and those where at least one is present.
+    absent: dict[str, list[str]] = {}
+    present: dict[str, list[str]] = {}
+    by_source = {scan.source: scan for scan in scans}
+    for table, columns in table_columns.items():
+        for source in assignments[table]:
+            scan = by_source.get(source)
+            if scan is None or table not in scan.verifiable:
+                continue
+            live_columns = scan.live.get(
+                (table_schemas.get(table, ""), bare_table_name(table)), {},
+            )
+            if set(columns) & set(live_columns):
+                present.setdefault(table, []).append(source)
+            else:
+                absent.setdefault(table, []).append(source)
+    if not absent:
+        return []
+
+    catalogues: dict[str, tuple[frozenset[tuple[str, str]], str] | None] = {}
+
+    def _catalogue(source: str) -> tuple[frozenset[tuple[str, str]], str] | None:
+        if source not in catalogues:
+            try:
+                engine = get_engine(source)
+                catalogues[source] = (list_tables(engine), default_schema(engine))
+            except Exception as exc:  # noqa: BLE001 - a source we cannot read gives no hint
+                logger.warning(
+                    "schema_data.drift: could not list the tables of data source %r: %s",
+                    source, exc,
+                )
+                catalogues[source] = None
+        return catalogues[source]
+
+    misplaced: list[dict[str, Any]] = []
+    for table in sorted(absent):
+        missing_from = [s for s in names if s in absent[table]]
+        found = [s for s in names if s in present.get(table, [])]
+        for source in names:
+            if source in assignments[table] or source in found:
+                continue
+            catalogue = _catalogue(source)
+            if catalogue is None:
+                continue
+            tables, default = catalogue
+            if table_location(table, table_schemas.get(table, ""), default) in tables:
+                found.append(source)
+        if not found:
+            continue
+        found = [s for s in names if s in found]
+        suggestion: str | list[str] = found[0] if len(found) == 1 else found
+        value = found[0] if len(found) == 1 else "[" + ", ".join(found) + "]"
+        misplaced.append({
+            "table": table,
+            "assigned": list(assignments[table]),
+            "missing_from": missing_from,
+            "found_in": found,
+            "suggested_datasource": suggestion,
+            "hint": (
+                f"{table}: not in {', '.join(missing_from)}, "
+                f"found in {', '.join(found)} — set datasource: {value}"
+            ),
+        })
+    return misplaced
 
 
 def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool = True) -> SchemaDriftReport:
@@ -274,8 +403,11 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
     engine:
         Defaults to each data source's :func:`database.connection.get_engine`
         engine -- the SAME read-only connections every query already runs
-        through -- with each source's tables checked on that source.
-        An injected engine is used for every table.
+        through -- with each source's tables checked on that source (a
+        table listed under several sources on each of them).
+        An injected engine is used for every table, and the
+        ``misplaced_tables`` hint (which needs the other sources) is not
+        computed.
         Inject a fixture engine to test against a throwaway database with
         no elevated credentials of any kind (there is no parameter here
         through which one could even be supplied).
@@ -292,18 +424,29 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
     table_columns = get_table_columns()
     table_schemas = get_table_schema_qualifiers()
 
+    assignments: dict[str, tuple[str, ...]] = {}
+    names: tuple[str, ...] = ()
     if engine is not None:
-        schemas_scanned, live, verifiable_tables = _scan(engine, table_columns, table_schemas)
+        scanned, live, verifiable = _scan(engine, table_columns, table_schemas)
+        scans = [_SourceScan(
+            None, frozenset(table_columns), tuple(scanned), live, frozenset(verifiable),
+        )]
     else:
-        schemas_scanned, live, verifiable_tables = _scan_every_datasource(
-            table_columns, table_schemas,
-        )
-    unverifiable_tables = sorted(set(table_columns) - verifiable_tables)
+        from database.datasources import datasource_names, table_datasource_sets
 
-    schema_col_ids: dict[str, str] = {}  # "Table.Column" -> (no type; presence only)
-    for table in verifiable_tables:
-        for column in table_columns[table]:
-            schema_col_ids[f"{table}.{column}"] = table
+        names = datasource_names()
+        default = names[0]
+        sets = table_datasource_sets()
+        assignments = {t: sets.get(t, (default,)) for t in table_columns}
+        scans = _scan_every_datasource(table_columns, table_schemas, assignments, names)
+
+    # A table that lives in several sources is reported per source, so the
+    # two copies' columns are not mixed up: its ids carry a " [source]" tail.
+    shared_tables = {t for t, sources in assignments.items() if len(sources) > 1}
+
+    def _column_id(table_id: str, column: str, scan: _SourceScan, table_key: str | None) -> str:
+        suffix = f" [{scan.source}]" if table_key in shared_tables and scan.source else ""
+        return f"{table_id}.{column}{suffix}"
 
     # Map a live (schema, bare_name) pair back to the schema.yaml KEY it
     # matches -- a qualified key's own bare name may differ from the key
@@ -313,39 +456,59 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
     # (the very case this feature exists to support) map back correctly
     # here because the lookup is keyed on (schema, bare_name) together.
     key_by_schema_and_bare = {
-        (table_schemas.get(t, ""), bare_table_name(t)): t for t in verifiable_tables
+        (table_schemas.get(t, ""), bare_table_name(t)): t for t in table_columns
     }
 
+    schema_col_ids: set[str] = set()
     live_col_ids: dict[str, str] = {}
-    for (schema_name, bare_name), columns in live.items():
-        key = key_by_schema_and_bare.get((schema_name, bare_name))
-        if key is not None:
-            # Matches a known table -- report under its schema.yaml key,
-            # UNCHANGED from today's output for a bare, non-duplicated key
-            # (there, key == bare_name, exactly what this branch already
-            # produced before qualified keys existed).
-            table_id = key
-        elif schema_name:
-            # No schema.yaml key names this table at all (a genuine
-            # warehouse_only table) -- reported schema-qualified when the
-            # schema is known, so two same-bare-name warehouse-only tables
-            # in different schemas are not collapsed into one identity.
-            table_id = f"{schema_name}.{bare_name}"
-        else:
-            table_id = bare_name
-        for column, col_type in columns.items():
-            live_col_ids[f"{table_id}.{column}"] = col_type
+    verified: set[tuple[str | None, str]] = set()
+    for scan in scans:
+        for table in scan.verifiable:
+            verified.add((scan.source, table))
+            for column in table_columns[table]:
+                schema_col_ids.add(_column_id(table, column, scan, table))
+        for (schema_name, bare_name), columns in scan.live.items():
+            key = key_by_schema_and_bare.get((schema_name, bare_name))
+            if key is not None:
+                if key not in scan.tables:
+                    # A copy of a table schema.yaml describes for another
+                    # source only: nothing routes a query here, so it is
+                    # neither drift nor queryable.
+                    continue
+                # Matches a known table -- report under its schema.yaml key,
+                # UNCHANGED from today's output for a bare, non-duplicated key
+                # (there, key == bare_name, exactly what this branch already
+                # produced before qualified keys existed).
+                table_id = key
+            elif schema_name:
+                # No schema.yaml key names this table at all (a genuine
+                # warehouse_only table) -- reported schema-qualified when the
+                # schema is known, so two same-bare-name warehouse-only tables
+                # in different schemas are not collapsed into one identity.
+                table_id = f"{schema_name}.{bare_name}"
+            else:
+                table_id = bare_name
+            for column, col_type in columns.items():
+                live_col_ids[_column_id(table_id, column, scan, key)] = col_type
+
+    # Every (source, table) pair that should have been scanned; a table is
+    # unverifiable unless it was scanned on each source it lives in.
+    if len(names) > 1:
+        expected = {(s, t) for t in table_columns for s in assignments[t]}
+    else:
+        expected = {(None, t) for t in table_columns}
+    unverifiable_tables = sorted({table for source, table in expected - verified})
 
     # A whole table the warehouse has that schema.yaml never mentions at
     # all reports here too, one entry per column -- there is nothing in
     # schema_col_ids to diff it against, so every one of its columns
     # already falls out of this set difference on its own.
-    warehouse_only = sorted(set(live_col_ids) - set(schema_col_ids))
-    schema_only = sorted(set(schema_col_ids) - set(live_col_ids))
+    warehouse_only = sorted(set(live_col_ids) - schema_col_ids)
+    schema_only = sorted(schema_col_ids - set(live_col_ids))
 
     baseline = _load_baseline() or {}
     type_changed: list[dict[str, str]] = []
-    for col_id in sorted(set(schema_col_ids) & set(live_col_ids)):
+    for col_id in sorted(schema_col_ids & set(live_col_ids)):
         current_type = live_col_ids[col_id]
         previous_type = baseline.get(col_id)
         if previous_type is not None and previous_type != current_type:
@@ -353,15 +516,22 @@ def check_schema_drift(engine: Engine | None = None, *, persist_baseline: bool =
                 "column": col_id, "previous_type": previous_type, "current_type": current_type,
             })
 
+    misplaced: list[dict[str, Any]] = []
+    if len(names) > 1:
+        misplaced = _find_misplaced_tables(
+            scans, table_columns, table_schemas, assignments, names,
+        )
+
     if persist_baseline:
         _save_baseline(live_col_ids)
 
     return SchemaDriftReport(
         checked_at=datetime.now(timezone.utc).isoformat(),
-        schemas_scanned=tuple(schemas_scanned),
+        schemas_scanned=tuple(sorted(s for scan in scans for s in scan.schemas_scanned)),
         warehouse_only=tuple(warehouse_only),
         schema_only=tuple(schema_only),
         type_changed=tuple(type_changed),
         unverifiable_tables=tuple(unverifiable_tables),
         baseline_available=bool(baseline),
+        misplaced_tables=tuple(misplaced),
     )

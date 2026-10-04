@@ -355,6 +355,35 @@ class TestValidationThroughRealLoaders:
         assert "archive" in str(exc_info.value)
         assert get_active_version()["version_id"] == active["version_id"]
 
+    def test_a_datasource_list_with_an_unconfigured_name_is_rejected(self, app_env):
+        """Every name in a ``datasource: [A, B]`` list is checked, not just
+        the first."""
+        active = get_active_version()
+        doc = yaml.safe_load(active["files"]["schema.yaml"])
+        doc["tables"]["Customer"]["datasource"] = ["default", "archive"]
+        invalid = yaml.dump(doc, allow_unicode=True, sort_keys=False)
+        with pytest.raises(ConfigVersionValidationError) as exc_info:
+            propose_or_apply(
+                {"schema.yaml": invalid},
+                based_on_version=active["version_id"],
+                actor_principal_id="sec-1",
+                actor_capabilities=_SECURITY,
+            )
+        assert "Customer -> archive" in str(exc_info.value)
+
+    def test_a_datasource_list_of_configured_names_is_accepted(self, app_env):
+        active = get_active_version()
+        doc = yaml.safe_load(active["files"]["schema.yaml"])
+        doc["tables"]["Customer"]["datasource"] = ["default"]
+        valid = yaml.dump(doc, allow_unicode=True, sort_keys=False)
+        result = propose_or_apply(
+            {"schema.yaml": valid},
+            based_on_version=active["version_id"],
+            actor_principal_id="sec-1",
+            actor_capabilities=_SECURITY,
+        )
+        assert result is not None
+
 
 # ---------------------------------------------------------------------------
 # §8: optimistic locking, not merging

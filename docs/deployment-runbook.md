@@ -529,9 +529,9 @@ attempts and catalogue scans) back to a few specific sources.
 |---|---|---|---|
 | Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
 | `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
-| Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the two deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
-| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt and `check_query_timeout`'s multi-second `WAITFOR DELAY` probe | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
-| Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema, on each source a table lives in; plus, only with more than one source and only when some table is missing from its assigned source, one `INFORMATION_SCHEMA.TABLES` query per other source (the "found in ..." hint) | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
 | Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column | On first use after startup if `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (default `false`); otherwise lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
 | Relationship-map schema inspection (`database/relationship_map.py`) | A one-time reflection of foreign-key relationships, only if no `project_config/relationships.yaml` is present | At most once per process lifetime (result is cached in memory for the life of the process; never repeats on a timer) | `AUTO_DISCOVER_SCHEMA` (default `false`) |
@@ -713,6 +713,36 @@ three-part name.
    existing source's tables is not a new source — give it a multi-part
    `db_schema: "OtherDb.dbo"` instead and leave `datasource` unset.
 
+   A table that exists, with the same shape, in more than one source (a
+   date dimension replicated into several databases) takes a list:
+   `datasource: [Auction_DM, Future_DM]` (distinct names, each a
+   configured source). A statement then runs on a source that has **every**
+   table it reads: the default source if it is one of them, otherwise the
+   first in `datasources.yaml` order. A statement reading only the shared
+   table runs on the default source, and so do the value resolver and the
+   dimension-vocabulary prefetch for it (they read one copy, not each).
+   Only when no source has all the tables is the statement refused
+   (`cross_datasource`), with a message listing which tables are available
+   where.
+
+   **Don't write these by hand.** From the repository root, with the
+   server's environment active, run
+   `python scripts/assign_datasources.py`. It lists the tables, views and
+   columns of every source (two `INFORMATION_SCHEMA` queries per source,
+   through the application's own read-only engines; no row data, nothing
+   written to a database), matches every `schema.yaml` table to the sources
+   that have it, and writes `schema.with_datasources.yaml` next to
+   `schema.yaml` — your file with every line and comment kept and one
+   `datasource:` line per table (`[A, B]` for a table found in both,
+   `# not found in any data source` under a table found in neither).
+   `schema.yaml` itself is never changed; review the new file, then
+   replace `schema.yaml` with it (`--output PATH` writes elsewhere). Its
+   report also lists the tables found nowhere and the columns `schema.yaml`
+   names that the database does not have. `--check` writes nothing and
+   exits 1 if any table's `datasource:` differs from where it was found,
+   which makes it usable in a deploy pipeline; exit 2 means a source could
+   not be read or the file could not be produced.
+
    **If your warehouse has the same table name in more than one schema**
    (e.g. `sales.Customer` and `ref.Customer`), give each one its own
    qualified `schema.yaml` key (`sales.Customer:`, `ref.Customer:`)
@@ -742,9 +772,17 @@ runs every database check once per configured source automatically —
 `Database connectivity [sales]`, `Database connectivity [inventory]`, and so
 on for the read-only-login, row-cap and query-timeout checks — plus one
 new check, `Tables map to data sources`, confirming every `schema.yaml`
-table's `datasource:` (if any) actually names a configured source. The
-admin panel's non-deep deployment checks (`GET /admin/health/checks`, and
-its "deep checks" button) expand the same way.
+table's `datasource:` (if any) actually names a configured source, and
+`Tables are in their data source`, which fails with the exact
+`datasource:` line to write — `Future_Dim.Broker: not in Auction_DM, found
+in Future_DM — set datasource: Future_DM` — for a table whose columns are
+all missing from the source `schema.yaml` assigns it to while another
+source has it (skipped with one source). The admin panel's non-deep
+deployment checks (`GET /admin/health/checks`, and its "deep checks"
+button) expand the same way; the placement check reflects every source's
+catalogue, so the panel runs it only with "deep checks" — its schema-drift
+card shows the same finding at any time (it lists the table with the value
+to write under "جدول در منبع دادهٔ دیگری است").
 
 **What `/health` shows.** With one source, `/health`'s `database_detail`
 field is exactly what it always was (e.g. `"SELECT 1 succeeded"`). With
@@ -765,4 +803,7 @@ an analyst-facing Persian sentence explaining that the question needs
 data from two separate servers and asking for it to be split. This is
 expected, not a bug to investigate: see `docs/design/DATASOURCES.md`'s
 roadmap section for why combining sources in one answer is deliberately
-not supported yet.
+not supported yet. A table listed under several sources counts for each of
+them, so a statement mixing it with tables of one source is not refused;
+the refusal names every source with its tables, and says which tables are
+available in several.

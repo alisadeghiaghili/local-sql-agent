@@ -55,6 +55,13 @@ topology (which servers exist), edited on disk like `.env`, and a change
 to it needs a restart. See `docs/design/DATASOURCES.md` for the full
 design, and `docs/deployment-runbook.md` for configuring and verifying it.
 
+With several sources, each `schema.yaml` table names where it lives with
+`datasource:` -- one name, or a list (`datasource: [Sales, Inventory]`) for
+a table that exists, with the same shape, in each of those sources. Run
+`python scripts/assign_datasources.py` from the repository root to have the
+values worked out from the databases and written to
+`schema.with_datasources.yaml` next to `schema.yaml` for review.
+
 ## What happens if project_config/ is missing?
 
 Importing `knowledge.*` and `schema_data.*` modules will succeed.

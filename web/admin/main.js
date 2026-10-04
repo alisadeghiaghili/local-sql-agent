@@ -192,9 +192,11 @@ function wireTopbar() {
   if (deepBtn) {
     deepBtn.addEventListener("click", () => {
       const proceed = window.confirm(
-        "این کار دو بررسیِ اضافی را روی انبار داده اجرا می‌کند: یک تلاش " +
+        "این کار چند بررسیِ اضافی را روی انبار داده اجرا می‌کند: یک تلاش " +
         "CREATE TABLE (که همیشه Rollback می‌شود) برای اطمینان از دسترسی " +
-        "فقط‌خواندنی، و یک پروب WAITFOR که چند ثانیه طول می‌کشد. ادامه می‌دهید؟",
+        "فقط‌خواندنی، یک پروب WAITFOR که چند ثانیه طول می‌کشد، و — اگر بیش از " +
+        "یک منبع داده تنظیم شده باشد — خواندن فهرست جدول‌ها و ستون‌های هر منبع " +
+        "برای یافتن جدولی که در منبعِ دیگری است. ادامه می‌دهید؟",
       );
       if (!proceed) return;
       refreshOne("health", { force: true, deep: true });
@@ -949,9 +951,33 @@ function renderMaintenance(state) {
 
 /* ── Admin panel phase 6: schema drift -- read-only, proposes nothing ── */
 
+/** Tables found in a different data source than schema.yaml assigns them
+ * (report.misplaced_tables, schema_data/drift.py). The names stay LTR; the
+ * last column is the exact value to put under the table's `datasource:`. */
+function misplacedTablesTable(items) {
+  const cell = (list) => `<td dir="ltr">${list.map(escapeHtml).join(", ")}</td>`;
+  const rows = items.map((m) => {
+    const suggested = Array.isArray(m.suggested_datasource)
+      ? `[${m.suggested_datasource.join(", ")}]`
+      : String(m.suggested_datasource);
+    return (
+      `<tr><td dir="ltr">${escapeHtml(m.table)}</td>${cell(m.missing_from || [])}` +
+      `${cell(m.found_in || [])}<td dir="ltr">datasource: ${escapeHtml(suggested)}</td></tr>`
+    );
+  });
+  return (
+    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+    "<th>جدول</th><th>در این منبع نیست</th><th>در این منبع پیدا شد</th>" +
+    "<th>مقدار پیشنهادی</th>" +
+    `</tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+  );
+}
+
 function renderSchemaDrift(report) {
   const body = $("schemaDrift-body");
+  const misplaced = report.misplaced_tables || [];
   const noDrift =
+    !misplaced.length &&
     (!report.warehouse_only || !report.warehouse_only.length) &&
     (!report.schema_only || !report.schema_only.length) &&
     (!report.type_changed || !report.type_changed.length);
@@ -960,6 +986,10 @@ function renderSchemaDrift(report) {
   if (noDrift) {
     out.push('<p class="admin-rail-summary"><strong>انحرافی یافت نشد</strong></p>');
   } else {
+    if (misplaced.length) {
+      out.push('<p class="admin-section-title">جدول در منبع دادهٔ دیگری است (datasource را در schema.yaml اصلاح کنید)</p>');
+      out.push(misplacedTablesTable(misplaced));
+    }
     if (report.warehouse_only && report.warehouse_only.length) {
       out.push('<p class="admin-section-title">فقط در انبار داده (فعلاً غیرقابل پرس‌وجو)</p>');
       out.push(`<p dir="ltr" class="admin-check-detail">${report.warehouse_only.map(escapeHtml).join(", ")}</p>`);

@@ -43,9 +43,11 @@ deployments written against 6.1 and 6.2. One source is one form or the
 other, never both.
 
 Each table in ``schema.yaml`` names its source with ``datasource:``; a
-table without one belongs to the default source. The source a query runs
-on is derived from the tables it references (see
-:mod:`database.routing`), never chosen by the model.
+table without one belongs to the default source. ``datasource:`` may also
+be a list (``[Auction_DM, Future_DM]``) for a table that exists, with the
+same shape, in each of those sources. The source a query runs on is
+derived from the tables it references (see :mod:`database.routing`),
+never chosen by the model.
 
 Without ``datasources.yaml``
 ----------------------------
@@ -74,7 +76,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, NamedTuple
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, NamedTuple
 
 import yaml
 from pydantic import (
@@ -111,6 +113,8 @@ __all__ = [
     "get_datasource",
     "get_datasources",
     "table_datasources",
+    "table_datasource_sets",
+    "pick_datasource",
     "check_table_datasources",
     "validate_datasource_urls",
     "reset_datasources_cache",
@@ -916,46 +920,141 @@ def get_datasources(settings: "Settings | None" = None) -> tuple[DataSource, ...
 # Tables -> sources
 # ---------------------------------------------------------------------------
 
-def table_datasources() -> dict[str, str]:
-    """Return ``{table_name: source_name}`` for every table in ``schema.yaml``.
+def _in_config_order(names: Iterable[str]) -> tuple[str, ...]:
+    """*names* ordered as :func:`datasource_names` orders the sources.
 
-    A table without a ``datasource:`` key belongs to the default source.
-    Names are returned as written; :func:`check_table_datasources` is what
-    refuses an unknown one.
+    The default source comes first, then ``datasources.yaml`` order; a name
+    that is not configured (refused later by :func:`check_table_datasources`)
+    goes last, in the order given.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     _in_config_order(["other", "default"])
+    ('default', 'other')
+    """
+    configured = datasource_names()
+    given = tuple(dict.fromkeys(names))
+    rank = {name: index for index, name in enumerate(configured)}
+    return tuple(sorted(given, key=lambda name: rank.get(name, len(rank))))
+
+
+def pick_datasource(candidates: Iterable[str]) -> str:
+    """The source a statement runs on when several sources could serve it.
+
+    The default source when it is a candidate, otherwise the first
+    candidate in ``datasources.yaml`` order, so the choice is the same on
+    every call and in every process.
+
+    Parameters
+    ----------
+    candidates:
+        Source names, at least one.
+
+    Returns
+    -------
+    str
+        One of *candidates*.
+
+    Raises
+    ------
+    ValueError
+        If *candidates* is empty.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     pick_datasource(["default"])
+    'default'
+    >>> pick_datasource([])
+    Traceback (most recent call last):
+        ...
+    ValueError: no data source to pick from
+    """
+    ordered = _in_config_order(candidates)
+    if not ordered:
+        raise ValueError("no data source to pick from")
+    return ordered[0]
+
+
+def table_datasource_sets() -> dict[str, tuple[str, ...]]:
+    """Return ``{table_name: (source, ...)}`` for every table in ``schema.yaml``.
+
+    Every source the table lives in, ordered as :func:`datasource_names`
+    orders them (default first). A table without a ``datasource:`` key
+    belongs to the default source alone. Names are returned as written;
+    :func:`check_table_datasources` is what refuses an unknown one.
     """
     from schema_data.registry import get_table_datasource_names
 
     default = default_datasource_name()
     return {
-        table: (source or default)
-        for table, source in get_table_datasource_names().items()
+        table: _in_config_order(sources or (default,))
+        for table, sources in get_table_datasource_names().items()
     }
 
 
-def check_table_datasources(assignments: Mapping[str, str] | None = None) -> None:
+def table_datasources() -> dict[str, str]:
+    """Return ``{table_name: source_name}`` for every table in ``schema.yaml``.
+
+    One source per table: the only one for a table with a single
+    ``datasource:``, and for a table listed in several, the one a
+    statement reading nothing else runs on (:func:`pick_datasource`: the
+    default source if the table lives there, else the first source in
+    ``datasources.yaml`` order). Code that needs every source of a table
+    -- routing across several tables, schema drift, prompt rendering --
+    uses :func:`table_datasource_sets`.
+    """
+    return {
+        table: pick_datasource(sources)
+        for table, sources in table_datasource_sets().items()
+    }
+
+
+def check_table_datasources(
+    assignments: Mapping[str, str | Iterable[str]] | None = None,
+) -> None:
     """Refuse a ``schema.yaml`` table that names an unconfigured source.
 
     Parameters
     ----------
     assignments:
-        ``{table: source}`` to check; defaults to :func:`table_datasources`.
-        The admin panel passes a candidate ``schema.yaml``'s own mapping
-        here before a draft is saved.
+        ``{table: source}`` or ``{table: (source, ...)}`` to check;
+        defaults to :func:`table_datasource_sets`. An empty name or an
+        empty sequence means the default source. The admin panel passes a
+        candidate ``schema.yaml``'s own mapping here before a draft is
+        saved.
 
     Raises
     ------
     ValueError
         Naming every offending table and the configured sources.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     check_table_datasources({"Order": "", "Date": ["default"]})
+    ...     check_table_datasources({"Order": ["default", "elsewhere"]})
+    Traceback (most recent call last):
+        ...
+    ValueError: schema.yaml assigns tables to data sources that are not configured: Order -> elsewhere. Configured sources: ['default']
     """
     if assignments is None:
-        assignments = table_datasources()
+        assignments = table_datasource_sets()
     known = set(datasource_names())
     default = default_datasource_name()
-    bad = sorted(
-        f"{table} -> {source}"
-        for table, source in assignments.items()
-        if (source or default) not in known
-    )
+    bad = []
+    for table, value in assignments.items():
+        sources = (value,) if isinstance(value, str) else tuple(value)
+        bad.extend(
+            f"{table} -> {source}"
+            for source in (sources or (default,))
+            if (source or default) not in known
+        )
+    bad.sort()
     if bad:
         raise ValueError(
             "schema.yaml assigns tables to data sources that are not "

@@ -83,7 +83,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
@@ -98,12 +98,14 @@ __all__ = [
     "SchemaConfig",
     "TableRef",
     "load_schema",
+    "schema_yaml_path",
     "validate_schema_yaml_text",
     "get_table_descriptions",
     "get_table_columns",
     "get_relationships_map",
     "get_table_schema_qualifiers",
     "get_table_datasource_names",
+    "normalise_datasource_names",
     "get_resolvable_columns",
     "get_prefetchable_columns",
     "check_allowlist_structural_invariants",
@@ -347,6 +349,63 @@ def table_reference_sql(key: str, qualifier: str = "") -> str:
     return f"{quote_tsql_qualifier(qualifier)}.{ident}"
 
 
+def normalise_datasource_names(value: Any) -> tuple[str, ...]:
+    """Normalise a ``datasource:`` value to a tuple of source names.
+
+    Parameters
+    ----------
+    value:
+        What ``schema.yaml`` holds under ``datasource``: a name, ``""`` /
+        ``None`` for "not set", or a non-empty list of distinct names.
+
+    Returns
+    -------
+    tuple[str, ...]
+        ``()`` when no source is named (the table belongs to the default
+        source), otherwise the names in the order written.
+
+    Raises
+    ------
+    ValueError
+        For an empty list, a blank or non-string entry, a name listed
+        twice, or any other type.
+
+    Examples
+    --------
+    >>> normalise_datasource_names("Auction_DM")
+    ('Auction_DM',)
+    >>> normalise_datasource_names("")
+    ()
+    >>> normalise_datasource_names(["Auction_DM", "Future_DM"])
+    ('Auction_DM', 'Future_DM')
+    >>> normalise_datasource_names([])
+    Traceback (most recent call last):
+        ...
+    ValueError: datasource: a list must name at least one data source
+    >>> normalise_datasource_names(["A", "A"])
+    Traceback (most recent call last):
+        ...
+    ValueError: datasource: 'A' is listed more than once
+    """
+    if value is None or value == "":
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        if not value:
+            raise ValueError("datasource: a list must name at least one data source")
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    "datasource: every entry in a list must be a data source name"
+                )
+        for item in value:
+            if list(value).count(item) > 1:
+                raise ValueError(f"datasource: {item!r} is listed more than once")
+        return tuple(value)
+    raise ValueError("datasource: must be a data source name or a list of names")
+
+
 # ---------------------------------------------------------------------------
 # Pydantic v2 models — mirrors the shape knowledge/config_loader.py uses for
 # its own five configs (a validated model per YAML file).
@@ -367,8 +426,12 @@ class TableDefinition(BaseModel):
     a table in another database on the same server.
 
     ``datasource`` names the data source (``datasources.yaml``) the table
-    lives in; empty means the default source. See
-    :mod:`database.datasources`. See the module docstring's "Per-table schema qualifier and
+    lives in; empty means the default source. A list of distinct names
+    says the same table exists, with the same shape, in each of those
+    sources (a replicated date dimension, say); the value is stored as a
+    tuple either way, ``()`` for "not set". See
+    :mod:`database.datasources` and :mod:`database.routing`. See the
+    module docstring's "Per-table schema qualifier and
     resolver/prefetch flags" section, and :class:`SchemaConfig`'s validator
     for the consistency rule tying them to ``columns``.
     """
@@ -376,9 +439,15 @@ class TableDefinition(BaseModel):
     description: str = ""
     columns: dict[str, str] | None = None
     db_schema: str = ""
-    datasource: str = ""
+    datasource: tuple[str, ...] = ()
     resolvable_columns: tuple[str, ...] = Field(default_factory=tuple)
     prefetchable_columns: tuple[str, ...] = Field(default_factory=tuple)
+
+    @field_validator("datasource", mode="before")
+    @classmethod
+    def _datasource_is_a_name_or_a_list_of_names(cls, value: Any) -> tuple[str, ...]:
+        """Accept ``datasource: Name`` or ``datasource: [A, B]``; store a tuple."""
+        return normalise_datasource_names(value)
 
 
 class RelationshipDefinition(BaseModel):
@@ -538,6 +607,16 @@ def _project_config_dir() -> Path:
     return _REPO_ROOT / configured
 
 
+def schema_yaml_path() -> Path:
+    """Path of the ``schema.yaml`` :func:`load_schema` reads.
+
+    Resolved at call time, like :func:`_project_config_dir` (a relative
+    ``PROJECT_CONFIG_DIR`` means the same directory here as everywhere
+    else it is read).
+    """
+    return _project_config_dir() / "schema.yaml"
+
+
 def load_schema() -> SchemaConfig:
     """Load and validate ``<PROJECT_CONFIG_DIR>/schema.yaml``.
 
@@ -557,8 +636,7 @@ def load_schema() -> SchemaConfig:
     ValueError
         If the file exists but fails Pydantic validation.
     """
-    path = _project_config_dir() / "schema.yaml"
-    raw = load_yaml(path)
+    raw = load_yaml(schema_yaml_path())
     return _validate_schema_raw(raw)
 
 
@@ -673,13 +751,17 @@ def get_table_schema_qualifiers() -> dict[str, str]:
     return _schema_cache()["table_schemas"]
 
 
-def get_table_datasource_names() -> dict[str, str]:
-    """Return ``{table_name: datasource}`` for every table in ``schema.yaml``.
+def get_table_datasource_names() -> dict[str, tuple[str, ...]]:
+    """Return ``{table_name: (datasource, ...)}`` for every table in ``schema.yaml``.
 
-    The value is exactly what the file says, ``""`` for a table with no
-    ``datasource`` key. :func:`database.datasources.table_datasources`
-    resolves ``""`` to the default source and is what callers should use;
-    this function exists so :mod:`schema_data` stays free of any
+    The value is exactly what the file says, normalised to a tuple: one
+    name for ``datasource: Name``, several for a list, ``()`` for a table
+    with no ``datasource`` key.
+    :func:`database.datasources.table_datasource_sets` resolves ``()`` to
+    the default source and orders the names by ``datasources.yaml``;
+    :func:`database.datasources.table_datasources` reduces each to the one
+    source a statement reading only that table runs on. Callers should use
+    those; this function exists so :mod:`schema_data` stays free of any
     dependency on :mod:`database`.
     """
     return _schema_cache()["table_datasources"]
@@ -808,20 +890,20 @@ def check_allowlist_structural_invariants(
 
 
 
-def _table_sources_if_several() -> dict[str, str]:
-    """``{table: source}`` when more than one data source is configured,
-    else ``{}``.
+def _table_sources_if_several() -> dict[str, tuple[str, ...]]:
+    """``{table: (source, ...)}`` when more than one data source is
+    configured, else ``{}``.
 
     The single-source case returns nothing so a deployment without
     ``datasources.yaml`` renders exactly the schema block it always has.
     Deferred import: :mod:`schema_data` otherwise has no dependency on
     :mod:`database`.
     """
-    from database.datasources import datasource_names, table_datasources
+    from database.datasources import datasource_names, table_datasource_sets
 
     if len(datasource_names()) < 2:
         return {}
-    return table_datasources()
+    return table_datasource_sets()
 
 
 class SchemaRegistry:
@@ -910,7 +992,7 @@ class SchemaRegistry:
             bare_name_counts[bare_table_name(name)] = bare_name_counts.get(bare_table_name(name), 0) + 1
 
         lines = []
-        shown_sources: set[str] = set()
+        shown_source_sets: set[tuple[str, ...]] = set()
 
         for table_name in selected_tables:
             if table_name not in table_columns:
@@ -923,9 +1005,9 @@ class SchemaRegistry:
             lines.append(f"Table: {table_name}")
 
             if table_sources:
-                source = table_sources[table_name]
-                shown_sources.add(source)
-                lines.append(f"Data source: {source}")
+                sources = table_sources[table_name]
+                shown_source_sets.add(sources)
+                lines.append(f"Data source: {', '.join(sources)}")
 
             qualifier = table_schemas.get(table_name, "")
             bare_name = bare_table_name(table_name)
@@ -949,12 +1031,20 @@ class SchemaRegistry:
 
             lines.append("")
 
-        if len(shown_sources) > 1:
+        # The rule is about what THIS block shows: it matters once the
+        # shown tables do not all live in exactly the same sources.
+        if len(shown_source_sets) > 1:
             lines.append(
                 "Rule: every table in one query must come from the same "
                 "data source. Tables in different data sources cannot be "
                 "joined or combined in one query."
             )
+            if any(len(sources) > 1 for sources in shown_source_sets):
+                lines.append(
+                    "A table with several data sources listed exists in each "
+                    "of them, and can be combined with tables from any one of "
+                    "those sources."
+                )
             lines.append("")
 
         return "\n".join(lines)

@@ -45,12 +45,17 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 #: ``check_login_is_read_only`` attempts a real (always-rolled-back)
 #: ``CREATE TABLE`` against the warehouse; ``check_query_timeout`` runs a
 #: ``WAITFOR DELAY`` probe that deliberately blocks for several seconds.
-#: Both are safe to run deliberately (that is exactly what
+#: ``check_tables_in_assigned_sources`` reflects the whole catalogue of
+#: every data source (the same read as the schema-drift card, which already
+#: shows its finding and is cached on its own).
+#: All are safe to run deliberately (that is exactly what
 #: ``python -m scripts.verify_deployment`` -- the CLI, unaffected by this
-#: set -- is for) but neither belongs in a check this panel would ever
+#: set -- is for) but none belongs in a check this panel would ever
 #: run on a timer or on every page load; see ``admin_health_checks``'s
 #: own ``deep`` parameter below.
-_DEEP_CHECK_NAMES = frozenset({"check_login_is_read_only", "check_query_timeout"})
+_DEEP_CHECK_NAMES = frozenset({
+    "check_login_is_read_only", "check_query_timeout", "check_tables_in_assigned_sources",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +132,9 @@ def admin_health_checks(
         False,
         description=(
             "Also run check_login_is_read_only (a rolled-back CREATE TABLE "
-            "DDL attempt) and check_query_timeout (a WAITFOR DELAY probe). "
-            "Both are skipped by default from this panel route -- see the "
+            "DDL attempt), check_query_timeout (a WAITFOR DELAY probe) and "
+            "check_tables_in_assigned_sources (a full catalogue reflection). "
+            "All are skipped by default from this panel route -- see the "
             "route's own docstring -- and always run from the CLI "
             "(python -m scripts.verify_deployment) regardless of this flag."
         ),

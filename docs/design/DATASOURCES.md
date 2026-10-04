@@ -43,8 +43,10 @@ question that might touch either one.
   with a message saying so, and so is a credential-like key under
   `options`.
 
-- Each table in `schema.yaml` may set `datasource: <name>`; a table
-  without one belongs to the default source. Table names stay globally
+- Each table in `schema.yaml` may set `datasource: <name>`, or a list of
+  distinct names for a table that exists in several sources (see "Tables
+  that live in several sources" below); a table without one belongs to
+  the default source. Table names stay globally
   unique across every source — there is one flat allowlist, not one per
   source — so a question never has to know which source a table lives on
   before it can ask about it.
@@ -77,8 +79,9 @@ question that might touch either one.
   (`database.routing.resolve_datasource`, fed by
   `security.sql_guard.extract_touched_tables` — the same table resolution
   the guard's own allowlist check already does, reused rather than
-  duplicated). One query runs on exactly one source. A query whose tables
-  span two sources is refused before it ever reaches a connection: the SQL
+  duplicated). One query runs on exactly one source. A query no single
+  source can run (no source has every table it reads) is refused before it
+  ever reaches a connection: the SQL
   guard raises `CorrectableRejection(reason="cross_datasource",
   is_refusal=True)` (`security.sql_guard._require_single_datasource`), and
   the web UI shows an analyst-facing Persian sentence for it, the same way
@@ -88,6 +91,96 @@ question that might touch either one.
   not need editing when mixed dialects eventually land) but a value other
   than the deployment's own `SQL_DIALECT` is refused at start-up
   (`database.datasources.validate_datasource_urls`).
+
+## Tables that live in several sources
+
+A real warehouse pair shares at least one table: a date dimension
+replicated into each database, which the fact tables of both join to. With
+one `datasource:` per table that table had to be assigned to one source,
+and every question joining it to the other source's facts was refused even
+though the other source has its own copy.
+
+`datasource:` therefore also accepts a **non-empty list of distinct names**
+(`datasource: [Auction_DM, Future_DM]`). The declaration is a claim about
+the database, not a preference: *the same table exists, with the same
+shape, in each of those sources.* It is stored as a tuple
+(`TableDefinition.datasource`, `()` for "not set"), and a name listed twice,
+an empty list or a blank entry is refused when `schema.yaml` loads. Every
+place that validates source names (`check_table_datasources`, start-up, the
+admin panel's draft validation, `verify_deployment.py`) checks every name.
+
+**Routing rule** (`database.routing.choose_datasource`, one function used
+by both the executor and the guard, so they cannot disagree):
+
+1. The candidate sources for a statement are the **intersection** of the
+   source sets of every table it reads. A table `schema.yaml` does not
+   list counts as living in the default source only, as before.
+2. An empty intersection is the `cross_datasource` refusal. Its text still
+   names every source and its tables, with a shared table listed under each
+   of its sources, and adds `Available in several data sources: Date
+   (Auction_DM, Future_DM)` so the reader sees why combining it with two
+   tables from different sources does not help.
+3. Otherwise the statement runs on the **default source if it is a
+   candidate, else the first candidate in `datasources.yaml` order**
+   (`database.datasources.pick_datasource`) — deterministic across calls
+   and processes. A statement reading only a shared table therefore runs on
+   the default source when the table lives there.
+
+`table_datasources()` keeps returning `{table: one source}` — rule 3 applied
+to the table alone — for callers that want a single name;
+`table_datasource_sets()` returns every source of every table (default
+first, then file order) and is what anything whose correctness depends on
+the full set uses.
+
+**What else follows from the full set**
+
+- *Prompt.* The schema block prints `Data source: Auction_DM, Future_DM`
+  for a shared table. The closing rule gains one sentence (a table listed
+  under several sources exists in each and combines with tables from any
+  one of them) only when the block mixes tables with different source sets;
+  a block where every table has the same sources prints no rule, and a
+  deployment without shared tables prints the rule byte-for-byte as before.
+- *Dimension vocabulary and value resolver.* Each is one single-table
+  statement, so it is routed by rule 3: the default source if the table
+  lives there, else the first listed in `datasources.yaml` order. A
+  replicated dimension is read from one copy, not from each; that is the
+  point of declaring the copies the same.
+- *Schema drift.* A shared table is compared on **each** of its sources. A
+  column missing from one copy is reported as `Table.Column [source]`
+  (single-source tables keep their plain `Table.Column`).
+- *Where a table really is.* When every `schema.yaml` column of a table is
+  missing from a source it is assigned to and another configured source has
+  the table, the drift report's `misplaced_tables` gives the sentence and
+  the value to write, e.g. `Future_Dim.Broker: not in Auction_DM, found in
+  Future_DM — set datasource: Future_DM`. The other sources are asked with
+  one `INFORMATION_SCHEMA.TABLES` query each, and only when such a table
+  exists; the result is cached with the rest of the drift report. The admin
+  panel's schema-drift card shows it, and `scripts/verify_deployment.py`
+  fails `Tables are in their data source` with the same text (that check
+  reflects every catalogue, so the panel runs it under "deep checks").
+
+**Generating the assignments.** A deployment that never set `datasource:`
+runs everything on the default source (`Invalid object name ...` for the
+tables that are elsewhere) and its drift panel lists every column of the
+other source as missing. `scripts/assign_datasources.py` is the one-time
+generator, curated afterwards: it reads each source's tables, views and
+columns through the application's own engines (two `INFORMATION_SCHEMA`
+queries per source; never a row), matches each `schema.yaml` table by
+schema and name (case-insensitively; a multi-part `db_schema` such as
+`OtherDb.dbo` by its schema part, because the catalogue views describe the
+connected database), and writes `schema.with_datasources.yaml` next to
+`schema.yaml` — every original line and comment kept, one `datasource:`
+line inserted (or an existing one replaced) under each table key: a name,
+`[A, B]` for a table in both, or `# not found in any data source` under a
+table found in neither. It checks the file with
+`schema_data.registry.validate_schema_yaml_text` and proves that nothing but
+`datasource` differs from `schema.yaml` before writing, and it stops
+without writing if any source's catalogue could not be read (a source it
+cannot see would make a shared table look single). The report lists, per
+source, the tables found only there, the shared tables, the tables found
+nowhere, the tables whose current `datasource:` disagrees, and the columns
+`schema.yaml` lists that the database lacks. `--check` writes nothing and
+exits 1 when any `datasource:` disagrees with what was found.
 
 ## Structured sources: what changed and why
 
@@ -300,7 +393,8 @@ design above leaves room for both without a rewrite:
    source separately and combine client-side, or route through a linked
    server a DBA has configured — has a natural seam to grow from:
    `database.routing.group_tables_by_datasource` already computes exactly
-   the `{source: tables}` partition such a mode would need as its input,
+   the `{source: tables}` partition such a mode would need as its input (a
+   table in several sources is listed under each),
    it simply currently feeds that partition to a refusal instead of to a
    second code path that runs one query per group and joins the results
    in the application layer.

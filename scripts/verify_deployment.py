@@ -38,8 +38,13 @@ With more than one warehouse data source configured
 every database check below (connectivity, read-only login, row cap, query
 timeout) runs once per source -- see :func:`build_checks` -- plus one more
 check, ``check_table_datasources``, confirming every ``schema.yaml``
-table's ``datasource:`` (if any) actually names a configured source. With
-the default single source this script's output is unchanged.
+table's ``datasource:`` (if any) actually names a configured source, and
+``check_tables_in_assigned_sources``, which fails -- printing the
+``datasource:`` line to write -- when a table is missing from the source(s)
+``schema.yaml`` assigns it to but another source has it (the same finding
+as the admin panel's schema-drift card). With the default single source
+this script's output is unchanged: the database checks keep their plain
+names and the placement check is skipped.
 
 Safety
 ------
@@ -706,6 +711,40 @@ def check_table_datasources() -> CheckResult:
     )
 
 
+#: How many "set datasource: ..." hints :func:`check_tables_in_assigned_sources`
+#: prints before summarising the rest.
+_MAX_PLACEMENT_HINTS = 10
+
+
+def check_tables_in_assigned_sources() -> CheckResult:
+    """A table must be in the data source(s) ``schema.yaml`` assigns it to.
+
+    Reads :func:`schema_data.drift.check_schema_drift`'s ``misplaced_tables``:
+    tables every one of whose columns is missing from an assigned source
+    while another configured source has them. FAIL names each table with the
+    ``datasource:`` value to put in ``schema.yaml``
+    (``scripts/assign_datasources.py`` writes a whole file of them). SKIP
+    with a single data source. Read-only; the drift baseline is not moved.
+    """
+    name = "Tables are in their data source"
+    try:
+        from database.datasources import datasource_names
+
+        if len(datasource_names()) < 2:
+            return CheckResult(name, "SKIP", "one data source -- nothing to place")
+        from schema_data.drift import check_schema_drift
+
+        misplaced = check_schema_drift(persist_baseline=False).misplaced_tables
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(name, "FAIL", f"could not compare schema.yaml with the data sources: {exc}")
+    if not misplaced:
+        return CheckResult(name, "PASS", "no table is in a different data source than schema.yaml assigns")
+    shown = [str(m["hint"]) for m in misplaced[:_MAX_PLACEMENT_HINTS]]
+    more = len(misplaced) - len(shown)
+    detail = "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
+    return CheckResult(name, "FAIL", f"{len(misplaced)} table(s): {detail}")
+
+
 #: Checks run once per data source, in this order, after the global ones
 #: that precede them in :func:`_checks`.
 _PER_SOURCE_CHECKS: list[Callable[..., CheckResult]] = [
@@ -717,6 +756,7 @@ _PER_SOURCE_CHECKS: list[Callable[..., CheckResult]] = [
 
 #: Checks that run once for the whole deployment.
 _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
+    check_tables_in_assigned_sources,
     check_openai_model_exists,
     check_api_key_authenticates,
     check_audit_log_writable,
