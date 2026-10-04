@@ -112,7 +112,7 @@ and every question joining it to the other source's facts was refused even
 though the other source has its own copy.
 
 `datasource:` therefore also accepts a **non-empty list of distinct names**
-(`datasource: [Auction_DM, Future_DM]`). The declaration is a claim about
+(`datasource: [sales, inventory]`). The declaration is a claim about
 the database, not a preference: *the same table exists, with the same
 shape, in each of those sources.* It is stored as a tuple
 (`TableDefinition.datasource`, `()` for "not set"), and a name listed twice,
@@ -129,7 +129,7 @@ by both the executor and the guard, so they cannot disagree):
 2. An empty intersection is the `cross_datasource` refusal. Its text still
    names every source and its tables, with a shared table listed under each
    of its sources, and adds `Available in several data sources: Date
-   (Auction_DM, Future_DM)` so the reader sees why combining it with two
+   (sales, inventory)` so the reader sees why combining it with two
    tables from different sources does not help.
 3. Otherwise the statement runs on the **default source if it is a
    candidate, else the first candidate in `datasources.yaml` order**
@@ -145,7 +145,7 @@ the full set uses.
 
 **What else follows from the full set**
 
-- *Prompt.* The schema block prints `Data source: Auction_DM, Future_DM`
+- *Prompt.* The schema block prints `Data source: sales, inventory`
   for a shared table. The closing rule gains one sentence (a table listed
   under several sources exists in each and combines with tables from any
   one of them) only when the block mixes tables with different source sets;
@@ -162,8 +162,8 @@ the full set uses.
 - *Where a table really is.* When every `schema.yaml` column of a table is
   missing from a source it is assigned to and another configured source has
   the table, the drift report's `misplaced_tables` gives the sentence and
-  the value to write, e.g. `Future_Dim.Broker: not in Auction_DM, found in
-  Future_DM — set datasource: Future_DM`. The other sources are asked with
+  the value to write, e.g. `stock_dim.Broker: not in sales, found in
+  inventory — set datasource: inventory`. The other sources are asked with
   one `INFORMATION_SCHEMA.TABLES` query each, and only when such a table
   exists; the result is cached with the rest of the drift report. The admin
   panel's schema-drift card shows it, and `scripts/verify_deployment.py`

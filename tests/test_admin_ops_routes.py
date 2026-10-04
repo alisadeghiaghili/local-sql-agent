@@ -380,14 +380,14 @@ class TestSchemaDriftMisplacedTables:
     cache without a second catalogue read."""
 
     _HINT = {
-        "table": "Future_Dim.Broker",
-        "assigned": ["Auction_DM"],
-        "missing_from": ["Auction_DM"],
-        "found_in": ["Future_DM"],
-        "suggested_datasource": "Future_DM",
+        "table": "stock_dim.Broker",
+        "assigned": ["sales"],
+        "missing_from": ["sales"],
+        "found_in": ["inventory"],
+        "suggested_datasource": "inventory",
         "hint": (
-            "Future_Dim.Broker: not in Auction_DM, found in Future_DM "
-            "— set datasource: Future_DM"
+            "stock_dim.Broker: not in sales, found in inventory "
+            "— set datasource: inventory"
         ),
     }
 

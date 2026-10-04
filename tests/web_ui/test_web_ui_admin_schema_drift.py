@@ -45,11 +45,11 @@ def _card_html(payload: dict) -> str:
     return json.loads(result.stdout.strip().splitlines()[-1])["html"]
 
 
-def _misplaced(table="Future_Dim.Broker", suggested="Future_DM", found=("Future_DM",)):
+def _misplaced(table="stock_dim.Broker", suggested="inventory", found=("inventory",)):
     return {
-        "table": table, "assigned": ["Auction_DM"], "missing_from": ["Auction_DM"],
+        "table": table, "assigned": ["sales"], "missing_from": ["sales"],
         "found_in": list(found), "suggested_datasource": suggested,
-        "hint": f"{table}: not in Auction_DM, found in {', '.join(found)}",
+        "hint": f"{table}: not in sales, found in {', '.join(found)}",
     }
 
 
@@ -58,17 +58,17 @@ class TestSchemaDriftCardPlacement:
     def test_a_misplaced_table_is_listed_with_the_line_to_write(self):
         html = _card_html({"misplaced_tables": [_misplaced()]})
         assert "جدول در منبع دادهٔ دیگری است" in html
-        assert 'dir="ltr">Future_Dim.Broker</td>' in html
-        assert 'dir="ltr">Auction_DM</td>' in html
-        assert 'dir="ltr">Future_DM</td>' in html
-        assert 'dir="ltr">datasource: Future_DM</td>' in html
+        assert 'dir="ltr">stock_dim.Broker</td>' in html
+        assert 'dir="ltr">sales</td>' in html
+        assert 'dir="ltr">inventory</td>' in html
+        assert 'dir="ltr">datasource: inventory</td>' in html
         assert "انحرافی یافت نشد" not in html
 
     def test_several_suggested_sources_are_written_as_a_list(self):
         html = _card_html({"misplaced_tables": [
-            _misplaced("Dim.Date", ["Future_DM", "Cold_DM"], ("Future_DM", "Cold_DM")),
+            _misplaced("Dim.Date", ["inventory", "archive"], ("inventory", "archive")),
         ]})
-        assert "datasource: [Future_DM, Cold_DM]" in html
+        assert "datasource: [inventory, archive]" in html
 
     def test_table_names_are_escaped(self):
         html = _card_html({"misplaced_tables": [_misplaced(table="<img src=x onerror=1>")]})

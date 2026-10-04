@@ -176,8 +176,8 @@ the security admin, whose actions have no other supervisory mechanism.
   each, its columns reported as `Table.Column [source]`), and a table
   whose columns are all missing from its assigned source but present in
   another is reported with the line to write
-  (`misplaced_tables`: `Future_Dim.Broker: not in Auction_DM, found in
-  Future_DM — set datasource: Future_DM`), costing one catalogue query per
+  (`misplaced_tables`: `stock_dim.Broker: not in sales, found in
+  inventory — set datasource: inventory`), costing one catalogue query per
   other source and cached with the rest of the result.
 - Vocabulary freshness: when each prefetched dimension column last
   refreshed, and a manual refresh. A hall added to the warehouse and

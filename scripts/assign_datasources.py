@@ -31,9 +31,9 @@ overwritten). The file is ``schema.yaml`` with every line and comment kept
 and one ``datasource:`` line under each table key, inserted, or replacing
 an existing ``datasource:`` entry of that table:
 
-* found in one source: ``datasource: Auction_DM``;
+* found in one source: ``datasource: sales``;
 * found in several (a replicated date dimension, say): ``datasource:
-  [Auction_DM, Future_DM]``, in ``datasources.yaml`` order;
+  [sales, inventory]``, in ``datasources.yaml`` order;
 * found in none: the table is left as it is and the comment ``# not found
   in any data source`` is added directly under its key.
 

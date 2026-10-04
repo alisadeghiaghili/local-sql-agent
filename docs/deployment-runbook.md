@@ -715,7 +715,7 @@ three-part name.
 
    A table that exists, with the same shape, in more than one source (a
    date dimension replicated into several databases) takes a list:
-   `datasource: [Auction_DM, Future_DM]` (distinct names, each a
+   `datasource: [sales, inventory]` (distinct names, each a
    configured source). A statement then runs on a source that has **every**
    table it reads: the default source if it is one of them, otherwise the
    first in `datasources.yaml` order. A statement reading only the shared
@@ -797,8 +797,8 @@ on for the read-only-login, row-cap and query-timeout checks — plus one
 new check, `Tables map to data sources`, confirming every `schema.yaml`
 table's `datasource:` (if any) actually names a configured source, and
 `Tables are in their data source`, which fails with the exact
-`datasource:` line to write — `Future_Dim.Broker: not in Auction_DM, found
-in Future_DM — set datasource: Future_DM` — for a table whose columns are
+`datasource:` line to write — `stock_dim.Broker: not in sales, found
+in inventory — set datasource: inventory` — for a table whose columns are
 all missing from the source `schema.yaml` assigns it to while another
 source has it (skipped with one source). The admin panel's non-deep
 deployment checks (`GET /admin/health/checks`, and its "deep checks"

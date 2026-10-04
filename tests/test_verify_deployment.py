@@ -583,7 +583,7 @@ class TestCheckTablesInAssignedSources:
     def test_fails_printing_the_datasource_line_to_write(self):
         from scripts.verify_deployment import check_tables_in_assigned_sources
 
-        hint = "Future_Dim.Broker: not in main, found in archive — set datasource: archive"
+        hint = "stock_dim.Broker: not in main, found in archive — set datasource: archive"
         with self._two_sources(), patch(
             "schema_data.drift.check_schema_drift", return_value=self._report(hint),
         ) as drift:

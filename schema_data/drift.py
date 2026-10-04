@@ -24,8 +24,8 @@ A fourth finding concerns data sources, not columns:
   columns is missing from a data source it is assigned to (its
   ``datasource:``, or the default source when it has none), but which
   another configured source does have. Each entry carries a ``hint``
-  such as ``Future_Dim.Broker: not in Auction_DM, found in Future_DM — set
-  datasource: Future_DM``. Only with more than one configured source;
+  such as ``stock_dim.Broker: not in sales, found in inventory — set
+  datasource: inventory``. Only with more than one configured source;
   costs one ``INFORMATION_SCHEMA.TABLES`` query per source that has to be
   asked (:func:`database.catalogue.list_tables`), and only when such a
   table exists.

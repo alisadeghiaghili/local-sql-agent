@@ -63,7 +63,7 @@ def _write(tmp_path, sources: dict, default: str | None = None, dialect: str = "
 
 def _refused(entry: dict) -> str:
     with pytest.raises(ValueError) as info:
-        validate_datasources_yaml_text(yaml.dump({"datasources": {"auction": entry}}))
+        validate_datasources_yaml_text(yaml.dump({"datasources": {"sales": entry}}))
     return str(info.value)
 
 
@@ -82,26 +82,26 @@ class TestNolockField:
 
     def test_true_in_the_structured_form(self):
         parsed = validate_datasources_yaml_text(yaml.dump({"datasources": {
-            "auction": _structured(nolock=True),
+            "sales": _structured(nolock=True),
         }}))
-        assert parsed.datasources["auction"].nolock is True
+        assert parsed.datasources["sales"].nolock is True
 
     def test_true_in_the_legacy_url_env_form(self):
         parsed = validate_datasources_yaml_text(yaml.dump({"datasources": {
-            "auction": {"url_env": "DB_URL_AUCTION", "nolock": True},
+            "sales": {"url_env": "DB_URL_SALES", "nolock": True},
         }}))
-        assert parsed.datasources["auction"].nolock is True
+        assert parsed.datasources["sales"].nolock is True
 
     def test_false_written_out_is_accepted(self):
         parsed = validate_datasources_yaml_text(yaml.dump({"datasources": {
-            "auction": _structured(nolock=False),
+            "sales": _structured(nolock=False),
         }}))
-        assert parsed.datasources["auction"].nolock is False
+        assert parsed.datasources["sales"].nolock is False
 
     def test_it_does_not_make_a_legacy_source_look_structured(self):
         # nolock is not one of the connection fields, so it never clashes
         # with url_env.
-        DataSourceDefinition(url_env="DB_URL_AUCTION", nolock=True)
+        DataSourceDefinition(url_env="DB_URL_SALES", nolock=True)
 
     def test_the_yaml_text_true_and_false_spellings(self):
         for text, expected in (("true", True), ("false", False), ("yes", True), ("no", False)):
@@ -115,12 +115,12 @@ class TestNolockField:
     ])
     def test_anything_but_a_boolean_is_refused_naming_the_source(self, value):
         message = _refused(_structured(nolock=value))
-        assert "datasources -> auction -> nolock" in message
+        assert "datasources -> sales -> nolock" in message
         assert "nolock must be true or false" in message
 
     def test_the_legacy_form_is_checked_the_same_way(self):
-        message = _refused({"url_env": "DB_URL_AUCTION", "nolock": "yes please"})
-        assert "datasources -> auction -> nolock" in message
+        message = _refused({"url_env": "DB_URL_SALES", "nolock": "yes please"})
+        assert "datasources -> sales -> nolock" in message
         assert "'yes please'" in message
 
     def test_an_unquoted_yaml_scalar_that_is_not_a_boolean_is_refused(self):
@@ -228,8 +228,8 @@ class TestRefusedOutsideTsql:
         assert "'plain'" not in message
 
     def test_the_structured_form_is_refused_too(self, tmp_path):
-        settings = _write(tmp_path, {"auction": _structured(nolock=True)}, dialect="postgres")
-        with pytest.raises(DataSourceConfigError, match="'auction'.*T-SQL only"):
+        settings = _write(tmp_path, {"sales": _structured(nolock=True)}, dialect="postgres")
+        with pytest.raises(DataSourceConfigError, match="'sales'.*T-SQL only"):
             load_datasources_config(settings)
 
     def test_every_consumer_of_the_file_refuses_it(self, tmp_path, monkeypatch):
@@ -318,11 +318,11 @@ class TestExampleFile:
     def test_app_is_an_accepted_option_and_reaches_the_odbc_url(self):
         definition = DataSourceDefinition(**_structured(options={"APP": "local-sql-agent"}))
         assert definition.options == {"APP": "local-sql-agent"}
-        url = build_url("auction", definition, "tsql", {"DB_PASSWORD_SALES": "pw"})
+        url = build_url("sales", definition, "tsql", {"DB_PASSWORD_SALES": "pw"})
         assert dict(url.query)["APP"] == "local-sql-agent"
 
     def test_an_app_from_options_is_not_replaced_by_the_default_application_name(self):
         definition = DataSourceDefinition(**_structured(options={"APP": "reporting-nlq"}))
-        url = build_url("auction", definition, "tsql", {"DB_PASSWORD_SALES": "pw"})
+        url = build_url("sales", definition, "tsql", {"DB_PASSWORD_SALES": "pw"})
         rendered = url.render_as_string(hide_password=False)
         assert with_application_name(rendered, "local-sql-agent") == rendered

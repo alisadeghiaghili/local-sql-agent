@@ -302,17 +302,17 @@ class TestDatasourceAcceptsSeveralSources:
     model stores a tuple either way (``()`` for "not set")."""
 
     def test_a_string_becomes_a_one_name_tuple(self):
-        assert TableDefinition(datasource="Auction_DM").datasource == ("Auction_DM",)
+        assert TableDefinition(datasource="sales").datasource == ("sales",)
 
     def test_an_empty_string_means_not_set(self):
         assert TableDefinition(datasource="").datasource == ()
 
     def test_a_list_keeps_its_order(self):
-        table = TableDefinition(datasource=["Future_DM", "Auction_DM"])
-        assert table.datasource == ("Future_DM", "Auction_DM")
+        table = TableDefinition(datasource=["inventory", "sales"])
+        assert table.datasource == ("inventory", "sales")
 
     def test_a_one_item_list_is_the_same_as_the_string(self):
-        assert TableDefinition(datasource=["Auction_DM"]) == TableDefinition(datasource="Auction_DM")
+        assert TableDefinition(datasource=["sales"]) == TableDefinition(datasource="sales")
 
     @pytest.mark.parametrize("value, message", [
         ([], "at least one data source"),
@@ -332,9 +332,9 @@ class TestDatasourceAcceptsSeveralSources:
         (tmp_path / "schema.yaml").write_text(
             "tables:\n"
             "  Date:\n"
-            "    datasource: [Auction_DM, Future_DM]\n"
+            "    datasource: [sales, inventory]\n"
             "  Broker:\n"
-            "    datasource: Future_DM\n"
+            "    datasource: inventory\n"
             "  Trade: {}\n",
             encoding="utf-8",
         )
@@ -345,8 +345,8 @@ class TestDatasourceAcceptsSeveralSources:
         finally:
             registry_module._cache.clear()
         assert names == {
-            "Date": ("Auction_DM", "Future_DM"),
-            "Broker": ("Future_DM",),
+            "Date": ("sales", "inventory"),
+            "Broker": ("inventory",),
             "Trade": (),
         }
 

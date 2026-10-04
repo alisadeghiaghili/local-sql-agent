@@ -372,12 +372,12 @@ def normalise_datasource_names(value: Any) -> tuple[str, ...]:
 
     Examples
     --------
-    >>> normalise_datasource_names("Auction_DM")
-    ('Auction_DM',)
+    >>> normalise_datasource_names("sales")
+    ('sales',)
     >>> normalise_datasource_names("")
     ()
-    >>> normalise_datasource_names(["Auction_DM", "Future_DM"])
-    ('Auction_DM', 'Future_DM')
+    >>> normalise_datasource_names(["sales", "inventory"])
+    ('sales', 'inventory')
     >>> normalise_datasource_names([])
     Traceback (most recent call last):
         ...

@@ -44,7 +44,7 @@ other, never both.
 
 Each table in ``schema.yaml`` names its source with ``datasource:``; a
 table without one belongs to the default source. ``datasource:`` may also
-be a list (``[Auction_DM, Future_DM]``) for a table that exists, with the
+be a list (``[sales, inventory]``) for a table that exists, with the
 same shape, in each of those sources. The source a query runs on is
 derived from the tables it references (see :mod:`database.routing`),
 never chosen by the model.
