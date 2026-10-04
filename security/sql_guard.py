@@ -2547,7 +2547,7 @@ def transpile_and_revalidate(
     return transpiled
 
 def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
-    """Re-render *sql* with sqlglot's pretty printer, for **display only**.
+    """Lay *sql* out in the house style, for **display only**.
 
     The SQL a client shows is whatever the model happened to emit. Models
     are inconsistent about it: the same deployment produces a clean
@@ -2557,13 +2557,19 @@ def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
     others. Formatting here makes the presentation a property of this
     codebase rather than of the model's mood.
 
+    For T-SQL the layout is :func:`security.sql_format.format_sql`'s (``SELECT``
+    alone on a line, one item per line with a leading comma, aligned aliases
+    and joins; its module docstring lists the rules), checked to parse back to
+    the same statement. Any other dialect, and any statement that layout
+    declines, gets sqlglot's pretty printer.
+
     Display only, and deliberately not applied to the string that runs.
     ``Turn.sql`` stays byte-for-byte what the guard validated and the
     database executed; ``Turn.sql_display`` is what the UI renders and the
     copy button copies. Re-rendering the executed SQL would mean the audit
     trail recorded a statement nobody ran.
 
-    Never raises. A statement sqlglot cannot re-render is returned
+    Never raises. A statement that cannot be re-rendered is returned
     unchanged: this is cosmetic, and there is no version of "the SQL could
     not be prettified" worth failing a successful query over. The same
     reasoning applies to the empty case.
@@ -2583,11 +2589,11 @@ def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
     --------
     >>> print(pretty_sql("SELECT a, b FROM t WHERE a = 1", dialect="tsql"))
     SELECT
-      a,
-      b
+         a
+        ,b
+    <BLANKLINE>
     FROM t
-    WHERE
-      a = 1
+    WHERE a = 1
 
     Unparseable input comes back untouched rather than raising:
 
@@ -2596,6 +2602,12 @@ def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
     """
     if not sql or not sql.strip():
         return sql
+    if dialect.lower() == "tsql":
+        # Imported here so that this edit stays inside this function; the
+        # layout module imports nothing from this one.
+        from security.sql_format import format_sql
+
+        return format_sql(sql, dialect)
     try:
         rendered = sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)
     except Exception:  # noqa: BLE001 - cosmetic; see docstring

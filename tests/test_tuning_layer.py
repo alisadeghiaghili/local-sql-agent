@@ -139,6 +139,38 @@ _ALLOWED_MODULE_CONSTANTS = {
         "config.Settings.resolve_value_max_concurrency"
     ),
 
+    # security/sql_format.py: the house layout's widths. They are the
+    # display format itself (the maintainers' SQL style, pinned character
+    # for character by tests/test_sql_format.py), not a threshold anything
+    # in a deployment's behaviour depends on; an environment variable that
+    # changed them would only make two deployments show the same query
+    # differently.
+    "security/sql_format.py::_INDENT": (
+        "layout width of the house SQL style; display only, pinned by "
+        "tests/test_sql_format.py"
+    ),
+    "security/sql_format.py::_FIRST_ITEM_COL": (
+        "layout width of the house SQL style; display only"
+    ),
+    "security/sql_format.py::_GAP": (
+        "layout width of the house SQL style; display only"
+    ),
+    "security/sql_format.py::_ON_SPACES": (
+        "layout width of the house SQL style; display only"
+    ),
+    "security/sql_format.py::_LONG_EXPR": (
+        "layout threshold of the house SQL style (when an expression stops "
+        "taking part in alias alignment); display only"
+    ),
+    "security/sql_format.py::_GROUP_INLINE": (
+        "layout threshold of the house SQL style (when a parenthesised "
+        "AND/OR group breaks over lines); display only"
+    ),
+    "security/sql_format.py::_EQ_ALIGN_MAX": (
+        "layout threshold of the house SQL style (when a join condition's "
+        "left side stops taking part in '=' alignment); display only"
+    ),
+
     # ── Tuning-shaped, but with a narrower, more appropriate configuration
     # surface than a process-wide environment variable -- deliberately not
     # duplicated into Settings. See config.py's "Three layers, not two"
