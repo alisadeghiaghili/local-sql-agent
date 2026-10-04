@@ -69,8 +69,9 @@ a ``SELECT`` (``MERGE``, ``INSERT``, ...), and any clause or table form this
 module does not lay out (``PIVOT``, ``USING``, ``OPTION``, ``INTO``,
 ``GROUP BY ROLLUP``, comma joins, table-valued ``FROM`` forms other than a
 plain table, ``APPLY`` of a function, window clauses, ...) is handed to
-sqlglot's pretty printer instead, and if that fails too the input is
-returned unchanged.
+sqlglot's pretty printer instead. If that fails, or prints a statement that
+does not parse back to the same tree as the input (it rewrites some
+expressions), the input is returned unchanged.
 """
 
 from __future__ import annotations
@@ -768,14 +769,30 @@ def _normalise(tree: exp.Expression) -> exp.Expression:
     return tree
 
 
-def _same_statement(original: exp.Expression, text: str, dialect: str) -> bool:
-    """Whether *text* parses to a single statement equal to *original*."""
+def _function_names(tree: exp.Expression) -> list[str]:
+    """Names of the functions sqlglot does not know, spelled as written.
+
+    sqlglot compares trees without regard to the case of these names, so
+    ``dbo.fn(1)`` and ``dbo.FN(1)`` are the same tree, yet the name of a
+    user-defined function is whatever the database says it is.
+    """
+    return [node.name for node in tree.find_all(exp.Anonymous)]
+
+
+def _same_statement(
+    original: exp.Expression, text: str, dialect: str, *, exact_names: bool = False
+) -> bool:
+    """Whether *text* parses to a single statement equal to *original*.
+
+    With *exact_names*, the case of the name of every function sqlglot does
+    not know must also be the same (see :func:`_function_names`).
+    """
     parsed = sqlglot.parse(text, read=dialect)
-    return (
-        len(parsed) == 1
-        and parsed[0] is not None
-        and _normalise(parsed[0]) == _normalise(original)
-    )
+    if len(parsed) != 1 or parsed[0] is None:
+        return False
+    if _normalise(parsed[0]) != _normalise(original):
+        return False
+    return not exact_names or _function_names(parsed[0]) == _function_names(original)
 
 
 def _house_layout(sql: str, dialect: str) -> str | None:
@@ -797,9 +814,50 @@ def _house_layout(sql: str, dialect: str) -> str | None:
 
 
 def _sqlglot_pretty(sql: str, dialect: str) -> str | None:
-    """Return sqlglot's pretty rendering of one statement, else ``None``."""
+    """Return sqlglot's pretty rendering of one statement, if it is the same one.
+
+    sqlglot's generator rewrites some expressions while it prints them
+    (``DATEDIFF(day, a, b)`` comes out as ``DATEDIFF(DAY, CAST(a AS
+    DATETIME2), CAST(b AS DATETIME2))`` in T-SQL, ``dbo.fn(1)`` as
+    ``dbo.FN(1)``). A rendering is therefore used only when it parses back,
+    in *dialect*, to the same tree as *sql* (the check :func:`_same_statement`
+    does for the house layout) and keeps the case of every function name
+    sqlglot does not know; otherwise the result is ``None``.
+
+    Parameters
+    ----------
+    sql : str
+        The statement to render.
+    dialect : str
+        sqlglot dialect to parse and render in.
+
+    Returns
+    -------
+    str or None
+        The pretty rendering, or ``None`` when *sql* is not exactly one
+        statement, sqlglot renders nothing, or the rendering is not the same
+        statement as *sql*.
+
+    Examples
+    --------
+    >>> print(_sqlglot_pretty("SELECT a FROM t LIMIT 5", "postgres"))
+    SELECT
+      a
+    FROM t
+    LIMIT 5
+
+    A rewrite is refused:
+
+    >>> _sqlglot_pretty("SELECT a FROM dbo.fn(1) AS f, u", "tsql") is None
+    True
+    """
+    parsed = sqlglot.parse(sql, read=dialect)
+    if len(parsed) != 1 or parsed[0] is None:
+        return None
     rendered = sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)
     if len(rendered) != 1 or not rendered[0]:
+        return None
+    if not _same_statement(parsed[0], rendered[0], dialect, exact_names=True):
         return None
     return rendered[0]
 
@@ -818,8 +876,11 @@ def format_sql(sql: str, dialect: str = "tsql") -> str:
     1. the house layout;
     2. sqlglot's pretty printer, when the house layout does not apply (a
        comment, a construct it does not lay out, a different *dialect*) or
-       fails the check above;
-    3. *sql* unchanged, when sqlglot cannot render it either.
+       fails the check above, and only when its output passes the same
+       check -- it rewrites some expressions as it prints them, and the
+       reader must never be shown SQL that differs from what ran;
+    3. *sql* unchanged, when sqlglot cannot render it or its rendering is not
+       the same statement. This applies to every dialect.
 
     Never raises.
 
@@ -829,7 +890,7 @@ def format_sql(sql: str, dialect: str = "tsql") -> str:
         The statement to format.
     dialect : str, default "tsql"
         sqlglot dialect to parse in. The house layout is T-SQL's; any other
-        dialect goes straight to sqlglot's pretty printer.
+        dialect goes straight to sqlglot's pretty printer (checked as above).
 
     Returns
     -------

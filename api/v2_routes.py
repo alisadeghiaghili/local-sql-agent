@@ -43,6 +43,7 @@ from appdb.access_requests import (
 from appdb.feedback import TurnNotAuditedError, list_feedback, submit_flag
 from knowledge.memory_policy import get_memory_keys
 from security.auth import Principal
+from security.sql_guard import pretty_sql
 from session.engine import TurnEngine
 from session.memory import (
     MemoryEntry,
@@ -533,7 +534,14 @@ async def _turn_event_stream(
     if turn.sql is not None:
         yield _sse_event(
             "sql",
-            {"sql": turn.sql, "guard": turn.guard.model_dump() if turn.guard else None},
+            {
+                "sql": turn.sql,
+                # The layout `done`'s `turn.sql_display` carries, so the
+                # first paint is the final one. Display only: `sql` is what
+                # ran. Computed here when the turn has none.
+                "sql_display": turn.sql_display or pretty_sql(turn.sql, cfg.settings.sql_dialect),
+                "guard": turn.guard.model_dump() if turn.guard else None,
+            },
         )
     if turn.result is not None:
         yield _sse_event(

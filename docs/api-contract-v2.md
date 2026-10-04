@@ -187,7 +187,8 @@ as before this phase.
   },
 
   "sql": "WITH _prev AS (...) SELECT TOP 10 ...",
-  "sql_display": "SELECT TOP 10 ...",   // optional: flattened, for readability
+  "sql_display": "SELECT TOP 10 ...",   // optional: `sql` laid out for reading
+                                         // (display and copy only; `sql` is what ran)
 
   "ambiguity": {
     "is_ambiguous": true,
@@ -234,6 +235,12 @@ as before this phase.
                                      // composition-level failure, or a rejection
                                      // this contract predates); null on an
                                      // allowed verdict
+    "rejected_sql_display": null,   // `rejected_sql` laid out for reading, the
+                                     // way `sql_display` is for `sql`: display
+                                     // only, null exactly when `rejected_sql`
+                                     // is, equal to it when it could not be
+                                     // laid out. Clients show it when present
+                                     // and `rejected_sql` otherwise
     "injected_top": 10,
     "tables_touched": ["Contract", "Customer", "Ring"]
   },
@@ -457,7 +464,7 @@ difference.
 | `resolved` | `{resolved_question, basis}` | shows what it understood, early |
 | `assumptions` | `ambiguity` object | assumption chips appear before the result |
 | `sql_delta` | `{text}` | SQL types out live |
-| `sql` | `{sql, guard}` | final SQL + guard verdict |
+| `sql` | `{sql, sql_display, guard}` | final SQL + guard verdict; `sql_display` is the layout `done`'s turn carries, so the first paint is the final one (additive: a client that ignores it keeps working) |
 | `rows` | `{columns, rows, row_count}` | table fills |
 | `interpretation_delta` | `{text}` | summary types out — only when the request set `interpret: true` |
 | `llm` | `llm` object | status strip populates |

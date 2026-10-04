@@ -880,12 +880,57 @@ class TestFallbacks:
         assert sql_format._house_layout(sql, "tsql") is None
         assert format_sql(sql) == sql
 
-    def test_a_construct_sqlglot_rewrites_falls_back(self):
+    def test_a_construct_sqlglot_rewrites_is_returned_unchanged(self):
         """sqlglot's T-SQL generator turns DATEDIFF into one over CASTs, which
-        is not the same tree as what was written; the check refuses it."""
+        is not the same tree as what was written. The house layout refuses it
+        and so does the fallback: the reader is shown what ran, not a
+        rewrite."""
         sql = "SELECT DATEDIFF(day, t.A, t.B) AS d FROM t"
         assert sql_format._house_layout(sql, "tsql") is None
-        assert format_sql(sql) == _sqlglot_pretty(sql)
+        assert "CAST" in _sqlglot_pretty(sql)  # the rewrite this guards against
+        assert format_sql(sql) == sql
+
+    def test_a_function_name_sqlglot_re_cases_is_returned_unchanged(self):
+        """``dbo.fn(1)`` in a table position comes out as ``dbo.FN(1)``. The two
+        are one tree to sqlglot, but a user-defined function is spelled the way
+        the database has it."""
+        sql = "SELECT a FROM dbo.fn(1) AS f, u"
+        assert "dbo.FN(1)" in _sqlglot_pretty(sql)
+        assert format_sql(sql) == sql
+
+    def test_a_function_name_in_another_dialect_is_checked_too(self):
+        sql = "SELECT a FROM dbo.fn(1) AS f, u"
+        assert "dbo.FN(1)" in _sqlglot_pretty(sql, "postgres")
+        assert format_sql(sql, dialect="postgres") == sql
+        assert pretty_sql(sql, "postgres") == sql
+
+    def test_another_dialect_rewrite_is_returned_unchanged(self):
+        sql = "SELECT DATEDIFF(day, a, b) FROM t, u"
+        assert "CAST" in _sqlglot_pretty(sql, "tsql")
+        assert format_sql(sql, dialect="tsql") == sql
+        assert pretty_sql(sql, "tsql") == sql
+
+    def test_a_pretty_rendering_that_is_the_same_statement_is_used(self):
+        sql = "SELECT a -- the key\nFROM t, u"
+        out = format_sql(sql)
+        assert out == _sqlglot_pretty(sql) != sql
+        assert out.splitlines()[0] == "SELECT"
+
+    def test_the_fallback_check_is_what_refuses_a_different_statement(self, monkeypatch):
+        """Whatever sqlglot printed, it is used only when it parses back to the
+        input's tree."""
+        monkeypatch.setattr(
+            sqlglot,
+            "transpile",
+            lambda sql, **kw: ["SELECT\n  b\nFROM t, u"],
+        )
+        sql = "SELECT a FROM t, u"
+        assert sql_format._sqlglot_pretty(sql, "tsql") is None
+        assert format_sql(sql) == sql
+
+    def test_the_fallback_refuses_more_than_one_statement(self):
+        sql = "SELECT 1; SELECT 2"
+        assert sql_format._sqlglot_pretty(sql, "tsql") is None
 
     def test_another_dialect_goes_to_sqlglot(self):
         sql = "SELECT a, b FROM t WHERE a = 1 LIMIT 5"
@@ -970,6 +1015,14 @@ class TestPrettySqlDelegation:
     def test_other_dialects_keep_sqlglots_pretty_output(self):
         sql = "SELECT a, b FROM t WHERE a = 1"
         assert pretty_sql(sql, "postgres") == _sqlglot_pretty(sql, "postgres")
+
+    @pytest.mark.parametrize("dialect", ["tsql", "postgres"])
+    def test_pretty_sql_never_shows_a_rewrite(self, dialect):
+        for sql in (
+            "SELECT DATEDIFF(day, a, b) FROM t, u",
+            "SELECT a FROM dbo.fn(1) AS f, u",
+        ):
+            assert pretty_sql(sql, dialect) == sql
 
     def test_it_never_raises_and_returns_garbage_unchanged(self):
         assert pretty_sql("not sql ((((", "tsql") == "not sql (((("

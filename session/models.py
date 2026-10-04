@@ -150,6 +150,16 @@ class GuardVerdict(BaseModel):
     ``highlightSql``) as any other generated SQL, since it is exactly as
     untrusted — falling back to the pre-existing "not retained" message
     when it is ``None``."""
+    rejected_sql_display: str | None = None
+    """*rejected_sql* laid out for reading, the way :attr:`Turn.sql_display`
+    is for :attr:`Turn.sql`: :func:`~security.sql_guard.pretty_sql` over
+    *rejected_sql* in the configured dialect. Display only. *rejected_sql*
+    stays the exact refused text -- the audit and copy source of truth --
+    and this is ``None`` exactly when it is (an allowed verdict, a rejection
+    with no candidate statement, or one this contract predates). A statement
+    ``pretty_sql`` cannot lay out, or would have to rewrite to do so, is
+    carried here unchanged, so the two are then equal. The web UI shows this
+    one when present and shows *rejected_sql* otherwise."""
     injected_top: int | None = None
     tables_touched: list[str] = Field(default_factory=list)
 

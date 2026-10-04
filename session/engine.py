@@ -310,6 +310,19 @@ def _guard_reason_subject(exc: Exception) -> tuple[str | None, str | None]:
     return getattr(exc, "reason", None), getattr(exc, "subject", None)
 
 
+def _display_sql(sql: str | None) -> str | None:
+    """*sql* laid out for the UI in the configured dialect, or ``None``.
+
+    The display form of a statement that did not run (``GuardVerdict.rejected_sql``);
+    ``Turn.sql_display`` is built the same way. Display only, and never
+    raises: :func:`~security.sql_guard.pretty_sql` returns what it cannot
+    lay out unchanged.
+    """
+    if not sql:
+        return None
+    return pretty_sql(sql, cfg.settings.sql_dialect)
+
+
 class TurnEngine:
     """Answers one question in the context of a session — see module docstring.
 
@@ -702,6 +715,7 @@ class TurnEngine:
                     # `validate_sql` refused. `None` when composition never
                     # produced a statement at all.
                     rejected_sql=composed,
+                    rejected_sql_display=_display_sql(composed),
                 ),
                 result=TurnResult(),
                 warnings=[f"پرس‌وجوی بازپالایی‌شده رد شد: {exc}"],
@@ -1084,6 +1098,7 @@ class TurnEngine:
                         # both of which run after this round's `cleaned`
                         # assignment above.
                         rejected_sql=cleaned,
+                        rejected_sql_display=_display_sql(cleaned),
                     ),
                     result=TurnResult(),
                     warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
@@ -1102,6 +1117,7 @@ class TurnEngine:
                             # raised (nothing was ever handed to
                             # `validate_sql` to refuse).
                             rejected_sql=cleaned,
+                            rejected_sql_display=_display_sql(cleaned),
                         ),
                         result=TurnResult(),
                         warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
@@ -1172,6 +1188,10 @@ class TurnEngine:
             ]
             return _GenOutcome(
                 sql=capped,
+                # The same display form the refinement path sets above: the
+                # layout is the codebase's, not whatever the model emitted,
+                # and the streamed `sql` event and `done` then agree.
+                sql_display=pretty_sql(capped, cfg.settings.sql_dialect),
                 guard=GuardVerdict(
                     verdict="allowed", injected_top=injected_top,
                     tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),

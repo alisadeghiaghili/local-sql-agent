@@ -27,6 +27,10 @@ Node (see ``run_rejected_sql.mjs``) and asserts:
 * a turn with ``guard.rejected_sql: null`` (an older persisted turn) falls
   back to the pre-existing "not retained" message, with no «دیدن SQL»
   control at all;
+* ``guard.rejected_sql_display`` (the server's laid-out form), when present,
+  is what the reveal shows, ``rejected_sql`` is left as it was, and a null,
+  empty or absent display form falls back to the client formatter over
+  ``rejected_sql``;
 * an ordinary allowed turn is entirely unaffected.
 """
 
