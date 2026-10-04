@@ -7,6 +7,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/prompt_budget.py` shows what each data source's prompt really costs and which `PROMPT_RETRIEVAL_TOKEN_BUDGET` to set.** Run it from the repository root: it builds each source's static prefix exactly as the server does (the system prompt from `PROJECT_CONFIG_DIR`, `build_static_prefix(system_prompt, source)`; the one implicit source when there is no `datasources.yaml`) and reports its characters, table count, the heuristic estimate, and the path it takes under the current budget. Unless `--no-model` is given it also sends each prefix to the endpoint the router uses for SQL generation as one chat completion with `max_tokens=1` and reads `usage.prompt_tokens`, using the application's own request body, headers and `LLM_EXTRA_BODY` and its data-governance gate (an untrusted endpoint is sent nothing unless `LLM_ALLOW_REMOTE` is true); this warms the model server's prefix cache for each source. The context length comes from `--context-length N` or `GET {base}/models` (`max_model_len`, `context_length` or `context_window`), else it is unknown. With it the script checks per source that real tokens (or the estimate times the largest ratio measured elsewhere, or times `--assumed-ratio`, default 1.15, labelled as such) + `--question-room` (default 2000) + `LLM_NUM_PREDICT` fit the window, leaves a source that does not fit out of the recommendation with a warning (it should stay on the retrieval path) and exits 1, and recommends the budget as the largest estimate among the sources that fit, plus `--headroom` percent (default 10), rounded up to a multiple of `--round` (default 500), with the exact `.env` line and each source's path now and after. If the endpoint is unreachable or returns no usage a source's count is shown as `unavailable` and the run continues. `--json` prints one JSON document; no API key or URL credential is printed; exit 2 means the configuration could not be loaded or an option is invalid.
+
+### Upgrading
+
+- **With several data sources, run `python scripts/prompt_budget.py` once after upgrading** and set the `PROMPT_RETRIEVAL_TOKEN_BUDGET` it prints in `.env`; it needs the model endpoint reachable for measured numbers (`--no-model` works offline from the estimate).
+
 ## [6.5.0] — 2026-10-04
 
 A data source can read its tables `WITH (NOLOCK)`, a table in `schema.yaml` may now live in several data sources, `scripts/assign_datasources.py` writes the `datasource:` lines for you, schema drift says where a table really is, and with several sources each question is routed to one of them so the model sees that source's whole schema; the SQL shown in the UI now has a fixed, aligned layout.
@@ -34,9 +42,9 @@ A data source can read its tables `WITH (NOLOCK)`, a table in `schema.yaml` may 
 
 ### Upgrading
 
-- **Nothing changes for a deployment with one data source, or whose tables each name one source or none: (PR #146)** prompts, routing, errors and drift output are as before.
-- **With several sources and no `datasource:` lines yet, (PR #146)** run `python scripts/assign_datasources.py`, review `schema.with_datasources.yaml`, and replace `schema.yaml` with it (it needs a restart like any `schema.yaml` change to the allowlist). `--check` in a deploy pipeline keeps the assignments honest afterwards.
-- **With several sources, (PR #146)** add `description:` and `keywords:` to each source in `datasources.yaml` (optional; routing works from the retrieved tables without them), restart, and read the start-up lines `Prompt path for data source ...`: a source over `PROMPT_RETRIEVAL_TOKEN_BUDGET` takes the retrieval path restricted to its tables, so raise the budget (leaving ~15% for Persian text) or move tables to another source if you want its cacheable prefix. Audit records now carry `datasource_selection`; a reader that does not know it can ignore it.
+- **Nothing changes for a deployment with one data source, or whose tables each name one source or none (PR #146):** prompts, routing, errors and drift output are as before.
+- **With several sources and no `datasource:` lines yet (PR #146),** run `python scripts/assign_datasources.py`, review `schema.with_datasources.yaml`, and replace `schema.yaml` with it (it needs a restart like any `schema.yaml` change to the allowlist). `--check` in a deploy pipeline keeps the assignments honest afterwards.
+- **With several sources (PR #146),** add `description:` and `keywords:` to each source in `datasources.yaml` (optional; routing works from the retrieved tables without them), restart, and read the start-up lines `Prompt path for data source ...`: a source over `PROMPT_RETRIEVAL_TOKEN_BUDGET` takes the retrieval path restricted to its tables, so raise the budget (leaving ~15% for Persian text) or move tables to another source if you want its cacheable prefix. Audit records now carry `datasource_selection`; a reader that does not know it can ignore it.
 
 ## [6.4.1] — 2026-10-03
 
