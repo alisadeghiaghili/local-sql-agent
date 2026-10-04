@@ -73,6 +73,17 @@
 #                   `database.routing` which server a query touching this
 #                   table must run against, and a query that references
 #                   tables from two different sources is refused.
+#                   A LIST names every source a table exists in, with the
+#                   same shape in each (a date dimension replicated into
+#                   several databases):  datasource: [Sales, Inventory]
+#                   A statement may then run on any source that has ALL
+#                   the tables it reads: the default source if it is one,
+#                   otherwise the first in datasources.yaml order. A
+#                   statement that reads only that table runs on the
+#                   default source. Names must be distinct.
+#                   `python scripts/assign_datasources.py` reads each
+#                   source's catalogue and writes these lines for you
+#                   (schema.with_datasources.yaml, for review).
 #     resolvable_columns  : (optional) subset of `columns`' keys that
 #                   retrieval.value_resolver.resolve_value is allowed to
 #                   query -- name-bearing dimension columns a free-text

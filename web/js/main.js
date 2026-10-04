@@ -1274,7 +1274,10 @@ async function askLive(q) {
           rebuild();
           break;
         case "sql":
-          Object.assign(working, { sql: data.sql, guard: data.guard });
+          // `sql_display` is the server's layout of `sql` (absent from an
+          // older server): shown as it is until `done` brings the same
+          // text, instead of the client formatter's different layout.
+          Object.assign(working, { sql: data.sql, sql_display: data.sql_display, guard: data.guard });
           rebuild();
           break;
         case "rows":

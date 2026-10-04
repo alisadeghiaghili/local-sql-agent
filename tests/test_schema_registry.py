@@ -77,8 +77,8 @@ class TestSchemaContextDataSources:
         with patch(
             "database.datasources.datasource_names", return_value=("main", "archive"),
         ), patch(
-            "database.datasources.table_datasources",
-            return_value={"Customer": "main", "Ring": "archive"},
+            "database.datasources.table_datasource_sets",
+            return_value={"Customer": ("main",), "Ring": ("archive",)},
         ):
             ctx = SchemaRegistry.build_context(("Customer", "Ring"))
         assert "Data source: main" in ctx
@@ -88,8 +88,8 @@ class TestSchemaContextDataSources:
         with patch(
             "database.datasources.datasource_names", return_value=("main", "archive"),
         ), patch(
-            "database.datasources.table_datasources",
-            return_value={"Customer": "main", "Ring": "archive"},
+            "database.datasources.table_datasource_sets",
+            return_value={"Customer": ("main",), "Ring": ("archive",)},
         ):
             ctx = SchemaRegistry.build_context(("Customer", "Ring"))
         assert ctx.count("must come from the same data source") == 1
@@ -102,12 +102,51 @@ class TestSchemaContextDataSources:
         with patch(
             "database.datasources.datasource_names", return_value=("main", "archive"),
         ), patch(
-            "database.datasources.table_datasources",
-            return_value={"Customer": "main", "Ring": "main"},
+            "database.datasources.table_datasource_sets",
+            return_value={"Customer": ("main",), "Ring": ("main",)},
         ):
             ctx = SchemaRegistry.build_context(("Customer", "Ring"))
         assert "Data source: main" in ctx
         assert "must come from the same data source" not in ctx
+
+
+class TestSchemaContextSharedTables:
+    """A table in several sources renders every one of them, and the closing
+    rule gains one sentence about it -- but only when the block shows tables
+    that do not all live in the same sources."""
+
+    def _render(self, assignments, tables):
+        with patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ), patch(
+            "database.datasources.table_datasource_sets", return_value=assignments,
+        ):
+            return SchemaRegistry.build_context(tables)
+
+    def test_a_shared_table_lists_all_its_sources(self):
+        ctx = self._render(
+            {"Customer": ("main", "archive"), "Ring": ("archive",)}, ("Customer", "Ring"),
+        )
+        assert "Data source: main, archive" in ctx
+        assert "Data source: archive" in ctx
+
+    def test_the_rule_explains_shared_tables_when_the_block_mixes_sources(self):
+        ctx = self._render(
+            {"Customer": ("main", "archive"), "Ring": ("archive",)}, ("Customer", "Ring"),
+        )
+        assert ctx.count("must come from the same data source") == 1
+        assert ctx.count("exists in each of them") == 1
+
+    def test_no_rule_when_every_shown_table_has_the_same_sources(self):
+        both = ("main", "archive")
+        ctx = self._render({"Customer": both, "Ring": both}, ("Customer", "Ring"))
+        assert "Data source: main, archive" in ctx
+        assert "must come from the same data source" not in ctx
+
+    def test_a_block_with_no_shared_table_keeps_the_original_rule_text(self):
+        ctx = self._render({"Customer": ("main",), "Ring": ("archive",)}, ("Customer", "Ring"))
+        assert "must come from the same data source" in ctx
+        assert "exists in each of them" not in ctx
 
 
 class TestSchemaContextMultiPartQualifier:

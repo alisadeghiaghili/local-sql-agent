@@ -31,6 +31,9 @@
 //   `sql_display` already exists -- and in every case the copy button
 //   still receives the exact Turn object string, never the prettified
 //   rendering. A throwing formatter is treated like a missing one.
+// * a turn as it is after the streamed `sql` event (SQL + the server's
+//   `sql_display`, no result yet) shows and copies that display form
+//   untouched, so first paint and the final turn agree.
 //
 // web/ ships no package.json / node_modules by design, so this brings its
 // own minimal DOM shim (same spirit as run_result_shapes.mjs's), extended
@@ -410,6 +413,28 @@ card.el.querySelector("button.btn-copy").click();
 await flushMicrotasks();
 assert.equal(clipboardCalls[0], BACKEND_PRETTY, "copy yields sql_display exactly");
 console.log("[ok] multi-line sql_display is not re-prettified client-side; copy matches");
+
+/* ── Scenario 6b: a turn as it stands after the streamed `sql` event, before
+ * `rows` and `done`: SQL and the server's house-style `sql_display`, no result
+ * yet. The first paint shows that display form untouched (the client formatter
+ * is not run over it), and copy yields it -- the same text the final turn
+ * will show. ──────────────────────────────────────────────────────────── */
+
+const HOUSE_STYLE = "SELECT TOP (10)\n     a\n    ,b\n\nFROM t\nWHERE a = 1";
+formatCalls = 0;
+clipboardCalls = [];
+turn = baseTurn({
+  sql: "SELECT TOP 10 a, b FROM t WHERE a = 1", sql_display: HOUSE_STYLE,
+  result: null, turn_id: "t_test6b",
+});
+card = createTurnCard(turn, noopCtx);
+codeEl = card.el.querySelector("code.language-sql");
+assert.equal(formatCalls, 0, "a streamed sql_display must not be reformatted client-side");
+assert.equal(codeEl.textContent, HOUSE_STYLE, "the first paint must show the server's display form as it is");
+card.el.querySelector("button.btn-copy").click();
+await flushMicrotasks();
+assert.equal(clipboardCalls[0], HOUSE_STYLE, "copy yields the display form, as for any turn with sql_display");
+console.log("[ok] a mid-stream turn with sql_display shows and copies it untouched");
 
 /* ── Scenario 7: sqlFormatter THROWS -- display falls back to the exact
  * Turn.sql, copy still works. Cosmetic failure must not hide SQL. ────── */

@@ -20,7 +20,10 @@
 //   SQL box uses, never raw innerHTML of untrusted text);
 // * a turn with `guard.rejected_sql: null` (an older persisted turn) falls
 //   back to the pre-existing "not retained" message, with no "دیدن SQL"
-//   control at all.
+//   control at all;
+// * `guard.rejected_sql_display` (the server's laid-out form), when present,
+//   is what the reveal shows; null / empty / absent falls back to the client
+//   formatter over `rejected_sql`, which itself is never altered.
 //
 // Usage: node run_rejected_sql.mjs <path-to-copied-turn.mjs>
 //
@@ -317,6 +320,54 @@ assert.ok(
 );
 
 console.log("[ok] rejected_sql: null falls back to the pre-existing not-retained message, with no دیدن SQL control");
+
+/* ── Scenario 3b: rejected_sql_display -- the server's display form is what
+ * is shown when present; rejected_sql (the audit / copy source) is neither
+ * shown nor altered; absent or null falls back to today's behaviour (the
+ * client formatter over rejected_sql). A fake window.sqlFormatter makes the
+ * two paths distinguishable: it would turn a one-liner into "CLIENT:<sql>". */
+
+globalThis.window.sqlFormatter = { format: (text) => `CLIENT:${text}` };
+
+const RAW_ONE_LINER = "SELECT a, b FROM t WHERE a = 1";
+const DISPLAY_FORM = "SELECT\n     a\n    ,b\n\nFROM t\nWHERE a = 1";
+const rejectedGuard = (extra) => ({
+  verdict: "rejected", rule: "boom", reason: "other", subject: null,
+  rejected_sql: RAW_ONE_LINER, injected_top: null, tables_touched: [], ...extra,
+});
+
+turn = baseRejectedTurn({ turn_id: "t_rej_disp", guard: rejectedGuard({ rejected_sql_display: DISPLAY_FORM }) });
+card = createTurnCard(turn, noopCtx);
+assert.ok(!card.el.textContent.includes("SELECT"), "the display form must not be in the DOM before activation either");
+card.el.querySelector(".rejected-sql-toggle").click();
+codeEl = card.el.querySelector("code.language-sql");
+assert.equal(codeEl.textContent, DISPLAY_FORM, "the server's display form must be what is shown, verbatim");
+assert.ok(!card.el.textContent.includes("CLIENT:"), "the client formatter must not touch an available display form");
+assert.equal(turn.guard.rejected_sql, RAW_ONE_LINER, "rejected_sql itself must be left as it was");
+assert.equal(card.el.querySelector("button.btn-copy"), null, "no copy control appears for rejected SQL");
+
+for (const [label, extra] of [["null", { rejected_sql_display: null }], ["empty", { rejected_sql_display: "" }], ["absent", {}]]) {
+  turn = baseRejectedTurn({ turn_id: `t_rej_${label}`, guard: rejectedGuard(extra) });
+  card = createTurnCard(turn, noopCtx);
+  card.el.querySelector(".rejected-sql-toggle").click();
+  assert.equal(
+    card.el.querySelector("code.language-sql").textContent,
+    `CLIENT:${RAW_ONE_LINER}`,
+    `a ${label} rejected_sql_display must fall back to the client formatter over rejected_sql`,
+  );
+}
+
+// The display form is as untrusted as any other model output.
+const XSS_DISPLAY = "SELECT\n     '<img src=x onerror=alert(1)>'\n\nFROM t";
+turn = baseRejectedTurn({ turn_id: "t_rej_disp_xss", guard: rejectedGuard({ rejected_sql_display: XSS_DISPLAY }) });
+card = createTurnCard(turn, noopCtx);
+card.el.querySelector(".rejected-sql-toggle").click();
+assert.equal(card.el.querySelector("code.language-sql").textContent, XSS_DISPLAY, "an <img> payload in the display form must stay plain text");
+assert.equal(card.el.querySelectorAll("img").length, 0, "no <img> element may be created from the display form");
+
+delete globalThis.window.sqlFormatter;
+
+console.log("[ok] rejected_sql_display is shown when present, rejected_sql is untouched, and null/empty/absent fall back to the client formatter");
 
 /* ── Scenario 4: an ALLOWED turn (normal SQL) is completely unaffected --
  * no .rejected-sql-reveal anywhere, normal SQL box renders as before. ──── */

@@ -20,6 +20,7 @@ import api.server as server_module
 import api.v2_routes as v2_routes
 from llm.providers import MockBackend
 from llm.router import LLMRouter
+from security.sql_guard import pretty_sql
 from session.engine import TurnEngine
 
 SIMPLE_SQL = "SELECT TOP 10 c.Name AS CustomerName FROM Customer c"
@@ -206,6 +207,45 @@ class TestAskTurnStreaming:
         names = [n for n, _ in self._events(body) if n != "stage"]
         assert names == ["resolved", "assumptions", "sql", "rows", "llm", "done"]
         assert '"turn"' in body
+
+    def test_sql_event_carries_the_display_form_the_done_turn_has(self, client_and_engine):
+        """First paint and final paint must be the same text. `sql` stays
+        what ran; `sql_display` is additive, and identical to `done`'s."""
+        client, _ = client_and_engine
+        sid = client.post("/v2/sessions").json()["session_id"]
+        with client.stream(
+            "POST", f"/v2/sessions/{sid}/turns?stream=1", json={"question": "لیست مشتریان"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+        events = self._events(body)
+        sql_event = next(d for n, d in events if n == "sql")
+        done_turn = next(d for n, d in events if n == "done")["turn"]
+
+        assert set(sql_event) >= {"sql", "guard"}  # nothing the old payload had is gone
+        assert sql_event["sql"] == done_turn["sql"]
+        assert sql_event["sql_display"] == done_turn["sql_display"]
+        assert sql_event["sql_display"] == pretty_sql(done_turn["sql"], "tsql")
+        assert sql_event["sql_display"].startswith("SELECT TOP (10)\n")
+
+    def test_sql_event_computes_the_display_form_when_the_turn_has_none(self, client_and_engine):
+        client, engine = client_and_engine
+        sid = client.post("/v2/sessions").json()["session_id"]
+        original_ask = engine.ask
+
+        def ask_without_display(*args, **kwargs):
+            turn = original_ask(*args, **kwargs)
+            turn.sql_display = None
+            return turn
+
+        engine.ask = ask_without_display
+        with client.stream(
+            "POST", f"/v2/sessions/{sid}/turns?stream=1", json={"question": "لیست مشتریان"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+        sql_event = next(d for n, d in self._events(body) if n == "sql")
+        assert sql_event["sql_display"] == pretty_sql(sql_event["sql"], "tsql")
 
     def test_stage_events_name_steps_the_ui_actually_draws(self, client_and_engine):
         """The regression that made this whole class worth splitting: a

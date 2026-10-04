@@ -156,6 +156,13 @@ class DialectProfile:
     #: reasoning at every call site.
     schema_qualification_note: str = ""
 
+    #: Whether ``WITH (<hint>)`` after a table reference is valid syntax and
+    #: :mod:`database.table_hints` knows how to write it -- T-SQL only.
+    #: Defaults to ``False`` (unlike the fields above) so a new dialect has
+    #: to opt in: a data source's ``nolock: true`` is refused for a dialect
+    #: where this is ``False`` instead of producing SQL the server rejects.
+    supports_table_hints: bool = False
+
 
 DIALECT_PROFILES: dict[str, DialectProfile] = {
     "tsql": DialectProfile(
@@ -167,6 +174,7 @@ DIALECT_PROFILES: dict[str, DialectProfile] = {
         driver_level_timeout_attr="timeout",
         schema_qualification="schema",
         supports_national_literal=True,
+        supports_table_hints=True,
         schema_qualification_note=(
             "SQL Server has a real schema namespace distinct from the "
             "database -- schema.yaml's db_schema is rendered as "

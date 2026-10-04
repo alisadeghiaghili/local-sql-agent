@@ -55,6 +55,14 @@
 #                           user id), driver, trusted_connection, server,
 #                           database and odbc_connect are refused: they have
 #                           their own fields, or must never be written here.
+#                           APP is accepted: it is the ODBC keyword that sets
+#                           the session's program_name, so a DBA can pick this
+#                           application's sessions out of
+#                           sys.dm_exec_sessions. Every connection already
+#                           carries APP=<DB_APPLICATION_NAME> (default
+#                           local-sql-agent) unless the URL sets one; write it
+#                           here only to use a different name for one source
+#                           (application_name, below, does the same).
 #
 #   Legacy field (kept for deployments written against 6.1 and 6.2):
 #     url_env             : the NAME of an environment variable holding a
@@ -63,7 +71,31 @@
 #                           percent-encoded by hand (@ becomes %40).
 #
 #   Fields for either form:
-#     description         : (optional) free text shown to operators.
+#     description         : (optional) free text shown to operators. With
+#                           several sources it is also printed once above the
+#                           schema block of a prompt built for this source
+#                           ("Data source: sales -- Sales warehouse"), so the
+#                           model is told what the tables are. Say what the
+#                           source holds, in a sentence.
+#     keywords            : (optional) a list of words or phrases, Persian or
+#                           English, that mark a question as being about this
+#                           source. Only used with several sources: each
+#                           question is routed to ONE source before its prompt
+#                           is built, and the model is then shown only that
+#                           source's tables. A keyword counts when it appears in
+#                           the question as whole words, after the same
+#                           folding the rest of the application applies
+#                           (Arabic ي/ك = ی/ک, Persian and Arabic digits =
+#                           0-9, ZWNJ removed, upper/lower case ignored): "stock"
+#                           does not match "stockholder", and a plural or a
+#                           prefixed form is another word, so list each form you
+#                           expect. The source with more distinct matching
+#                           keywords wins; when none or several tie, the tables
+#                           retrieval finds decide (then the default source).
+#                           A list of non-empty strings with no repeats (two
+#                           spellings that fold to the same text are a
+#                           repeat); anything else is refused at start-up.
+#                           Leave it out and routing relies on the tables alone.
 #     dialect             : (optional) must equal this deployment's
 #                           SQL_DIALECT if set at all -- mixed dialects
 #                           across sources are not supported yet. Leave it
@@ -72,6 +104,23 @@
 #     application_name    : (optional) overrides DB_APPLICATION_NAME for just
 #                           this source's connections, so a DBA can tell
 #                           which source's sessions are which.
+#     nolock              : (optional, true/false, default false) true makes
+#                           every query on this source read its tables
+#                           WITH (NOLOCK): the executor inserts the hint after
+#                           each table reference (and its alias) just before
+#                           the statement is sent. It means DIRTY READS --
+#                           rows another transaction has not committed, and
+#                           occasionally a row twice or not at all -- so turn
+#                           it on only where the DBA requires it. Works in
+#                           both forms. Table hints are T-SQL, so start-up is
+#                           refused when a source sets it and SQL_DIALECT is
+#                           not tsql. Derived tables, CTE names, table
+#                           functions, #temp tables, @table variables,
+#                           INFORMATION_SCHEMA and sys objects, and tables that
+#                           already carry a WITH (...) hint are left as
+#                           written. The audit trail keeps the validated SQL
+#                           (without hints); only the text sent to the server
+#                           changes.
 #
 # Two databases on the SAME server are a supported configuration as two
 # sources, as below: each has its own connection pool, and each query runs
@@ -91,6 +140,7 @@ default: sales
 datasources:
   sales:
     description: Sales warehouse
+    keywords: [revenue, sales, invoice, فروش, درآمد]
     host: 10.0.0.5
     # port: 1433
     database: SalesDW
@@ -99,10 +149,13 @@ datasources:
     password_env: DB_PASSWORD_SALES       # .env: DB_PASSWORD_SALES=<raw password>
     options:
       TrustServerCertificate: true        # rendered as TrustServerCertificate=yes
+      # APP: local-sql-agent              # program_name in sys.dm_exec_sessions
+    # nolock: true                        # read every table WITH (NOLOCK): dirty reads
 
   # A second database on the same server: its own source, its own pool.
   inventory:
     description: Inventory warehouse
+    keywords: [stock, stock level, warehouse, reorder, موجودی, انبار]
     host: 10.0.0.5
     database: InventoryDW
     username: nlq_reader

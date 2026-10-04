@@ -70,6 +70,25 @@ prompt caching (OpenAI's own hosted API) on the very requests that most need a f
 no test failing and no error raised. ``tests/test_sql_agent_router.py``
 asserts this holds across correction rounds.
 
+With several data sources configured the prefix is the chosen source's
+(``build_prompt_segments(..., source=...)``), and every correction round
+keeps it. The one thing that replaces it is the ``OUT_OF_SCOPE`` retry
+below, which starts over on another source with no correction text.
+
+Choosing the data source, and the one retry
+-------------------------------------------
+With more than one data source the agent routes the question to one of
+them before building the prompt (:class:`~llm.source_routing.SourceRouting`,
+:mod:`retrieval.source_selector`): the model sees only that source's
+tables. If it answers ``OUT_OF_SCOPE`` and another candidate source exists,
+the agent retries **once** with the next candidate -- one extra generation
+call beyond the correction budget, never more, and the correction history
+(which describes the other source's tables) is dropped. A second
+``OUT_OF_SCOPE`` is raised as it always was. With one source nothing of
+this runs. The selection is returned on
+:attr:`~llm.base.SQLGenerationResult.datasource_selection`, and attached
+to a raised exception as ``datasource_selection``, for the audit record.
+
 Design notes
 ------------
 * ``SQLAgent`` depends on ``LLMBackend``/``LLMRouter`` (abstract), not on
@@ -114,6 +133,7 @@ Design notes
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, nullcontext
@@ -124,6 +144,7 @@ import pandas as pd
 import config as cfg
 from llm.base import LLMBackend, SQLGenerationResult
 from llm.router import LLMRouter, PromptSegments, TaskType, build_prompt_segments
+from llm.source_routing import SourceRouting, generate_with_source_fallback
 from observability.timing import StageTimer
 from retrieval.context_retriever import ContextRetriever
 from security.sql_guard import (
@@ -318,11 +339,23 @@ class SQLAgent:
             ``None`` (the default) applies no column restriction, exactly
             this method's pre-Phase-8 behaviour.
 
+        Notes
+        -----
+        With several data sources the question is first routed to one of
+        them and the model is shown only that source's tables; an
+        ``OUT_OF_SCOPE`` answer is retried once on the next candidate
+        source (see the module docstring, "Choosing the data source, and
+        the one retry"). The returned result, or a raised exception, carries
+        the selection as ``datasource_selection``. With one source none of
+        this applies.
+
         Raises
         ------
         ValueError("OUT_OF_SCOPE")
             When the model signals the question is out of scope.  Never
-            retried — this is a terminal signal, not a fixable mistake.
+            retried on the same source — this is a terminal signal, not a
+            fixable mistake — and retried at most once, on another data
+            source, when several are configured.
         ValueError
             When SQL validation still fails after all correction attempts.
         RuntimeError
@@ -331,8 +364,48 @@ class SQLAgent:
         with _stage(timer, "plan"):
             context = ContextRetriever.retrieve(question)
         with _stage(timer, "prompt"):
-            initial_segments = build_prompt_segments(question, system_prompt, context)
+            routing = SourceRouting.plan(
+                question, context,
+                build=lambda source: build_prompt_segments(
+                    question, system_prompt, context, source=source,
+                ),
+            )
+            initial_segments = (
+                routing.segments if routing is not None
+                else build_prompt_segments(question, system_prompt, context)
+            )
 
+        try:
+            df, result = self._attempt_loop(
+                question, initial_segments, routing,
+                timer=timer, sql_cache_lookup=sql_cache_lookup,
+                denied_columns=denied_columns,
+            )
+        except Exception as exc:
+            if routing is not None:
+                exc.datasource_selection = routing.audit()  # type: ignore[attr-defined]
+            raise
+        if routing is not None:
+            result = dataclasses.replace(result, datasource_selection=routing.audit())
+        return df, result
+
+    def _attempt_loop(
+        self,
+        question: str,
+        initial_segments: PromptSegments,
+        routing: SourceRouting | None,
+        *,
+        timer: StageTimer | None,
+        sql_cache_lookup: Callable[[str], pd.DataFrame | None] | None,
+        denied_columns: Iterable[str] | None,
+    ) -> tuple[pd.DataFrame, SQLGenerationResult]:
+        """The generate / validate / execute / correct loop of :meth:`run`.
+
+        Split out so :meth:`run` can attach the data-source selection to
+        whatever leaves the loop, a result or an exception alike. See
+        :meth:`run` for the contract; *routing* is ``None`` unless several
+        data sources are configured.
+        """
         correction_prompts: list[str] = []
         last_error: str | None = None
         sql = ""
@@ -389,11 +462,20 @@ class SQLAgent:
             # call metadata for the audit trail on this uncaught path.
             with _stage(timer, "llm"):
                 try:
-                    route_result = self._router.generate_for_task(
-                        TaskType.SQL_GENERATION, segments
+                    route_result, replaced = generate_with_source_fallback(
+                        lambda s: self._router.generate_for_task(TaskType.SQL_GENERATION, s),
+                        routing, segments,
                     )
                 except Exception as exc:  # noqa: BLE001 - unwrapped and re-raised below
                     raise exc.__cause__ or exc
+            if replaced is not None:
+                # The model declined on the first source and the one retry
+                # on the next candidate answered. Corrections gathered so
+                # far describe the other source's tables, so they start
+                # over from this source's own prompt (its prefix is what
+                # every later round keeps).
+                initial_segments = replaced
+                correction_prompts.clear()
             raw = route_result.text or ""
             llm_meta = route_result.meta
 

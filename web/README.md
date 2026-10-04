@@ -243,6 +243,8 @@ One module owns how generated SQL looks: `js/sql-display.js`.
 | Layer | What it does |
 |---|---|
 | **Copy source of truth** | `Turn.sql_display \|\| Turn.sql`, verbatim. The copy button never reads the DOM. |
+| **First paint** | The streamed `sql` event carries `sql_display` too; `main.js` keeps it on the turn, so what shows before `done` is what `done` brings. |
+| **Rejected SQL** | The «دیدن SQL» reveal shows `guard.rejected_sql_display` when the server sent one, else `guard.rejected_sql` through the formatter above. `rejected_sql` itself is never altered. |
 | **Display** | Multi-line input (backend `pretty_sql`, scenario SQL) is left alone. One-liners go through vendored [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (`language: tsql`, `keywordCase: upper`, `tabWidth: 2`). |
 | **Highlight** | Vendored Prism + `js/prism-tsql-patch.js` (classic script): `[Bracketed]` identifiers are one token, `N'…'` includes the `N`. |
 | **Theme** | Fixed always-dark editor palette (`--sql-*` in `styles/style.css`) — keyword blue, number gold, function violet. Not chrome brand hues. |

@@ -30,7 +30,11 @@ dependency chain including ``sql-display.js``) under Node (see
   input, and a throwing formatter falls back to the raw text;
 * with no ``window.Prism`` at all, and separately with a throwing
   ``Prism.highlight``, the SQL still renders as plain, uncorrupted text
-  and copy still works.
+  and copy still works;
+* a turn as it is after the streamed ``sql`` event (SQL plus the server's
+  ``sql_display``, no result yet) shows and copies that display form
+  untouched (the streaming wiring itself is in
+  ``test_web_ui_streaming_sql_display.py``).
 """
 
 from __future__ import annotations

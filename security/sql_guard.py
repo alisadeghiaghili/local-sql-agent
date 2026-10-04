@@ -1040,12 +1040,14 @@ def _resolve_star_tables(
 
 
 def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) -> None:
-    """Refuse a query whose tables live in more than one data source.
+    """Refuse a query no single data source can run.
 
     Every table has already passed the allowlist when this runs. The
-    mapping comes from ``schema.yaml`` via :mod:`database.routing`; with a
-    single data source (the default deployment) every table maps to it and
-    this never raises.
+    rule is :func:`database.routing.choose_datasource` -- the same one the
+    executor routes with: the sources that have every table, where a table
+    listed under several sources counts for each. With a single data
+    source (the default deployment) every table maps to it and this never
+    raises.
 
     A :class:`CorrectableRejection` with ``is_refusal`` set, the same shape
     as the unknown-table rejection: a retry can plausibly answer from one
@@ -1060,15 +1062,14 @@ def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) 
     if len(tables) < 2:
         return
 
-    from database.routing import CrossDatasourceError, group_tables_by_datasource
+    from database.routing import CrossDatasourceError, choose_datasource
 
-    groups = group_tables_by_datasource(tables)
-    if len(groups) > 1:
-        exc = CorrectableRejection(
-            str(CrossDatasourceError(groups)), reason="cross_datasource",
-        )
+    try:
+        choose_datasource(tables)
+    except CrossDatasourceError as err:
+        exc = CorrectableRejection(str(err), reason="cross_datasource")
         exc.is_refusal = True
-        raise exc
+        raise exc from None
 
 
 def clean_sql(raw: str) -> str:
@@ -2546,7 +2547,7 @@ def transpile_and_revalidate(
     return transpiled
 
 def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
-    """Re-render *sql* with sqlglot's pretty printer, for **display only**.
+    """Lay *sql* out in the house style, for **display only**.
 
     The SQL a client shows is whatever the model happened to emit. Models
     are inconsistent about it: the same deployment produces a clean
@@ -2556,13 +2557,23 @@ def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
     others. Formatting here makes the presentation a property of this
     codebase rather than of the model's mood.
 
+    For T-SQL the layout is :func:`security.sql_format.format_sql`'s (``SELECT``
+    alone on a line, one item per line with a leading comma, aligned aliases
+    and joins; its module docstring lists the rules), checked to parse back to
+    the same statement. Any other dialect, and any statement that layout
+    declines, gets sqlglot's pretty printer, but only when its output parses
+    back to the same tree as the input: that printer rewrites some
+    expressions (``DATEDIFF(day, a, b)`` gains ``CAST`` calls, ``dbo.fn(1)``
+    becomes ``dbo.FN(1)``), and the reader must never be shown SQL that
+    differs from what ran. Otherwise the input is returned unchanged.
+
     Display only, and deliberately not applied to the string that runs.
     ``Turn.sql`` stays byte-for-byte what the guard validated and the
     database executed; ``Turn.sql_display`` is what the UI renders and the
     copy button copies. Re-rendering the executed SQL would mean the audit
     trail recorded a statement nobody ran.
 
-    Never raises. A statement sqlglot cannot re-render is returned
+    Never raises. A statement that cannot be re-rendered is returned
     unchanged: this is cosmetic, and there is no version of "the SQL could
     not be prettified" worth failing a successful query over. The same
     reasoning applies to the empty case.
@@ -2582,23 +2593,26 @@ def pretty_sql(sql: str, dialect: str = _DIALECT) -> str:
     --------
     >>> print(pretty_sql("SELECT a, b FROM t WHERE a = 1", dialect="tsql"))
     SELECT
-      a,
-      b
+         a
+        ,b
+    <BLANKLINE>
     FROM t
-    WHERE
-      a = 1
+    WHERE a = 1
 
     Unparseable input comes back untouched rather than raising:
 
     >>> pretty_sql("this is not sql at all ((", dialect="tsql")
     'this is not sql at all (('
+
+    So does a statement the pretty printer would rewrite (here it would
+    upper-case the function name):
+
+    >>> pretty_sql("SELECT a FROM dbo.fn(1) AS f, u", dialect="tsql")
+    'SELECT a FROM dbo.fn(1) AS f, u'
     """
     if not sql or not sql.strip():
         return sql
-    try:
-        rendered = sqlglot.transpile(sql, read=dialect, write=dialect, pretty=True)
-    except Exception:  # noqa: BLE001 - cosmetic; see docstring
-        return sql
-    if not rendered:
-        return sql
-    return rendered[0]
+    # Imported here; the layout module imports nothing from this one.
+    from security.sql_format import format_sql
+
+    return format_sql(sql, dialect)

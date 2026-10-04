@@ -54,6 +54,8 @@ import { getApiKey } from "./apikey.js";
  * @typedef {Object} Guard
  * @property {"allowed"|"rejected"} verdict
  * @property {string|null} rule
+ * @property {string|null} [rejected_sql]
+ * @property {string|null} [rejected_sql_display]
  * @property {number|null} injected_top
  * @property {string[]} tables_touched
  *

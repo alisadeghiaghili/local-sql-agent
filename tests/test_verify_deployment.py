@@ -542,3 +542,84 @@ class TestConnectivityCheckRedactsTheUrl:
         assert result.status == "FAIL"
         assert "DB_PASSWORD_SALES" in result.detail
         assert "auction" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# check_tables_in_assigned_sources -- schema drift's "misplaced_tables"
+# ---------------------------------------------------------------------------
+
+class TestCheckTablesInAssignedSources:
+    @staticmethod
+    def _report(*hints: str):
+        from schema_data.drift import SchemaDriftReport
+
+        return SchemaDriftReport(
+            checked_at="t", schemas_scanned=(), warehouse_only=(), schema_only=(),
+            type_changed=(), unverifiable_tables=(), baseline_available=True,
+            misplaced_tables=tuple({"table": h.split(":")[0], "hint": h} for h in hints),
+        )
+
+    @staticmethod
+    def _two_sources():
+        return patch("database.datasources.datasource_names", return_value=("main", "archive"))
+
+    def test_skipped_with_a_single_data_source_without_touching_the_database(self):
+        from scripts.verify_deployment import check_tables_in_assigned_sources
+
+        with patch("database.datasources.datasource_names", return_value=("default",)), \
+                patch("schema_data.drift.check_schema_drift") as drift:
+            result = check_tables_in_assigned_sources()
+        assert result.status == "SKIP"
+        drift.assert_not_called()
+
+    def test_passes_when_no_table_is_misplaced(self):
+        from scripts.verify_deployment import check_tables_in_assigned_sources
+
+        with self._two_sources(), patch(
+            "schema_data.drift.check_schema_drift", return_value=self._report(),
+        ):
+            assert check_tables_in_assigned_sources().status == "PASS"
+
+    def test_fails_printing_the_datasource_line_to_write(self):
+        from scripts.verify_deployment import check_tables_in_assigned_sources
+
+        hint = "stock_dim.Broker: not in main, found in archive — set datasource: archive"
+        with self._two_sources(), patch(
+            "schema_data.drift.check_schema_drift", return_value=self._report(hint),
+        ) as drift:
+            result = check_tables_in_assigned_sources()
+        assert result.status == "FAIL"
+        assert hint in result.detail
+        # Reading must not move the drift panel's type baseline.
+        assert drift.call_args.kwargs == {"persist_baseline": False}
+
+    def test_a_long_list_is_cut_and_counted(self):
+        from scripts.verify_deployment import check_tables_in_assigned_sources
+
+        hints = [f"T{i}: not in main, found in archive" for i in range(13)]
+        with self._two_sources(), patch(
+            "schema_data.drift.check_schema_drift", return_value=self._report(*hints),
+        ):
+            result = check_tables_in_assigned_sources()
+        assert "13 table(s)" in result.detail
+        assert "T9:" in result.detail and "T10:" not in result.detail
+        assert "and 3 more" in result.detail
+
+    def test_an_unreadable_source_is_a_failure_not_a_crash(self):
+        from scripts.verify_deployment import check_tables_in_assigned_sources
+
+        with self._two_sources(), patch(
+            "schema_data.drift.check_schema_drift", side_effect=RuntimeError("down"),
+        ):
+            result = check_tables_in_assigned_sources()
+        assert result.status == "FAIL"
+        assert "down" in result.detail
+
+    def test_it_is_part_of_the_checks_and_a_deep_check_for_the_panel(self):
+        from api.admin_routes import _DEEP_CHECK_NAMES
+
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            reset_datasources_cache()
+            names = [c.__name__ for c in build_checks()]
+        assert "check_tables_in_assigned_sources" in names
+        assert "check_tables_in_assigned_sources" in _DEEP_CHECK_NAMES

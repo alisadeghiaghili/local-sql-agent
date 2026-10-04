@@ -19,6 +19,7 @@ environment (``.env``), named by ``password_env``::
     datasources:
       sales:
         description: Sales warehouse
+        keywords: [revenue, invoice]  # steers a question to this source
         host: 10.0.0.5
         database: SalesDW
         username: nlq_reader
@@ -43,9 +44,18 @@ deployments written against 6.1 and 6.2. One source is one form or the
 other, never both.
 
 Each table in ``schema.yaml`` names its source with ``datasource:``; a
-table without one belongs to the default source. The source a query runs
-on is derived from the tables it references (see
-:mod:`database.routing`), never chosen by the model.
+table without one belongs to the default source. ``datasource:`` may also
+be a list (``[sales, inventory]``) for a table that exists, with the
+same shape, in each of those sources. The source a query runs on is
+derived from the tables it references (see :mod:`database.routing`),
+never chosen by the model.
+
+With several sources, a question is first routed to one of them so that
+the model is shown only that source's tables (:mod:`retrieval.source_selector`).
+``description`` is printed above that source's schema block, and
+``keywords`` -- whole words or phrases that mark a question as being about
+the source -- are the strongest routing signal. Neither affects where a
+statement runs.
 
 Without ``datasources.yaml``
 ----------------------------
@@ -74,7 +84,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, NamedTuple
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, NamedTuple
 
 import yaml
 from pydantic import (
@@ -88,6 +98,7 @@ from pydantic import (
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
+from core.persian import normalize_for_matching
 from core.yaml_loading import safe_load_strict
 
 if TYPE_CHECKING:
@@ -110,7 +121,12 @@ __all__ = [
     "datasource_names",
     "get_datasource",
     "get_datasources",
+    "datasource_nolock",
+    "datasource_keywords",
+    "datasource_descriptions",
     "table_datasources",
+    "table_datasource_sets",
+    "pick_datasource",
     "check_table_datasources",
     "validate_datasource_urls",
     "reset_datasources_cache",
@@ -245,7 +261,19 @@ class DataSourceDefinition(BaseModel):
     Attributes
     ----------
     description:
-        Free text shown to operators (``/health``, the admin panel).
+        Free text shown to operators (``/health``, the admin panel). With
+        several sources it is also printed once above the schema block of
+        a prompt built for this source (``Data source: sales -- Sales
+        warehouse``), so the model is told what the tables are.
+    keywords:
+        Optional words or phrases, Persian or English, that mark a
+        question as being about this source (``["stock", "warehouse"]``).
+        They only matter with several sources, where
+        :mod:`retrieval.source_selector` matches them against the question
+        (whole phrases, after the same character folding the retrieval
+        layer uses) to pick the source before the prompt is built. Must be
+        a list of non-empty strings with no repeats (two spellings that
+        fold to the same text count as a repeat).
     dialect:
         Optional sqlglot dialect key. Must equal ``SQL_DIALECT`` when set.
     application_name:
@@ -272,6 +300,14 @@ class DataSourceDefinition(BaseModel):
     options:
         Extra ODBC keywords. ``true``/``false`` become ``yes``/``no``,
         numbers become their text.
+    nolock:
+        ``true`` makes every query on this source read its tables
+        ``WITH (NOLOCK)`` (:mod:`database.table_hints`, applied by
+        :mod:`database.executor` just before execution). It means dirty
+        reads, so it is off unless a DBA asks for it. Valid in both the
+        structured and the ``url_env`` form; T-SQL only (see
+        :func:`load_datasources_config`). Must be a YAML ``true`` or
+        ``false``.
 
     Examples
     --------
@@ -282,11 +318,18 @@ class DataSourceDefinition(BaseModel):
     {'TrustServerCertificate': 'yes'}
     >>> d.trusted_connection, d.port
     (False, None)
+    >>> d.nolock
+    False
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", nolock=True).nolock
+    True
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", keywords=["stock", " Stock level "]).keywords
+    ['stock', 'Stock level']
     """
 
     model_config = {"extra": "forbid"}
 
     description: str = ""
+    keywords: list[str] = Field(default_factory=list)
     dialect: str | None = None
     application_name: str | None = None
 
@@ -301,6 +344,8 @@ class DataSourceDefinition(BaseModel):
     password_env: str | None = None
     trusted_connection: bool = False
     options: dict[str, str] = Field(default_factory=dict)
+
+    nolock: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -348,6 +393,47 @@ class DataSourceDefinition(BaseModel):
             raise ValueError(
                 "host must be a bare server name or address (no scheme, "
                 "login, path or ',port'; the port has its own field)"
+            )
+        return value
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _keywords_are_distinct_phrases(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError(
+                "keywords must be a list of words or phrases, not "
+                f"{type(value).__name__} ({value!r})"
+            )
+        cleaned: list[str] = []
+        seen: dict[str, str] = {}
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"keywords[{index}] must be a string, not "
+                    f"{type(item).__name__} ({item!r})"
+                )
+            phrase = item.strip()
+            folded = normalize_for_matching(phrase)
+            if not folded:
+                raise ValueError(f"keywords[{index}] must not be empty")
+            if folded in seen:
+                raise ValueError(
+                    f"keywords lists {phrase!r} twice (it folds to the same "
+                    f"text as {seen[folded]!r})"
+                )
+            seen[folded] = phrase
+            cleaned.append(phrase)
+        return cleaned
+
+    @field_validator("nolock", mode="before")
+    @classmethod
+    def _nolock_is_a_boolean(cls, value: object) -> object:
+        # pydantic would accept "yes", "1" or 1 for a bool; a switch that
+        # turns on dirty reads is only ever a YAML true/false.
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"nolock must be true or false, not {value!r} "
+                f"({type(value).__name__})"
             )
         return value
 
@@ -498,6 +584,13 @@ def validate_datasources_yaml_text(text: str) -> DataSourcesConfig:
     >>> cfg.datasources["main"].host
     'db1'
     >>> validate_datasources_yaml_text(
+    ...     "datasources:\\n  main:\\n    url_env: DB_URL_MAIN\\n"
+    ...     "    keywords: [stock, STOCK]\\n"
+    ... )
+    Traceback (most recent call last):
+        ...
+    ValueError: [datasources.yaml] validation error at 'datasources -> main -> keywords': keywords lists 'STOCK' twice (it folds to the same text as 'stock')
+    >>> validate_datasources_yaml_text(
     ...     "datasources:\\n  main:\\n    url_env: mssql://u:p@h/db\\n"
     ... )
     Traceback (most recent call last):
@@ -549,6 +642,53 @@ def datasources_path(settings: "Settings | None" = None) -> Path:
     return base / DATASOURCES_FILENAME
 
 
+def _refuse_nolock_without_table_hints(config: DataSourcesConfig, dialect: str) -> None:
+    """Refuse ``nolock: true`` for a dialect where ``WITH (NOLOCK)`` is not SQL.
+
+    Table hints are T-SQL syntax (``DialectProfile.supports_table_hints``).
+    This depends on the deployment's ``SQL_DIALECT``, which the file does
+    not know, so it runs when the file is loaded with settings rather than
+    in the model's validators, and the load (and with it start-up) stops
+    before a query could be sent a hint the server rejects.
+
+    Parameters
+    ----------
+    config:
+        The validated file.
+    dialect:
+        :attr:`config.Settings.sql_dialect`.
+
+    Raises
+    ------
+    DataSourceConfigError
+        Naming every offending source and the dialect.
+
+    Examples
+    --------
+    >>> cfg = validate_datasources_yaml_text(
+    ...     "datasources:\\n  main:\\n    url_env: DB_URL_MAIN\\n    nolock: true\\n"
+    ... )
+    >>> _refuse_nolock_without_table_hints(cfg, "tsql")
+    >>> _refuse_nolock_without_table_hints(cfg, "postgres")
+    Traceback (most recent call last):
+        ...
+    database.datasources.DataSourceConfigError: [datasources.yaml] data source 'main' sets nolock: true, but SQL_DIALECT is 'postgres' and table hints (WITH (NOLOCK)) are T-SQL only; remove nolock or use SQL_DIALECT=tsql
+    """
+    from security.dialects import DIALECT_PROFILES
+
+    profile = DIALECT_PROFILES.get(dialect)
+    if profile is not None and profile.supports_table_hints:
+        return
+    for name, definition in config.datasources.items():
+        if definition.nolock:
+            raise DataSourceConfigError(
+                f"[{DATASOURCES_FILENAME}] data source {name!r} sets nolock: "
+                f"true, but SQL_DIALECT is {dialect!r} and table hints "
+                "(WITH (NOLOCK)) are T-SQL only; remove nolock or use "
+                "SQL_DIALECT=tsql"
+            )
+
+
 @lru_cache(maxsize=8)
 def _load_cached(path: str, mtime_ns: int) -> DataSourcesConfig:
     with open(path, encoding="utf-8") as fh:
@@ -575,14 +715,18 @@ def load_datasources_config(settings: "Settings | None" = None) -> DataSourcesCo
     Raises
     ------
     ValueError
-        If the file exists but is invalid.
+        If the file exists but is invalid, or a source sets ``nolock: true``
+        while the dialect has no table hints (see
+        :func:`_refuse_nolock_without_table_hints`).
     """
     path = datasources_path(settings)
     try:
         mtime_ns = path.stat().st_mtime_ns
     except FileNotFoundError:
         return None
-    return _load_cached(str(path), mtime_ns)
+    config = _load_cached(str(path), mtime_ns)
+    _refuse_nolock_without_table_hints(config, _settings(settings).sql_dialect)
+    return config
 
 
 def reset_datasources_cache() -> None:
@@ -771,10 +915,20 @@ class DataSource:
         Value stamped on the connection so a DBA can identify the session.
     description:
         Operator-facing description.
+    keywords:
+        Phrases that mark a question as being about this source (see
+        :attr:`DataSourceDefinition.keywords`); empty for the single-source
+        fallback.
+    nolock:
+        Whether queries on this source are rewritten to read every table
+        ``WITH (NOLOCK)`` (:mod:`database.table_hints`); read by
+        :mod:`database.executor`. ``False`` for the single-source fallback.
 
     Examples
     --------
     >>> s = DataSource("sales", "mssql+pyodbc://u:secret@h/db", None, "tsql", "app")
+    >>> s.nolock
+    False
     >>> s.redacted_url
     'mssql+pyodbc://u:***@h/db'
     >>> "secret" in repr(s)
@@ -787,6 +941,8 @@ class DataSource:
     dialect: str
     application_name: str
     description: str = ""
+    nolock: bool = False
+    keywords: tuple[str, ...] = ()
 
     def __repr__(self) -> str:  # never print the connection string
         return f"DataSource(name={self.name!r}, url_env={self.url_env!r}, dialect={self.dialect!r})"
@@ -904,6 +1060,8 @@ def get_datasource(name: str | None = None, settings: "Settings | None" = None) 
             else settings.db_application_name
         ),
         description=definition.description,
+        nolock=definition.nolock,
+        keywords=tuple(definition.keywords),
     )
 
 
@@ -912,50 +1070,260 @@ def get_datasources(settings: "Settings | None" = None) -> tuple[DataSource, ...
     return tuple(get_datasource(name, settings) for name in datasource_names(settings))
 
 
+def datasource_nolock(name: str | None = None, settings: "Settings | None" = None) -> bool:
+    """Whether queries on source *name* read their tables ``WITH (NOLOCK)``.
+
+    The same flag :attr:`DataSource.nolock` carries, read from the
+    definition alone: it does not resolve the source's credentials, so the
+    executor can ask on every query without touching the environment.
+
+    Parameters
+    ----------
+    name:
+        Source name; ``None`` means the default source.
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    bool
+        ``False`` for the single-source fallback (no ``datasources.yaml``)
+        and for a name that is not configured (the connection to such a
+        source is refused where the engine is built, not here).
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_nolock()
+    False
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return False
+    definition = config.datasources.get(config.default_name if name is None else name)
+    return definition is not None and definition.nolock
+
+
+def datasource_keywords(settings: "Settings | None" = None) -> dict[str, tuple[str, ...]]:
+    """Return ``{source: keywords}`` for every configured source, default first.
+
+    Read from the definitions alone, like :func:`datasource_nolock`, so it
+    never touches a source's credentials.
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        The phrases each source lists under ``keywords:`` (``()`` when it
+        lists none). The single-source fallback is ``{"default": ()}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_keywords()
+    {'default': ()}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ()}
+    return {
+        name: tuple(config.datasources[name].keywords)
+        for name in datasource_names(settings)
+    }
+
+
+def datasource_descriptions(settings: "Settings | None" = None) -> dict[str, str]:
+    """Return ``{source: description}`` for every configured source, default first.
+
+    Read from the definitions alone, so it never touches a source's
+    credentials. A source with no ``description:`` maps to ``""``.
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, str]
+        The single-source fallback is ``{"default": ""}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_descriptions()
+    {'default': ''}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ""}
+    return {
+        name: config.datasources[name].description.strip()
+        for name in datasource_names(settings)
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tables -> sources
 # ---------------------------------------------------------------------------
 
-def table_datasources() -> dict[str, str]:
-    """Return ``{table_name: source_name}`` for every table in ``schema.yaml``.
+def _in_config_order(names: Iterable[str]) -> tuple[str, ...]:
+    """*names* ordered as :func:`datasource_names` orders the sources.
 
-    A table without a ``datasource:`` key belongs to the default source.
-    Names are returned as written; :func:`check_table_datasources` is what
-    refuses an unknown one.
+    The default source comes first, then ``datasources.yaml`` order; a name
+    that is not configured (refused later by :func:`check_table_datasources`)
+    goes last, in the order given.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     _in_config_order(["other", "default"])
+    ('default', 'other')
+    """
+    configured = datasource_names()
+    given = tuple(dict.fromkeys(names))
+    rank = {name: index for index, name in enumerate(configured)}
+    return tuple(sorted(given, key=lambda name: rank.get(name, len(rank))))
+
+
+def pick_datasource(candidates: Iterable[str]) -> str:
+    """The source a statement runs on when several sources could serve it.
+
+    The default source when it is a candidate, otherwise the first
+    candidate in ``datasources.yaml`` order, so the choice is the same on
+    every call and in every process.
+
+    Parameters
+    ----------
+    candidates:
+        Source names, at least one.
+
+    Returns
+    -------
+    str
+        One of *candidates*.
+
+    Raises
+    ------
+    ValueError
+        If *candidates* is empty.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     pick_datasource(["default"])
+    'default'
+    >>> pick_datasource([])
+    Traceback (most recent call last):
+        ...
+    ValueError: no data source to pick from
+    """
+    ordered = _in_config_order(candidates)
+    if not ordered:
+        raise ValueError("no data source to pick from")
+    return ordered[0]
+
+
+def table_datasource_sets() -> dict[str, tuple[str, ...]]:
+    """Return ``{table_name: (source, ...)}`` for every table in ``schema.yaml``.
+
+    Every source the table lives in, ordered as :func:`datasource_names`
+    orders them (default first). A table without a ``datasource:`` key
+    belongs to the default source alone. Names are returned as written;
+    :func:`check_table_datasources` is what refuses an unknown one.
     """
     from schema_data.registry import get_table_datasource_names
 
     default = default_datasource_name()
     return {
-        table: (source or default)
-        for table, source in get_table_datasource_names().items()
+        table: _in_config_order(sources or (default,))
+        for table, sources in get_table_datasource_names().items()
     }
 
 
-def check_table_datasources(assignments: Mapping[str, str] | None = None) -> None:
+def table_datasources() -> dict[str, str]:
+    """Return ``{table_name: source_name}`` for every table in ``schema.yaml``.
+
+    One source per table: the only one for a table with a single
+    ``datasource:``, and for a table listed in several, the one a
+    statement reading nothing else runs on (:func:`pick_datasource`: the
+    default source if the table lives there, else the first source in
+    ``datasources.yaml`` order). Code that needs every source of a table
+    -- routing across several tables, schema drift, prompt rendering --
+    uses :func:`table_datasource_sets`.
+    """
+    return {
+        table: pick_datasource(sources)
+        for table, sources in table_datasource_sets().items()
+    }
+
+
+def check_table_datasources(
+    assignments: Mapping[str, str | Iterable[str]] | None = None,
+) -> None:
     """Refuse a ``schema.yaml`` table that names an unconfigured source.
 
     Parameters
     ----------
     assignments:
-        ``{table: source}`` to check; defaults to :func:`table_datasources`.
-        The admin panel passes a candidate ``schema.yaml``'s own mapping
-        here before a draft is saved.
+        ``{table: source}`` or ``{table: (source, ...)}`` to check;
+        defaults to :func:`table_datasource_sets`. An empty name or an
+        empty sequence means the default source. The admin panel passes a
+        candidate ``schema.yaml``'s own mapping here before a draft is
+        saved.
 
     Raises
     ------
     ValueError
         Naming every offending table and the configured sources.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     check_table_datasources({"Order": "", "Date": ["default"]})
+    ...     check_table_datasources({"Order": ["default", "elsewhere"]})
+    Traceback (most recent call last):
+        ...
+    ValueError: schema.yaml assigns tables to data sources that are not configured: Order -> elsewhere. Configured sources: ['default']
     """
     if assignments is None:
-        assignments = table_datasources()
+        assignments = table_datasource_sets()
     known = set(datasource_names())
     default = default_datasource_name()
-    bad = sorted(
-        f"{table} -> {source}"
-        for table, source in assignments.items()
-        if (source or default) not in known
-    )
+    bad = []
+    for table, value in assignments.items():
+        sources = (value,) if isinstance(value, str) else tuple(value)
+        bad.extend(
+            f"{table} -> {source}"
+            for source in (sources or (default,))
+            if (source or default) not in known
+        )
+    bad.sort()
     if bad:
         raise ValueError(
             "schema.yaml assigns tables to data sources that are not "

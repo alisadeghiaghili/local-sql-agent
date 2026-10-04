@@ -258,7 +258,12 @@ export function createTurnCard(turn, ctx) {
           // always assigns `textContent` first and only ever OVERLAYS Prism
           // markup on top -- the refused statement is untrusted model output,
           // like any generated SQL, and must never reach `innerHTML` unescaped.
-          highlightSql(code, formatSqlForDisplay(rejectedSql));
+          //
+          // What is shown is the server's display form
+          // (`guard.rejected_sql_display`, laid out like `Turn.sql_display`)
+          // when it sent one, else the refused text through the client
+          // formatter as before. `rejected_sql` itself is never altered.
+          highlightSql(code, formatSqlForDisplay(turn.guard.rejected_sql_display || rejectedSql));
           pre.appendChild(code);
           revealBody.appendChild(pre);
           built = true;

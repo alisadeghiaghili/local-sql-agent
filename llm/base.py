@@ -52,6 +52,15 @@ class SQLGenerationResult:
     ``docs/api-contract-v2.md`` §4's ``guard.injected_top``: it tells a
     reader whether the number they are looking at was truncated."""
 
+    datasource_selection: dict[str, Any] | None = None
+    """How the data source was chosen when several are configured --
+    ``{"chosen", "reason", "candidates", "fallback_from"}``, see
+    :meth:`~llm.source_routing.SourceRouting.audit`; ``chosen`` is the
+    source the answer was generated for (the retry's, when the model
+    declined the first). ``None`` for a deployment with one data source.
+    Set by :meth:`~llm.sql_agent.SQLAgent.run` and consumed by
+    ``api/runner.py`` for the audit record."""
+
 
 class LLMBackend(ABC):
     """Contract every LLM backend must satisfy.

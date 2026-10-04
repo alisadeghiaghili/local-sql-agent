@@ -1424,3 +1424,113 @@ class TestExampleFile:
         assert parsed.datasources["reports"].trusted_connection is True
         assert parsed.datasources["finance"].username_env == "DB_USER_FINANCE"
         assert parsed.datasources["warehouse2"].url_env == "DB_URL_WAREHOUSE2"
+
+
+# ---------------------------------------------------------------------------
+# Tables that live in several sources
+# ---------------------------------------------------------------------------
+
+_TWO_SOURCES = {
+    "default": "sales",
+    "datasources": {
+        "inventory": {"url_env": "DB_URL_INVENTORY"},
+        "sales": {"url_env": "DB_URL_SALES"},
+        "archive": {"url_env": "DB_URL_COLD"},
+    },
+}
+
+
+@pytest.fixture()
+def shared_project(tmp_path):
+    """A project dir with three sources (default ``sales``, then
+    ``inventory``, then ``archive`` in file order after the default) and a
+    schema whose tables use a name, a list and nothing."""
+    import schema_data.registry as registry_module
+
+    (tmp_path / "datasources.yaml").write_text(_dump(_TWO_SOURCES), encoding="utf-8")
+    (tmp_path / "schema.yaml").write_text(
+        "tables:\n"
+        "  Date:\n    datasource: [archive, inventory, sales]\n"
+        "  Broker:\n    datasource: inventory\n"
+        "  Replica:\n    datasource: [archive, inventory]\n"
+        "  Trade: {}\n",
+        encoding="utf-8",
+    )
+    registry_module._cache.clear()
+    try:
+        with override_settings(project_config_dir=str(tmp_path)):
+            yield tmp_path
+    finally:
+        registry_module._cache.clear()
+
+
+class TestTableDatasourceSets:
+    def test_every_source_of_a_table_in_datasources_yaml_order(self, shared_project):
+        from database.datasources import table_datasource_sets
+
+        assert table_datasource_sets() == {
+            # default first, then the file's order -- not the order written
+            "Date": ("sales", "inventory", "archive"),
+            "Broker": ("inventory",),
+            "Replica": ("inventory", "archive"),
+            "Trade": ("sales",),
+        }
+
+    def test_table_datasources_keeps_returning_one_name_per_table(self, shared_project):
+        assert table_datasources() == {
+            "Date": "sales",      # the default, because the table lives there
+            "Broker": "inventory",
+            "Replica": "inventory",    # no default: the first source in file order
+            "Trade": "sales",
+        }
+
+    def test_single_source_deployment_is_unchanged(self):
+        import schema_data.registry as registry_module
+        from database.datasources import table_datasource_sets
+
+        registry_module._cache.clear()
+        try:
+            with override_settings(project_config_dir="project_config.example"):
+                sets = table_datasource_sets()
+        finally:
+            registry_module._cache.clear()
+        assert sets and all(v == (DEFAULT_DATASOURCE,) for v in sets.values())
+
+
+class TestPickDatasource:
+    def test_the_default_wins_when_it_is_a_candidate(self, shared_project):
+        from database.datasources import pick_datasource
+
+        assert pick_datasource(["archive", "sales"]) == "sales"
+
+    def test_otherwise_the_first_in_datasources_yaml_order(self, shared_project):
+        from database.datasources import pick_datasource
+
+        assert pick_datasource(["archive", "inventory"]) == "inventory"
+        assert pick_datasource({"inventory", "archive"}) == "inventory"
+
+    def test_nothing_to_pick_from_is_an_error(self, shared_project):
+        from database.datasources import pick_datasource
+
+        with pytest.raises(ValueError):
+            pick_datasource([])
+
+
+class TestCheckTableDatasourcesWithLists:
+    def test_a_list_of_configured_sources_passes(self, shared_project):
+        check_table_datasources({"Date": ("sales", "inventory"), "Order": ""})
+
+    def test_every_unknown_name_in_a_list_is_named(self, shared_project):
+        with pytest.raises(ValueError) as exc_info:
+            check_table_datasources({"Date": ["sales", "Nope"], "Ring": ["Gone", "Nope"]})
+        text = str(exc_info.value)
+        assert "Date -> Nope" in text
+        assert "Ring -> Gone" in text
+        assert "Ring -> Nope" in text
+        assert "sales" in text  # the configured sources are listed
+
+    def test_an_empty_tuple_means_the_default_source(self, shared_project):
+        check_table_datasources({"Order": ()})
+
+    def test_the_default_argument_checks_the_schema_yaml_lists(self, shared_project):
+        check_table_datasources()

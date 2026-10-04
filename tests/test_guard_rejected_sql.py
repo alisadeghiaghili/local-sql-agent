@@ -42,10 +42,12 @@ import pytest
 from llm.base import LLMBackend
 from llm.providers import MockBackend
 from llm.router import LLMRouter
+from config import override_settings
+from security.sql_guard import pretty_sql
 from session.engine import TurnEngine
-from session.models import GuardVerdict, Turn, TurnResult
+from session.models import GuardVerdict, ResultColumn, Turn, TurnResult
 from session.persistence import SessionPersistence
-from session.store import SessionStore
+from session.store import SessionStore, TurnMemory
 
 SYSTEM_PROMPT = "You are a T-SQL expert."
 
@@ -309,6 +311,151 @@ class TestPersistenceRoundTrip:
 
         assert len(loaded_turns) == 1
         assert loaded_turns[0].guard.rejected_sql is None
+
+
+# ---------------------------------------------------------------------------
+# 6. rejected_sql_display -- the display form, never a replacement.
+# ---------------------------------------------------------------------------
+
+
+class TestRejectedSqlDisplay:
+    def test_field_defaults_to_none_and_round_trips_through_model_dump(self):
+        assert GuardVerdict(verdict="allowed").rejected_sql_display is None
+        v = GuardVerdict(
+            verdict="rejected", rule="boom",
+            rejected_sql="SELECT a FROM t", rejected_sql_display="SELECT\n     a\n\nFROM t",
+        )
+        dumped = v.model_dump()
+        assert dumped["rejected_sql"] == "SELECT a FROM t"
+        assert dumped["rejected_sql_display"] == "SELECT\n     a\n\nFROM t"
+
+    def test_policy_rejection_carries_the_laid_out_statement(self):
+        store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+        record = store.create()
+        sql = "SELECT NationalID FROM Customer"
+        engine = TurnEngine(
+            router=LLMRouter(default_chain=[MockBackend(response=sql)]),
+            execute_fn=_never_execute,
+        )
+
+        turn = engine.ask(
+            record, "کد ملی مشتری‌ها را نشان بده", SYSTEM_PROMPT, denied_columns=("NationalID",),
+        )
+
+        assert turn.guard.rejected_sql == sql  # the audit / copy source is untouched
+        assert turn.guard.rejected_sql_display == "SELECT\n     NationalID\n\nFROM Customer"
+        assert turn.guard.rejected_sql_display == pretty_sql(sql, "tsql")
+
+    def test_exhausted_correction_carries_the_laid_out_last_statement(self):
+        store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+        record = store.create()
+        engine = TurnEngine(
+            router=LLMRouter(default_chain=[_RoundAwareBackend()]),
+            execute_fn=_never_execute,
+            max_corrections=1,
+        )
+
+        turn = engine.ask(record, "پرسشی که هرگز جدول درستی نمی‌سازد", SYSTEM_PROMPT)
+
+        assert turn.guard.rejected_sql == "SELECT * FROM ThisTableDoesNotExist_round_2"
+        assert turn.guard.rejected_sql_display == "SELECT\n     *\n\nFROM ThisTableDoesNotExist_round_2"
+
+    def test_the_configured_dialect_is_used(self):
+        store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+        record = store.create()
+        sql = "SELECT @@version"
+        engine = TurnEngine(
+            router=LLMRouter(default_chain=[MockBackend(response=sql)]),
+            execute_fn=_never_execute,
+        )
+
+        turn = engine.ask(record, "نسخهٔ سرور دیتابیس چیست؟", SYSTEM_PROMPT)
+
+        assert turn.guard.rejected_sql_display == pretty_sql(sql, "tsql")
+
+    def test_a_statement_that_cannot_be_laid_out_is_carried_unchanged(self):
+        """Several statements are refused by the guard, and ``pretty_sql``
+        hands them back as they are -- so the display form equals the
+        refused text rather than being dropped or cut to one statement."""
+        sql = "SELECT 1; SELECT 2"
+        store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+        record = store.create()
+        engine = TurnEngine(
+            router=LLMRouter(default_chain=[MockBackend(response=sql)]),
+            execute_fn=_never_execute,
+            max_corrections=0,
+        )
+
+        turn = engine.ask(record, "پرسش", SYSTEM_PROMPT)
+
+        assert turn.guard.verdict == "rejected"
+        assert turn.guard.rejected_sql == sql
+        assert turn.guard.rejected_sql_display == sql
+
+    def test_a_refinement_the_guard_refuses_carries_it_too(self):
+        store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+        record = store.create()
+        previous = Turn(
+            turn_id="t_prev", session_id=record.session_id, index=1, question="q1",
+            sql="SELECT TOP 5 c.Name AS Name FROM NotATable_zzz c",
+            result=TurnResult(columns=[ResultColumn(name="Name", type="string")], row_count=0),
+        )
+        record.turns.append(previous)
+        record.memory["t_prev"] = TurnMemory(turn_id="t_prev", filters={})
+        engine = TurnEngine(
+            router=LLMRouter(default_chain=[MockBackend(response="SELECT TOP 10 Name FROM _prev")]),
+            execute_fn=_never_execute,
+        )
+
+        with override_settings(refinement_scan_cap=1000, default_top_n=1000):
+            turn = engine.ask(record, "از بین آن‌ها ۱۰ مورد", SYSTEM_PROMPT)
+
+        assert turn.guard is not None and turn.guard.verdict == "rejected"
+        assert turn.guard.rejected_sql
+        assert turn.guard.rejected_sql_display == pretty_sql(turn.guard.rejected_sql, "tsql")
+        assert "\n" in turn.guard.rejected_sql_display
+
+    def test_an_accepted_turn_has_none(self):
+        from schema_data.columns import TABLE_COLUMNS
+
+        any_table = next(iter(TABLE_COLUMNS))
+        any_column = next(iter(TABLE_COLUMNS[any_table]))
+        sql = f"SELECT TOP 1 {any_column} FROM [{any_table}]"
+        store = SessionStore(ttl_seconds=60, max_size=10, max_turns=10)
+        record = store.create()
+        engine = TurnEngine(
+            router=LLMRouter(default_chain=[MockBackend(response=sql)]),
+            execute_fn=lambda _sql: pd.DataFrame({any_column: [1]}),
+        )
+
+        turn = engine.ask(record, "یک پرسش معتبر", SYSTEM_PROMPT)
+
+        assert turn.guard.verdict == "allowed"
+        assert turn.guard.rejected_sql_display is None
+        # The generative path sets the turn's own display form as well.
+        assert turn.sql_display == pretty_sql(turn.sql, "tsql")
+        assert turn.sql_display.startswith("SELECT TOP (1)\n")
+
+    def test_it_round_trips_through_persistence_and_an_older_record_loads(self, tmp_path):
+        persistence = SessionPersistence(str(tmp_path / "sessions.db"))
+        try:
+            turn = Turn(
+                turn_id="t1", session_id="s1", index=1, question="q",
+                guard=GuardVerdict(
+                    verdict="rejected", rule="boom", rejected_sql="SELECT a FROM t",
+                    rejected_sql_display="SELECT\n     a\n\nFROM t",
+                ),
+                result=TurnResult(),
+            )
+            persistence.save_turn("s1", turn, memory=None)
+            loaded_turns, _ = persistence.load_turns("s1")
+        finally:
+            persistence.close()
+
+        assert loaded_turns[0].guard.rejected_sql_display == "SELECT\n     a\n\nFROM t"
+        # A guard object stored before the field existed has no such key.
+        old = {"verdict": "rejected", "rule": "boom", "rejected_sql": "SELECT 1"}
+        assert GuardVerdict.model_validate(old).rejected_sql_display is None
 
 
 if __name__ == "__main__":

@@ -180,6 +180,7 @@ def build_prompt_segments(
     context: Any,
     *,
     session_context: str = "",
+    source: str | None = None,
 ) -> PromptSegments:
     """Build a :class:`PromptSegments` for the SQL-generation task.
 
@@ -189,10 +190,25 @@ def build_prompt_segments(
     gives the exact prefix bytes, and the router only needs to know where
     they end in the full built string.
 
+    This is the one place both engines (``api/runner.py`` and
+    ``session/engine.py``) go through to assemble a SQL-generation prompt,
+    which is why the data source is threaded through here: with several
+    sources configured, the prompt describes only the *source* the
+    question was routed to.
+
     Parameters
     ----------
     question, system_prompt, context, session_context:
         Same as :meth:`~prompt_engine.builder.PromptBuilder.build`.
+    source:
+        The data source the question was routed to
+        (:mod:`retrieval.source_selector`). The prompt then holds only that
+        source's tables, relationships and few-shot examples, built from
+        the source's own cacheable static prefix when that fits the token
+        budget (``should_use_static_prefix(system_prompt, source)``), else
+        from retrieval restricted to its tables. ``None`` (the default, and
+        the only value any single-source deployment passes) is the whole
+        schema, exactly as before.
 
     Returns
     -------
@@ -217,7 +233,18 @@ def build_prompt_segments(
     True
     """
     from prompt_engine.builder import PromptBuilder
-    from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
+    from prompt_engine.source_scope import scoped_source
+    from prompt_engine.static_prefix import (
+        build_static_prefix,
+        log_prompt_paths,
+        should_use_static_prefix,
+    )
+
+    # None for a single-source deployment, whatever was passed, so the two
+    # calls below are exactly the ones this function always made.
+    source = scoped_source(source)
+    if source is not None:
+        log_prompt_paths(system_prompt)
 
     # Finding 19 (2026 audit): getattr, not `context.resolved_values`,
     # because `context: Any` above is deliberately loose -- some callers
@@ -226,17 +253,19 @@ def build_prompt_segments(
     # neither should raise AttributeError over an optional signal.
     resolved_values = getattr(context, "resolved_values", None) or None
 
-    if not should_use_static_prefix(system_prompt):
+    if not should_use_static_prefix(system_prompt, source):
         full = PromptBuilder.build(
             question, system_prompt, context,
             session_context=session_context, resolved_values=resolved_values,
+            source=source,
         )
         return PromptSegments(question=full)
 
-    prefix = build_static_prefix(system_prompt)
+    prefix = build_static_prefix(system_prompt, source)
     full = PromptBuilder.build_static(
         question, system_prompt, context,
         session_context=session_context, resolved_values=resolved_values,
+        source=source,
     )
     if not full.startswith(prefix):
         # Defensive fallback only — should_use_static_prefix() already

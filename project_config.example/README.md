@@ -55,6 +55,21 @@ topology (which servers exist), edited on disk like `.env`, and a change
 to it needs a restart. See `docs/design/DATASOURCES.md` for the full
 design, and `docs/deployment-runbook.md` for configuring and verifying it.
 
+With several sources, each `schema.yaml` table names where it lives with
+`datasource:` -- one name, or a list (`datasource: [Sales, Inventory]`) for
+a table that exists, with the same shape, in each of those sources. Run
+`python scripts/assign_datasources.py` from the repository root to have the
+values worked out from the databases and written to
+`schema.with_datasources.yaml` next to `schema.yaml` for review.
+
+With several sources, each question is also routed to **one** source before
+its prompt is built, and the model is shown that source's tables only.
+`datasources.yaml` can help it with `description:` (printed above the
+source's tables) and `keywords:` (words or phrases that mark a question as
+being about the source); see the template and "Choosing a source per
+question" in `docs/design/DATASOURCES.md`. `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+then applies to each source's prompt separately.
+
 ## What happens if project_config/ is missing?
 
 Importing `knowledge.*` and `schema_data.*` modules will succeed.

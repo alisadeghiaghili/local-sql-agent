@@ -129,8 +129,9 @@
     <div class="admin-section-head">
       <h2 id="rail-heading">بررسی‌های استقرار</h2>
       <div class="admin-section-actions">
-        <!-- Deep checks (a rolled-back CREATE TABLE DDL attempt +
-             a multi-second WAITFOR probe) are opt-in only -- never part
+        <!-- Deep checks (a rolled-back CREATE TABLE DDL attempt, a
+             multi-second WAITFOR probe, and with several data sources a
+             full catalogue read to place each table) are opt-in only -- never part
              of the ordinary refresh, and never the 30s auto-refresh.
              See web/admin/main.js's EXPENSIVE_CARDS and this button's
              confirm() dialog. -->

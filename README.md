@@ -190,6 +190,14 @@ cp .env.example .env
 # Querying more than one database? Add project_config/datasources.yaml
 # (host, database, login per source; one DB_PASSWORD_* variable each)
 # instead of a single DB_CONNECTION_URL — see docs/design/DATASOURCES.md.
+# Then run `python scripts/assign_datasources.py` once: it reads which
+# source each schema.yaml table lives in and writes the `datasource:` lines
+# (a list, `[A, B]`, for a table that exists in several) to
+# schema.with_datasources.yaml for you to review.
+# With several sources each question is routed to one of them and the model
+# sees only that source's tables: give each source `description:` and
+# `keywords:` in datasources.yaml (see "Choosing a source per question" in
+# docs/design/DATASOURCES.md); PROMPT_RETRIEVAL_TOKEN_BUDGET then applies per source.
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
@@ -390,6 +398,7 @@ local-sql-agent/
 │   ├── rule_retriever.py     #   business rule injection
 │   ├── value_resolver.py     #   resolves a named value against the warehouse
 │   ├── dimension_vocabulary.py  # prefetched vocabulary + background refresh
+│   ├── source_selector.py    #   which data source a question is about (several sources)
 │   └── example_retriever.py  #   tag-scored few-shot selection
 ├── schema_data/              # Schema registry, populated from schema.yaml
 │   ├── registry.py           #   SchemaRegistry + LRU cache
@@ -398,11 +407,13 @@ local-sql-agent/
 │   └── retriever.py          #   TF-IDF bigram fallback engine
 ├── prompt_engine/
 │   ├── builder.py            #   PromptBuilder.build()
-│   ├── static_prefix.py      #   the byte-identical, KV-cacheable prefix
+│   ├── static_prefix.py      #   the byte-identical, KV-cacheable prefix (one per data source)
+│   ├── source_scope.py       #   narrow a prompt's examples to one data source
 │   └── templates.py          #   PROMPT_TEMPLATE
 ├── llm/
 │   ├── sql_agent.py          #   generate → clean → auto-correct loop
 │   ├── router.py             #   task → endpoint routing, fallback
+│   ├── source_routing.py     #   per-question data source + the single OUT_OF_SCOPE retry
 │   ├── providers.py          #   OpenAI-compatible provider (retries + back-off)
 │   └── base.py               #   LLMBackend ABC
 ├── security/
@@ -423,6 +434,8 @@ local-sql-agent/
 │   ├── connection.py         #   cached SQLAlchemy engine per data source
 │   ├── datasources.py        #   datasources.yaml — named sources, DB_CONNECTION_URL fallback
 │   ├── routing.py            #   which data source a query's tables belong to
+│   ├── catalogue.py          #   read-only INFORMATION_SCHEMA table/column lists
+│   ├── table_hints.py        #   WITH (NOLOCK) after each table, for sources with nolock: true
 │   └── executor.py           #   timeout + row cap + always-rolled-back transaction
 ├── web/                      # Static Persian/RTL client (no build step)
 ├── webapp/                   # Flask web application (bilingual FA/EN)
@@ -430,6 +443,7 @@ local-sql-agent/
 ├── scripts/
 │   ├── verify_deployment.py  #   pre-flight check for the four things that stop a week
 │   ├── issue_api_key.py      #   mint a new API key
+│   ├── assign_datasources.py #   write each schema.yaml table's datasource: from the databases
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis
 │   ├── analyze_misses.py     #   offline retrieval miss diagnostics
 │   └── release_notes.py      #   version, summary and notes for the release workflow
@@ -631,7 +645,7 @@ an infringer.
 | **Validation & security** | `security/` — sqlglot-AST guard (single statement, SELECT-only, table/column allowlist, column ACL), per-dialect profiles, transpile-and-re-verify, API keys |
 | **Conversational sessions** | `session/` — `Turn` contract, CTE-composed refinement, declared assumptions |
 | **Evaluation & observability** | `eval/`, `observability/` — golden set, execution accuracy, result fingerprinting, determinism, baseline gate; audit records, stage timings, LLM status block |
-| **Database** | `database/` — one cached SQLAlchemy engine per data source (`datasources.yaml`, `DB_CONNECTION_URL` when absent), tables routed to their source automatically, query timeout, hard row cap, always-rolled-back transaction |
+| **Database** | `database/` — one cached SQLAlchemy engine per data source (`datasources.yaml`, `DB_CONNECTION_URL` when absent), tables routed to their source automatically (a table may live in several), query timeout, hard row cap, always-rolled-back transaction |
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |

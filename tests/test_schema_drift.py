@@ -385,3 +385,243 @@ class TestSourceWithNoTables:
 
         assert requested == ["main"]
         assert report.schema_only == ()
+
+
+class TestSharedTablesAndPlacement:
+    """A table in several sources is checked in EACH of them, and a table
+    missing from its assigned source but present in another is reported
+    with the ``datasource:`` line to write (``misplaced_tables``)."""
+
+    def _project(self, schema_dir, tables: dict, sources=("main", "archive")) -> None:
+        (schema_dir / "datasources.yaml").write_text(
+            f"default: {sources[0]}\ndatasources:\n"
+            + "".join(f"  {s}:\n    url_env: DB_URL_{s.upper()}\n" for s in sources),
+            encoding="utf-8",
+        )
+        _write_schema(schema_dir, tables)
+
+    def _warehouses(self, tmp_path, contents: dict[str, list[str]]) -> dict:
+        engines = {}
+        for name, statements in contents.items():
+            engine = create_engine(f"sqlite:///{tmp_path / (name + '.db')}")
+            with engine.begin() as conn:
+                for statement in statements:
+                    conn.execute(text(statement))
+            engines[name] = engine
+        return engines
+
+    def _run(self, schema_dir, engines, requested=None):
+        import database.datasources as datasources_module
+
+        def _get_engine(name=None):
+            if requested is not None:
+                requested.append(name)
+            return engines[name or "main"]
+
+        try:
+            with override_settings(project_config_dir=str(schema_dir)):
+                registry_module._cache.clear()
+                datasources_module.reset_datasources_cache()
+                with pytest.MonkeyPatch.context() as mp:
+                    mp.setattr("database.connection.get_engine", _get_engine)
+                    return check_schema_drift()
+        finally:
+            for engine in engines.values():
+                engine.dispose()
+            registry_module._cache.clear()
+            datasources_module.reset_datasources_cache()
+
+    def test_a_shared_table_is_checked_in_each_source_and_reported_per_source(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Date": {
+                "description": "t", "datasource": ["main", "archive"],
+                "columns": {"ID": "pk", "Name": "name"},
+            },
+            "Widget": {"description": "t", "columns": {"ID": "pk"}},
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": [
+                "CREATE TABLE Date (ID INTEGER, Name TEXT, Extra TEXT)",
+                "CREATE TABLE Widget (ID INTEGER, Spare TEXT)",
+            ],
+            "archive": ["CREATE TABLE Date (ID INTEGER)"],
+        })
+        report = self._run(schema_dir, engines)
+
+        # The column archive's copy lacks, and the one main's copy adds,
+        # are reported against THEIR source -- not merged away.
+        assert "Date.Name [archive]" in report.schema_only
+        assert "Date.Name [main]" not in report.schema_only
+        assert "Date.Extra [main]" in report.warehouse_only
+        # A table in one source keeps the plain id it always had.
+        assert "Widget.Spare" in report.warehouse_only
+        assert report.unverifiable_tables == ()
+        assert report.misplaced_tables == ()
+
+    def test_a_table_missing_from_its_source_but_in_another_gets_a_hint(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Broker": {"description": "t", "columns": {"ID": "pk", "Code": "code"}},
+            "Widget": {"description": "t", "columns": {"ID": "pk"}},
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Widget (ID INTEGER)"],
+            "archive": ["CREATE TABLE Broker (ID INTEGER, Code TEXT)"],
+        })
+        report = self._run(schema_dir, engines)
+
+        assert report.misplaced_tables == ({
+            "table": "Broker",
+            "assigned": ["main"],
+            "missing_from": ["main"],
+            "found_in": ["archive"],
+            "suggested_datasource": "archive",
+            "hint": "Broker: not in main, found in archive — set datasource: archive",
+        },)
+        assert report.as_dict()["misplaced_tables"] == list(report.misplaced_tables)
+        # The column-level drift is still reported as before.
+        assert {"Broker.ID", "Broker.Code"} <= set(report.schema_only)
+
+    def test_a_shared_table_missing_from_one_of_its_sources_is_hinted(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Date": {
+                "description": "t", "datasource": ["main", "archive"],
+                "columns": {"ID": "pk"},
+            },
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Other (X INTEGER)"],
+            "archive": ["CREATE TABLE Date (ID INTEGER)"],
+        })
+        report = self._run(schema_dir, engines)
+
+        (hint,) = report.misplaced_tables
+        assert hint["missing_from"] == ["main"]
+        assert hint["found_in"] == ["archive"]
+        assert hint["hint"].endswith("set datasource: archive")
+
+    def test_a_table_found_in_several_other_sources_suggests_a_list(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Date": {"description": "t", "columns": {"ID": "pk"}},
+            "Widget": {"description": "t", "columns": {"ID": "pk"}},
+        }, sources=("main", "archive", "cold"))
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Widget (ID INTEGER)"],
+            "archive": ["CREATE TABLE Date (ID INTEGER)"],
+            "cold": ["CREATE TABLE Date (ID INTEGER)"],
+        })
+        report = self._run(schema_dir, engines)
+
+        (hint,) = report.misplaced_tables
+        assert hint["found_in"] == ["archive", "cold"]
+        assert hint["suggested_datasource"] == ["archive", "cold"]
+        assert hint["hint"] == (
+            "Date: not in main, found in archive, cold — set datasource: [archive, cold]"
+        )
+
+    def test_a_table_that_is_nowhere_gets_no_hint(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Ghost": {"description": "t", "columns": {"ID": "pk"}},
+            "Widget": {"description": "t", "columns": {"ID": "pk"}},
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Widget (ID INTEGER)"],
+            "archive": ["CREATE TABLE Other (X INTEGER)"],
+        })
+        report = self._run(schema_dir, engines)
+        assert report.misplaced_tables == ()
+        assert "Ghost.ID" in report.schema_only
+
+    def test_a_table_with_some_of_its_columns_is_not_misplaced(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Widget": {"description": "t", "columns": {"ID": "pk", "Retired": "gone"}},
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Widget (ID INTEGER)"],
+            "archive": ["CREATE TABLE Widget (ID INTEGER)"],
+        })
+        report = self._run(schema_dir, engines)
+        assert report.misplaced_tables == ()
+        assert "Widget.Retired" in report.schema_only
+
+    def test_no_other_source_is_asked_when_no_table_is_absent(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Widget": {"description": "t", "columns": {"ID": "pk"}},
+        }, sources=("main", "archive", "cold"))
+        engines = self._warehouses(tmp_path, {"main": ["CREATE TABLE Widget (ID INTEGER)"]})
+        requested: list = []
+        self._run(schema_dir, engines, requested)
+        assert requested == ["main"]
+
+    def test_each_other_source_is_asked_once_however_many_tables_are_misplaced(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "A": {"description": "t", "columns": {"ID": "pk"}},
+            "B": {"description": "t", "columns": {"ID": "pk"}},
+            "C": {"description": "t", "columns": {"ID": "pk"}},
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Other (X INTEGER)"],
+            "archive": [f"CREATE TABLE {n} (ID INTEGER)" for n in "ABC"],
+        })
+        calls: list = []
+        import database.catalogue as catalogue_module
+
+        real = catalogue_module.list_tables
+
+        def _counting(engine):
+            calls.append(engine)
+            return real(engine)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("database.catalogue.list_tables", _counting)
+            report = self._run(schema_dir, engines)
+        assert [m["table"] for m in report.misplaced_tables] == ["A", "B", "C"]
+        assert len(calls) == 1
+
+    def test_a_source_whose_catalogue_cannot_be_read_gives_no_hint_and_no_crash(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        self._project(schema_dir, {
+            "Broker": {"description": "t", "columns": {"ID": "pk"}},
+            "Widget": {"description": "t", "columns": {"ID": "pk"}},
+        })
+        engines = self._warehouses(tmp_path, {
+            "main": ["CREATE TABLE Widget (ID INTEGER)"],
+            "archive": ["CREATE TABLE Broker (ID INTEGER)"],
+        })
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "database.catalogue.list_tables",
+                lambda engine: (_ for _ in ()).throw(RuntimeError("no access")),
+            )
+            report = self._run(schema_dir, engines)
+        assert report.misplaced_tables == ()
+
+    def test_an_injected_engine_never_computes_placement(
+        self, schema_dir, baseline_file, tmp_path,
+    ):
+        _write_schema(schema_dir, {"Ghost": {"description": "t", "columns": {"ID": "pk"}}})
+        engine = create_engine(f"sqlite:///{tmp_path / 'one.db'}")
+        try:
+            with override_settings(project_config_dir=str(schema_dir)):
+                registry_module._cache.clear()
+                report = check_schema_drift(engine=engine)
+        finally:
+            engine.dispose()
+        assert report.misplaced_tables == ()
+        assert report.as_dict()["misplaced_tables"] == []

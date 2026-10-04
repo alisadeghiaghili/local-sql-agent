@@ -250,11 +250,11 @@ class TestPydanticModels:
         t = TableDefinition()
         assert t.description == ""
         assert t.columns is None
-        assert t.datasource == ""
+        assert t.datasource == ()
 
     def test_table_definition_datasource_round_trips(self):
         t = TableDefinition(datasource="archive")
-        assert t.datasource == "archive"
+        assert t.datasource == ("archive",)
 
     def test_relationship_definition_requires_all_three_fields(self):
         with pytest.raises(Exception):
@@ -293,5 +293,67 @@ class TestCachedAccessorsAgreeWithRealConfig:
         fresh = {name: table.datasource for name, table in cfg.tables.items()}
         assert get_table_datasource_names() == fresh
         # No datasource: key anywhere in the real/example schema -- every
-        # value is the empty string (means "the default source").
-        assert set(fresh.values()) <= {""}
+        # value is the empty tuple (means "the default source").
+        assert set(fresh.values()) <= {()}
+
+
+class TestDatasourceAcceptsSeveralSources:
+    """``datasource:`` is a name or a non-empty list of distinct names; the
+    model stores a tuple either way (``()`` for "not set")."""
+
+    def test_a_string_becomes_a_one_name_tuple(self):
+        assert TableDefinition(datasource="sales").datasource == ("sales",)
+
+    def test_an_empty_string_means_not_set(self):
+        assert TableDefinition(datasource="").datasource == ()
+
+    def test_a_list_keeps_its_order(self):
+        table = TableDefinition(datasource=["inventory", "sales"])
+        assert table.datasource == ("inventory", "sales")
+
+    def test_a_one_item_list_is_the_same_as_the_string(self):
+        assert TableDefinition(datasource=["sales"]) == TableDefinition(datasource="sales")
+
+    @pytest.mark.parametrize("value, message", [
+        ([], "at least one data source"),
+        (["A", "A"], "'A' is listed more than once"),
+        (["A", ""], "must be a data source name"),
+        (["A", 3], "must be a data source name"),
+        (7, "name or a list of names"),
+        ({"A": 1}, "name or a list of names"),
+    ])
+    def test_invalid_values_are_refused(self, value, message):
+        with pytest.raises(ValueError, match=message):
+            TableDefinition(datasource=value)
+
+    def test_yaml_list_loads_and_is_reported_by_the_accessor(self, tmp_path):
+        import schema_data.registry as registry_module
+
+        (tmp_path / "schema.yaml").write_text(
+            "tables:\n"
+            "  Date:\n"
+            "    datasource: [sales, inventory]\n"
+            "  Broker:\n"
+            "    datasource: inventory\n"
+            "  Trade: {}\n",
+            encoding="utf-8",
+        )
+        registry_module._cache.clear()
+        try:
+            with override_settings(project_config_dir=str(tmp_path)):
+                names = get_table_datasource_names()
+        finally:
+            registry_module._cache.clear()
+        assert names == {
+            "Date": ("sales", "inventory"),
+            "Broker": ("inventory",),
+            "Trade": (),
+        }
+
+    def test_an_invalid_list_names_the_table_in_the_load_error(self, tmp_path):
+        (tmp_path / "schema.yaml").write_text(
+            "tables:\n  Date:\n    datasource: []\n", encoding="utf-8",
+        )
+        with override_settings(project_config_dir=str(tmp_path)):
+            with pytest.raises(ValueError, match=r"tables -> Date -> datasource"):
+                load_schema()

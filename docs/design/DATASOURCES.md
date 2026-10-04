@@ -30,7 +30,8 @@ question that might touch either one.
   ODBC `options` (the structured form, below). Only the secret stays in
   the environment, named by `password_env`. A source may instead use the
   legacy `url_env` form (below). Either form may add an optional
-  `description` and a per-source `dialect`/`application_name` override.
+  `description`, optional `keywords` (see "Choosing a source per question"
+  below) and a per-source `dialect`/`application_name` override.
   One `default` key says which source a table with no explicit assignment
   belongs to (required once more than one source is listed; inferred when
   there is only one).
@@ -43,8 +44,10 @@ question that might touch either one.
   with a message saying so, and so is a credential-like key under
   `options`.
 
-- Each table in `schema.yaml` may set `datasource: <name>`; a table
-  without one belongs to the default source. Table names stay globally
+- Each table in `schema.yaml` may set `datasource: <name>`, or a list of
+  distinct names for a table that exists in several sources (see "Tables
+  that live in several sources" below); a table without one belongs to
+  the default source. Table names stay globally
   unique across every source — there is one flat allowlist, not one per
   source — so a question never has to know which source a table lives on
   before it can ask about it.
@@ -77,8 +80,9 @@ question that might touch either one.
   (`database.routing.resolve_datasource`, fed by
   `security.sql_guard.extract_touched_tables` — the same table resolution
   the guard's own allowlist check already does, reused rather than
-  duplicated). One query runs on exactly one source. A query whose tables
-  span two sources is refused before it ever reaches a connection: the SQL
+  duplicated). One query runs on exactly one source. A query no single
+  source can run (no source has every table it reads) is refused before it
+  ever reaches a connection: the SQL
   guard raises `CorrectableRejection(reason="cross_datasource",
   is_refusal=True)` (`security.sql_guard._require_single_datasource`), and
   the web UI shows an analyst-facing Persian sentence for it, the same way
@@ -88,6 +92,322 @@ question that might touch either one.
   not need editing when mixed dialects eventually land) but a value other
   than the deployment's own `SQL_DIALECT` is refused at start-up
   (`database.datasources.validate_datasource_urls`).
+
+- A source may set `nolock: true` to have every table it reads carry
+  `WITH (NOLOCK)`. It is a per-source switch because it changes what a
+  query can see (dirty reads), and it is T-SQL only, so
+  `database.datasources.load_datasources_config` refuses it when
+  `SQL_DIALECT` has no table hints
+  (`DialectProfile.supports_table_hints`). The executor applies it to the
+  routed source's statement just before execution
+  (`database.table_hints.add_nolock_hints`, which inserts text at offsets
+  found with sqlglot rather than regenerating the SQL); the audit trail
+  keeps the validated statement.
+
+## Tables that live in several sources
+
+A real warehouse pair shares at least one table: a date dimension
+replicated into each database, which the fact tables of both join to. With
+one `datasource:` per table that table had to be assigned to one source,
+and every question joining it to the other source's facts was refused even
+though the other source has its own copy.
+
+`datasource:` therefore also accepts a **non-empty list of distinct names**
+(`datasource: [sales, inventory]`). The declaration is a claim about
+the database, not a preference: *the same table exists, with the same
+shape, in each of those sources.* It is stored as a tuple
+(`TableDefinition.datasource`, `()` for "not set"), and a name listed twice,
+an empty list or a blank entry is refused when `schema.yaml` loads. Every
+place that validates source names (`check_table_datasources`, start-up, the
+admin panel's draft validation, `verify_deployment.py`) checks every name.
+
+**Routing rule** (`database.routing.choose_datasource`, one function used
+by both the executor and the guard, so they cannot disagree):
+
+1. The candidate sources for a statement are the **intersection** of the
+   source sets of every table it reads. A table `schema.yaml` does not
+   list counts as living in the default source only, as before.
+2. An empty intersection is the `cross_datasource` refusal. Its text still
+   names every source and its tables, with a shared table listed under each
+   of its sources, and adds `Available in several data sources: Date
+   (sales, inventory)` so the reader sees why combining it with two
+   tables from different sources does not help.
+3. Otherwise the statement runs on the **default source if it is a
+   candidate, else the first candidate in `datasources.yaml` order**
+   (`database.datasources.pick_datasource`) — deterministic across calls
+   and processes. A statement reading only a shared table therefore runs on
+   the default source when the table lives there.
+
+`table_datasources()` keeps returning `{table: one source}` — rule 3 applied
+to the table alone — for callers that want a single name;
+`table_datasource_sets()` returns every source of every table (default
+first, then file order) and is what anything whose correctness depends on
+the full set uses.
+
+**What else follows from the full set**
+
+- *Prompt.* The schema block prints `Data source: sales, inventory`
+  for a shared table. The closing rule gains one sentence (a table listed
+  under several sources exists in each and combines with tables from any
+  one of them) only when the block mixes tables with different source sets;
+  a block where every table has the same sources prints no rule, and a
+  deployment without shared tables prints the rule byte-for-byte as before.
+- *Dimension vocabulary and value resolver.* Each is one single-table
+  statement, so it is routed by rule 3: the default source if the table
+  lives there, else the first listed in `datasources.yaml` order. A
+  replicated dimension is read from one copy, not from each; that is the
+  point of declaring the copies the same.
+- *Schema drift.* A shared table is compared on **each** of its sources. A
+  column missing from one copy is reported as `Table.Column [source]`
+  (single-source tables keep their plain `Table.Column`).
+- *Where a table really is.* When every `schema.yaml` column of a table is
+  missing from a source it is assigned to and another configured source has
+  the table, the drift report's `misplaced_tables` gives the sentence and
+  the value to write, e.g. `stock_dim.Broker: not in sales, found in
+  inventory — set datasource: inventory`. The other sources are asked with
+  one `INFORMATION_SCHEMA.TABLES` query each, and only when such a table
+  exists; the result is cached with the rest of the drift report. The admin
+  panel's schema-drift card shows it, and `scripts/verify_deployment.py`
+  fails `Tables are in their data source` with the same text (that check
+  reflects every catalogue, so the panel runs it under "deep checks").
+
+**Generating the assignments.** A deployment that never set `datasource:`
+runs everything on the default source (`Invalid object name ...` for the
+tables that are elsewhere) and its drift panel lists every column of the
+other source as missing. `scripts/assign_datasources.py` is the one-time
+generator, curated afterwards: it reads each source's tables, views and
+columns through the application's own engines (two `INFORMATION_SCHEMA`
+queries per source; never a row), matches each `schema.yaml` table by
+schema and name (case-insensitively; a multi-part `db_schema` such as
+`OtherDb.dbo` by its schema part, because the catalogue views describe the
+connected database), and writes `schema.with_datasources.yaml` next to
+`schema.yaml` — every original line and comment kept, one `datasource:`
+line inserted (or an existing one replaced) under each table key: a name,
+`[A, B]` for a table in both, or `# not found in any data source` under a
+table found in neither. It checks the file with
+`schema_data.registry.validate_schema_yaml_text` and proves that nothing but
+`datasource` differs from `schema.yaml` before writing, and it stops
+without writing if any source's catalogue could not be read (a source it
+cannot see would make a shared table look single). The report lists, per
+source, the tables found only there, the shared tables, the tables found
+nowhere, the tables whose current `datasource:` disagrees, and the columns
+`schema.yaml` lists that the database lacks. `--check` writes nothing and
+exits 1 when any `datasource:` disagrees with what was found.
+
+## Choosing a source per question
+
+A statement can only ever run on one source, so a prompt that describes
+every table of every source asks the model to read, and the application to
+send, far more than any one answer can use. With several sources the
+application therefore **picks one source per question first, and shows the
+model that source's whole schema**. With one source none of this runs: every
+prompt, prompt prefix, cache key and code path is what it was before.
+
+**Why not keep one prompt for everything.** The whole-schema static prefix
+(`prompt_engine/static_prefix.py`) is cacheable and the model sees every
+table, which is the best case, but it must fit
+`PROMPT_RETRIEVAL_TOKEN_BUDGET`. A schema that is comfortable for one source
+can be several times over the budget once a second source is added. Every
+request then takes the retrieval path, which picks a handful of tables by
+alias and TF-IDF. That is a good tool for a small schema and a poor one for
+dozens of tables: it can choose dimension tables from both sources and miss
+the fact table that holds the measure the question names, so the model sees
+no table that answers it and says `OUT_OF_SCOPE`, or a self-correction round
+is spent. When retrieval found nothing it used to show *every* table, a
+prompt several times the size of the budget. Choosing the source first
+removes most of that: the model sees one source's complete schema, and each
+source gets its own cacheable prefix again.
+
+### How the source is chosen
+
+`retrieval.source_selector.select_source` is deterministic and makes no
+model call. The signals are tried in this order and the first that picks a
+winner decides:
+
+| Order | Signal | Wins when | Reason |
+|---|---|---|---|
+| 1 | **Keywords** | One source has more distinct matching `keywords:` phrases than every other | `keyword` |
+| 2 | **Session** | A follow-up turn, and the keywords do not point at another source: the previous turn's source is kept | `session` |
+| 3 | **Retrieval evidence** | One source has the highest score from the tables retrieval selected and the tables whose warehouse values matched | `retrieval` |
+| 4 | **Default** | Nothing above decided: the default source (or, among sources still tied, the first in `datasources.yaml` order) | `default` |
+
+*Keywords.* `keywords:` in `datasources.yaml` is a list of words or phrases,
+Persian or English, that mark a question as being about the source. A
+phrase counts when it occurs in the question as **whole words**, after the
+same folding every other comparison in the retrieval layer applies
+(`core.persian.normalize_for_matching`): Arabic `ي`/`ك` fold to `ی`/`ک`,
+Persian and Arabic digits to `0-9`, the ZWNJ is removed, case is ignored.
+`stock` does not match inside `stockholder`, and a plural or a prefixed
+form is another word, so list each form you expect. A phrase counts once
+however often it occurs. Several sources with the same, highest number of
+matching phrases is a tie, not a decision (below). The file is refused at
+start-up if `keywords` is not a list of non-empty strings with no repeats
+(two spellings that fold to the same text are a repeat).
+
+*Session.* Only for a turn that continues the previous question (the v2
+engine's `refines` basis, `session.refinement`). A question classified as
+`fresh` is a new topic, so retrieval decides. A refinement composed over the
+previous turn's SQL (`composition: cte`) reads whatever that statement read
+and stays on the previous source with no selection of its own. The source a
+turn was answered from is kept in the turn's private memory
+(`TurnMemory.datasource`) and persisted with the session, so a reopened
+conversation continues from it; a turn stored before the field existed
+falls back to the source its SQL routes to.
+
+*Retrieval evidence.* `ContextRetriever.retrieve(question)` already runs
+over the whole schema for every request. Each source scores one point for
+every selected table that lives in it, and one point for every table whose
+resolved dimension values matched (`context.resolved_values`), where a
+table that lives in several sources gives each of them its share of the
+point (half a point each for two sources). A shared table does not
+discriminate, so it is weak evidence for any one source.
+
+*Ties.* Sources tied on the highest keyword count are decided by the
+previous source if it is one of them, then by retrieval evidence among them
+only, then by `datasources.yaml` order.
+
+The result also lists **every** source in fallback order, the chosen one
+first, the rest by strength of evidence (keyword matches, then retrieval
+score, then configuration order).
+
+### What the prompt for a source contains
+
+- The tables whose source set includes the chosen source, shared tables
+  included, under one line near the top of the schema block:
+  `Data source: sales — Sales warehouse` (the `description` of the source;
+  just the name when it has none). The per-table `Data source:` lines and
+  the closing "tables in different sources cannot be combined" rule are not
+  printed: the model sees one source.
+- The relationships whose two ends are both among those tables.
+- The few-shot examples whose SQL reads only tables available in that
+  source (`security.sql_guard.extract_touched_tables` parses the example).
+  An example whose tables cannot be determined is kept.
+- Business rules and metrics, whole: they are not table-scoped.
+
+`SchemaRegistry.build_schema_context(..., source=)`,
+`build_static_prefix(system_prompt, source)` and
+`llm.router.build_prompt_segments(..., source=)` are the one place this is
+done, and both engines go through the last.
+
+### One path per source, and the token budget
+
+`should_use_static_prefix(system_prompt, source)` asks the budget question
+**for that source's prefix**:
+
+- If the source's estimated static prefix is at most
+  `PROMPT_RETRIEVAL_TOKEN_BUDGET`, its prompts use that prefix. It is cached
+  per `(system_prompt, source)` and byte-identical across requests for the
+  same source, so each source has its own prefix cache (vLLM prefix caching,
+  llama.cpp KV reuse) exactly as the single-source deployment had.
+- Otherwise the retrieval path runs **restricted to the source's tables**:
+  only retrieved tables that live in the source are shown, and when none are
+  left every table *of that source* is shown, never every table of the
+  deployment. Relationships come from the tables shown and the examples are
+  filtered the same way.
+
+The default budget is unchanged (6000). **With several sources the budget
+applies to each source, not to their sum**, so a schema whose whole prefix is
+many times the budget can still leave each source under it. At start-up (or
+at first use, whichever comes first) one INFO line per source says its table
+count, its estimate, the budget and the path it will take:
+
+```
+Prompt path for data source 'sales': static prefix (cacheable) -- 26 table(s), static prefix estimate 5100 tokens, PROMPT_RETRIEVAL_TOKEN_BUDGET 6000 (per source)
+```
+
+*Sizing the budget.* `estimate_tokens` is `len(text) // 4`, a heuristic with
+no tokenizer behind it. For English it is close; **for Persian it
+undercounts by roughly 15%**: measured on a whole-schema prompt whose
+descriptions are mostly Persian, the model's real `prompt_tokens` were about
+1.14 times the estimate. Choose the budget from the logged estimates like
+this:
+
+1. A source stays on the static path when `budget >= its estimate`. Its real
+   size is then about `estimate x 1.15` for Persian-heavy text, plus the
+   variable suffix (filters, session context, the question) and the model's
+   output. Check that sum against the model's context window and against
+   how long a cold prefill may take, which is paid once per source for as
+   long as the prefix stays in the model server's cache.
+2. The budget is a threshold on the *estimate*, not a promise about tokens:
+   a source whose estimate is just under it is a little over it in real
+   tokens. Leave that margin when choosing the number.
+3. To keep every source on the static path, set the budget to at least the
+   largest source's estimate. To send a source down the retrieval path,
+   leave its estimate above the budget, or split its tables by moving some
+   to another source.
+4. Making a source smaller usually helps more than raising the budget: a
+   source with half the tables prefills in about half the time and leaves
+   room for the answer.
+
+### When the model says OUT_OF_SCOPE
+
+Selection is a heuristic, and a model that is shown the wrong source's
+tables can only decline. If it answers `OUT_OF_SCOPE` and another candidate
+source exists, the request is retried **once** with the next candidate in
+the fallback order: **one extra model call at most, never more**, outside
+the correction budget. The correction history is dropped, because it
+describes the other source's tables, and corrections after the retry keep
+the new source's prefix. A second `OUT_OF_SCOPE` is returned exactly as
+before. A deployment with one source never retries, and neither does a
+refinement composed over the previous turn's SQL: its prompt carries no
+schema, so there is no other source to show. The retry is one helper,
+`llm.source_routing.generate_with_source_fallback`, called from
+`llm.sql_agent.SQLAgent` and `api.runner` (result, full and SQL-only
+modes) and from `session.engine.TurnEngine`, so the two engines cannot
+drift.
+
+### What it does not change
+
+- **The guard and the router stay authoritative.** The selection decides
+  what the model sees, never where a statement runs. The generated SQL must
+  still pass `security.sql_guard.validate_sql`, and its source is still
+  derived from the tables it reads (`database.routing.choose_datasource`).
+  If that differs from the selected source, that is fine and no new refusal
+  is added: the audit record keeps both.
+- **The result cache key.** `api.query_cache` keys on the whole-schema
+  prefix fingerprint, which does not depend on a source. For `/query` the
+  source is a function of the question and of configuration that cannot
+  change while the process runs, so a cached answer cannot belong to a
+  different source than the one a fresh request would choose.
+- **Business rules, metrics, and every single-source prompt.** Byte for
+  byte; `tests/test_source_prompts.py` pins them.
+
+### Observability
+
+The audit record gains `datasource_selection`:
+
+```json
+{"chosen": "inventory", "reason": "keyword",
+ "candidates": ["inventory", "sales", "archive"], "fallback_from": null}
+```
+
+`chosen` is the source whose tables the model last saw; `reason` is the
+signal that ordered the candidates (`keyword`, `session`, `retrieval`,
+`default`); `fallback_from` names the source that declined when the request
+retried. It is `null` for a deployment with one source and for a result
+served from the cache (no selection ran). It is separate from `datasource`,
+which is where the *generated SQL* routes. The audit file is the only place
+records are persisted, and the field is additive: a reader that does not
+know it ignores it, and a record written before it has no key.
+`prefix_cache_hit` in the audit `llm` block is measured against the chosen
+source's own prefix estimate.
+
+### Alternatives considered
+
+**Asking the model which source a question is about.** Rejected for the
+reason given above for routing itself, and for latency: it is one more call
+before the real one. The selection is deterministic, auditable and free;
+the single retry covers the cases it gets wrong.
+
+**Keeping every source in the prompt and improving retrieval.** The problem
+is not only retrieval quality: a whole-schema prompt cannot be cached once
+it is over the budget, and a prompt that mixes sources invites a statement
+that mixes them. One source per prompt makes both go away.
+
+**Embedding or classifier models for the selection.** More moving parts and
+a nondeterminism this project avoids elsewhere; keywords plus the retrieval
+evidence already computed for the request are enough to start with, and
+`keywords:` is the knob an operator controls.
 
 ## Structured sources: what changed and why
 
@@ -256,6 +576,9 @@ itself.
   (`observability.audit.AuditRecord.datasource`, re-derived from the
   executed SQL the same way routing itself works) — an old record simply
   has no key for it, and every reader treats that the same as `None`.
+- With several sources the audit trail also records how the source was
+  chosen for the prompt (`AuditRecord.datasource_selection`, see "Choosing a
+  source per question") — additive and `None` with one source.
 
 ## Result cache — no key change needed
 
@@ -300,7 +623,8 @@ design above leaves room for both without a rewrite:
    source separately and combine client-side, or route through a linked
    server a DBA has configured — has a natural seam to grow from:
    `database.routing.group_tables_by_datasource` already computes exactly
-   the `{source: tables}` partition such a mode would need as its input,
+   the `{source: tables}` partition such a mode would need as its input (a
+   table in several sources is listed under each),
    it simply currently feeds that partition to a refusal instead of to a
    second code path that runs one query per group and joins the results
    in the application layer.

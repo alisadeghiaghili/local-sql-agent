@@ -170,7 +170,15 @@ the security admin, whose actions have no other supervisory mechanism.
   `(principal, ip)` pair, and nobody can currently see whether its
   allowance is right.
 - **Schema drift**: a read-only comparison of `schema.yaml` against the
-  live database that *proposes* a diff. It never applies one.
+  live database that *proposes* a diff. It never applies one. With more
+  than one warehouse data source each table is compared on the source(s)
+  its `datasource:` names (a table listed under several is compared on
+  each, its columns reported as `Table.Column [source]`), and a table
+  whose columns are all missing from its assigned source but present in
+  another is reported with the line to write
+  (`misplaced_tables`: `stock_dim.Broker: not in sales, found in
+  inventory — set datasource: inventory`), costing one catalogue query per
+  other source and cached with the rest of the result.
 - Vocabulary freshness: when each prefetched dimension column last
   refreshed, and a manual refresh. A hall added to the warehouse and
   never refreshed makes value resolution miss silently.

@@ -31,20 +31,40 @@ is the single gate: below ``cfg.settings.prompt_retrieval_token_budget``
 static prefix is used; above it, :mod:`prompt_engine.builder` falls back to
 the six-retriever pipeline, which keeps working unchanged and is exercised
 by ``tests/test_static_prefix.py``'s forced-large-schema test.
+
+One prefix per data source
+--------------------------
+With several data sources configured, a question is routed to one source
+before its prompt is built (:mod:`retrieval.source_selector`), and every
+function here takes that ``source``: :func:`build_static_prefix` renders
+only the tables, relationships and few-shot examples that can run on it,
+and is cached per ``(system_prompt, source)`` -- still byte-identical across
+requests for the same source, so each source keeps its own prefix cache.
+:func:`should_use_static_prefix` then asks the budget question per source:
+a source whose prefix fits ``prompt_retrieval_token_budget`` uses its
+static prefix, a larger one uses the retrieval path restricted to its
+tables. ``source=None`` (what every single-source deployment passes) is the
+whole schema, exactly as before. :func:`log_prompt_paths` states each
+source's estimate and path in the log.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
+import threading
 from functools import lru_cache
 
 import config as cfg
 from knowledge.business_rules import BUSINESS_RULES
 from knowledge.examples import EXAMPLES
 from knowledge.metrics import METRICS
+from prompt_engine.source_scope import examples_for_source, scoped_source
 from prompt_engine.templates import STATIC_PREFIX_TEMPLATE
 from schema_data.columns import TABLE_COLUMNS
 from schema_data.registry import SchemaRegistry
+
+logger = logging.getLogger(__name__)
 
 #: Rough characters-per-token ratio for the heuristic estimator below.
 #: There is no tokenizer dependency in this project (no ``tiktoken`` /
@@ -126,48 +146,73 @@ def _all_metrics_text() -> str:
     return "\n".join(lines)
 
 
-def _all_examples_text() -> str:
-    """Every few-shot example as a Question/SQL pair, in configured order."""
+def _all_examples_text(source: str | None = None) -> str:
+    """Every few-shot example as a Question/SQL pair, in configured order.
+
+    With *source*, only the examples that can run on that data source.
+    """
     parts = [
-        f"Question:\n{ex['question']}\n\nSQL:\n{ex['sql']}" for ex in EXAMPLES
+        f"Question:\n{ex['question']}\n\nSQL:\n{ex['sql']}"
+        for ex in (EXAMPLES if source is None else examples_for_source(EXAMPLES, source))
     ]
     return "\n\n".join(parts)
 
 
-def _full_schema_text() -> str:
-    """The complete schema for every known table (all 12 today)."""
-    return SchemaRegistry.build_schema_context(None)
+def _full_schema_text(source: str | None = None) -> str:
+    """The complete schema for every known table (all 12 today), or for
+    every table of data source *source*."""
+    return SchemaRegistry.build_schema_context(None, source=source)
 
 
-def _full_relationships_text() -> str:
-    """JOIN clauses for every FK edge between every known table."""
-    all_tables = list(TABLE_COLUMNS.keys())
-    return "\n".join(SchemaRegistry.get_relationships(all_tables))
+def _full_relationships_text(source: str | None = None) -> str:
+    """JOIN clauses for every FK edge between every known table, or between
+    the tables of data source *source*."""
+    tables = (
+        list(TABLE_COLUMNS.keys())
+        if source is None
+        else SchemaRegistry.tables_for_source(source)
+    )
+    return "\n".join(SchemaRegistry.get_relationships(tables))
 
 
-@lru_cache(maxsize=8)
-def build_static_prefix(system_prompt: str) -> str:
+@lru_cache(maxsize=32)
+def build_static_prefix(system_prompt: str, source: str | None = None) -> str:
     """Assemble the byte-identical static prefix for *system_prompt*.
 
-    Cached (``lru_cache``) on the system prompt text: the prefix depends
-    on nothing else that changes at runtime (schema/rules/examples are
-    static module data loaded once at import time), so repeated calls
-    with the same system prompt — the common case, since it is loaded
-    once at server startup — return the exact same string object without
-    re-assembling it. ``maxsize=8`` allows a handful of distinct system
-    prompts (e.g. across tests) without unbounded growth.
+    Cached (``lru_cache``) on the system prompt text and the data source:
+    the prefix depends on nothing else that changes at runtime
+    (schema/rules/examples are static module data loaded once at import
+    time), so repeated calls with the same arguments — the common case,
+    since the system prompt is loaded once at server startup — return the
+    exact same string object without re-assembling it. ``maxsize=32``
+    allows a handful of distinct system prompts (e.g. across tests) times
+    a handful of data sources without unbounded growth.
 
     Parameters
     ----------
     system_prompt:
         The domain system prompt text (``<PROJECT_CONFIG_DIR>/system_prompt.md``).
+    source:
+        A data source name, when several are configured: the prefix then
+        holds only the tables that live in that source (a table in several
+        sources is in each one's prefix), the relationships whose two ends
+        are both among them, and the few-shot examples whose SQL reads
+        only such tables, under a ``Data source: <name>`` line. Business
+        rules and metrics are not table-scoped and are included whole.
+        ``None`` (the default, and the only value that does anything in a
+        single-source deployment) is the whole schema.
 
     Returns
     -------
     str
         The complete static prefix: system prompt, business rules,
-        metrics, full schema, relationships, and every few-shot example,
+        metrics, the schema, relationships, and the few-shot examples,
         in that fixed order (``docs/api-contract-v2.md`` §8).
+
+    Raises
+    ------
+    ValueError
+        If several sources are configured and *source* is not one of them.
 
     Examples
     --------
@@ -178,26 +223,37 @@ def build_static_prefix(system_prompt: str) -> str:
     True
     >>> build_static_prefix("You are a T-SQL expert.") is prefix
     True
+
+    With one data source configured a source name changes nothing:
+
+    >>> build_static_prefix("You are a T-SQL expert.", "default") == prefix
+    True
     """
+    source = scoped_source(source)
     return STATIC_PREFIX_TEMPLATE.format(
         system_prompt=system_prompt,
         business_rules=_all_business_rules_text(),
         metrics=_all_metrics_text(),
-        schema=_full_schema_text(),
-        relationships=_full_relationships_text(),
-        examples=_all_examples_text(),
+        schema=_full_schema_text(source),
+        relationships=_full_relationships_text(source),
+        examples=_all_examples_text(source),
     )
 
 
-def static_prefix_token_estimate(system_prompt: str) -> int:
+def static_prefix_token_estimate(system_prompt: str, source: str | None = None) -> int:
     """:func:`estimate_tokens` of :func:`build_static_prefix` for *system_prompt*.
+
+    Parameters
+    ----------
+    system_prompt, source:
+        As for :func:`build_static_prefix`.
 
     Examples
     --------
     >>> static_prefix_token_estimate("You are a T-SQL expert.") > 0
     True
     """
-    return estimate_tokens(build_static_prefix(system_prompt))
+    return estimate_tokens(build_static_prefix(system_prompt, source))
 
 
 @lru_cache(maxsize=8)
@@ -304,7 +360,7 @@ def prefix_version_for_config(system_prompt: str, config_version: int | str) -> 
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:12]
 
 
-def should_use_static_prefix(system_prompt: str) -> bool:
+def should_use_static_prefix(system_prompt: str, source: str | None = None) -> bool:
     """True when the static prefix fits ``cfg.settings.prompt_retrieval_token_budget``.
 
     This is the single gate between the two prompt-assembly paths: below
@@ -313,10 +369,16 @@ def should_use_static_prefix(system_prompt: str) -> bool:
     schema falls back to the six-retriever pipeline in :mod:`retrieval`
     instead of shipping an ever-growing static prompt on every request.
 
+    With several data sources the budget applies to each source's own
+    prefix, not to the sum: pass *source* and the estimate is that
+    source's :func:`build_static_prefix`.
+
     Parameters
     ----------
     system_prompt:
         The domain system prompt text.
+    source:
+        The data source the prompt is for; ``None`` is the whole schema.
 
     Returns
     -------
@@ -339,4 +401,65 @@ def should_use_static_prefix(system_prompt: str) -> bool:
     budget = cfg.settings.prompt_retrieval_token_budget
     if budget <= 0:
         return False
-    return static_prefix_token_estimate(system_prompt) <= budget
+    return static_prefix_token_estimate(system_prompt, source) <= budget
+
+
+#: Prompts whose per-source paths were already logged (by a hash of the
+#: system prompt), so :func:`log_prompt_paths` says it once per process.
+_logged_prompt_paths: set[str] = set()
+_logged_lock = threading.Lock()
+
+
+def log_prompt_paths(system_prompt: str) -> None:
+    """Log, once per process, each data source's prefix estimate and prompt path.
+
+    With several data sources the budget decision is made per source, and
+    the estimate is a heuristic (:func:`estimate_tokens`), so an operator
+    needs to see the numbers rather than infer them: one INFO line per
+    source says its estimated static-prefix tokens, the budget, and which
+    path its prompts take (the cacheable static prefix, or retrieval
+    restricted to its tables). Does nothing with a single data source, and
+    on every call after the first for the same *system_prompt*. Never
+    raises: a failure to describe the paths must not stop a request.
+
+    Parameters
+    ----------
+    system_prompt:
+        The domain system prompt text.
+
+    Examples
+    --------
+    >>> log_prompt_paths("You are a T-SQL expert.")  # one source: silent
+    """
+    import database.datasources as datasources
+
+    try:
+        names = datasources.datasource_names()
+        if len(names) < 2:
+            return
+        key = prefix_version(system_prompt)
+        with _logged_lock:
+            if key in _logged_prompt_paths:
+                return
+            _logged_prompt_paths.add(key)
+        budget = cfg.settings.prompt_retrieval_token_budget
+        for name in names:
+            estimate = static_prefix_token_estimate(system_prompt, name)
+            tables = len(SchemaRegistry.tables_for_source(name))
+            if should_use_static_prefix(system_prompt, name):
+                path = "static prefix (cacheable)"
+            else:
+                path = "retrieval restricted to its tables"
+            logger.info(
+                "Prompt path for data source %r: %s -- %d table(s), static prefix "
+                "estimate %d tokens, PROMPT_RETRIEVAL_TOKEN_BUDGET %d (per source)",
+                name, path, tables, estimate, budget,
+            )
+    except Exception:  # noqa: BLE001 - describing the paths must never fail a request
+        logger.exception("Could not describe the per-source prompt paths")
+
+
+def _reset_logged_prompt_paths_for_testing() -> None:
+    """Forget which prompts :func:`log_prompt_paths` already described. Test-only."""
+    with _logged_lock:
+        _logged_prompt_paths.clear()

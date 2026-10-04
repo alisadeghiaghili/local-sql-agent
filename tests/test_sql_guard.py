@@ -303,6 +303,69 @@ class TestCrossDatasourceRejection:
             )  # no raise
 
 
+class TestCrossDatasourceRejectionWithSharedTables:
+    """The guard applies the executor's own rule (``choose_datasource``):
+    a table listed under several sources counts for each of them, and the
+    statement is refused only when no source has every table."""
+
+    def _sources(self, assignments):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch.multiple(
+            "database.routing",
+            table_datasource_sets=lambda: assignments,
+            default_datasource_name=lambda: "main",
+        ))
+        stack.enter_context(patch(
+            "database.datasources.datasource_names", return_value=("main", "archive"),
+        ))
+        return stack
+
+    _SQL = f"SELECT a.{_ANY_COLUMN} FROM [{_ANY_TABLE}] a, [{_ANOTHER_TABLE}] b"
+
+    def test_a_shared_table_with_a_single_source_table_is_allowed(self):
+        with self._sources({_ANY_TABLE: ("main", "archive"), _ANOTHER_TABLE: ("archive",)}):
+            validate_sql(self._SQL)  # no raise
+
+    def test_two_shared_tables_are_allowed(self):
+        both = ("main", "archive")
+        with self._sources({_ANY_TABLE: both, _ANOTHER_TABLE: both}):
+            validate_sql(self._SQL)  # no raise
+
+    def test_no_source_with_every_table_is_refused_and_says_where_each_is(self):
+        with self._sources({_ANY_TABLE: ("main",), _ANOTHER_TABLE: ("archive",)}):
+            with pytest.raises(CorrectableRejection) as exc_info:
+                validate_sql(self._SQL)
+        assert exc_info.value.reason == "cross_datasource"
+        assert exc_info.value.is_refusal is True
+        assert f"main: {_ANY_TABLE}" in str(exc_info.value)
+        assert f"archive: {_ANOTHER_TABLE}" in str(exc_info.value)
+
+    def test_guard_and_executor_agree(self):
+        from database.routing import CrossDatasourceError, resolve_datasource
+
+        cases = [
+            {_ANY_TABLE: ("main", "archive"), _ANOTHER_TABLE: ("archive",)},
+            {_ANY_TABLE: ("main",), _ANOTHER_TABLE: ("archive",)},
+            {_ANY_TABLE: ("main", "archive"), _ANOTHER_TABLE: ("main", "archive")},
+        ]
+        for assignments in cases:
+            with self._sources(assignments):
+                try:
+                    resolve_datasource(self._SQL)
+                    executor_refuses = False
+                except CrossDatasourceError:
+                    executor_refuses = True
+                try:
+                    validate_sql(self._SQL)
+                    guard_refuses = False
+                except CorrectableRejection as exc:
+                    assert exc.reason == "cross_datasource"
+                    guard_refuses = True
+            assert guard_refuses == executor_refuses, assignments
+
+
 # ---------------------------------------------------------------------------
 # dispose_engine
 # ---------------------------------------------------------------------------

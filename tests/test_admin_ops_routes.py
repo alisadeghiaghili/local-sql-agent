@@ -372,3 +372,49 @@ class TestAuthFailuresRoute:
             auth_failures_module._AUTH_FAILURE_LOG_FILE = ""
         assert resp.status_code == 200
         assert resp.json()["total"] == 1
+
+
+class TestSchemaDriftMisplacedTables:
+    """``misplaced_tables`` travels in the cached drift result: the panel
+    shows the hint, and a second call inside the TTL serves it from the
+    cache without a second catalogue read."""
+
+    _HINT = {
+        "table": "stock_dim.Broker",
+        "assigned": ["sales"],
+        "missing_from": ["sales"],
+        "found_in": ["inventory"],
+        "suggested_datasource": "inventory",
+        "hint": (
+            "stock_dim.Broker: not in sales, found in inventory "
+            "— set datasource: inventory"
+        ),
+    }
+
+    def test_the_hint_is_in_the_response_and_in_the_cached_response(self, client, monkeypatch):
+        import api.admin_ops_routes as admin_ops_routes_module
+
+        calls = {"n": 0}
+        hint = self._HINT
+
+        class _Report:
+            def as_dict(self):
+                return {
+                    "checked_at": "t", "schemas_scanned": [], "warehouse_only": [],
+                    "schema_only": [], "type_changed": [], "unverifiable_tables": [],
+                    "baseline_available": True, "misplaced_tables": [hint],
+                }
+
+        def fake_check_schema_drift():
+            calls["n"] += 1
+            return _Report()
+
+        monkeypatch.setattr(admin_ops_routes_module, "check_schema_drift", fake_check_schema_drift)
+        with cfg.override_settings(admin_expensive_cache_ttl_seconds=300):
+            first = client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+            second = client.get("/admin/schema-drift", headers=_auth(RAW_SECURITY_KEY))
+
+        assert first.json()["misplaced_tables"] == [hint]
+        assert second.json()["misplaced_tables"] == [hint]
+        assert second.json()["cache"]["cached"] is True
+        assert calls["n"] == 1

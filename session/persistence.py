@@ -300,16 +300,18 @@ class SessionPersistence:
             data["result"]["rows"] = []
         turn_json = json.dumps(data, ensure_ascii=False)
 
-        memory_json = json.dumps(
-            {
-                "filters": memory.filters if memory is not None else {},
-                "result_columns": memory.result_columns if memory is not None else [],
-                "sql": memory.sql if memory is not None else None,
-                "injected_top": memory.injected_top if memory is not None else None,
-                "row_count": memory.row_count if memory is not None else 0,
-            },
-            ensure_ascii=False,
-        )
+        memory_payload = {
+            "filters": memory.filters if memory is not None else {},
+            "result_columns": memory.result_columns if memory is not None else [],
+            "sql": memory.sql if memory is not None else None,
+            "injected_top": memory.injected_top if memory is not None else None,
+            "row_count": memory.row_count if memory is not None else 0,
+        }
+        # Additive: only written when set, so a single-source deployment's
+        # stored payload is what it always was.
+        if memory is not None and memory.datasource is not None:
+            memory_payload["datasource"] = memory.datasource
+        memory_json = json.dumps(memory_payload, ensure_ascii=False)
 
         stmt = sqlite_insert(_turns).values(
             session_id=session_id, turn_id=turn.turn_id, turn_index=turn.index,
@@ -358,6 +360,7 @@ class SessionPersistence:
                 sql=mem.get("sql"),
                 injected_top=mem.get("injected_top"),
                 row_count=mem.get("row_count", 0),
+                datasource=mem.get("datasource"),
             )
         return turns, memories
 

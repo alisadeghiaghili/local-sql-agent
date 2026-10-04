@@ -326,6 +326,18 @@ class TestReasonEnumIsDocumented:
             "`rejected_sql` -- a client would not know the field exists."
         )
 
+    def test_display_forms_are_documented(self):
+        """``rejected_sql_display`` (§4 `guard`) and the ``sql_display`` that
+        the §7 ``sql`` event carries are additive fields a client could not
+        otherwise discover."""
+        doc = (
+            Path(__file__).resolve().parent.parent
+            / "docs" / "api-contract-v2.md"
+        ).read_text(encoding="utf-8")
+
+        assert '"rejected_sql_display"' in doc
+        assert "`{sql, sql_display, guard}`" in doc
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

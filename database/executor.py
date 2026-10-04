@@ -34,8 +34,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import config as cfg
 from database.connection import get_engine
+from database.datasources import datasource_nolock
 from database.errors import classify_database_error
 from database.routing import CrossDatasourceError, resolve_datasource
+from database.table_hints import add_nolock_hints
 from security.dialects import get_dialect_profile
 
 logger = logging.getLogger(__name__)
@@ -131,6 +133,10 @@ def _execute(
     dialect = cfg.settings.sql_dialect
     profile = get_dialect_profile(dialect)
     source = _route(sql, datasource)
+    if datasource_nolock(source):
+        # Only the text sent to the server changes: the caller keeps the
+        # validated SQL (the audit trail's generated_sql is that text).
+        sql = add_nolock_hints(sql)
 
     try:
         engine = get_engine(source)
@@ -221,6 +227,14 @@ def execute_sql(sql: str, *, datasource: str | None = None) -> pd.DataFrame:
       to (:func:`database.routing.resolve_datasource`), or on *datasource*
       when given. A statement with no configured table runs on the default
       source; one spanning two sources is refused.
+    * **Table hints** — when the routed source sets ``nolock: true`` in
+      ``datasources.yaml``, ``WITH (NOLOCK)`` is added after every physical
+      table reference (:func:`database.table_hints.add_nolock_hints`)
+      just before execution, and the rewritten text is what the server
+      receives. The *sql* argument, and the ``generated_sql`` the audit
+      trail records, stay the validated statement. A statement that cannot
+      be rewritten and checked runs as given (a warning is logged once per
+      reason). ``NOLOCK`` reads uncommitted data.
     * **Raw driver execution** — the query is passed to
       :meth:`~sqlalchemy.engine.Connection.exec_driver_sql`, not
       ``conn.execute(text(sql))``. SQLAlchemy's :func:`~sqlalchemy.text`

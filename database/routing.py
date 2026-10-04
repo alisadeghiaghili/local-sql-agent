@@ -15,6 +15,17 @@ statement whose tables span two sources is refused here, and earlier by
 :func:`security.sql_guard.validate_sql` with a message the model and the
 analyst can act on (reason ``cross_datasource``).
 
+A table may live in several sources (``datasource: [A, B]`` in
+``schema.yaml``: the same table, with the same shape, in each). The
+sources that can run a statement are then the **intersection** of the
+source sets of every table it reads. An empty intersection is the
+refusal above; otherwise the statement runs on the default source when
+it is a candidate, else on the first candidate in ``datasources.yaml``
+order (:func:`database.datasources.pick_datasource`). A statement that
+reads only a shared table therefore runs on the default source when the
+table lives there. The rule lives in :func:`choose_datasource`, which the
+SQL guard calls too, so guard and executor cannot disagree.
+
 A statement that references no configured table (``SELECT 1``, a catalogue
 probe written by an operator tool) runs on the default source. Callers
 that must reach a specific source regardless of the SQL text -- ``/health``
@@ -26,10 +37,15 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from database.datasources import default_datasource_name, table_datasources
+from database.datasources import (
+    default_datasource_name,
+    pick_datasource,
+    table_datasource_sets,
+)
 
 __all__ = [
     "CrossDatasourceError",
+    "choose_datasource",
     "group_tables_by_datasource",
     "resolve_datasource",
     "target_datasource_or_none",
@@ -37,12 +53,13 @@ __all__ = [
 
 
 class CrossDatasourceError(ValueError):
-    """A statement reads tables that live in more than one data source.
+    """No single data source has every table a statement reads.
 
     Attributes
     ----------
     groups:
-        ``{source: sorted table names}`` for every source involved.
+        ``{source: sorted table names}`` for every source involved; a
+        table that lives in several sources is listed under each of them.
     """
 
     def __init__(self, groups: dict[str, list[str]]) -> None:
@@ -50,15 +67,29 @@ class CrossDatasourceError(ValueError):
         described = "; ".join(
             f"{source}: {', '.join(tables)}" for source, tables in sorted(groups.items())
         )
-        super().__init__(
+        message = (
             "query reads tables from more than one data source "
             f"({described}); every table in one query must come from the "
             "same data source"
         )
+        # Say where the shared tables are, so the reader can see why the
+        # combination fails (a table in both sources does not help when
+        # the other tables are each in only one).
+        where: dict[str, list[str]] = {}
+        for source, tables in sorted(groups.items()):
+            for table in tables:
+                where.setdefault(table, []).append(source)
+        shared = {table: sources for table, sources in where.items() if len(sources) > 1}
+        if shared:
+            listed = "; ".join(
+                f"{table} ({', '.join(sources)})" for table, sources in sorted(shared.items())
+            )
+            message += f". Available in several data sources: {listed}"
+        super().__init__(message)
 
 
 def group_tables_by_datasource(tables: Iterable[str]) -> dict[str, list[str]]:
-    """Group canonical table names by the data source they belong to.
+    """Group canonical table names by the data sources they belong to.
 
     Parameters
     ----------
@@ -70,19 +101,65 @@ def group_tables_by_datasource(tables: Iterable[str]) -> dict[str, list[str]]:
     Returns
     -------
     dict[str, list[str]]
-        ``{source: sorted table names}``; empty for no tables.
+        ``{source: sorted table names}``; empty for no tables. A table
+        that lives in several sources appears under each of them.
 
     Examples
     --------
     >>> group_tables_by_datasource([])
     {}
     """
-    assignments = table_datasources()
+    assignments = table_datasource_sets()
     default = default_datasource_name()
     groups: dict[str, set[str]] = {}
     for table in tables:
-        groups.setdefault(assignments.get(table, default), set()).add(table)
+        for source in assignments.get(table, (default,)):
+            groups.setdefault(source, set()).add(table)
     return {source: sorted(names) for source, names in groups.items()}
+
+
+def choose_datasource(tables: Iterable[str]) -> str | None:
+    """The one data source that can run a statement reading *tables*.
+
+    The candidates are the sources every table lives in (the intersection
+    of the tables' source sets). The default source wins when it is a
+    candidate, otherwise the first candidate in ``datasources.yaml``
+    order. Used by :func:`resolve_datasource` and, for the cross-source
+    check, by :func:`security.sql_guard.validate_sql`.
+
+    Parameters
+    ----------
+    tables:
+        Canonical table names as they appear in ``schema.yaml``; a name
+        ``schema.yaml`` does not list counts as living in the default
+        source only.
+
+    Returns
+    -------
+    str | None
+        The source name, or ``None`` when *tables* is empty.
+
+    Raises
+    ------
+    CrossDatasourceError
+        If no source has every table.
+
+    Examples
+    --------
+    >>> choose_datasource([]) is None
+    True
+    """
+    names = set(tables)
+    if not names:
+        return None
+    groups = group_tables_by_datasource(names)
+    # A source can run the statement when every table is among its tables.
+    candidates = [
+        source for source, members in groups.items() if len(members) == len(names)
+    ]
+    if not candidates:
+        raise CrossDatasourceError(groups)
+    return pick_datasource(candidates)
 
 
 def resolve_datasource(sql: str, dialect: str | None = None) -> str:
@@ -99,13 +176,14 @@ def resolve_datasource(sql: str, dialect: str | None = None) -> str:
     Returns
     -------
     str
-        The one source every referenced table belongs to, or the default
-        source when *sql* references no configured table.
+        The source chosen by :func:`choose_datasource` for the referenced
+        tables, or the default source when *sql* references no configured
+        table.
 
     Raises
     ------
     CrossDatasourceError
-        If the referenced tables belong to more than one source.
+        If no single source has every referenced table.
 
     Examples
     --------
@@ -116,12 +194,7 @@ def resolve_datasource(sql: str, dialect: str | None = None) -> str:
     from security.sql_guard import extract_touched_tables
 
     tables = extract_touched_tables(sql, dialect=dialect or cfg.settings.sql_dialect)
-    groups = group_tables_by_datasource(tables)
-    if len(groups) > 1:
-        raise CrossDatasourceError(groups)
-    if groups:
-        return next(iter(groups))
-    return default_datasource_name()
+    return choose_datasource(tables) or default_datasource_name()
 
 
 def target_datasource_or_none(sql: str | None, dialect: str | None = None) -> str | None:
@@ -131,8 +204,8 @@ def target_datasource_or_none(sql: str | None, dialect: str | None = None) -> st
     it went on to run (a guard rejection still names the source the
     statement was aimed at, which is what an investigation needs).
     ``None`` for empty *sql* (nothing was generated) and for a statement
-    whose tables span two sources, so a record never claims a single
-    source that is not true. Never raises.
+    whose tables have no source in common, so a record never claims a
+    single source that is not true. Never raises.
 
     Parameters
     ----------

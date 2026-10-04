@@ -1214,8 +1214,15 @@ One SQLAlchemy engine per configured data source, cached for the life of
 the process (`database.connection.get_engine(datasource=...)`) — a single
 engine, exactly as pictured above, for a deployment with no
 `datasources.yaml`. Which engine a query above actually runs on is
-derived from its own tables, never chosen by the model — see
-`docs/design/DATASOURCES.md`.
+derived from its own tables, never chosen by the model: a table may name
+several sources (`datasource: [A, B]`), and a statement runs on a source
+that has every table it reads (the default if it qualifies) — see
+`docs/design/DATASOURCES.md`. With several sources the same file also
+explains how a question is routed to one source *before* the prompt is
+built (`retrieval/source_selector.py`: keywords, then session, then
+retrieval evidence, then the default) so the model sees that source's
+tables only, with one cacheable prefix per source and one `OUT_OF_SCOPE`
+retry on the next source (`llm/source_routing.py`).
 
 ---
 

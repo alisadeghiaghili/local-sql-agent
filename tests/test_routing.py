@@ -10,7 +10,7 @@ not need. So every test here drives
 from the loaded schema (``PROJECT_CONFIG_DIR=project_config.example`` in
 CI: ``Order``, ``Customer``, ``Ring``, all genuinely queryable) and
 reassigns only the TABLE-TO-SOURCE mapping, by patching
-:func:`database.routing.table_datasources` /
+:func:`database.routing.table_datasource_sets` /
 :func:`database.routing.default_datasource_name` directly -- the one part
 of the picture that genuinely is just data, re-readable at any time.
 """
@@ -29,10 +29,15 @@ from database.routing import (
 )
 
 
-def _patched(assignments: dict[str, str], default: str = "main"):
+def _patched(assignments: dict[str, str | tuple[str, ...]], default: str = "main"):
+    """Patch the table-to-sources mapping; a plain string is a table in one source."""
+    sets = {
+        table: (value,) if isinstance(value, str) else tuple(value)
+        for table, value in assignments.items()
+    }
     return patch.multiple(
         "database.routing",
-        table_datasources=lambda: assignments,
+        table_datasource_sets=lambda: sets,
         default_datasource_name=lambda: default,
     )
 
@@ -128,3 +133,104 @@ class TestTargetDatasourceOrNone:
         with _patched({"Order": "main", "Ring": "archive"}):
             sql = "SELECT * FROM [Order] o JOIN Ring r ON 1 = 1"
             assert target_datasource_or_none(sql) is None
+
+
+class TestSharedTables:
+    """A table listed under several sources (``datasource: [A, B]``): the
+    candidates for a statement are the intersection of its tables' source
+    sets; the default source if it is one, else the first in
+    ``datasources.yaml`` order."""
+
+    _ORDER = ("main", "archive", "cold")
+
+    def _routed(self, assignments, default="main"):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(_patched(assignments, default=default))
+        stack.enter_context(patch(
+            "database.datasources.datasource_names", return_value=self._ORDER,
+        ))
+        return stack
+
+    def test_a_statement_reading_only_a_shared_table_runs_on_the_default(self):
+        with self._routed({"Order": ("main", "archive")}):
+            assert resolve_datasource("SELECT ID FROM [sales].[Order]") == "main"
+
+    def test_without_the_default_among_them_the_first_in_config_order_wins(self):
+        # Written in the opposite order on purpose: the pick must not
+        # depend on how schema.yaml happened to list them.
+        with self._routed({"Order": ("cold", "archive")}):
+            assert resolve_datasource("SELECT ID FROM [sales].[Order]") == "archive"
+
+    def test_a_shared_table_joins_with_a_table_of_either_of_its_sources(self):
+        sql = (
+            "SELECT o.ID FROM [sales].[Order] o "
+            "JOIN [sales].[Customer] c ON c.ID = o.CustomerID"
+        )
+        with self._routed({"Order": ("main", "archive"), "Customer": "archive"}):
+            assert resolve_datasource(sql) == "archive"
+        with self._routed({"Order": ("main", "archive"), "Customer": "main"}):
+            assert resolve_datasource(sql) == "main"
+
+    def test_the_intersection_of_several_shared_tables_is_used(self):
+        sql = (
+            "SELECT o.ID FROM [sales].[Order] o "
+            "JOIN [sales].[Customer] c ON c.ID = o.CustomerID"
+        )
+        with self._routed({"Order": ("main", "archive"), "Customer": ("archive", "cold")}):
+            assert resolve_datasource(sql) == "archive"
+
+    def test_an_empty_intersection_is_refused_naming_sources_and_tables(self):
+        sql = (
+            "SELECT o.ID FROM [sales].[Order] o "
+            "JOIN [sales].[Customer] c ON c.ID = o.CustomerID "
+            "JOIN [ref].[Ring] r ON r.ID = o.RingID"
+        )
+        with self._routed({
+            "Order": ("main", "archive"), "Customer": "main", "Ring": "archive",
+        }):
+            with pytest.raises(CrossDatasourceError) as exc_info:
+                resolve_datasource(sql)
+        # The shared table is listed under each of its sources.
+        assert exc_info.value.groups == {
+            "main": ["Customer", "Order"], "archive": ["Order", "Ring"],
+        }
+        text = str(exc_info.value)
+        assert "more than one data source" in text
+        assert "main: Customer, Order" in text
+        assert "archive: Order, Ring" in text
+        assert "Available in several data sources: Order (archive, main)" in text
+
+    def test_a_refusal_without_shared_tables_reads_as_before(self):
+        exc = CrossDatasourceError({"main": ["Order"], "archive": ["Ring"]})
+        assert "several" not in str(exc)
+
+    def test_group_tables_lists_a_shared_table_under_every_source(self):
+        with _patched({"Order": ("main", "archive"), "Ring": "archive"}):
+            groups = group_tables_by_datasource(["Order", "Ring"])
+        assert groups == {"main": ["Order"], "archive": ["Order", "Ring"]}
+
+    def test_the_audit_target_follows_the_same_rule(self):
+        with self._routed({"Order": ("cold", "archive")}):
+            assert target_datasource_or_none("SELECT ID FROM [sales].[Order]") == "archive"
+
+    def test_choose_datasource_returns_none_for_no_tables(self):
+        from database.routing import choose_datasource
+
+        assert choose_datasource([]) is None
+
+    def test_vocabulary_prefetch_and_value_resolver_sql_route_to_the_default(self):
+        """Both build one single-table statement from the schema.yaml key;
+        for a table in several sources that is the shared-table rule."""
+        from retrieval.dimension_vocabulary import _prefetch_query
+        from retrieval.value_resolver import _build_query
+
+        statements = [
+            _prefetch_query("Customer", "Name"),
+            _build_query("Customer", "Name"),
+        ]
+        with self._routed({"Customer": ("cold", "archive", "main")}):
+            assert [resolve_datasource(sql) for sql in statements] == ["main", "main"]
+        with self._routed({"Customer": ("cold", "archive")}):
+            assert [resolve_datasource(sql) for sql in statements] == ["archive", "archive"]
