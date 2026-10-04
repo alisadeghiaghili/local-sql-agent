@@ -7,9 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [6.6.1] — 2026-10-04
+
+A template for the `API_KEYS_FILE` key array.
+
 ### Added
 
-- **`project_config.example/api_keys.example.json` is a template for the `API_KEYS_FILE` file.** Copy it to `project_config/api_keys.json` (git-ignored) and replace each `key_sha256` with the digest `scripts/issue_api_key.py` prints. It holds an analyst entry with a `denied_columns` example and an admin entry with `admin`, `operations` and `security`, which together show every field the parser reads. Both digests are placeholders, so a copy that was not edited is refused at start-up (`key_sha256 must be a 64-character SHA-256 hex digest`) instead of loading keys nobody holds. `.env.example`, the deployment runbook, `project_config.example/README.md` and the Persian getting-started guide point to it; `tests/test_api_keys_file.py` pins its fields and the refusal.
+- **`project_config.example/api_keys.example.json` is a template for the `API_KEYS_FILE` file (PR #150).** Copy it to `project_config/api_keys.json` (git-ignored) and replace each `key_sha256` with the digest `scripts/issue_api_key.py` prints. It holds an analyst entry with a `denied_columns` example and an admin entry with `admin`, `operations` and `security`, which together show every field the parser reads. Both digests are placeholders, so a copy that was not edited is refused at start-up (`key_sha256 must be a 64-character SHA-256 hex digest`) instead of loading keys nobody holds. `.env.example`, the deployment runbook, `project_config.example/README.md` and the Persian getting-started guide point to it; `tests/test_api_keys_file.py` pins its fields and the refusal.
 
 ## [6.6.0] — 2026-10-04
 
