@@ -112,6 +112,7 @@ __all__ = [
     "datasource_names",
     "get_datasource",
     "get_datasources",
+    "datasource_nolock",
     "table_datasources",
     "table_datasource_sets",
     "pick_datasource",
@@ -276,6 +277,14 @@ class DataSourceDefinition(BaseModel):
     options:
         Extra ODBC keywords. ``true``/``false`` become ``yes``/``no``,
         numbers become their text.
+    nolock:
+        ``true`` makes every query on this source read its tables
+        ``WITH (NOLOCK)`` (:mod:`database.table_hints`, applied by
+        :mod:`database.executor` just before execution). It means dirty
+        reads, so it is off unless a DBA asks for it. Valid in both the
+        structured and the ``url_env`` form; T-SQL only (see
+        :func:`load_datasources_config`). Must be a YAML ``true`` or
+        ``false``.
 
     Examples
     --------
@@ -286,6 +295,10 @@ class DataSourceDefinition(BaseModel):
     {'TrustServerCertificate': 'yes'}
     >>> d.trusted_connection, d.port
     (False, None)
+    >>> d.nolock
+    False
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", nolock=True).nolock
+    True
     """
 
     model_config = {"extra": "forbid"}
@@ -305,6 +318,8 @@ class DataSourceDefinition(BaseModel):
     password_env: str | None = None
     trusted_connection: bool = False
     options: dict[str, str] = Field(default_factory=dict)
+
+    nolock: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -352,6 +367,18 @@ class DataSourceDefinition(BaseModel):
             raise ValueError(
                 "host must be a bare server name or address (no scheme, "
                 "login, path or ',port'; the port has its own field)"
+            )
+        return value
+
+    @field_validator("nolock", mode="before")
+    @classmethod
+    def _nolock_is_a_boolean(cls, value: object) -> object:
+        # pydantic would accept "yes", "1" or 1 for a bool; a switch that
+        # turns on dirty reads is only ever a YAML true/false.
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"nolock must be true or false, not {value!r} "
+                f"({type(value).__name__})"
             )
         return value
 
@@ -553,6 +580,53 @@ def datasources_path(settings: "Settings | None" = None) -> Path:
     return base / DATASOURCES_FILENAME
 
 
+def _refuse_nolock_without_table_hints(config: DataSourcesConfig, dialect: str) -> None:
+    """Refuse ``nolock: true`` for a dialect where ``WITH (NOLOCK)`` is not SQL.
+
+    Table hints are T-SQL syntax (``DialectProfile.supports_table_hints``).
+    This depends on the deployment's ``SQL_DIALECT``, which the file does
+    not know, so it runs when the file is loaded with settings rather than
+    in the model's validators, and the load (and with it start-up) stops
+    before a query could be sent a hint the server rejects.
+
+    Parameters
+    ----------
+    config:
+        The validated file.
+    dialect:
+        :attr:`config.Settings.sql_dialect`.
+
+    Raises
+    ------
+    DataSourceConfigError
+        Naming every offending source and the dialect.
+
+    Examples
+    --------
+    >>> cfg = validate_datasources_yaml_text(
+    ...     "datasources:\\n  main:\\n    url_env: DB_URL_MAIN\\n    nolock: true\\n"
+    ... )
+    >>> _refuse_nolock_without_table_hints(cfg, "tsql")
+    >>> _refuse_nolock_without_table_hints(cfg, "postgres")
+    Traceback (most recent call last):
+        ...
+    database.datasources.DataSourceConfigError: [datasources.yaml] data source 'main' sets nolock: true, but SQL_DIALECT is 'postgres' and table hints (WITH (NOLOCK)) are T-SQL only; remove nolock or use SQL_DIALECT=tsql
+    """
+    from security.dialects import DIALECT_PROFILES
+
+    profile = DIALECT_PROFILES.get(dialect)
+    if profile is not None and profile.supports_table_hints:
+        return
+    for name, definition in config.datasources.items():
+        if definition.nolock:
+            raise DataSourceConfigError(
+                f"[{DATASOURCES_FILENAME}] data source {name!r} sets nolock: "
+                f"true, but SQL_DIALECT is {dialect!r} and table hints "
+                "(WITH (NOLOCK)) are T-SQL only; remove nolock or use "
+                "SQL_DIALECT=tsql"
+            )
+
+
 @lru_cache(maxsize=8)
 def _load_cached(path: str, mtime_ns: int) -> DataSourcesConfig:
     with open(path, encoding="utf-8") as fh:
@@ -579,14 +653,18 @@ def load_datasources_config(settings: "Settings | None" = None) -> DataSourcesCo
     Raises
     ------
     ValueError
-        If the file exists but is invalid.
+        If the file exists but is invalid, or a source sets ``nolock: true``
+        while the dialect has no table hints (see
+        :func:`_refuse_nolock_without_table_hints`).
     """
     path = datasources_path(settings)
     try:
         mtime_ns = path.stat().st_mtime_ns
     except FileNotFoundError:
         return None
-    return _load_cached(str(path), mtime_ns)
+    config = _load_cached(str(path), mtime_ns)
+    _refuse_nolock_without_table_hints(config, _settings(settings).sql_dialect)
+    return config
 
 
 def reset_datasources_cache() -> None:
@@ -775,10 +853,16 @@ class DataSource:
         Value stamped on the connection so a DBA can identify the session.
     description:
         Operator-facing description.
+    nolock:
+        Whether queries on this source are rewritten to read every table
+        ``WITH (NOLOCK)`` (:mod:`database.table_hints`); read by
+        :mod:`database.executor`. ``False`` for the single-source fallback.
 
     Examples
     --------
     >>> s = DataSource("sales", "mssql+pyodbc://u:secret@h/db", None, "tsql", "app")
+    >>> s.nolock
+    False
     >>> s.redacted_url
     'mssql+pyodbc://u:***@h/db'
     >>> "secret" in repr(s)
@@ -791,6 +875,7 @@ class DataSource:
     dialect: str
     application_name: str
     description: str = ""
+    nolock: bool = False
 
     def __repr__(self) -> str:  # never print the connection string
         return f"DataSource(name={self.name!r}, url_env={self.url_env!r}, dialect={self.dialect!r})"
@@ -908,12 +993,53 @@ def get_datasource(name: str | None = None, settings: "Settings | None" = None) 
             else settings.db_application_name
         ),
         description=definition.description,
+        nolock=definition.nolock,
     )
 
 
 def get_datasources(settings: "Settings | None" = None) -> tuple[DataSource, ...]:
     """Resolve every configured source, default first."""
     return tuple(get_datasource(name, settings) for name in datasource_names(settings))
+
+
+def datasource_nolock(name: str | None = None, settings: "Settings | None" = None) -> bool:
+    """Whether queries on source *name* read their tables ``WITH (NOLOCK)``.
+
+    The same flag :attr:`DataSource.nolock` carries, read from the
+    definition alone: it does not resolve the source's credentials, so the
+    executor can ask on every query without touching the environment.
+
+    Parameters
+    ----------
+    name:
+        Source name; ``None`` means the default source.
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    bool
+        ``False`` for the single-source fallback (no ``datasources.yaml``)
+        and for a name that is not configured (the connection to such a
+        source is refused where the engine is built, not here).
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_nolock()
+    False
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return False
+    definition = config.datasources.get(config.default_name if name is None else name)
+    return definition is not None and definition.nolock
 
 
 # ---------------------------------------------------------------------------

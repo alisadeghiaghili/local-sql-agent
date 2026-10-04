@@ -428,6 +428,7 @@ local-sql-agent/
 │   ├── datasources.py        #   datasources.yaml — named sources, DB_CONNECTION_URL fallback
 │   ├── routing.py            #   which data source a query's tables belong to
 │   ├── catalogue.py          #   read-only INFORMATION_SCHEMA table/column lists
+│   ├── table_hints.py        #   WITH (NOLOCK) after each table, for sources with nolock: true
 │   └── executor.py           #   timeout + row cap + always-rolled-back transaction
 ├── web/                      # Static Persian/RTL client (no build step)
 ├── webapp/                   # Flask web application (bilingual FA/EN)

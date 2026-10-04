@@ -757,6 +757,29 @@ three-part name.
    panel's versioned config bundle covers — a change to it needs a
    restart, the same as changing `DB_CONNECTION_URL` always did.
 
+**Reading with `WITH (NOLOCK)`.** If the DBA requires every table read by
+this application to carry `WITH (NOLOCK)`, set `nolock: true` on that
+source (both the structured and the `url_env` form accept it; it defaults
+to `false`). Just before a statement is executed on that source,
+`database.table_hints.add_nolock_hints` inserts ` WITH (NOLOCK)` after each
+physical table reference (after the alias, when there is one) in `FROM`,
+every `JOIN`, subqueries, CTE bodies and each branch of a `UNION`. The rest
+of the text is not touched. CTE names, derived tables, table-valued
+functions, `#temp` tables, `@table` variables, `INFORMATION_SCHEMA` and
+`sys` objects, and tables that already have a `WITH (...)` hint are left as
+they are. A statement that cannot be parsed, or whose rewrite does not pass
+a second parse, is executed unchanged and a warning naming the reason is
+logged once. The audit trail's `generated_sql` is still the validated SQL
+without hints; the hinted text is only what the server receives. Table
+hints are T-SQL, so start-up is refused if a source sets `nolock: true` and
+`SQL_DIALECT` is not `tsql`. **`NOLOCK` allows dirty reads**: a query can
+see rows another transaction has not committed (and may roll back), and
+occasionally a row twice or not at all while pages split. It is the
+operator's decision, made per source. To let the DBA tell this
+application's sessions apart in `sys.dm_exec_sessions`, the connection
+carries `APP=<DB_APPLICATION_NAME>` as its `program_name`; a source can use
+another name with `options: {APP: ...}` (or `application_name:`).
+
 **Moving a `url_env` source to the structured form.** A source written
 for 6.1 or 6.2 (`url_env: DB_URL_MAIN`, the variable holding a complete
 URL) keeps working unchanged, and may sit beside structured sources in

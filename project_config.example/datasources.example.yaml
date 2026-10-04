@@ -55,6 +55,14 @@
 #                           user id), driver, trusted_connection, server,
 #                           database and odbc_connect are refused: they have
 #                           their own fields, or must never be written here.
+#                           APP is accepted: it is the ODBC keyword that sets
+#                           the session's program_name, so a DBA can pick this
+#                           application's sessions out of
+#                           sys.dm_exec_sessions. Every connection already
+#                           carries APP=<DB_APPLICATION_NAME> (default
+#                           local-sql-agent) unless the URL sets one; write it
+#                           here only to use a different name for one source
+#                           (application_name, below, does the same).
 #
 #   Legacy field (kept for deployments written against 6.1 and 6.2):
 #     url_env             : the NAME of an environment variable holding a
@@ -72,6 +80,23 @@
 #     application_name    : (optional) overrides DB_APPLICATION_NAME for just
 #                           this source's connections, so a DBA can tell
 #                           which source's sessions are which.
+#     nolock              : (optional, true/false, default false) true makes
+#                           every query on this source read its tables
+#                           WITH (NOLOCK): the executor inserts the hint after
+#                           each table reference (and its alias) just before
+#                           the statement is sent. It means DIRTY READS --
+#                           rows another transaction has not committed, and
+#                           occasionally a row twice or not at all -- so turn
+#                           it on only where the DBA requires it. Works in
+#                           both forms. Table hints are T-SQL, so start-up is
+#                           refused when a source sets it and SQL_DIALECT is
+#                           not tsql. Derived tables, CTE names, table
+#                           functions, #temp tables, @table variables,
+#                           INFORMATION_SCHEMA and sys objects, and tables that
+#                           already carry a WITH (...) hint are left as
+#                           written. The audit trail keeps the validated SQL
+#                           (without hints); only the text sent to the server
+#                           changes.
 #
 # Two databases on the SAME server are a supported configuration as two
 # sources, as below: each has its own connection pool, and each query runs
@@ -99,6 +124,8 @@ datasources:
     password_env: DB_PASSWORD_SALES       # .env: DB_PASSWORD_SALES=<raw password>
     options:
       TrustServerCertificate: true        # rendered as TrustServerCertificate=yes
+      # APP: local-sql-agent              # program_name in sys.dm_exec_sessions
+    # nolock: true                        # read every table WITH (NOLOCK): dirty reads
 
   # A second database on the same server: its own source, its own pool.
   inventory:

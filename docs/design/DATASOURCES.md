@@ -92,6 +92,17 @@ question that might touch either one.
   than the deployment's own `SQL_DIALECT` is refused at start-up
   (`database.datasources.validate_datasource_urls`).
 
+- A source may set `nolock: true` to have every table it reads carry
+  `WITH (NOLOCK)`. It is a per-source switch because it changes what a
+  query can see (dirty reads), and it is T-SQL only, so
+  `database.datasources.load_datasources_config` refuses it when
+  `SQL_DIALECT` has no table hints
+  (`DialectProfile.supports_table_hints`). The executor applies it to the
+  routed source's statement just before execution
+  (`database.table_hints.add_nolock_hints`, which inserts text at offsets
+  found with sqlglot rather than regenerating the SQL); the audit trail
+  keeps the validated statement.
+
 ## Tables that live in several sources
 
 A real warehouse pair shares at least one table: a date dimension
