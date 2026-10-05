@@ -25,7 +25,7 @@ and comments explaining every field.
 | `schema.yaml` | Warehouse tables/columns/relationships — also the SQL guard's table/column allowlist | `TABLE_DESCRIPTIONS`, `TABLE_COLUMNS`, `RELATIONSHIPS` |
 | `datasources.example.yaml` | **Optional**, and *not* loaded under this name — template for `project_config/datasources.yaml`, which lists more than one warehouse data source (different servers). Absent entirely (the default): one source, `DB_CONNECTION_URL`, unchanged from every earlier release. See `docs/design/DATASOURCES.md` | `database.datasources` |
 | `api_keys.example.json` | **Optional**, and *not* loaded under this name — template for `project_config/api_keys.json`, the file `API_KEYS_FILE` names: the API key array with every field an entry accepts (`id`, `name`, `key_sha256`, `denied_columns`, `admin`, `operations`, `security`). Copy it, then replace each `key_sha256` with the digest `scripts/issue_api_key.py` prints; the server refuses to start while a placeholder digest is left in. See `docs/deployment-runbook.md` | `API_KEYS_FILE` |
-| `relationships.yaml` | Explicit join paths between tables, for `database.relationship_map` | (loaded directly, not through `knowledge.config_loader`) |
+| `relationships.yaml` | Optional explicit join paths between tables, for `database.relationship_map`. Nothing in the server, the API or the CLI imports that module today (only its tests do), so the prompt's relationships come from `schema.yaml` | (loaded directly, not through `knowledge.config_loader`) |
 | `retrieval_hints.yaml` | Retrieval-ranking overrides (always-include terms, boosts) | consumed by `schema_data.retriever` |
 | `memory_policy.yaml` | Session-memory retention policy | consumed by `session.*` |
 | `session_policy.yaml` | Session/turn composition policy | consumed by `session.*` |
@@ -57,8 +57,9 @@ to it needs a restart. See `docs/design/DATASOURCES.md` for the full
 design, and `docs/deployment-runbook.md` for configuring and verifying it.
 
 With several sources, each `schema.yaml` table names where it lives with
-`datasource:` -- one name, or a list (`datasource: [Sales, Inventory]`) for
-a table that exists, with the same shape, in each of those sources. Run
+`datasource:` -- one name, or a list (`datasource: [sales, inventory]`, the
+names exactly as written in `datasources.yaml`) for a table that exists, with
+the same shape, in each of those sources. Run
 `python scripts/assign_datasources.py` from the repository root to have the
 values worked out from the databases and written to
 `schema.with_datasources.yaml` next to `schema.yaml` for review.
@@ -71,7 +72,9 @@ being about the source); see the template and "Choosing a source per
 question" in `docs/design/DATASOURCES.md`. `PROMPT_RETRIEVAL_TOKEN_BUDGET`
 then applies to each source's prompt separately; run
 `python scripts/prompt_budget.py` from the repository root to see what each
-source's prompt costs in real tokens and which budget to set.
+source's prompt costs in real tokens and which budget to set. The whole
+sequence, with the commands, is `docs/deployment-runbook.md` §16; a source
+that must read its tables `WITH (NOLOCK)` sets `nolock: true` (§16.7).
 
 ## What happens if project_config/ is missing?
 

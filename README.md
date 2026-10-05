@@ -5,8 +5,8 @@
 > Built to run fully on-premise: point `OPENAI_BASE_URL` at a local model and no question, schema, or row leaves your network.
 
 [![CI](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](setup.cfg)
-[![Tests](https://img.shields.io/badge/tests-2%2C620-brightgreen)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen)](setup.cfg)
+[![Tests](https://img.shields.io/badge/tests-5%2C170-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://python.org)
 [![Release](https://img.shields.io/github/v/release/alisadeghiaghili/local-sql-agent)](https://github.com/alisadeghiaghili/local-sql-agent/releases)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)  
@@ -17,7 +17,7 @@
 <sub>The CI and release badges read GitHub directly. Coverage is enforced
 on every push — the build fails below the 90% gate in
 [`setup.cfg`](setup.cfg) — and the coverage and test figures shown were
-measured at v4.10.2 (`pytest tests/ eval/tests --cov`);
+measured at v6.6.1 (`pytest tests/ eval/tests --cov`);
 `tests/test_readme_claims.py` fails the build if the badge ever claims
 more than the gate actually holds. The three purple badges are claims a
 build step enforces, not aspirations: each links to the guard that makes
@@ -92,6 +92,11 @@ than re-querying the warehouse, and returns every assumption it made —
 which measure, which period, which scope — as declared, editable data
 alongside the answer.
 
+A conversation turn also carries `sql_display`: the same statement laid out
+in a fixed house style for reading (`SELECT` alone on its line, aligned
+aliases and joins). It is display only. `sql` is the text that was validated,
+executed and audited, and `/query` and the CLI return it as it is.
+
 ---
 
 ## How it works
@@ -111,7 +116,12 @@ Question (Persian / English)
     └─ ValueRetriever         resolves named values against the warehouse
     │
     ▼
- PromptBuilder   →  [ static prefix — byte-identical, KV-cached ]
+ (several data sources: one is chosen for the question first —
+  keywords, session, retrieval evidence, default — no model call)
+    │
+    ▼
+ PromptBuilder   →  [ static prefix — byte-identical, KV-cached,
+                      one per data source ]
                     [ variable suffix — session, filters, question ]
     │
     ▼
@@ -152,23 +162,24 @@ its KV cache instead of re-reading the schema on every question.
 | 🗂️ | **Many conversations, kept** | A conversation index that survives a restart: sessions, turns and titles persist for `session_retention_days`. Result **rows never touch the disk** — a stored row could not be re-checked against an ACL that changed after it was written. |
 | 📌 | **Cross-session memory** | Standing preferences the analyst *pins* — never inferred from repetition. A closed, config-declared set, surfaced as an editable assumption chip and re-checked against the column ACL on every turn that would apply it. |
 | 🔑 | **Authentication & column ACL** | API keys on every route but `/health`; per-principal `denied_columns` enforced in the guard, not just partitioned in the cache. |
-| 🧑‍💼 | **Admin panel** | Eleven cards. Read-only diagnostics — audit summary, deployment checks, schema drift, vocabulary freshness, per-analyst usage, failed auth — alongside the narrow writes: maintenance mode, feedback triage, cache control, and key issuance / disable / revoke / column ACLs / role grants. Two admin roles split on one rule: anything that changes *who can see what data* is the security admin's. |
+| 🧑‍💼 | **Admin panel** | Twelve sections. Read-only diagnostics — audit summary, deployment checks, schema drift (including a table that is in a different data source than `schema.yaml` says), vocabulary freshness, per-analyst usage, failed auth — alongside the narrow writes: maintenance mode, feedback triage, access-request triage, cache control, and key issuance / disable / revoke / column ACLs / role grants. Two admin roles split on one rule: anything that changes *who can see what data* is the security admin's. |
 | 📝 | **Plain-language summary** | Opt-in per question, as a toggle each analyst sets for themselves — producing one sends up to twenty result rows to the model, and the governance gate still refuses a *remote* backend without `LLM_ALLOW_REMOTE`. |
-| 🖥️ | **Analyst web UI** | Static, no build step. Conversation sidebar, generated SQL with highlighting, result table, chart, assumption chips, Excel export — and each analyst's own key in their own browser, never one shared key baked into the page. |
+| 🖥️ | **Analyst web UI** | Static, no build step. Conversation sidebar, generated SQL in a fixed house layout with highlighting, result table, chart, assumption chips, Excel export — and each analyst's own key in their own browser, never one shared key baked into the page. |
 | 🗄️ | **Multi-dialect** | Generates T-SQL, transpiles, then re-validates in the dialect that will execute. T-SQL and SQLite verified by execution. |
+| 🏛️ | **Several warehouses** | `datasources.yaml` describes each database or server; every statement runs on the one source that has all its tables (a table may live in several), and each question is routed to one source so the model sees only that source's schema. Per-source `WITH (NOLOCK)` where a DBA requires it. See [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md). |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
 | 💾 | **LRU query cache** | Thread-safe TTL + LRU cache, partitioned by visibility scope so two principals never share a result they should not. |
 | 📊 | **Evaluation harness** | Golden set, execution accuracy, error taxonomy, latency percentiles, determinism measurement, baseline regression gate. |
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 2,620 unit + integration tests at 92% coverage, gated at 90%; GitHub Actions CI on Python 3.11–3.13, plus doctests and an offline evaluation gate. |
+| 🧪 | **Test suite** | 5,170 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
 ## Quick start
 
-**Requires:** Python 3.11+, an OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) reachable via `OPENAI_BASE_URL`, SQL Server + ODBC Driver 17
+**Requires:** Python 3.11+, an OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) reachable via `OPENAI_BASE_URL`, SQL Server + an ODBC driver (17 or 18)
 
 ```bash
 # 1. Clone and install
@@ -187,19 +198,13 @@ cp .env.example .env
 #   OPENAI_BASE_URL=http://your-llm-host:8000/v1
 #   OPENAI_MODEL=gpt-oss-20:F16
 #   OPENAI_API_KEY=your-key
-# Querying more than one database? Add project_config/datasources.yaml
-# (host, database, login per source; one DB_PASSWORD_* variable each)
-# instead of a single DB_CONNECTION_URL — see docs/design/DATASOURCES.md.
-# Then run `python scripts/assign_datasources.py` once: it reads which
-# source each schema.yaml table lives in and writes the `datasource:` lines
-# (a list, `[A, B]`, for a table that exists in several) to
-# schema.with_datasources.yaml for you to review.
-# With several sources each question is routed to one of them and the model
-# sees only that source's tables: give each source `description:` and
-# `keywords:` in datasources.yaml (see "Choosing a source per question" in
-# docs/design/DATASOURCES.md); PROMPT_RETRIEVAL_TOKEN_BUDGET then applies per source.
-# `python scripts/prompt_budget.py` shows each source's prompt size in real tokens
-# (it asks the model; --no-model skips that) and the budget to set.
+# Querying more than one database? Describe each source in
+# project_config/datasources.yaml (host, database, login; one DB_PASSWORD_*
+# variable each) instead of setting DB_CONNECTION_URL, then follow
+# docs/deployment-runbook.md §16: it covers `python scripts/assign_datasources.py`
+# (writes each table's `datasource:`), `keywords:` for routing,
+# `python scripts/prompt_budget.py` (sizes PROMPT_RETRIEVAL_TOKEN_BUDGET) and
+# `nolock`. docs/design/DATASOURCES.md explains why it is shaped this way.
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
@@ -213,6 +218,9 @@ cp -r project_config.example project_config
 python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
 # ...and one for yourself, with every admin capability:
 python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin
+# More than one key? Keep the array in project_config/api_keys.json (start from
+# project_config.example/api_keys.example.json) and set API_KEYS_FILE; see
+# docs/deployment-runbook.md §2.
 
 # 5a. CLI
 python app.py
@@ -223,7 +231,8 @@ uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header
 # ...or, once API_HOST/API_PORT are set in .env, the equivalent launcher:
 python -m api
 
-# 6. Before a real deployment, check the four things that stop a week
+# 6. Before a real deployment, run the preflight (database, read-only login,
+#    keys, model, config; once per data source) — it must end with `0 failed`
 python -m scripts.verify_deployment
 ```
 
@@ -253,6 +262,7 @@ python -m scripts.verify_deployment
 | `CACHE_MAX_SIZE` | `256` | Maximum number of cached query results |
 | `LLM_NUM_PREDICT` | `512` | Max tokens the model may generate (`max_tokens`). Too low for a **reasoning** model, which spends this budget thinking before it answers — see `.env.example` |
 | `LLM_EXTRA_BODY` | *(empty)* | JSON object merged into every chat-completions request. How you turn a model's reasoning off, since that is not in the OpenAI schema and every server spells it differently |
+| `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Estimate (`len(text) // 4`, which undercounts Persian by about 15%) up to which the whole schema goes into the prompt as one cacheable, byte-identical prefix; above it the prompt is built per question from retrieved tables. With several data sources it applies to each source's own prefix, not their sum. `python scripts/prompt_budget.py` measures real tokens and prints the value to set |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
 | `API_KEYS_JSON` | *(empty)* | JSON array of `{"id","name","key_sha256","denied_columns"?,"admin"?,"operations"?,"security"?}` — see [Authentication](#authentication-phase-8) |
@@ -278,21 +288,25 @@ what it does and why its default is what it is.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/query` | Run a natural-language query; returns SQL + result set |
+| `POST` | `/query/stream` | The same, streamed as Server-Sent Events |
 | `POST` | `/v2/sessions` | Start a conversation |
 | `GET` | `/v2/sessions/{sid}` | Its transcript |
 | `POST` | `/v2/sessions/{sid}/turns` | Ask, in context; add `?stream=1` for SSE |
 | `PATCH` | `/v2/sessions/{sid}/turns/{tid}/assumptions` | Re-run under edited assumptions — returns a *new* turn, never mutates the old one |
 | `DELETE` | `/v2/sessions/{sid}` | Drop a conversation and free its state |
+| `POST` / `GET` | `/v2/sessions/{sid}/turns/{tid}/feedback` | Flag an answer as wrong, or read the flags raised for it |
+| `POST` | `/v2/sessions/{sid}/turns/{tid}/access-request` | Ask for access to the column a guard rejection denied (`GET /v2/access-requests` lists the caller's own) |
 | `GET` | `/v2/sessions` | The caller's conversation index |
 | `PATCH` | `/v2/sessions/{sid}` | Rename a conversation |
 | `GET` | `/v2/memory` | Standing preferences, and which fields may be remembered |
 | `PUT` | `/v2/memory/{key}` | Pin one preference |
 | `DELETE` | `/v2/memory/{key}` | Forget one |
 | `DELETE` | `/v2/memory` | Forget all |
-| `GET` | `/health` | DB + LLM endpoint reachability probe |
+| `GET` | `/health` | LLM endpoint reachability, and a `SELECT 1` on every data source |
 | `GET` | `/cache/stats` | Cache size, hits, misses, evictions |
 | `POST` | `/cache/invalidate` | Remove a specific cached entry |
 | `POST` | `/cache/clear` | Flush the entire cache |
+| | `/admin/*` | The admin panel's API (`docs/admin-panel-architecture.md`); every route declares the capability it needs |
 
 Every route above except `GET /health` requires `Authorization: Bearer <key>`
 — see [Authentication](#authentication-phase-8). The conversational contract
@@ -307,6 +321,9 @@ is frozen in `docs/api-contract-v2.md`.
 | `ModelTimeoutError` | 504 | LLM request timed out |
 | `ModelUnavailableError` | 503 | LLM endpoint unreachable after all retries |
 | `QueryExecutionError` | 500 | SQL Server execution failure |
+
+These are the common ones; `api/errors.py` has the full hierarchy, and a
+statement the guard refuses carries a `reason` (`docs/api-contract-v2.md` §4).
 
 ---
 
@@ -373,9 +390,13 @@ local-sql-agent/
 │   ├── retrieval_hints.yaml  #   fact tables + trigger phrases
 │   ├── session_policy.yaml   #   the default scope assumption
 │   ├── memory_policy.yaml    #   the closed set of pinnable preferences
-│   ├── relationships.yaml    #   explicit join paths, for database.relationship_map
+│   ├── relationships.yaml    #   optional join paths for database.relationship_map (not imported by the server today)
+│   ├── datasources.yaml      #   optional: several warehouse connections (template in project_config.example/)
+│   ├── api_keys.json         #   optional: the API_KEYS_FILE array (template in project_config.example/)
 │   └── system_prompt.md      #   the LLM's system instructions (not YAML)
 ├── project_config.example/   # Same structure, placeholder data — what CI runs against
+├── appdb/                    # Application database: API keys, role grants, config versions, feedback
+├── core/                     # Shared models, the Persian normaliser, strict YAML loading, the start-up notice
 ├── knowledge/                # Lazy loaders + validation for the YAML above
 │   ├── config_loader.py      #   Pydantic models, fail-closed on a missing file
 │   ├── aliases.py            #   (loader, not data)
@@ -404,6 +425,7 @@ local-sql-agent/
 │   └── example_retriever.py  #   tag-scored few-shot selection
 ├── schema_data/              # Schema registry, populated from schema.yaml
 │   ├── registry.py           #   SchemaRegistry + LRU cache
+│   ├── drift.py              #   schema.yaml vs the live catalogues, incl. tables in the wrong data source
 │   ├── columns.py            #   column allowlist (derived, not authored)
 │   ├── relationships.py      #   FK → JOIN SQL map
 │   └── retriever.py          #   TF-IDF bigram fallback engine
@@ -419,8 +441,9 @@ local-sql-agent/
 │   ├── providers.py          #   OpenAI-compatible provider (retries + back-off)
 │   └── base.py               #   LLMBackend ABC
 ├── security/
-│   ├── sql_guard.py          #   clean_sql / validate_sql / ensure_top / transpile
-│   ├── dialects.py           #   per-dialect profiles (catalogues, timeouts, quoting)
+│   ├── sql_guard.py          #   clean_sql / validate_sql / ensure_top / transpile / pretty_sql
+│   ├── sql_format.py         #   the house layout of the SQL shown to an analyst (display only)
+│   ├── dialects.py           #   per-dialect profiles (catalogues, timeouts, quoting, table hints)
 │   └── auth.py               #   Principal, API-key resolution, cache scope key
 ├── observability/
 │   ├── audit.py              #   compliance-grade records — never result rows
@@ -447,17 +470,21 @@ local-sql-agent/
 │   ├── issue_api_key.py      #   mint a new API key
 │   ├── assign_datasources.py #   write each schema.yaml table's datasource: from the databases
 │   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
+│   ├── migrate_app_db.py     #   move the application database between backends
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis
 │   ├── analyze_misses.py     #   offline retrieval miss diagnostics
 │   └── release_notes.py      #   version, summary and notes for the release workflow
 ├── docs/
 │   ├── api-contract-v2.md    #   the frozen conversational-session contract
-│   ├── admin-panel-architecture.md  # agreed design for the admin panel
-│   ├── deployment-runbook.md #   ordered deployment steps
+│   ├── admin-panel-architecture.md  # design of the admin panel
+│   ├── deployment-runbook.md #   ordered deployment steps, several data sources (§16), upgrading 6.0 to 6.6 (§17)
 │   ├── db-hardening.md       #   server-side hardening for the DBA
+│   ├── dba/                  #   read-only diagnostic kit for the DBA
+│   ├── design/               #   decision records: DATASOURCES.md, TABLE-NAMES.md, UI design
 │   ├── en/tutorial.md        #   full English tutorial
+│   ├── fa/getting-started.md #   Persian setup guide — راهنمای راه‌اندازی
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 2,620 unit + integration tests
+└── tests/                    # 5,170 unit + integration tests
 ```
 
 ---
@@ -470,7 +497,7 @@ pytest tests/test_sql_guard.py -v       # one module
 pytest tests/ eval/tests --cov          # exactly what CI measures
 ```
 
-**2,620 tests at 92% branch coverage**, with the build failing below 90%
+**5,170 tests at 94% branch coverage**, with the build failing below 90%
 (`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
 cover is stated in the same file rather than left to be discovered: the
 interactive wizards and CLI front-ends are excluded by policy — their
@@ -478,8 +505,11 @@ value is in being run by a human — and `database/schema_inspector.py` and
 `relationship_map.py` are excluded as a declared ratchet, with the reason
 and the condition for their return written next to the exclusion.
 
-CI runs on every push via GitHub Actions across Python 3.11, 3.12 and
-3.13, with doctests, coverage, and an offline evaluation gate. It runs
+CI runs on every pull request to `main` and every push to it, via GitHub
+Actions on Ubuntu, Windows and macOS across Python 3.11, 3.12 and 3.13, each
+combination once on the newest releases `requirements.txt` allows and once on
+the exact pins of `requirements.lock`, with doctests, coverage, a dependency
+audit of `requirements.lock` and an offline evaluation gate. It runs
 with `PROJECT_CONFIG_DIR=project_config.example` and no `project_config/`
 present, so the suite never depends on real domain data.
 
@@ -538,6 +568,7 @@ dialect and assumed for another has unknown holes.
 - **Exactly one statement:** the query is parsed and rejected if it is not a single T-SQL statement — stacked statements are refused as a class, not by recognising each one's keyword
 - **Allowlist by AST node, not keyword:** only a `SELECT`/`WITH` root, or a top-level `UNION`/`INTERSECT`/`EXCEPT`, is permitted; `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`, `MERGE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`/`EXECUTE`, `SELECT ... INTO`, and `xp_*`/`sp_*`/`OPENROWSET`/`OPENQUERY`/`OPENDATASOURCE` are refused by node type or function name, wherever they appear in the tree
 - **Table allowlist, strictly enforced:** every table reference must resolve to the allowlist derived from your `project_config/schema.yaml` (case-insensitively, brackets ignored) or be a CTE defined earlier in the same query — an unresolvable table (hallucinated, out-of-domain, or malicious) is refused outright, independent of whether the DB login is itself scoped to just these tables (see `docs/db-hardening.md`). This is why `schema.yaml` is a security file: adding a table widens what generated SQL may touch, and a typo silently narrows the allowlist. A table's schema/db qualifier is checked too, not ignored: a `schema.yaml` key may itself be qualified (`sales.Customer`) for a warehouse with the same table name in more than one schema, and a query that writes some *other* schema in front of an allowlisted table's bare name is refused (`unknown_table`) rather than silently resolved — see `docs/design/TABLE-NAMES.md`
+- **One data source per statement:** with several data sources the guard works out which source has every table the statement reads (`database.routing.choose_datasource`, the same function the executor uses) and refuses the statement as `cross_datasource` when none does; the source is derived from the tables, never taken from the model — see `docs/design/DATASOURCES.md`
 - **Column allowlist, deliberately lenient:** every resolvable qualified column reference is checked against its table's known columns; an unqualified column, or one qualified by a CTE name or derived-table alias, is allowed rather than risk a false-positive rejection — this leniency applies to *columns* only, not table names
 - **Column-level ACL seam:** `validate_sql(sql, denied_columns=...)` refuses any query touching a named column, regardless of table — the foundation for future multi-tenant column policies; `*`/`alias.*` cannot be used to read around an active policy (it is expanded against its resolved table(s) and checked, or refused outright if it can't be resolved with confidence)
 - **No SQL comments:** any comment is refused outright because it is present — its content is never inspected for keywords, since scanning comment text would repeat the same substring-matching mistake this module was rewritten to fix, just in a new place
@@ -652,7 +683,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 2,620 unit and integration tests at 92% coverage; GitHub Actions CI across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 5,170 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
 
 ---
 

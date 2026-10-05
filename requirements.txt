@@ -1,5 +1,6 @@
 # Auction NLQ Engine — dependencies
-# Install: pip install -r requirements.txt
+# Install for a deployment: pip install -r requirements.lock (exact pins);
+# this file states the floors those pins must satisfy.
 #
 # These are floors, not pins -- two installs a month apart can resolve
 # different trees. For anything beyond quick local hacking (a real

@@ -108,7 +108,7 @@
   ├──────────────────┼──────────────────┼───────────────────────┤
   │  TESTS           │  DEPLOYMENT      │  CLOUD                │
   │  ──────          │  ──────────      │  ─────                │
-  │  470+            │  On-Premise      │  OpenAI-compatible   │
+  │  5,000+          │  On-Premise      │  OpenAI-compatible   │
   │  Unit +          │  Only            │  LLM Endpoint        │
   │  Integration     │                  │                       │
   └──────────────────┴──────────────────┴───────────────────────┘
@@ -218,7 +218,7 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  │                                                                │   ║
 ║  │   prompt_engine/builder.py                                     │   ║
 ║  │                                                                │   ║
-║  │   Assembles a single prompt from 7 labeled sections:          │   ║
+║  │   Static prefix + variable suffix (Step 5):                   │   ║
 ║  │                                                                │   ║
 ║  │   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐        │   ║
 ║  │   │ System   │ │ Business │ │ Schema   │ │ Relations│        │   ║
@@ -239,7 +239,7 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  LAYER 5: LLM GENERATION                                             ║
 ║  ┌────────────────────────────────────────────────────────────────┐   ║
 ║  │                                                                │   ║
-║  │   llm/wizard_llm.py ──► OpenAI-compatible API             │   ║
+║  │   llm/router.py ──► OpenAI-compat. API                    │   ║
 ║  │                                                                │   ║
 ║  │   ┌──────────────────────────────────────────────────────┐    │   ║
 ║  │   │                                                      │    │   ║
@@ -268,9 +268,9 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  │                                                                │   ║
 ║  │   Raw SQL ──► clean_sql ──► validate_sql ──► ensure_top       │   ║
 ║  │                               │                                │   ║
-║  │                               ├── Block DDL/DML? ──► ERROR    │   ║
-║  │                               ├── Block injection? ──► ERROR  │   ║
-║  │                               └── Valid SELECT? ──► PASS      │   ║
+║  │                               ├── One SELECT only? ──► ERR    │   ║
+║  │                               ├── Tables/columns ok? ──► ERR  │   ║
+║  │                               └── ACL ok? ──► PASS            │   ║
 ║  │                                                                │   ║
 ║  └──────────────────────────────┬─────────────────────────────────┘   ║
 ║                                 │                                     ║
@@ -282,13 +282,13 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  │   database/connection.py ──► database/executor.py              │   ║
 ║  │                                                                │   ║
 ║  │   ┌──────────────────────────────────────────────────────┐    │   ║
-║  │   │  SQLAlchemy Engine                                    │    │   ║
-║  │   │  pool_size=10 | max_overflow=20 | pre_ping=True      │    │   ║
+║  │   │  SQLAlchemy Engine (one per data source)              │    │   ║
+║  │   │  pool_size=10 | max_overflow=20 | idle ping         │     │   ║
 ║  │   └──────────────────────┬───────────────────────────────┘    │   ║
 ║  │                          │                                     │   ║
 ║  │                          ▼                                     │   ║
 ║  │   ┌──────────────────────────────────────────────────────┐    │   ║
-║  │   │  SQL Server (ODBC Driver 17)                         │    │   ║
+║  │   │  SQL Server (ODBC Driver 17 or 18)                   │    │   ║
 ║  │   │  the warehouse database                              │    │   ║
 ║  │   └──────────────────────┬───────────────────────────────┘    │   ║
 ║  │                          │                                     │   ║
@@ -485,62 +485,24 @@ This section walks through exactly what happens from the moment a user asks a qu
   └─────────────────────────────────────────────────────────┘
 ```
 
+Every HTTP route except `GET /health` requires `Authorization: Bearer <api-key>`.
+
 ---
 
 ### Step 2: Middleware Processing (HTTP Mode Only)
 
-**Module:** `api/middleware.py`
+**Modules:** `api/middleware.py`, `api/auth.py`, `api/concurrency.py`
 
-```
-  Incoming HTTP Request
-        │
-        ▼
-  ┌─────────────────────────────────────────────────────────────┐
-  │                  MIDDLEWARE STACK                            │
-  │                                                             │
-  │   ┌─────────────────────────────────────────────────────┐  │
-  │   │  LAYER 3 (Outermost): RequestIDMiddleware           │  │
-  │   │                                                     │  │
-  │   │  • Assigns unique X-Request-ID to every request     │  │
-  │   │  • Enables request tracking and correlation         │  │
-  │   │  • Adds X-Response-Time header to response          │  │
-  │   └─────────────────────────┬───────────────────────────┘  │
-  │                             │                               │
-  │                             ▼                               │
-  │   ┌─────────────────────────────────────────────────────┐  │
-  │   │  LAYER 2: RateLimitMiddleware                       │  │
-  │   │                                                     │  │
-  │   │  Token-bucket algorithm per client IP:              │  │
-  │   │                                                     │  │
-  │   │  ┌──────────┐    ┌──────────┐    ┌──────────┐     │  │
-  │   │  │ 60 req   │    │ 60 sec   │    │ 10 burst │     │  │
-  │   │  │ / window │    │ window   │    │ capacity │     │  │
-  │   │  └──────────┘    └──────────┘    └──────────┘     │  │
-  │   │                                                     │  │
-  │   │  If exceeded → HTTP 429 "Too Many Requests"         │  │
-  │   └─────────────────────────┬───────────────────────────┘  │
-  │                             │                               │
-  │                             ▼                               │
-  │   ┌─────────────────────────────────────────────────────┐  │
-  │   │  LAYER 1 (Innermost): ConcurrencyMiddleware        │  │
-  │   │                                                     │  │
-  │   │  Semaphore-based concurrency limiter:              │  │
-  │   │                                                     │  │
-  │   │  ┌──────────────────────────────────────────────┐  │  │
-  │   │  │  Slots: [1][2][3][4][5][6][7][8][9][10]     │  │  │
-  │   │  │          ▲                                   │  │  │
-  │   │  │          │ MAX_CONCURRENT_REQUESTS = 10      │  │  │
-  │   │  └──────────────────────────────────────────────┘  │  │
-  │   │                                                     │  │
-  │   │  If all slots full → HTTP 503 "Server Overload"    │  │
-  │   └─────────────────────────┬───────────────────────────┘  │
-  │                             │                               │
-  └─────────────────────────────┼───────────────────────────────┘
-                                │
-                                ▼
-                          Request proceeds
-                          to Step 3
-```
+Every request passes through a stack of middleware before a route runs. From the outermost layer in (`api/server.py` documents the order and why):
+
+| Layer | What it does |
+|---|---|
+| `SecurityHeadersMiddleware` | Outermost, so an error response carries the same security headers as a 200 |
+| `CORSMiddleware` | Answers a browser's preflight; the allowed origins are `CORS_ALLOWED_ORIGINS` (default `http://localhost:8080` and `http://127.0.0.1:8080`) |
+| `RequestIDMiddleware` | Assigns `X-Request-ID` (the same id the audit record carries) and adds `X-Response-Time` (seconds, e.g. `0.412s`) |
+| `AuthMiddleware` | Resolves the API key (`Authorization: Bearer <key>`) to a principal, 401 otherwise; `GET /health` is the one open route |
+| `RateLimitMiddleware` | Token bucket per (principal, IP): `RATE_LIMIT_REQUESTS` (600) per `RATE_LIMIT_WINDOW_SEC` (60) with `RATE_LIMIT_BURST` (40) extra; 429 on excess. Failed authentications have their own small bucket |
+| `ConcurrencyMiddleware` | Innermost: at most `MAX_CONCURRENT_REQUESTS` (10) pipeline requests in flight (`/query`, `/query/stream`, v2 turns, the assumptions `PATCH`); 503 `SERVER_OVERLOAD` beyond that. The slot is held until the response body is fully sent |
 
 ---
 
@@ -549,43 +511,18 @@ This section walks through exactly what happens from the moment a user asks a qu
 **Module:** `api/query_cache.py`
 
 ```
-  Incoming Question + Mode
-        │
-        ▼
-  ┌─────────────────────────────────────────────────────────────┐
-  │                    CACHE LOOKUP                              │
-  │                                                             │
-  │   Cache Key = (question_text, mode)                         │
-  │                                                             │
-  │   ┌──────────────────────────────────────────────────┐     │
-  │   │            In-Memory Cache Store                  │     │
-  │   │                                                   │     │
-  │   │   ┌─────────┬─────────┬─────────┬─────────┐     │     │
-  │   │   │ Entry 1 │ Entry 2 │ Entry 3 │ Entry N │     │     │
-  │   │   │ Q1+full │ Q2+sql  │ Q3+full │ QN+full │     │     │
-  │   │   │ TTL: 5m │ TTL: 5m │ TTL: 5m │ TTL: 5m │     │     │
-  │   │   └─────────┴─────────┴─────────┴─────────┘     │     │
-  │   │                                                   │     │
-  │   │   Max Size: 256 entries                           │     │
-  │   │   Eviction: LRU (Least Recently Used)             │     │
-  │   │   Thread Safety: threading.Lock                   │     │
-  │   └──────────────────────────────────────────────────┘     │
-  │                                                             │
-  └─────────────────────────┬───────────────────────────────────┘
-                            │
-                  ┌─────────┴─────────┐
-                  │                   │
-                  ▼                   ▼
-            ┌──────────┐        ┌──────────┐
-            │  CACHE   │        │  CACHE   │
-            │  HIT     │        │  MISS    │
-            │          │        │          │
-            │ Return   │        │ Continue │
-            │ cached   │        │ to Step  │
-            │ result   │        │ 4        │
-            │ NOW      │        │          │
-            └──────────┘        └──────────┘
+  Cache key = (normalised question, mode, prompt-prefix version, scope key)
+
+  scope key = a hash of the caller's denied_columns (and of any pinned memory
+              that changed the answer): two principals who may see the same
+              data share entries, two who may not never do.
+
+  mode "sql" and requests with interpret=true are not cached.
+  Max size: CACHE_MAX_SIZE (256) entries     TTL: CACHE_TTL_SECONDS (300; 0 = off)
+  Eviction: LRU     Thread safety: a lock around every operation
 ```
+
+A hit returns the stored result immediately: no model call, no database statement, and no source routing, because a hit never routes anything (`docs/design/DATASOURCES.md`, "Result cache"). A miss continues to Step 4.
 
 ---
 
@@ -593,7 +530,7 @@ This section walks through exactly what happens from the moment a user asks a qu
 
 **Module:** `retrieval/context_retriever.py` + 6 sub-retrievers
 
-This is the **most critical step**. Instead of sending the entire database schema to the LLM (which would overwhelm small local models), the system retrieves only the **relevant subset** of knowledge for each question.
+This is the **most critical step**. The retrievers pick the **relevant subset** of the knowledge base for each question. Whether the prompt then shows that subset or, while the whole knowledge base fits `PROMPT_RETRIEVAL_TOKEN_BUDGET`, everything (Step 5), is decided when the prompt is built; the retrieval output also feeds the filters, the value resolution and, with several data sources, the choice of source.
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐
@@ -750,105 +687,42 @@ Each sub-retriever uses a **two-tier matching strategy**:
 
 ### Step 5: Prompt Assembly
 
-**Module:** `prompt_engine/builder.py` + `prompt_engine/templates.py`
+**Modules:** `prompt_engine/builder.py`, `prompt_engine/static_prefix.py`, `prompt_engine/templates.py`
 
-The `PromptBuilder.build()` method assembles a single structured prompt from 7 labeled sections:
+`PromptBuilder.build()` assembles one prompt string from a **static prefix** and a **variable suffix**. One gate decides how the prefix is made, `should_use_static_prefix`, which compares the prefix's token estimate (`len(text) // 4`) with `PROMPT_RETRIEVAL_TOKEN_BUDGET` (default 6000):
 
 ```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │                    PROMPT ASSEMBLY PROCESS                      │
-  │                                                                 │
-  │   ┌─────────────────────────────────────────────────────┐      │
-  │   │                                                     │      │
-  │   │  Section 1: SYSTEM PROMPT                           │      │
-  │   │  ────────────────────────                           │      │
-  │   │  "You are an expert Microsoft SQL Server           │      │
-  │   │   query generator..."                               │      │
-  │   │                                                     │      │
-  │   │  Source: <PROJECT_CONFIG_DIR>/system_prompt.md      │      │
-  │   │                                                     │      │
-  │   ├─────────────────────────────────────────────────────┤      │
-  │   │                                                     │      │
-  │   │  Section 2: BUSINESS RULES                          │      │
-  │   │  ───────────────────────                            │      │
-  │   │  "Ring names must use full formal name..."          │      │
-  │   │  "Persian year starts from Farvardin..."            │      │
-  │   │                                                     │      │
-  │   │  Source: RuleRetriever (Step 4.4)                   │      │
-  │   │                                                     │      │
-  │   ├─────────────────────────────────────────────────────┤      │
-  │   │                                                     │      │
-  │   │  Section 3: DATABASE SCHEMA                         │      │
-  │   │  ────────────────────────                           │      │
-  │   │  Table: Ring                                        │      │
-  │   │    Description: Trading halls on the exchange       │      │
-  │   │    Columns:                                         │      │
-  │   │      - ID: Surrogate primary key                   │      │
-  │   │      - Name: Full trading hall name                 │      │
-  │   │                                                     │      │
-  │   │  Source: SchemaRegistry.build_schema_context()      │      │
-  │   │  (ONLY relevant tables — not full database)         │      │
-  │   │                                                     │      │
-  │   ├─────────────────────────────────────────────────────┤      │
-  │   │                                                     │      │
-  │   │  Section 4: RELATIONSHIPS                           │      │
-  │   │  ──────────────────────                             │      │
-  │   │  JOIN [ref].[Ring] ON                       │      │
-  │   │    [sales].[Order].[RingID] =             │      │
-  │   │    [ref].[Ring].[ID]                        │      │
-  │   │                                                     │      │
-  │   │  Source: RelationshipRetriever (Step 4.3)           │      │
-  │   │                                                     │      │
-  │   ├─────────────────────────────────────────────────────┤      │
-  │   │                                                     │      │
-  │   │  Section 5: DETECTED FILTERS                        │      │
-  │   │  ─────────────────────────                          │      │
-  │   │  Ring: تالار پتروشیمی                              │      │
-  │   │  PersianYear: 1402                                  │      │
-  │   │                                                     │      │
-  │   │  Source: ValueRetriever (Step 4.6)                  │      │
-  │   │                                                     │      │
-  │   ├─────────────────────────────────────────────────────┤      │
-  │   │                                                     │      │
-  │   │  Section 6: EXAMPLES                                │      │
-  │   │  ────────────────                                   │      │
-  │   │  Question: فروش تالار فلزات در ۱۴۰۱                │      │
-  │   │  SQL: SELECT TOP 100 SUM(c.TotalPrice) ...          │      │
-  │   │                                                     │      │
-  │   │  Source: ExampleRetriever (Step 4.5)                │      │
-  │   │                                                     │      │
-  │   ├─────────────────────────────────────────────────────┤      │
-  │   │                                                     │      │
-  │   │  Section 7: USER QUESTION                           │      │
-  │   │  ───────────────────────                            │      │
-  │   │  فروش ماهانه تالار پتروشیمی در 1402                │      │
-  │   │                                                     │      │
-  │   │  Source: Original user input                        │      │
-  │   │                                                     │      │
-  │   └─────────────────────────────────────────────────────┘      │
-  │                                                                 │
-  │                        │                                        │
-  │                        ▼                                        │
-  │                                                                 │
-  │              ┌──────────────────────┐                           │
-  │              │   SINGLE PROMPT      │                           │
-  │              │   STRING             │                           │
-  │              │                      │                           │
-  │              │   Sent to LLM in     │                           │
-  │              │   Step 6             │                           │
-  │              └──────────────────────┘                           │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
+  STATIC PATH (the prefix fits the budget — the default)
+  ┌─────────────────────────────────────────────────────────────┐
+  │  system prompt        <PROJECT_CONFIG_DIR>/system_prompt.md │
+  │  BUSINESS RULES       every rule         (business_rules)   │
+  │  METRICS              every metric       (metrics)          │
+  │  DATABASE SCHEMA      every table        (schema.yaml)      │  byte-identical for
+  │  RELATIONSHIPS        every relationship (schema.yaml)      │  every request, built
+  │  EXAMPLES             every example      (examples)         │  once and cached, so
+  └─────────────────────────────────────────────────────────────┘  the model server can
+  ┌─────────────────────────────────────────────────────────────┐  reuse its KV cache
+  │  DETECTED FILTERS            ValueRetriever (Step 4.6)      │
+  │  RESOLVED WAREHOUSE VALUES   matched against the warehouse, │  the only part that
+  │                              fenced as data, not as orders  │  changes per request
+  │  SESSION CONTEXT             the last turns of a session    │
+  │  USER QUESTION               the original input             │
+  └─────────────────────────────────────────────────────────────┘
+
+  RETRIEVAL PATH (the prefix is over the budget)
+  The same sections, built per question from only the tables, relationships,
+  rules and examples the six retrievers selected (Step 4).
 ```
 
-**Why this matters:** By scoping the prompt to only relevant tables and rules, even small 8B–20B parameter models can generate accurate SQL. Without scoping, the full schema would overwhelm the model's context window.
+**With several data sources** (`project_config/datasources.yaml`) one source is chosen for the question first, with no model call (`retrieval/source_selector.py`: `keywords:`, then the conversation, then retrieval evidence, then the default), and the prompt describes that source only: its tables (those shared with other sources included), the relationships between them, and the examples whose SQL reads only those tables, under one `Data source: <name> — <description>` line. The gate runs per source, so each source has its own cached prefix and its own budget decision; a source over the budget uses the retrieval path restricted to its tables. If the model answers `OUT_OF_SCOPE`, the request is retried once with the next candidate source (`llm/source_routing.py`). With one source none of this runs and the prompt is exactly what it was. See `docs/design/DATASOURCES.md`.
+
+**Why this matters:** an identical prefix lets a local model server skip prefill for everything but the short suffix, which is the latency win. Retrieval remains the escape hatch that keeps a schema too large for the context window usable.
 
 ---
 
 ### Step 6: LLM Generation
 
-**Module:** `llm/wizard_llm.py` → OpenAI-compatible API
+**Modules:** `llm/router.py` → `llm/providers.py` (the CLI's one-shot path uses `llm/wizard_llm.py`) → OpenAI-compatible API
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐
@@ -993,82 +867,36 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
 
 **Module:** `security/sql_guard.py` → `validate_sql()` function
 
+`validate_sql` is **parser-based**: it parses the statement with sqlglot and decides from the syntax tree, not from keywords in the text (`tests/test_sql_guard_bypass.py` holds the bypasses and false positives this replaced). A statement is accepted only if all of these hold; each refusal carries a `reason` that clients and the audit trail use (`docs/api-contract-v2.md` §4):
+
 ```
   Cleaned SQL
        │
        ▼
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │                    SQL VALIDATION PIPELINE                      │
-  │                                                                 │
-  │   ┌─────────────────────────────────────────────────────────┐  │
-  │   │  CHECK 1: SQL is not empty                              │  │
-  │   │                                                         │  │
-  │   │  ┌─────────┐                                            │  │
-  │   │  │ Empty?  │──YES──► RAISE ERROR: "Empty SQL"          │  │
-  │   │  └────┬────┘                                            │  │
-  │   │       │ NO                                               │  │
-  │   │       ▼                                                  │  │
-  │   └─────────────────────────────────────────────────────────┘  │
-  │                                                                 │
-  │   ┌─────────────────────────────────────────────────────────┐  │
-  │   │  CHECK 2: No forbidden keywords                        │  │
-  │   │                                                         │  │
-  │   │  BLOCKED KEYWORDS:                                      │  │
-  │   │  ┌─────────────────────────────────────────────────┐   │  │
-  │   │  │ DELETE │ UPDATE │ INSERT │ DROP   │ ALTER       │   │  │
-  │   │  │ TRUNCATE│ MERGE  │ EXEC   │EXECUTE │ XP_  │ SP_│   │  │
-  │   │  └─────────────────────────────────────────────────┘   │  │
-  │   │                                                         │  │
-  │   │  ┌──────────┐                                           │  │
-  │   │  │ Found?   │──YES──► RAISE ERROR: "Forbidden: DELETE" │  │
-  │   │  └────┬─────┘                                           │  │
-  │   │       │ NO                                               │  │
-  │   │       ▼                                                  │  │
-  │   └─────────────────────────────────────────────────────────┘  │
-  │                                                                 │
-  │   ┌─────────────────────────────────────────────────────────┐  │
-  │   │  CHECK 3: Starts with SELECT or WITH                   │  │
-  │   │                                                         │  │
-  │   │  ┌──────────────────────┐                               │  │
-  │   │  │ SELECT ... or WITH ? │──NO──► RAISE ERROR:           │  │
-  │   │  └──────────┬───────────┘       "Only SELECT/CTE"      │  │
-  │   │             │ YES                                        │  │
-  │   │             ▼                                            │  │
-  │   └─────────────────────────────────────────────────────────┘  │
-  │                                                                 │
-  │   ┌─────────────────────────────────────────────────────────┐  │
-  │   │  CHECK 4: No system catalogue access                   │  │
-  │   │                                                         │  │
-  │   │  BLOCKED:                                               │  │
-  │   │  • INFORMATION_SCHEMA                                   │  │
-  │   │  • SYS. references                                      │  │
-  │   │                                                         │  │
-  │   │  ┌────────────────┐                                      │  │
-  │   │  │ Found?         │──YES──► RAISE ERROR                 │  │
-  │   │  └───────┬────────┘                                      │  │
-  │   │          │ NO                                            │  │
-  │   │          ▼                                               │  │
-  │   └─────────────────────────────────────────────────────────┘  │
-  │                                                                 │
-  │   ┌─────────────────────────────────────────────────────────┐  │
-  │   │  CHECK 5: No LIMIT clause                              │  │
-  │   │                                                         │  │
-  │   │  ┌──────────┐                                           │  │
-  │   │  │ LIMIT ?  │──YES──► RAISE ERROR:                     │  │
-  │   │  └────┬─────┘       "LIMIT is not valid T-SQL"         │  │
-  │   │       │ NO                                               │  │
-  │   │       ▼                                                  │  │
-  │   │  ┌──────────────┐                                        │  │
-  │   │  │   ALL PASS   │                                        │  │
-  │   │  │   ─────────  │                                        │  │
-  │   │  │   Continue   │                                        │  │
-  │   │  │   to Step 9  │                                        │  │
-  │   │  └──────────────┘                                        │  │
-  │   └─────────────────────────────────────────────────────────┘  │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
+  1. exactly one statement                      (stacked statements refused as a class)
+  2. a SELECT/WITH root, or a top-level UNION / INTERSECT / EXCEPT
+       DDL, DML, EXEC, SELECT ... INTO, xp_* / sp_* / OPENROWSET ... refused
+       wherever they appear in the tree
+  3. no comments                                (refused because present)
+  4. no system catalogue                        (INFORMATION_SCHEMA, sys.*, ...)
+  5. every table is on the allowlist derived from schema.yaml (a table with a
+       `columns` map), or a CTE of this query; a schema written in front of a
+       name must match the table's known schema            → unknown_table,
+       a bare name that two schemas share is refused       → ambiguous_table
+  6. every qualified column exists on its table; denied_columns refused
+       (also through * )                                   → denied_column
+  7. function calls: only allowlisted data functions; anything that reads
+       server or session state is refused
+  8. at least one non-CTE table                 → no_table_reference
+  9. one data source can run it: some configured source has EVERY table the
+       statement reads (database.routing.choose_datasource, the same
+       function the executor uses)                         → cross_datasource
+       │
+       ▼
+  accepted → ensure_top() → execute
 ```
+
+`LIMIT` is not on the refusal list: `clean_sql` (Step 7) has already rewritten it to `TOP n`.
 
 ---
 
@@ -1143,6 +971,8 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   └─────────────────────────────────────────────────────────────────┘
 ```
 
+A rejection that no rewrite could satisfy (a policy refusal such as a denied column, or `cross_datasource`) is not re-prompted, and a response cut short by `LLM_NUM_PREDICT` before any SQL is not retried either. With several data sources, the one retry on the next source after an `OUT_OF_SCOPE` answer is outside this correction budget.
+
 ---
 
 ### Step 10: Database Execution
@@ -1166,8 +996,8 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │   │  │  pool_size      = 10    (persistent connections)  │   │  │
   │   │  │  max_overflow   = 20    (burst connections)       │   │  │
   │   │  │  pool_recycle   = 3600s (recycle every hour)      │   │  │
-  │   │  │  pool_pre_ping  = True  (verify before use)      │   │  │
-  │   │  │  fast_executemany = True (batch optimization)     │   │  │
+  │   │  │  idle-aware ping (DB_POOL_PING_IDLE_SECONDS)     │   │  │
+  │   │  │  (SELECT-only: no fast_executemany)               │   │  │
   │   │  │                                                   │   │  │
   │   │  └─────────────────────────────────────────────────┘   │  │
   │   │                                                         │  │
@@ -1181,7 +1011,7 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   │   │     └─ Prevents indefinite blocking                      │  │
   │   │                                                         │  │
   │   │  2. Execute SQL query                                   │  │
-  │   │     └─ Against SQL Server via ODBC Driver 17            │  │
+  │   │     └─ Against SQL Server via ODBC 17 or 18             │  │
   │   │                                                         │  │
   │   │  3. fetchmany(MAX_ROWS_RETURNED)                        │  │
   │   │     └─ Hard row cap: 1000 rows max                      │  │
@@ -1210,19 +1040,7 @@ The `PromptBuilder.build()` method assembles a single structured prompt from 7 l
   └─────────────────────────────────────────────────────────────────┘
 ```
 
-One SQLAlchemy engine per configured data source, cached for the life of
-the process (`database.connection.get_engine(datasource=...)`) — a single
-engine, exactly as pictured above, for a deployment with no
-`datasources.yaml`. Which engine a query above actually runs on is
-derived from its own tables, never chosen by the model: a table may name
-several sources (`datasource: [A, B]`), and a statement runs on a source
-that has every table it reads (the default if it qualifies) — see
-`docs/design/DATASOURCES.md`. With several sources the same file also
-explains how a question is routed to one source *before* the prompt is
-built (`retrieval/source_selector.py`: keywords, then session, then
-retrieval evidence, then the default) so the model sees that source's
-tables only, with one cacheable prefix per source and one `OUT_OF_SCOPE`
-retry on the next source (`llm/source_routing.py`).
+One SQLAlchemy engine per configured data source is cached for the life of the process (`database.connection.get_engine(datasource=...)`); a deployment with no `datasources.yaml` has one, exactly as pictured. Which engine a statement uses is derived from its tables, never chosen by the model: the source that has every table it reads (the default source if it qualifies). With `nolock: true` on that source, the executor inserts ` WITH (NOLOCK)` after each table reference just before sending the text. Routing, the shared-table rule and `NOLOCK` are in `docs/design/DATASOURCES.md`; the operator's procedure is `docs/deployment-runbook.md` §16.
 
 ---
 
@@ -1263,29 +1081,31 @@ retry on the next source (`llm/source_routing.py`).
 
 ### Step 12: Logging
 
-**Module:** `logs/logger.py` + `logs/query_log.py`
+**Modules:** `logs/logger.py` + `logs/query_log.py` (the CLI), `observability/audit.py` (the HTTP API)
 
 ```
-  Every Query Gets Logged:
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │   {                                                            │
-  │     "timestamp": "2026-06-27T14:22:57",                       │
-  │     "question": "فروش ماهانه تالار پتروشیمی در 1402",         │
-  │     "generated_sql": "SELECT TOP 1000 d.PersianMonthName...",  │
-  │     "model_name": "openai:gpt-oss-20:F16",                    │
-  │     "status": "SUCCESS",                                       │
-  │     "row_count": 12,                                           │
-  │     "execution_time_seconds": 3.456,                           │
-  │     "error_message": null,                                     │
-  │     "excel_file": "exports/result_20260627_142257.xlsx"        │
-  │   }                                                            │
-  │                                                                 │
-  │   Written to: logs/query_log_YYYYMMDD.jsonl                    │
-  │   Format: Rotating JSONL (auto-rotation)                       │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
+  CLI — one line per question in logs/query_log.jsonl:
+  {
+    "timestamp": "2026-06-27T14:22:57",
+    "question": "top 5 customers by purchase value in 2024",
+    "generated_sql": "SELECT TOP 5 c.Name ...",
+    "model_name": "openai:gpt-oss-20:F16",
+    "status": "SUCCESS",
+    "row_count": 5,
+    "execution_time_seconds": 3.456,
+    "error_message": null,
+    "excel_file": "exports/result_20260627_142257.xlsx"
+  }
+
+  HTTP API — one record per request in logs/audit_log.jsonl: request and
+  session ids, the principal, the question's tier, the guard verdict and
+  tables touched, the LLM status block (tokens, prefix-cache hit, finish
+  reason), per-stage timings, the configuration version, `datasource` (where
+  the SQL ran) and, with several data sources, `datasource_selection` (which
+  source the model was shown and why). Never result rows.
 ```
+
+Both files rotate by size (`LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`). `scripts/analyze_audit_log.py` aggregates the audit log without question text or SQL (`docs/deployment-runbook.md` §8).
 
 ---
 
@@ -1293,131 +1113,45 @@ retry on the next source (`llm/source_routing.py`).
 
 ### 4.1 Directory Structure
 
-```
-local-sql-agent/
-│
-├── app.py                     # CLI entry point (interactive REPL)
-├── config.py                  # Environment-based configuration (Settings singleton)
-│
-├── api/                       # FastAPI HTTP service layer
-│   ├── server.py              #   App factory, endpoints, middleware registration
-│   ├── runner.py              #   Cache-aware query orchestrator
-│   ├── query_cache.py         #   Thread-safe TTL + LRU cache
-│   ├── models.py              #   Pydantic request/response models
-│   ├── errors.py              #   Error hierarchy → HTTP status mapping
-│   ├── middleware.py          #   Request ID, rate limiting, concurrency control
-│   └── health.py              #   /health endpoint (DB + LLM endpoint probe)
-│
-├── retrieval/                 # Modular retrieval pipeline (6 retrievers)
-│   ├── context_retriever.py   #   Orchestrator → single RetrievalContext
-│   ├── entity_retriever.py    #   Dimension table detection
-│   ├── fact_retriever.py      #   Fact table detection
-│   ├── relationship_retriever.py  # JOIN clause generation
-│   ├── rule_retriever.py      #   Business rule injection
-│   ├── value_retriever.py     #   Filter value extraction
-│   └── example_retriever.py   #   Tag-scored few-shot selection
-│
-├── prompt_engine/             # Prompt construction
-│   ├── builder.py             #   PromptBuilder.build() — assembles final prompt
-│   └── templates.py           #   PROMPT_TEMPLATE — the prompt skeleton
-│
-├── llm/                       # LLM integration
-│   ├── base.py                #   LLMBackend abstract base class
-│   ├── wizard_llm.py          #   OpenAI-compatible client with retry + back-off
-│   └── sql_agent.py           #   Generate → clean → validate → auto-correct loop
-│
-├── security/                  # SQL safety
-│   └── sql_guard.py           #   clean_sql, validate_sql, ensure_top
-│
-├── database/                  # Database connectivity
-│   ├── connection.py          #   SQLAlchemy engine singleton (lazy init)
-│   ├── executor.py            #   Execute SQL → DataFrame (timeout + row cap)
-│   ├── schema_inspector.py    #   Introspect live database schema
-│   └── schema_inspector_cli.py  # CLI for schema inspection
-│
-├── knowledge/                 # Domain knowledge (edit to extend)
-│   ├── aliases.py             #   Trading hall Persian aliases
-│   ├── business_rules.py      #   Domain rules per topic
-│   ├── entities.py            #   Dimension entity catalog
-│   ├── examples.py            #   22+ few-shot NLQ→SQL pairs
-│   ├── metrics.py             #   35+ named metrics with SQL expressions
-│   └── config_loader.py       #   YAML config loader
-│
-├── schema_data/               # Database schema definitions
-│   ├── tables.py              #   Table descriptions (bilingual)
-│   ├── columns.py             #   Column allowlist per table
-│   ├── relationships.py       #   FK → JOIN SQL map
-│   ├── registry.py            #   SchemaRegistry (renders schema blocks)
-│   └── retriever.py           #   TF-IDF bigram fallback engine
-│
-├── exporters/                 # Result export
-│   └── excel_exporter.py      #   DataFrame → timestamped Excel file
-│
-├── logs/                      # Structured logging
-│   ├── logger.py              #   Rotating JSONL logger
-│   └── query_log.py           #   QueryLog data model
-│
-├── core/                      # Shared data models
-│   ├── models.py              #   RetrievalContext, SQLGenerationResult
-│   └── analyze_misses.py      #   Offline retrieval miss diagnostics
-│
-├── project_config/             # Deployment-specific config, git-ignored
-│   └── system_prompt.md       #   Core system instructions for the LLM
-│                               #   (see project_config.example/ for the template)
-│
-├── scripts/                   # Utility scripts
-│   ├── create_db.py           #   Database setup
-│   └── analyze_misses.py      #   Retrieval diagnostics
-│
-├── tests/                     # 427+ unit + integration tests
-│
-├── .env.example               # Environment variable template
-├── requirements.txt           # Python dependencies
-└── README.md                  # Project README
-```
+The README's "Project structure" section is the maintained file-by-file tree. By layer:
+
+| Directory | Role |
+|---|---|
+| `app.py` | CLI entry point (interactive REPL) |
+| `config.py` | Typed `Settings` singleton, read from the environment |
+| `api/` | FastAPI service: `server.py` (app and routes), `runner.py` (cache-aware orchestrator), `v2_routes.py` (conversations), `admin_*.py` (admin panel API), middleware, auth, health, errors |
+| `session/` | Conversational engine: `TurnEngine`, refinement, CTE composition, declared assumptions, persistence |
+| `retrieval/` | The six retrievers, `context_retriever.py` (orchestrator), value resolution, the dimension vocabulary, `source_selector.py` (which data source) |
+| `prompt_engine/` | `builder.py`, `static_prefix.py` (one cacheable prefix per data source), `source_scope.py`, `templates.py` |
+| `llm/` | `router.py` (task routing and fallback), `providers.py` (OpenAI-compatible client with retries), `sql_agent.py` (generate, clean, validate, correct), `source_routing.py` (per-question source and the single `OUT_OF_SCOPE` retry), `wizard_llm.py` (the CLI's one-shot path) |
+| `security/` | `sql_guard.py` (clean, validate, cap, transpile, `pretty_sql`), `sql_format.py` (house layout of displayed SQL), `dialects.py`, `auth.py` |
+| `database/` | `connection.py` (one engine per data source), `datasources.py` (`datasources.yaml`), `routing.py`, `executor.py`, `table_hints.py` (`WITH (NOLOCK)`), `catalogue.py` |
+| `schema_data/`, `knowledge/` | Loaders and validation for `project_config/*.yaml` (`schema_data/registry.py` is the schema allowlist; `drift.py` compares it with the live catalogues) |
+| `appdb/` | Application database: API keys, role grants, config versions, feedback, access requests |
+| `observability/` | Audit records, the LLM status block, stage timings |
+| `exporters/`, `logs/` | Excel / CSV / JSON exports; rotating JSONL logger |
+| `core/` | Shared models, the Persian normaliser, strict YAML loading, the start-up notice |
+| `scripts/` | Operator tools: `verify_deployment.py`, `issue_api_key.py`, `assign_datasources.py`, `prompt_budget.py`, `analyze_audit_log.py`, `analyze_misses.py`, `migrate_app_db.py` |
+| `web/` | Static Persian/RTL client and the admin panel (no build step) |
+| `project_config/` | Deployment-specific domain data, git-ignored (template: `project_config.example/`) |
 
 ### 4.2 Module Dependency Map
 
 ```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │                    MODULE DEPENDENCY MAP                         │
-  │                                                                 │
-  │   app.py ──────────► sql_agent.py ──► wizard_llm.py              │
-  │      │                    │                  │                   │
-  │      │                    │                  └──► OpenAI API     │
-  │      │                    │                                       │
-  │      │                    ├──► context_retriever.py               │
-  │      │                    │         │                             │
-  │      │                    │         ├──► entity_retriever.py      │
-  │      │                    │         ├──► fact_retriever.py        │
-  │      │                    │         ├──► relationship_retriever.py│
-  │      │                    │         ├──► rule_retriever.py        │
-  │      │                    │         ├──► example_retriever.py     │
-  │      │                    │         └──► value_retriever.py       │
-  │      │                    │                                       │
-  │      │                    ├──► prompt_engine/builder.py           │
-  │      │                    │         │                             │
-  │      │                    │         └──► schema_data/registry.py  │
-  │      │                    │                                       │
-  │      │                    ├──► security/sql_guard.py              │
-  │      │                    │                                       │
-  │      │                    └──► database/executor.py               │
-  │      │                              │                             │
-  │      │                              └──► database/connection.py   │
-  │      │                                        │                   │
-  │      │                                        └──► SQL Server     │
-  │      │                                                            │
-  │      ├──► exporters/excel_exporter.py                             │
-  │      └──► logs/logger.py                                          │
-  │                                                                 │
-  │   server.py ──────► runner.py ──► (same as sql_agent.py chain)   │
-  │      │                    │                                      │
-  │      │                    └──► query_cache.py                    │
-  │      │                                                            │
-  │      └──► middleware.py                                           │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
+  app.py ──► llm/wizard_llm.py ──► retrieval ──► prompt_engine ──► llm/providers.py ──► model endpoint
+     │                 │
+     │                 └────────► security/sql_guard.py
+     └──► database/executor.py ──► database/routing.py ──► database/connection.py ──► SQL Server
+                                    (source per statement)   (engine per data source)
+
+  api/server.py ──► api/runner.py ──► llm/sql_agent.py ──► llm/router.py ──► llm/providers.py
+        │                │                  │
+        │                │                  ├──► retrieval (incl. source_selector) ──► prompt_engine
+        │                │                  ├──► security/sql_guard.py
+        │                │                  └──► database/executor.py ──► ... (as above)
+        │                └──► api/query_cache.py
+        ├──► api/v2_routes.py ──► session/engine.py ──► (the same stages)
+        └──► api/middleware.py, api/auth.py
 ```
 
 ---
@@ -1461,6 +1195,8 @@ local-sql-agent/
   │                                                                 │
   └─────────────────────────────────────────────────────────────────┘
 ```
+
+The map shows the original routes. Since then the service gained `POST /query/stream` (the same request as Server-Sent Events), the conversational routes under `/v2/` (sessions, turns, memory, feedback, access requests; `docs/api-contract-v2.md`) and the admin panel's `/admin/` routes (`docs/admin-panel-architecture.md`); the README's "API endpoints" table lists them. Every route except `GET /health` requires `Authorization: Bearer <api-key>`.
 
 ### 5.2 POST /query — Request Modes
 
@@ -1528,165 +1264,68 @@ Every generated SQL query passes through a **multi-layer security pipeline** bef
   │   Raw LLM Output                                               │
   │        │                                                       │
   │        ▼                                                       │
-  │   ┌─────────────────────────────────────────────────────┐      │
-  │   │  LAYER 1: clean_sql()                               │      │
-  │   │  ──────────────────                                 │      │
-  │   │                                                     │      │
-  │   │  • Extract from markdown fences                     │      │
-  │   │  • Remove prose preamble                            │      │
-  │   │  • Convert LIMIT → TOP                              │      │
-  │   │  • Fix TOP DISTINCT order                           │      │
-  │   │                                                     │      │
-  │   └─────────────────────┬───────────────────────────────┘      │
-  │                         │                                       │
-  │                         ▼                                       │
-  │   ┌─────────────────────────────────────────────────────┐      │
-  │   │  LAYER 2: validate_sql()                            │      │
-  │   │  ───────────────────                                │      │
-  │   │                                                     │      │
-  │   │  ┌─────────────────────────────────────────────┐   │      │
-  │   │  │  BLOCKED KEYWORDS:                          │   │      │
-  │   │  │  DELETE │ UPDATE │ INSERT │ DROP             │   │      │
-  │   │  │  ALTER  │TRUNCATE│ MERGE  │ EXEC │EXECUTE   │   │      │
-  │   │  │  XP_    │ SP_                                 │   │      │
-  │   │  └─────────────────────────────────────────────┘   │      │
-  │   │                                                     │      │
-  │   │  ┌─────────────────────────────────────────────┐   │      │
-  │   │  │  BLOCKED PATTERNS:                          │   │      │
-  │   │  │  • INFORMATION_SCHEMA                       │   │      │
-  │   │  │  • SYS. references                          │   │      │
-  │   │  │  • Stacked queries (SQL injection)           │   │      │
-  │   │  │  • LIMIT clause (MySQL syntax)               │   │      │
-  │   │  └─────────────────────────────────────────────┘   │      │
-  │   │                                                     │      │
-  │   │  ALLOWED:                                           │      │
-  │   │  • SELECT ... (read-only)                           │      │
-  │   │  • WITH ... SELECT (CTE)                            │      │
-  │   │                                                     │      │
-  │   └─────────────────────┬───────────────────────────────┘      │
-  │                         │                                       │
-  │                         ▼                                       │
-  │   ┌─────────────────────────────────────────────────────┐      │
-  │   │  LAYER 3: ensure_top()                              │      │
-  │   │  ──────────────────                                 │      │
-  │   │                                                     │      │
-  │   │  If no TOP clause present:                          │      │
-  │   │  Inject TOP 1000 (configurable)                     │      │
-  │   │                                                     │      │
-  │   │  Safety net: guarantees no unbounded result sets    │      │
-  │   │                                                     │      │
-  │   └─────────────────────┬───────────────────────────────┘      │
-  │                         │                                       │
-  │                         ▼                                       │
-  │   ┌─────────────────────────────────────────────────────┐      │
-  │   │  LAYER 4: execute_sql()                             │      │
-  │   │  ───────────────────                                │      │
-  │   │                                                     │      │
-  │   │  • SET LOCK_TIMEOUT (prevent indefinite blocking)   │      │
-  │   │  • fetchmany(MAX_ROWS_RETURNED) — hard row cap      │      │
-  │   │  • All DB errors wrapped in RuntimeError            │      │
-  │   │                                                     │      │
-  │   └─────────────────────┬───────────────────────────────┘      │
-  │                         │                                       │
-  │                         ▼                                       │
-  │                    Safe Result Set                               │
+  │   LAYER 1: clean_sql()                                         │
+  │     • Extract from markdown fences, drop prose preamble        │
+  │     • Convert LIMIT → TOP, fix TOP DISTINCT order              │
+  │        │                                                       │
+  │        ▼                                                       │
+  │   LAYER 2: validate_sql()      (parser-based, Step 8)          │
+  │     • exactly one SELECT/WITH statement                        │
+  │     • table and column allowlist from schema.yaml, schema      │
+  │       qualifier checked, column ACL (denied_columns)           │
+  │     • no comments, no system catalogues, allowlisted functions │
+  │     • one data source can run it (cross_datasource otherwise)  │
+  │        │                                                       │
+  │        ▼                                                       │
+  │   LAYER 3: ensure_top()                                        │
+  │     • inject TOP DEFAULT_TOP_N when there is no row limit      │
+  │        │                                                       │
+  │        ▼                                                       │
+  │   LAYER 4: execute_sql()                                       │
+  │     • runs on the source that has every table                  │
+  │     • SET LOCK_TIMEOUT, driver timeout, always rolled back     │
+  │     • fetchmany(MAX_ROWS_RETURNED): the hard row cap           │
+  │        │                                                       │
+  │        ▼                                                       │
+  │   Result set                                                   │
   │                                                                 │
   └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Security Guarantees Summary
 
-```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │   SECURITY GUARANTEES                                          │
-  │                                                                 │
-  │   ┌───────────────────────────────────────────────────────┐    │
-  │   │                                                       │    │
-  │   │   ✓ Only SELECT queries executed (read-only)          │    │
-  │   │                                                       │    │
-  │   │   ✓ No data modification possible                     │    │
-  │   │                                                       │    │
-  │   │   ✓ Row limits enforced at SQL level (TOP)            │    │
-  │   │     AND application level (fetchmany)                 │    │
-  │   │                                                       │    │
-  │   │   ✓ No hardcoded credentials (env vars only)          │    │
-  │   │                                                       │    │
-  │   │   ✓ SQL injection blocked at validation time          │    │
-  │   │                                                       │    │
-  │   │   ✓ Zero external API calls (100% local)              │    │
-  │   │                                                       │    │
-  │   └───────────────────────────────────────────────────────┘    │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
-```
+- Only read-only `SELECT` statements over allowlisted tables and columns are executed; DDL, DML and procedure calls are refused by syntax-tree node type.
+- A principal's `denied_columns` are enforced in the guard, not only partitioned in the cache.
+- Row limits are enforced at SQL level (`TOP`) and again in the application (`fetchmany`).
+- Every route except `GET /health` requires an API key; keys are stored only as SHA-256 digests.
+- No credentials in code or in versioned config: secrets come from the environment (`datasources.yaml` names only the variable that holds a password).
+- Defence in depth belongs on the server as well: `docs/db-hardening.md` specifies the read-only login, `DENY` grants and Resource Governor group for each warehouse server.
+- With a local model endpoint no question, schema or row leaves the network; a remote endpoint is refused unless `LLM_ALLOW_REMOTE` is true.
+
+The README's "Security model" and "Authentication" sections are the full list.
 
 ---
 
 ## 7. Configuration
 
-All configuration is read from **environment variables** (or a `.env` file):
+All configuration is read from **environment variables** (or a `.env` file); `.env.example` documents every one, and `config.py` carries the reasoning behind each default. The ones most deployments touch:
 
-```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                                                                 │
-  │                    CONFIGURATION MAP                            │
-  │                                                                 │
-  │   ┌────────────────────┬────────────────┬─────────────────┐   │
-  │   │  VARIABLE          │  DEFAULT       │  DESCRIPTION    │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  OPENAI_BASE_URL│  api.openai.   │  OpenAI-compatible │   │
-  │   │                 │  com/v1        │  endpoint          │   │
-  │   ├─────────────────┼────────────────┼────────────────────┤   │
-  │   │  OPENAI_MODEL   │  gpt-4o-mini   │  Model name        │   │
-  │   ├─────────────────┼────────────────┼────────────────────┤   │
-  │   │  OPENAI_API_KEY │  (required)    │  Endpoint API key  │   │
-  │   ├─────────────────┼────────────────┼────────────────────┤   │
-  │   │  DB_CONNECTION_URL │  (required) │  SQLAlchemy        │   │
-  │   │                 │                │  connection        │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  QUERY_TIMEOUT_    │  60            │  Max query time │   │
-  │   │  SECONDS           │                │  (seconds)      │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  MAX_ROWS_RETURNED │  1000          │  Hard row cap   │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  CACHE_TTL_SECONDS │  300           │  Cache TTL      │   │
-  │   │                    │                │  (0=disabled)   │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  CACHE_MAX_SIZE    │  256           │  Max cached     │   │
-  │   │                    │                │  entries        │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  LOG_DIR           │  logs          │  Log directory  │   │
-  │   ├────────────────────┼────────────────┼─────────────────┤   │
-  │   │  EXPORT_DIR        │  exports       │  Export dir     │   │
-  │   └────────────────────┴────────────────┴─────────────────┘   │
-  │                                                                 │
-  └─────────────────────────────────────────────────────────────────┘
-```
+| Variable | Default | Description |
+|---|---|---|
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint (set it to your own for on-premise use) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model name served by the endpoint |
+| `OPENAI_API_KEY` | *(empty)* | Endpoint credential; a local server usually needs none |
+| `DB_CONNECTION_URL` | *(required without `datasources.yaml`)* | SQLAlchemy connection string, without the password |
+| `DB_PASSWORD` | *(empty)* | The raw password for `DB_CONNECTION_URL` |
+| `QUERY_TIMEOUT_SECONDS` | `60` | Max query time (seconds) |
+| `MAX_ROWS_RETURNED` | `1000` | Hard row cap |
+| `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Static prefix up to this estimate, retrieval path above it; per data source |
+| `CACHE_TTL_SECONDS` / `CACHE_MAX_SIZE` | `300` / `256` | Query cache (`0` TTL = disabled) |
+| `API_KEYS_JSON` / `API_KEYS_FILE` | *(empty)* | The API key array, inline or in a file; set one |
+| `AUTH_REQUIRED` | `true` | Fail-closed authentication |
+| `LOG_DIR` / `EXPORT_DIR` | `logs` / `exports` | Log and export directories |
 
-`DB_CONNECTION_URL` above is what a deployment with exactly **one**
-warehouse connection sets — the default, and still the whole story for
-most deployments. Its password goes in `DB_PASSWORD`, raw: the code sets it
-on the parsed URL (`database.datasources.apply_db_password`,
-`URL.set(password=...)`), so nothing is percent-encoded by hand. A password
-written inside the URL itself is used as written (and so must be encoded),
-and one in both places is refused.
-
-A deployment that needs to query more than one database (a second database
-on the same server, another SQL Server instance) instead adds
-`project_config/datasources.yaml`, whose sources **describe the
-connection** — `host`, `port`, `database`, `driver`, `username`, `options`,
-or `trusted_connection: true` for Windows authentication — while `.env`
-holds only the raw password, one variable per source, named by
-`password_env` (`DB_PASSWORD_SALES`, …). `database.datasources.build_url`
-assembles each URL with `sqlalchemy.engine.URL.create`, which escapes the
-password. A source may instead keep the earlier `url_env` form (a variable
-holding a complete URL); the two forms can share one file.
-`DB_CONNECTION_URL` and `DB_PASSWORD` are then unused. Two databases on one
-server are two sources with a pool each; a question that must join across
-them needs one source and a multi-part `db_schema` instead. See
-`docs/design/DATASOURCES.md` for the full design and
-`docs/deployment-runbook.md` §16 for configuring and verifying it.
+`DB_CONNECTION_URL` is what a deployment with exactly **one** warehouse connection sets, and the password goes in `DB_PASSWORD`, raw, so nothing is percent-encoded by hand (`database.datasources.apply_db_password`). A deployment that queries more than one database instead adds `project_config/datasources.yaml`, whose sources describe the connection (host, port, database, driver, login, options, or `trusted_connection: true`) while `.env` holds only the raw password, one variable per source, named by `password_env`; `DB_CONNECTION_URL` and `DB_PASSWORD` are then unused. The design is `docs/design/DATASOURCES.md` and the ordered procedure (assigning each table's `datasource:`, keywords, the token budget, `nolock`) is `docs/deployment-runbook.md` §16.
 
 ---
 
@@ -1725,7 +1364,7 @@ them needs one source and a multi-part `db_schema` instead. See
 
 ```bash
 # Step 1: Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.lock
 
 # Step 2: Configure environment
 cp .env.example .env
@@ -1739,12 +1378,16 @@ python app.py
 
 ```bash
 # Start the FastAPI server
-uvicorn api.server:app --host 0.0.0.0 --port 8000
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header
 
 # Send a query via HTTP
 curl -X POST http://localhost:8000/query \
+  -H 'Authorization: Bearer <your-api-key>' \
   -H 'Content-Type: application/json' \
   -d '{"question": "فروش ماهانه تالار پتروشیمی در 1402", "mode": "full"}'
+# the key comes from: python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
+# (docs/deployment-runbook.md §1-§2); a real deployment also runs
+# python -m scripts.verify_deployment first (§3)
 ```
 
 ---
@@ -1767,7 +1410,7 @@ pytest --cov=. --cov-report=html
 ```
   ┌─────────────────────────────────────────────────────────────────┐
   │                                                                 │
-  │                    TEST SUITE (427+ tests)                      │
+  │                    TEST SUITE (5,000+ tests)                    │
   │                                                                 │
   │   ┌───────────────────┐  ┌───────────────────┐                 │
   │   │  Unit Tests       │  │  Integration      │                 │
@@ -1788,11 +1431,11 @@ pytest --cov=. --cov-report=html
   │   │  • Error recovery │  │  • Invalidation   │                 │
   │   └───────────────────┘  └───────────────────┘                 │
   │                                                                 │
-  │   CI: GitHub Actions (Python 3.13)                             │
+  │   CI: GitHub Actions (3 OSes, Python 3.11-3.13)                │
   │                                                                 │
   └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-*This document describes the Local SQL Agent system as of June 2026.*
+*This document describes the Local SQL Agent system as of release 6.6.1 (October 2026). Where it and the code disagree, the code wins; `README.md`, `docs/deployment-runbook.md` and `docs/design/DATASOURCES.md` are the maintained references.*

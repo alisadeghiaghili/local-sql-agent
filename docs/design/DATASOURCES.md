@@ -1,8 +1,14 @@
 # Multiple warehouse data sources — decision record
 
-Status: **implemented**. This document records why the design looks the
-way it does, what was rejected and why, what is deliberately still out of
-scope, and how the current shape leaves room for it.
+Status: **implemented** (6.1 to 6.6). This document records why the design
+looks the way it does, what was rejected and why, what is deliberately still
+out of scope, and how the current shape leaves room for it. It is the one
+place where data sources are explained in full; the runbook
+(`docs/deployment-runbook.md` §16) is the ordered procedure for an operator
+and links here for the reasoning. The numbered records under "Decisions"
+(DS1 to DS4) summarise the four choices that shape the rest. The display-only
+layout of the SQL shown to an analyst is not a data-source decision and is
+recorded in `docs/design/DESIGN.md` (D13).
 
 ## Context
 
@@ -421,7 +427,11 @@ schema, so there is no other source to show. The retry is one helper,
 `llm.source_routing.generate_with_source_fallback`, called from
 `llm.sql_agent.SQLAgent` and `api.runner` (result, full and SQL-only
 modes) and from `session.engine.TurnEngine`, so the two engines cannot
-drift.
+drift. The CLI (`app.py`) is not one of the callers: it calls
+`llm.wizard_llm.generate_sql`, which picks the source the same way
+(`llm.source_routing.choose_source`) but makes a single model call with no
+correction loop, so a wrong guess there ends as the `OUT_OF_SCOPE` message,
+not as a retry.
 
 ### What it does not change
 
@@ -559,6 +569,123 @@ beside structured sources in one file. To move a source over, copy the
 host, port, database, login and any query parameters out of the URL into
 the YAML fields, put only the raw password in a new `DB_PASSWORD_*`
 variable, and point `password_env` at it.
+
+## Decisions
+
+Four records, in the order the choices were made. Each says what was
+decided, what the alternative was, and what the operator lives with as a
+result. The long form of each is in the section it points to.
+
+### DS1. One data source per statement (6.1)
+
+*Context.* SQL Server joins tables across databases of one instance with a
+three-part name, but not across servers; a linked server is, from this
+application's side, one source whose tables carry four-part names
+(`database.routing`'s module docstring).
+
+*Decision.* A statement runs on exactly one source, and that source is
+derived from the tables the statement reads (`database.routing`), never
+taken from the model's output or the question. A statement for which no
+source has every table is refused before it reaches a connection, with the
+guard reason `cross_datasource`.
+
+*Alternatives.* Letting the model name the source, and a pool per table, are
+rejected in "Alternatives considered and rejected" below. Running one query
+per source and combining the results in the application is the roadmap
+item; `group_tables_by_datasource` is the seam it would start from.
+
+*Consequences.* A question that needs two servers has to be asked as two
+questions. Two databases on one server are two sources, or one source with a
+multi-part `db_schema` when they must be joined ("Decision" above).
+
+### DS2. A table in several sources: the intersection rule (6.5)
+
+*Context.* A date dimension replicated into both databases is the usual
+shared table. With one `datasource:` name per table it had to be assigned
+to one source, and every question joining it to the other source's facts
+was refused although that source has its own copy.
+
+*Decision.* `datasource:` takes a list: a claim that the same table, with
+the same shape, exists in each named source. The sources that can run a
+statement are the intersection of the source sets of every table it reads
+(`database.routing.choose_datasource`). The default source runs it when it
+is a candidate, otherwise the first candidate in `datasources.yaml` order
+(`database.datasources.pick_datasource`), so the choice is the same on every
+call and in every process. An empty intersection is `cross_datasource`. The
+guard and the executor call the same function, so they cannot disagree.
+
+*Alternatives.* Keeping one name per table (the previous behaviour) refuses
+statements that have a place to run. A shared table is never treated as
+matching every source, because a statement could then be sent to a server
+that lacks the statement's other tables; the intersection is the largest
+set in which every table exists.
+
+*Consequences.* The list is a statement about the databases, so it has to be
+true: `scripts/assign_datasources.py` writes it from the catalogues and
+stops without writing when a catalogue cannot be read, because a source it
+cannot see would make a shared table look single. Schema drift checks
+each copy ("Tables that live in several sources"). The value resolver and the
+dimension vocabulary read one copy, not each.
+
+### DS3. The source is chosen per question, before the prompt, without a model call (6.5)
+
+*Context.* A prompt that describes every table of every source is far larger
+than any one answer can use, loses its cacheable prefix once it passes
+`PROMPT_RETRIEVAL_TOKEN_BUDGET`, and invites a statement that mixes sources
+("Choosing a source per question").
+
+*Decision.* `retrieval.source_selector.select_source` decides from signals
+that need no model call, in a fixed order: `keywords:` in `datasources.yaml`,
+then the previous turn's source for a follow-up, then the tables retrieval
+selected and the tables whose values matched, then the default source. The
+prompt is built from that source's tables only, with a static prefix and a
+budget decision of its own per source. The selection is advisory: the guard
+and the router still decide where a statement runs, and a disagreement
+between the two is recorded in the audit record
+(`datasource_selection` beside `datasource`), not refused. If the model
+answers `OUT_OF_SCOPE`, the request is retried once with the next
+candidate, at most one extra model call.
+
+*Alternatives.* Asking the model, keeping every source in one prompt with
+better retrieval, and a classifier or embedding model are rejected in
+"Alternatives considered" under "Choosing a source per question".
+
+*Consequences.* `keywords:` is the operator's knob, and a missing keyword
+costs a model call, not an answer (the audit log's `fallback_from` finds the
+cases). The budget is per source, sized with `scripts/prompt_budget.py`. The
+CLI selects a source but does not retry (see "When the model says
+OUT_OF_SCOPE").
+
+### DS4. `NOLOCK` is inserted into the text, not produced by regenerating the SQL (6.5)
+
+*Context.* Some warehouses are shared with loaders whose locks a DBA does not
+want a read-only application to wait on, and the DBA's rule is that every
+read of a table carries `WITH (NOLOCK)`. The guard has already approved the
+exact text the model wrote.
+
+*Decision.* `nolock: true` is a per-source switch (T-SQL only; it is refused
+when `SQL_DIALECT` has no table hints). Just before execution
+`database.table_hints.add_nolock_hints` parses the statement only to find the
+table references and inserts ` WITH (NOLOCK)` at one offset per reference in
+the original string. Every other character, comment and literal stays as it
+was. The rewritten text is parsed again and must have the same table
+references, each hinted. If the statement cannot be parsed, a position
+cannot be verified or the check fails, the statement runs unchanged and one
+warning per reason is logged: running without the hint takes the locks the
+statement would take without the feature, which is the safe direction. The
+audit record keeps the validated statement; only the text sent to the server
+differs.
+
+*Alternatives.* Rendering the statement back from the parsed tree is
+rejected: regenerating SQL can re-space operators, re-case keywords, rewrite
+`TOP` or `OFFSET` and change a literal's form, so what ran would no longer be
+what the guard approved.
+
+*Consequences.* `NOLOCK` allows dirty reads (uncommitted rows, and
+occasionally a row twice or not at all while pages split), so the operator
+turns it on per source, only where it is required. It applies to every
+statement the executor sends to that source, including the value resolver's
+and the vocabulary prefetch's.
 
 ## Alternatives considered and rejected
 
