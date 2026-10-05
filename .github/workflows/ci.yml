@@ -194,8 +194,16 @@ jobs:
           PROJECT_CONFIG_DIR: project_config.example
         run: python -m eval.cli run --golden eval_data.example/golden.jsonl
 
+      # A coverage upload is a report, not a check: an outage at the
+      # coverage service must not turn a green test run red. The step's
+      # own fail_ci_if_error: false covers an upload the service rejects,
+      # but not the action crashing before it gets that far (a TLS
+      # handshake failure fetching its uploader did exactly that), so the
+      # step as a whole may fail without failing the job. Tests, doctests
+      # and the evaluation gate above still fail it as before.
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' && matrix.deps == 'floors'
+        continue-on-error: true
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
