@@ -156,15 +156,24 @@ class TestReadSheet:
 
     def test_missing_columns_are_named(self, tmp_path):
         path = tmp_path / "s.csv"
-        path.write_text("id,question\r\nc1,q\r\n", encoding="utf-8")
+        path.write_text("id,question\r\nc1,q\r\n", encoding="utf-8", newline="")
         with pytest.raises(ValueError, match="missing column.*proposed_sql"):
             read_sheet(path)
 
     def test_header_case_and_extra_columns_are_tolerated(self, tmp_path):
         path = tmp_path / "s.csv"
         header = ",".join(c.upper() for c in COLUMNS) + ",extra"
-        path.write_text(f"{header}\r\nc1,q,SELECT 1,,correct,success,,n,whatever\r\n", encoding="utf-8")
+        path.write_text(f"{header}\r\nc1,q,SELECT 1,,correct,success,,n,whatever\r\n",
+                        encoding="utf-8", newline="")
         assert read_sheet(path)[0]["verdict"] == "correct"
+
+    def test_blank_rows_are_skipped_and_row_numbers_still_match(self, tmp_path):
+        path = tmp_path / "s.csv"
+        blank = "," * (len(COLUMNS) - 1)
+        path.write_text(",".join(COLUMNS) + "\r\n\r\nc1,q,SELECT 1,,correct,success,,n\r\n"
+                        + blank + "\r\n", encoding="utf-8", newline="")
+        rows = read_sheet(path)
+        assert [(r["id"], r["_row"]) for r in rows] == [("c1", "3")]
 
     def test_row_numbers_match_the_spreadsheet(self, tmp_path):
         path = tmp_path / "s.csv"

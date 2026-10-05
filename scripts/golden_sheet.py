@@ -192,7 +192,8 @@ def read_sheet(path: str | Path) -> list[dict[str, str]]:
     list[dict[str, str]]
         One dict per data row (header names stripped and lower-cased; every
         value stripped of the formula-defusing apostrophe), plus the key
-        ``"_row"`` holding the spreadsheet row number as a string.
+        ``"_row"`` holding the spreadsheet row number as a string. Rows whose
+        cells are all empty are skipped.
 
     Raises
     ------
@@ -229,6 +230,11 @@ def read_sheet(path: str | Path) -> list[dict[str, str]]:
         raise ValueError(f"{path}: missing column(s): {', '.join(missing)}")
     rows: list[dict[str, str]] = []
     for number, cells in enumerate(reader, start=2):
+        if not any(cell.strip() for cell in cells):
+            # A blank line, or a row Excel kept with every cell empty: not a
+            # case. Skipped without renumbering, so "_row" stays the row
+            # number the analyst sees in the spreadsheet.
+            continue
         row = {name: refuse_formula(cells[i].strip()) if i < len(cells) else ""
                for i, name in enumerate(header)}
         row["_row"] = str(number)
