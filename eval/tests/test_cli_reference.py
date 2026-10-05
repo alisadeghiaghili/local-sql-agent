@@ -154,8 +154,13 @@ class TestRunReferenceLive:
         live_baseline = tmp_path / "live_baseline.json"
         assert cli.main(["run", "--golden", str(path), "--live", "--reference", "live",
                          "--save-baseline", str(live_baseline)]) == 0
+        # The fake runs take microseconds, so the relative p95 change between
+        # two of them is scheduling noise; a generous latency threshold keeps
+        # this test about the reference pairing (the same reasoning as
+        # eval/tests/test_cli.py's baseline tests).
         assert cli.main(["run", "--golden", str(path), "--live", "--reference", "live",
-                         "--baseline", str(live_baseline)]) == 0
+                         "--baseline", str(live_baseline),
+                         "--max-latency-p95-increase-pct", "100000"]) == 0
 
     def test_a_regression_against_a_live_baseline_exits_one(self, tmp_path, fake_live):
         good = _golden(tmp_path, CASES[0])
