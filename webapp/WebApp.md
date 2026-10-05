@@ -40,9 +40,14 @@ webapp/
 
 - Python 3.13 (the app is invoked as `py -3.13`)
 - The repo-root `.env` file (copy `.env.example`) with:
-  - `OLLAMA_URL` / `OLLAMA_MODEL` — a running Ollama instance with the model
-    pulled
-  - `DB_CONNECTION_URL` — SQL Server connection string
+  - `OPENAI_BASE_URL` / `OPENAI_MODEL` (and `OPENAI_API_KEY` if the endpoint
+    wants one) — any OpenAI-compatible endpoint serving the model (vLLM, LM
+    Studio, Ollama's `/v1`)
+  - `DB_CONNECTION_URL` and `DB_PASSWORD` — the SQL Server connection, or a
+    `project_config/datasources.yaml` with one `DB_PASSWORD_*` per source when
+    the deployment queries several databases (`docs/deployment-runbook.md`
+    §16); the web app goes through the same pipeline, so it follows
+    whichever the API uses
 - The repo-root dependencies (`api` package) installed
 
 ## Running
@@ -54,7 +59,7 @@ From this folder (`webapp/`):
 pip install -r requirements.txt
 
 # 2. Install the repo-root (NLQ engine) dependencies — once, from the repo root
-pip install -r ..\requirements.txt
+pip install -r ..\requirements.lock
 
 # 3. Create a user account (password is prompted if omitted)
 py -3.13 app.py create-user alice

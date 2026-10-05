@@ -1,10 +1,16 @@
 # Implementation Plan — UI 5.0
 
 > Sequenced TDD plan. Starts only after `docs/design/DESIGN.md` mockups are approved.
+>
+> **Status: delivered in 5.0.0.** Every box in the Definition of done below is
+> ticked; this file stays as the record of the sequence. The version numbers
+> below are the plan's own, as written before the release. The SQL display
+> step (A4) shipped as described; its server-side half, the house layout,
+> arrived in 6.5 and is decision D13 in `DESIGN.md`.
 
-## Current version
+## Current version (when this plan was written)
 
-**4.12.0** (`core/version.py`)
+**4.12.0** (`core/version.py` then; see `CHANGELOG.md` for the version now)
 
 ## Target
 

@@ -177,15 +177,16 @@ isn't there:
 - On any other network failure (backend not running at all), the health
   pills go red with a hint to start `uvicorn api.server:app`.
 
-**CORS:** `api/server.py` now registers `CORSMiddleware`, controlled by
-the `CORS_ALLOWED_ORIGINS` setting (comma-separated origins; empty by
-default, which blocks every cross-origin request). Serving this folder
-from a different origin/port than the API (the normal case when following
-"Quick start" above) requires the operator to set
-`CORS_ALLOWED_ORIGINS=http://localhost:8080` (or whatever origin/port this
-folder is served from) before starting the API — same-origin deployments
-never need this at all. See `docs/api-contract-v2.md` §9 and `config.py`
-for the full setting.
+**CORS:** `api/server.py` registers `CORSMiddleware`, controlled by the
+`CORS_ALLOWED_ORIGINS` setting (comma-separated origins). It defaults to
+`http://localhost:8080` and `http://127.0.0.1:8080`, the origins "Quick
+start" above serves this folder from, so the local layout needs nothing.
+Serving this folder from any other origin or port requires setting
+`CORS_ALLOWED_ORIGINS` to that origin before starting the API (setting it
+replaces the default list rather than adding to it) — same-origin
+deployments never need it. The server logs the effective list at start-up
+(`CORS allowed origins: ...`). See `config.py` for the full setting and
+`docs/deployment-runbook.md` §4 for the failure it prevents.
 
 ## Structure
 
@@ -220,7 +221,7 @@ web/
 │   │                           #   with the admin capabilities). Started
 │   │                           #   read-only in phase 1; phases 4, 6 and 7
 │   │                           #   added narrow, closed-set writes.
-│   ├── index.html               # dashboard shell: eleven cards
+│   ├── index.html               # dashboard shell: twelve sections
 │   ├── admin.css                 # admin-only layout, reuses styles/style.css's tokens
 │   ├── admin.js                   # /admin/* request layer, one _request chokepoint
 │   └── main.js                     # DOM wiring / rendering for each card
@@ -245,7 +246,7 @@ One module owns how generated SQL looks: `js/sql-display.js`.
 | **Copy source of truth** | `Turn.sql_display \|\| Turn.sql`, verbatim. The copy button never reads the DOM. |
 | **First paint** | The streamed `sql` event carries `sql_display` too; `main.js` keeps it on the turn, so what shows before `done` is what `done` brings. |
 | **Rejected SQL** | The «دیدن SQL» reveal shows `guard.rejected_sql_display` when the server sent one, else `guard.rejected_sql` through the formatter above. `rejected_sql` itself is never altered. |
-| **Display** | Multi-line input (backend `pretty_sql`, scenario SQL) is left alone. One-liners go through vendored [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (`language: tsql`, `keywordCase: upper`, `tabWidth: 2`). |
+| **Display** | Multi-line input (the server's `sql_display` from `pretty_sql` and `security/sql_format.py`, whose house layout puts `SELECT` alone on its line and aligns aliases and joins; or scenario SQL) is left alone. One-liners (a statement the server could not lay out, or from an API client that sends none) go through vendored [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (`language: tsql`, `keywordCase: upper`, `tabWidth: 2`). |
 | **Highlight** | Vendored Prism + `js/prism-tsql-patch.js` (classic script): `[Bracketed]` identifiers are one token, `N'…'` includes the `N`. |
 | **Theme** | Fixed always-dark editor palette (`--sql-*` in `styles/style.css`) — keyword blue, number gold, function violet. Not chrome brand hues. |
 

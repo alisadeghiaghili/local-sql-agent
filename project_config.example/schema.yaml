@@ -75,7 +75,9 @@
 #                   tables from two different sources is refused.
 #                   A LIST names every source a table exists in, with the
 #                   same shape in each (a date dimension replicated into
-#                   several databases):  datasource: [Sales, Inventory]
+#                   several databases):  datasource: [sales, inventory]
+#                   (the names are those of datasources.yaml, with the same
+#                   letter case)
 #                   A statement may then run on any source that has ALL
 #                   the tables it reads: the default source if it is one,
 #                   otherwise the first in datasources.yaml order. A

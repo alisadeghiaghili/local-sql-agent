@@ -11,6 +11,38 @@ accuracy and latency numbers. If the deployment stumbles, or the log is
 lost, that week (and the users' confidence) does not come back. Everything
 below is ordered so each step is verified before the next depends on it.
 
+Where to start: a first deployment on one warehouse database follows §1 to
+§8 in order. A deployment that queries more than one database adds §16, in
+the order it gives. An installation already running 6.0 that is moving to
+6.6 follows §17, which sequences the upgrade notes of every release in
+between into one checklist.
+
+### Install the dependencies
+
+On the machine that will run the server, in its virtual environment:
+
+```bash
+pip install -r requirements.lock
+```
+
+Install from `requirements.lock`, not from `requirements.txt`. The lock pins
+every package, transitively, to the exact version this code was validated
+against; `requirements.txt` states floors only, so two installs a month apart
+can resolve different trees with nothing to review. One pin matters for
+security specifically: `sqlglot` is the parser every allow/deny decision of the
+SQL guard (`security/sql_guard.py`) is made from, so an unreviewed `sqlglot`
+upgrade is the one dependency change that can alter security behaviour without
+a line of this repository changing. Re-run the same command after every pull
+(§17 step 2).
+
+CI tests both sets of dependencies: every operating system and Python version
+in its matrix runs the suite once on the newest releases `requirements.txt`
+allows, and once on exactly the pins of `requirements.lock`, so a failure that
+only a newer release causes is seen before anyone deploys it, and what is
+deployed is also what was tested (the locked legs are named `... / locked
+deps`; pip-audit checks the lock once). A checkout older than PR #152 still has
+the single floors-only job.
+
 ## 1. Issue an API key
 
 Every route except `GET /health` requires a named API key
@@ -53,11 +85,16 @@ capability — `docs/admin-panel-architecture.md` §2 splits them:
 |---|---|
 | `admin` | audit summary, deployment checks, query cache, domain config |
 | `operations` or `security` | maintenance mode, feedback, schema drift, dimension vocabulary, per-analyst usage, auth failures |
+| `operations` | keys and access (issue, disable, revoke) |
+| `security` | access requests (the triage queue for a denied-column request) |
 
-So a key holding only `admin` loads a panel where six of the ten sections
-return 403 — which reads as a broken deployment rather than as a
-permissions decision. For a deployment with a single operator, grant all
-three at once:
+The panel has twelve sections. A key holding only `admin` loads four of them
+and gets 403 on the other eight, which reads as a broken deployment rather
+than as a permissions decision: the keys and access-requests sections say
+which capability they are missing, while a 403 on any other section raises
+the page-level banner that calls the key "not an admin key", which is
+misleading for a key that holds `admin`. For a deployment with a single
+operator, grant all three at once:
 
 ```bash
 python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin
@@ -76,7 +113,7 @@ partly-403 panel, so this is checkable at issue time rather than at first
 login. Both admin roles must be bootstrapped from `API_KEYS_FILE` /
 `API_KEYS_JSON` this way:
 the first admin of each kind comes from the environment, never from a web
-flow (§2.3).
+flow (`docs/admin-panel-architecture.md` §2.3).
 
 ## 2. Set the environment
 
@@ -105,16 +142,23 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   (an entry still holding the template's placeholder stops startup with
   `key_sha256 must be a 64-character SHA-256 hex digest`), and set
   `API_KEYS_FILE=project_config/api_keys.json` in `.env`. The template has
-  the shape below, and `denied_columns` takes column names as they appear in
-  `schema.yaml` (`"NationalID"`, not `Customer.NationalID`):
+  the shape below: an analyst entry with a `denied_columns` example and an
+  admin entry with all three capabilities.
 
   ```json
   [
-    {"id": "analyst-1", "name": "Jane Analyst", "key_sha256": "<64 hex>"},
+    {"id": "analyst-1", "name": "Jane Analyst",
+     "key_sha256": "<64 hex>", "denied_columns": ["NationalID"]},
     {"id": "admin-1", "name": "Admin", "key_sha256": "<64 hex>",
-     "admin": true, "operations": true, "security": true}
+     "denied_columns": [], "admin": true, "operations": true, "security": true}
   ]
   ```
+
+  `denied_columns` takes column names as they appear in `schema.yaml`
+  (`"NationalID"`, not `Customer.NationalID`). An entry that leaves the field
+  out gets **no** column restriction (a key issued from the admin panel starts
+  with every column denied instead) and the server logs one warning for it;
+  write `"denied_columns": []` once that is what you mean.
 
   The file is read once at start-up, so **restart the server after editing
   it** (the preflight below runs in its own process and always sees the
@@ -143,7 +187,11 @@ Leave `RATE_LIMIT_*`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`, `AUTH_REQUIRED`,
 and `MAX_CONCURRENT_REQUESTS` at their shipped defaults unless step 3 below
 tells you otherwise for your specific expected concurrency — see
 `config.Settings.rate_limit_requests` / `.log_backup_count` for the
-reasoning behind each default before changing it.
+reasoning behind each default before changing it. `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+(default `6000`) is the exception that is worth measuring:
+`python scripts/prompt_budget.py` shows what your prompt costs and which
+value to set (§16.6 has the steps, and applies per data source when there
+are several).
 
 If the API and the static UI end up on different ports or hosts (the
 `web/` layout described in step 4 below and in `web/README.md` puts them
@@ -174,6 +222,19 @@ unwritable log directory, a `project_config/` that fails to load, or a
 rate limit too tight for your expected number of analysts). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
+
+The checks run in this order: `Settings.validate()` (required settings,
+leftover placeholders, `.env` lines python-dotenv cannot use),
+`Tables map to data sources`, then `Database connectivity`,
+`Login is read-only`, `Row cap` and `Query timeout`, then
+`Tables are in their data source`, `OpenAI-compatible model exists`,
+`API key authentication`, `Audit log directory writable`,
+`Session store directory writable`, `project_config/ loads` (the six domain
+files) and `Rate limit sane for deployment`. With several data sources the four database
+checks run once per source and each name carries the source, as
+`Database connectivity [sales]`; `Tables are in their data source` is skipped
+with one source. The last line is `N passed, N failed, N skipped`, and the
+exit code is 1 when anything failed.
 
 Two optional environment variables sharpen two of the checks without
 changing anything persistent:
@@ -260,8 +321,11 @@ provenance banner (`core/provenance.log_startup_notice`) — confirm it
 appears in the server's log output:
 
 ```
-Auction NLQ Engine — <version/licence line identifying this codebase>
+Local SQL Agent - (c) 2024-2026 Ali Sadeghi Aghili - BUSL-1.1
 ```
+
+(it is the first of a few lines naming the licence terms and the files that
+state them)
 
 Right after it, confirm the CORS line — the one place the effective,
 post-`.env` allowlist is stated plainly, rather than left for the UI to
@@ -274,6 +338,17 @@ CORS allowed origins: http://localhost:8080, http://127.0.0.1:8080
 If the UI's own origin is not in that list (and the UI is not
 same-origin with the API), that is the fix — see the CORS callout in
 step 4 above before assuming anything else is wrong.
+
+With several data sources, also look for one line per source saying which
+prompt path its questions take (logged at start-up, or at first use if that
+comes first):
+
+```
+Prompt path for data source 'sales': static prefix (cacheable) -- 26 table(s), static prefix estimate 5100 tokens, PROMPT_RETRIEVAL_TOKEN_BUDGET 6000 (per source)
+```
+
+`retrieval restricted to its tables` in place of `static prefix (cacheable)`
+means that source's prefix is over the budget; §16.6 says what to do about it.
 
 If neither line appears at all, nothing is wrong with this deployment's
 `.env` — it means logging itself never reached a handler. Both
@@ -291,7 +366,7 @@ when nothing else has configured logging first.
 
 If startup instead exits immediately with `RuntimeError: ...`, the
 preflight in step 3 should have already caught the same problem — go back
-and re-run it. The two most common fail-closed exits, both intentional:
+and re-run it. The three most common fail-closed exits, all intentional:
 
 - `Invalid configuration: ...` — a `Settings.validate()` failure (a
   placeholder left in `.env`, or a `.env` line python-dotenv could not use:
@@ -526,21 +601,24 @@ larger change than a retention window.
 
 A DBA watching `sys.dm_exec_sessions`/a trace sees this application as one
 of possibly many clients. Everything below is a real, periodic or
-per-request round trip to the configured `DB_CONNECTION_URL` — kept here in
-one place, with the setting that controls each, following the 2026
-warehouse-load audit that traced a steady `SELECT 1` stream (plus DDL
-attempts and catalogue scans) back to a few specific sources.
+per-request round trip to a configured warehouse connection
+(`DB_CONNECTION_URL`, or each source in `datasources.yaml`, which has a pool
+and its own traffic) — kept here in one place, with the setting that controls
+each, following the 2026 warehouse-load audit that traced a steady `SELECT 1`
+stream (plus DDL attempts and catalogue scans) back to a few specific
+sources.
 
 | Source | What it sends | How often | Controlled by |
 |---|---|---|---|
-| Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
-| `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
+| Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`, one pool per data source; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
+| `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection (of each data source, when there are several) — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema, on each source a table lives in; plus, only with more than one source and only when some table is missing from its assigned source, one `INFORMATION_SCHEMA.TABLES` query per other source (the "found in ..." hint) | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
-| Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
-| Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column | On first use after startup if `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (default `false`); otherwise lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
-| Relationship-map schema inspection (`database/relationship_map.py`) | A one-time reflection of foreign-key relationships, only if no `project_config/relationships.yaml` is present | At most once per process lifetime (result is cached in memory for the life of the process; never repeats on a timer) | `AUTO_DISCOVER_SCHEMA` (default `false`) |
+| Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, access requests, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
+| Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column, as one single-table statement on the source that column's table routes to (a table listed under several sources is read from one copy: the default source if the table is there, else the first in `datasources.yaml` order) | At start-up when `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (the default; set `false` for a start-up that must not touch the warehouse); afterwards lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
+| Relationship-map schema inspection (`database/relationship_map.py`) | Nothing, in a running deployment. The module reflects foreign keys only if no `project_config/relationships.yaml` exists and `AUTO_DISCOVER_SCHEMA=true`, but the server, the API and the CLI do not import it (the relationships in the prompt come from `schema.yaml`), so the setting causes no warehouse traffic today | Not applicable. Were it wired in, it would run at most once per process lifetime (cached in memory; never on a timer) and read `DB_CONNECTION_URL` itself, not `DB_PASSWORD` or `datasources.yaml` | `AUTO_DISCOVER_SCHEMA` (default `false`) |
+| Operator scripts, run by hand: `scripts/assign_datasources.py` | Two metadata queries per data source, `INFORMATION_SCHEMA.TABLES` and `INFORMATION_SCHEMA.COLUMNS`, names only, no rows | Once per run | Not time-based. `--check` runs the same two queries |
 | Every `/query` request that reaches SQL execution (`database/executor.py`) | The generated, guard-validated `SELECT` itself, inside a transaction | Once per end-user query — this is the real workload the application exists to serve, not overhead | `MAX_CONCURRENT_REQUESTS`, `RATE_LIMIT_*` bound how many of these can be in flight/arriving at once |
 
 ## 13. `pool_pre_ping`: what it costs, and when turning it off is reasonable
@@ -654,26 +732,43 @@ and how to read the result — including the same point §14 makes above:
 usually comes from something else. Hand every configured source's
 server, in turn, to its own DBA if they differ — see §16 below.
 
-## 16. Describing the connection in `datasources.yaml` (optional)
+## 16. Several data sources (optional)
 
-Every step above assumes the default, single-source shape: one
-`DB_CONNECTION_URL` (plus `DB_PASSWORD`). Use `datasources.yaml` when this
-deployment queries more than one database — a second database on the same
-server, another SQL Server instance, a partner's warehouse on its own box
-— or simply wants host, database and driver written in a reviewable file
-instead of one long URL in `.env`. See `docs/design/DATASOURCES.md` for
-the full design and why it is shaped this way.
+Every step above assumes the default shape: one warehouse connection,
+`DB_CONNECTION_URL` plus `DB_PASSWORD`. Add `project_config/datasources.yaml`
+when this deployment queries more than one database (a second database on the
+same server, another SQL Server instance, a partner's warehouse on its own
+box), or when you simply want host, database and driver written in a reviewable
+file instead of one long URL in `.env`.
 
-**One server, two databases: two sources, or one.** Two databases on the
-same server are a supported configuration as **two sources** (same `host`,
-different `database`). Each source has its own connection pool and login,
-and one query still runs on exactly one source. If questions need to
-**join across** the two databases, use **one** source instead and give the
-second database's tables a multi-part `db_schema` (`db_schema:
-"OtherDb.dbo"`, step 3 below), which SQL Server can join with a
-three-part name.
+This section is the order to do it in, with the commands. The reasoning, the
+exact routing rules and what was rejected are in `docs/design/DATASOURCES.md`;
+each step links to the part you need.
 
-**Configuring it.**
+| Step | What | Where |
+|---|---|---|
+| 1 | Choose: two sources, or one source with a multi-part `db_schema` | §16.1 |
+| 2 | Describe each connection, put each raw password in `.env` | §16.2 |
+| 3 | Write each table's `datasource:` with `assign_datasources.py` | §16.3 |
+| 4 | Give each source a `description:` and `keywords:` | §16.4 |
+| 5 | Preflight and restart | §16.5 |
+| 6 | Size `PROMPT_RETRIEVAL_TOKEN_BUDGET` with `prompt_budget.py` | §16.6 |
+| 7 | `nolock: true`, only where the DBA requires it | §16.7 |
+| 8 | Read the admin panel's drift and vocabulary cards | §16.8 |
+| 9 | Watch which source answers | §16.9 |
+
+### 16.1 Two sources, or one
+
+Two databases on the same server are a supported configuration as **two
+sources** (same `host`, different `database`). Each source has its own
+connection pool and login, and one query runs on exactly one source. If
+questions must **join across** the two databases, use **one** source instead
+and give the second database's tables a multi-part `db_schema`
+(`db_schema: "OtherDb.dbo"`), which SQL Server joins with a three-part name.
+A database on another server is always its own source. The statement that
+needs tables of two sources is refused (§16.10).
+
+### 16.2 Describe the connections and set the passwords
 
 1. Copy `project_config.example/datasources.example.yaml` to
    `project_config/datasources.yaml` and describe each real source:
@@ -695,11 +790,12 @@ three-part name.
        password_env: DB_PASSWORD_INVENTORY
    ```
 
-   `port` defaults to 1433 and `driver` to `ODBC Driver 18 for SQL
-   Server`. For Windows authentication write `trusted_connection: true`
-   and leave out the username and `password_env`. This file is versioned
-   like `schema.yaml` and must **never** hold a password; a `password:`
-   key is refused, and so is a credential key under `options`.
+   `port` defaults to 1433 and `driver` to `ODBC Driver 18 for SQL Server`.
+   For Windows authentication write `trusted_connection: true` and leave out
+   the login and `password_env`; `username_env` names a variable that holds the
+   login instead. The file is versioned like `schema.yaml`, so it must never
+   hold a password: a `password:` key is refused, and so is a credential key
+   under `options`. `default` is required once there is more than one source.
 2. Set each source's **raw** password in `.env`, under the variable
    `password_env` names:
 
@@ -708,67 +804,85 @@ three-part name.
    DB_PASSWORD_INVENTORY=...
    ```
 
-   Write the password exactly as the database knows it. Do **not**
-   URL-encode it: the application builds the connection URL and escapes
-   every special character itself. `DB_CONNECTION_URL` and `DB_PASSWORD`
-   are then unused, and no longer required. A missing or empty variable is
-   refused at start-up with a message naming the source and the variable.
-3. In `project_config/schema.yaml`, give every table that is not on the
-   default source a `datasource: <name>` key. A table in a second
-   database on the **same** server that should stay joinable with an
-   existing source's tables is not a new source — give it a multi-part
-   `db_schema: "OtherDb.dbo"` instead and leave `datasource` unset.
+   Write the password exactly as the database knows it and do **not**
+   URL-encode it: the application builds the connection URL and escapes every
+   special character itself. `DB_CONNECTION_URL` and `DB_PASSWORD` are then
+   unused and no longer required. A variable that is missing or empty, a
+   placeholder host, database, login or password, and an application
+   database (`APP_DB_URL`) that points at any of the sources are all refused
+   at start-up, naming the source and never the value.
+3. Create the read-only login on **every** source's server
+   (`docs/db-hardening.md`).
 
-   A table that exists, with the same shape, in more than one source (a
-   date dimension replicated into several databases) takes a list:
-   `datasource: [sales, inventory]` (distinct names, each a
-   configured source). A statement then runs on a source that has **every**
-   table it reads: the default source if it is one of them, otherwise the
-   first in `datasources.yaml` order. A statement reading only the shared
-   table runs on the default source, and so do the value resolver and the
-   dimension-vocabulary prefetch for it (they read one copy, not each).
-   Only when no source has all the tables is the statement refused
-   (`cross_datasource`), with a message listing which tables are available
-   where.
+A source written for 6.1 or 6.2 with `url_env: DB_URL_MAIN` (a variable
+holding a complete URL, password percent-encoded by hand) keeps working and
+may sit beside structured sources; §16.11 says how to move it. Changing
+`datasources.yaml` needs a restart: it is deployment topology, not one of the
+nine files the admin panel's versioned config bundle covers.
 
-   **Don't write these by hand.** From the repository root, with the
-   server's environment active, run
-   `python scripts/assign_datasources.py`. It lists the tables, views and
-   columns of every source (two `INFORMATION_SCHEMA` queries per source,
-   through the application's own read-only engines; no row data, nothing
-   written to a database), matches every `schema.yaml` table to the sources
-   that have it, and writes `schema.with_datasources.yaml` next to
-   `schema.yaml` — your file with every line and comment kept and one
-   `datasource:` line per table (`[A, B]` for a table found in both,
-   `# not found in any data source` under a table found in neither).
-   `schema.yaml` itself is never changed; review the new file, then
-   replace `schema.yaml` with it (`--output PATH` writes elsewhere). Its
-   report also lists the tables found nowhere and the columns `schema.yaml`
-   names that the database does not have. `--check` writes nothing and
-   exits 1 if any table's `datasource:` differs from where it was found,
-   which makes it usable in a deploy pipeline; exit 2 means a source could
-   not be read or the file could not be produced.
+### 16.3 Write each table's `datasource:`
 
-   **If your warehouse has the same table name in more than one schema**
-   (e.g. `sales.Customer` and `ref.Customer`), give each one its own
-   qualified `schema.yaml` key (`sales.Customer:`, `ref.Customer:`)
-   instead of colliding on `Customer:` — see `docs/design/TABLE-NAMES.md`.
-   This applies whether or not you use `datasources.yaml` at all; it is
-   worth doing even for a single-source deployment. Give **every** table a
-   `db_schema`, even a bare-keyed one, while you're there — a table with
-   no qualifier configured at all cannot have its schema checked by the
-   guard, so a query naming the wrong schema for it still resolves.
-4. Restart the server. Like `.env` itself, `datasources.yaml` is
-   deployment config edited on disk, not one of the nine files the admin
-   panel's versioned config bundle covers — a change to it needs a
-   restart, the same as changing `DB_CONNECTION_URL` always did.
+A table with no `datasource:` belongs to the default source, and fails there
+(`Invalid object name ...`) when it is really in another database. A table
+that exists with the same shape in several sources (a date dimension replicated
+into each database) takes a list, `datasource: [sales, inventory]`: distinct
+names, each a configured source, in the same letter case as in
+`datasources.yaml`.
 
-**Choosing a source per question (several sources only).** With more than
-one source each question is first routed to **one** source, and the model is
-shown that source's tables only (the whole schema of that source, with the
-tables it shares with other sources). Nothing changes with one source. Two
-optional keys in `datasources.yaml` help, and both are only about what the
-model sees, never about where a statement runs:
+Do not write these by hand. From the repository root, with the server's
+environment active (the sources' passwords in `.env`):
+
+```bash
+python scripts/assign_datasources.py
+```
+
+It reads the tables, views and columns of every source (two
+`INFORMATION_SCHEMA` queries per source, through the application's own
+read-only engines; names only, nothing is written to a database), matches
+every `schema.yaml` table to the sources that have it and writes
+`schema.with_datasources.yaml` next to `schema.yaml`: your file with every line
+and comment kept and one `datasource:` line per table (`[sales, inventory]` for
+a table found in both, `# not found in any data source` under a table found in
+neither). `schema.yaml` itself is never changed, and `--output PATH` writes the
+proposal elsewhere. The report lists, per source, the tables found only there,
+the shared tables, the tables found nowhere, the tables whose current
+`datasource:` disagrees with what was found, and the columns `schema.yaml`
+names that the database does not have (a column the read-only login cannot see
+through `INFORMATION_SCHEMA` is reported missing too, so check the `DENY` grants
+of `docs/db-hardening.md` before deleting one).
+
+Then:
+
+1. Review `schema.with_datasources.yaml`: look at the tables found nowhere and
+   at every `[A, B]`, because a list asserts that the table has the same shape
+   in each source.
+2. Replace `schema.yaml` with it. `schema.yaml` is the guard's allowlist, so a
+   change to it takes effect at the next restart whichever way it is made
+   (by hand, or through the admin panel's draft and approval).
+3. Run `python scripts/assign_datasources.py --check`. It writes nothing and
+   exits 0 when every `datasource:` matches what was found (a table with none
+   counts as being on the default source), 1 when one differs. Put it in the deploy pipeline to keep the assignments honest. Exit
+   code 2 means a source's catalogue could not be read (the run stops rather
+   than guess, because an unreadable source would make a shared table look
+   single), `schema.yaml` could not be edited, or the output would not
+   validate.
+
+If the same table name exists in several schemas (`sales.Customer` and
+`ref.Customer`), give each its own qualified `schema.yaml` key instead of
+colliding on `Customer:` (`docs/design/TABLE-NAMES.md`); this applies with one
+source too. Give every table a `db_schema`, even a bare-keyed one: a table with
+no qualifier configured at all cannot have its schema checked by the guard.
+
+How a statement that reads a shared table is routed (the intersection rule)
+is in `docs/design/DATASOURCES.md`, "Tables that live in several sources" and
+decision DS2.
+
+### 16.4 Help the router with `description:` and `keywords:`
+
+With more than one source each question is routed to **one** source before
+the prompt is built, and the model is shown that source's tables only. Nothing
+changes with one source. Two optional keys per source help; both are about what
+the model sees, never about where a statement runs:
 
 ```yaml
 datasources:
@@ -780,128 +894,309 @@ datasources:
     keywords: [stock level, reorder, موجودی, انبار]
 ```
 
-- `keywords` match the question as whole words, after Persian/Arabic letter
-  folding, digit folding, ZWNJ removal and case folding; `stock` does not
-  match `stockholder`, and a plural or a prefixed form is another word, so
-  list each form you expect. A list of non-empty strings with no repeats;
-  anything else stops the server at start-up with the source's name.
-- Without a keyword hit the choice follows the conversation (a follow-up
-  question stays on the previous question's source), then the tables the
-  retrieval layer finds for the question, then the default source. If the
-  model answers `OUT_OF_SCOPE`, the request is retried **once** with the next
-  candidate source (one extra model call at most), so a wrong guess costs a
-  call rather than an answer. See `docs/design/DATASOURCES.md`, "Choosing a
-  source per question".
-- **The token budget now applies per source.**
-  `PROMPT_RETRIEVAL_TOKEN_BUDGET` (default 6000, unchanged) is compared with
-  each source's own prompt-prefix estimate, not the sum: a source under it
-  uses its cacheable static prefix (fast warm requests through the model
-  server's prefix cache), a source over it uses retrieval restricted to its
-  tables. The server logs one line per source at start-up:
-  `Prompt path for data source 'sales': static prefix (cacheable) -- 26
-  table(s), static prefix estimate 5100 tokens, PROMPT_RETRIEVAL_TOKEN_BUDGET
-  6000 (per source)`. To size the budget, read those estimates and remember
-  that the estimator (`len(text) // 4`) **undercounts Persian text by roughly
-  15%**: the real prompt of a source whose estimate is 5,100 is about 5,900
-  tokens. Set the budget to at least the largest estimate you want on the
-  static path, leave room for the question and the answer in the model's
-  context window, and prefer moving tables to another source over raising the
-  budget until a very large prompt is slow to prefill.
-  **`python scripts/prompt_budget.py` does this sizing for you.** Run it from
-  the repository root with the server's environment active: it builds each
-  source's prefix as the server does, asks the model endpoint for the real
-  `prompt_tokens` (one chat completion per source with `max_tokens=1`;
-  `--no-model` skips it, `--timeout` allows for a slow cold prefill), reads the
-  context length from `GET /models` (or `--context-length N`), checks that
-  each source's real tokens + `--question-room` (default 2000) +
-  `LLM_NUM_PREDICT` fit it, and prints the `PROMPT_RETRIEVAL_TOKEN_BUDGET=`
-  line to put in `.env` (largest estimate that fits, plus `--headroom`, default
-  10%, rounded up to a multiple of `--round`, default 500) with each source's
-  path now and after. A source that cannot fit is left out of the
-  recommendation and must stay on the retrieval path (exit code 1). Counting
-  real tokens warms the model server's prefix cache for each source, so run it
-  before opening the service to users rather than during a busy hour. See
-  `docs/design/DATASOURCES.md`, "One path per source, and the token budget".
-- Each audit record carries `datasource_selection` (`chosen`, `reason`,
-  `candidates`, `fallback_from`); `grep` the audit log for
-  `"fallback_from": "` followed by a name to find the questions that needed
-  the retry, which usually means a keyword is missing.
+`keywords` match the question as whole words after Persian/Arabic letter
+folding, digit folding, ZWNJ removal and case folding: `stock` does not match
+`stockholder`, and a plural or a prefixed form is another word, so list each
+form you expect. The value is a list of non-empty strings with no repeats
+(two spellings that fold to the same text are a repeat); anything else stops
+the server at start-up, naming the source. Without a keyword hit the choice
+follows the conversation (a follow-up stays on the previous question's
+source), then the tables retrieval finds for the question, then the default
+source. If the model answers `OUT_OF_SCOPE` the request is retried **once**
+with the next candidate (one extra model call at most); the CLI does not
+retry. The full rules are in `docs/design/DATASOURCES.md`, "Choosing a source
+per question".
 
-**Reading with `WITH (NOLOCK)`.** If the DBA requires every table read by
-this application to carry `WITH (NOLOCK)`, set `nolock: true` on that
-source (both the structured and the `url_env` form accept it; it defaults
-to `false`). Just before a statement is executed on that source,
-`database.table_hints.add_nolock_hints` inserts ` WITH (NOLOCK)` after each
-physical table reference (after the alias, when there is one) in `FROM`,
-every `JOIN`, subqueries, CTE bodies and each branch of a `UNION`. The rest
-of the text is not touched. CTE names, derived tables, table-valued
-functions, `#temp` tables, `@table` variables, `INFORMATION_SCHEMA` and
-`sys` objects, and tables that already have a `WITH (...)` hint are left as
-they are. A statement that cannot be parsed, or whose rewrite does not pass
-a second parse, is executed unchanged and a warning naming the reason is
-logged once. The audit trail's `generated_sql` is still the validated SQL
-without hints; the hinted text is only what the server receives. Table
-hints are T-SQL, so start-up is refused if a source sets `nolock: true` and
-`SQL_DIALECT` is not `tsql`. **`NOLOCK` allows dirty reads**: a query can
-see rows another transaction has not committed (and may roll back), and
-occasionally a row twice or not at all while pages split. It is the
-operator's decision, made per source. To let the DBA tell this
-application's sessions apart in `sys.dm_exec_sessions`, the connection
-carries `APP=<DB_APPLICATION_NAME>` as its `program_name`; a source can use
-another name with `options: {APP: ...}` (or `application_name:`).
+### 16.5 Preflight and restart
 
-**Moving a `url_env` source to the structured form.** A source written
-for 6.1 or 6.2 (`url_env: DB_URL_MAIN`, the variable holding a complete
-URL) keeps working unchanged, and may sit beside structured sources in
-one file. To move it: copy the host, port, database, login and query
-parameters (`TrustServerCertificate=yes` and the like, which become
-`options`) from the URL into the YAML; put only the raw, un-encoded
-password in a new `DB_PASSWORD_*` variable; replace `url_env` with
-`password_env`; restart and run `python -m scripts.verify_deployment`.
-Remove the old `DB_URL_*` variable afterwards.
+```bash
+python scripts/verify_deployment.py
+```
 
-**Verifying it.** `python -m scripts.verify_deployment` (step 3 above)
-runs every database check once per configured source automatically —
-`Database connectivity [sales]`, `Database connectivity [inventory]`, and so
-on for the read-only-login, row-cap and query-timeout checks — plus one
-new check, `Tables map to data sources`, confirming every `schema.yaml`
-table's `datasource:` (if any) actually names a configured source, and
-`Tables are in their data source`, which fails with the exact
-`datasource:` line to write — `stock_dim.Broker: not in sales, found
-in inventory — set datasource: inventory` — for a table whose columns are
-all missing from the source `schema.yaml` assigns it to while another
-source has it (skipped with one source). The admin panel's non-deep
-deployment checks (`GET /admin/health/checks`, and its "deep checks"
-button) expand the same way; the placement check reflects every source's
-catalogue, so the panel runs it only with "deep checks" — its schema-drift
-card shows the same finding at any time (it lists the table with the value
-to write under "جدول در منبع دادهٔ دیگری است").
+Every database check runs once per source (`Database connectivity [sales]`,
+`Database connectivity [inventory]`, then the same for `Login is read-only`,
+`Row cap` and `Query timeout`). Two checks are specific to several sources:
 
-**What `/health` shows.** With one source, `/health`'s `database_detail`
-field is exactly what it always was (e.g. `"SELECT 1 succeeded"`). With
-more than one, it names each source in turn:
+- `Tables map to data sources` confirms every table's `datasource:` (if any)
+  names a configured source.
+- `Tables are in their data source` fails, with the exact line to write, for a
+  table whose columns are all missing from the source `schema.yaml` assigns it
+  to while another source has it: `stock_dim.Broker: not in sales, found in
+  inventory — set datasource: inventory`. It reads every catalogue, so the
+  admin panel runs it only under "deep checks" (§16.8).
+
+`0 failed` before you go on (§3). Restart the server, and confirm the
+`Prompt path for data source '<name>'` line for each source (§5).
+`GET /health` then names every source in `database_detail`:
 
 ```
 sales: SELECT 1 succeeded; inventory: SELECT 1 succeeded
 ```
 
-and `database` (the boolean) is `true` only when **every** configured
-source answered — one source being down is enough to flip the whole
-field to `false`, with the detail string still naming exactly which one.
+and `database` is `true` only when **every** source answered: one source being
+down flips the whole field to `false`, with the detail naming which one.
 
-**A query spanning two sources.** A generated query whose tables belong
-to two different sources is refused before it ever opens a connection —
-the guard rejects it with reason `cross_datasource`, and the web UI shows
-an analyst-facing Persian sentence explaining that the question needs
-data from two separate servers and asking for it to be split. This is
-expected, not a bug to investigate: see `docs/design/DATASOURCES.md`'s
-roadmap section for why combining sources in one answer is deliberately
-not supported yet. A table listed under several sources counts for each of
-them, so a statement mixing it with tables of one source is not refused;
-the refusal names every source with its tables, and says which tables are
-available in several.
+### 16.6 Size `PROMPT_RETRIEVAL_TOKEN_BUDGET`
 
-## 17. Measuring accuracy on the real warehouse, and gating an upgrade on it
+The budget (default `6000`) is compared with **each source's own** static-prefix
+estimate, not the sum: a source under it uses its cacheable static prefix (fast
+warm requests through the model server's prefix cache), a source over it uses
+retrieval restricted to its tables. The estimator is `len(text) // 4`, which
+undercounts Persian by roughly 15%. Do not work that out from the log lines;
+run, from the repository root with the server's environment active:
+
+```bash
+python scripts/prompt_budget.py
+```
+
+It builds each source's prefix as the server does, asks the model endpoint for
+the real `prompt_tokens` (one chat completion per source with `max_tokens=1`),
+reads the context length from `GET /models`, checks that each source's real
+tokens plus room for the question plus `LLM_NUM_PREDICT` fit it, and prints the
+exact line for `.env`:
+
+```
+PROMPT_RETRIEVAL_TOKEN_BUDGET=6000
+```
+
+with each source's path now and after. Put that line in `.env` and restart.
+
+- Run it before the service is opened to users, not in a busy hour: counting
+  real tokens prefills each prefix once, which warms the model server's prefix
+  cache (a cold prefill of a large prefix can take about a minute, hence
+  `--timeout`, default 300 seconds).
+- `--no-model` never contacts the endpoint (give `--context-length N` for the
+  fit check); `--json` prints one JSON document; `--headroom` (default 10%),
+  `--round` (default 500) and `--question-room` (default 2000) tune the
+  recommendation. Pass `--context-length` too when the model server divides its
+  context between parallel slots, because it may accept less per request than
+  it reports.
+- A source that cannot fit the context window is left out of the
+  recommendation and must stay on the retrieval path; the exit code is then 1.
+  Moving some of its tables to another source usually helps more than raising
+  the budget.
+- Exit code 2 means the configuration could not be loaded or an option is
+  invalid. No API key or URL credential is ever printed, and an endpoint that
+  is not trusted is sent nothing unless `LLM_ALLOW_REMOTE` is true.
+
+How the numbers are derived, and the same reasoning by hand, is in
+`docs/design/DATASOURCES.md`, "One path per source, and the token budget".
+
+### 16.7 Reading with `WITH (NOLOCK)`
+
+If the DBA requires every table read by this application to carry
+`WITH (NOLOCK)`, set `nolock: true` on that source (both the structured and the
+`url_env` form accept it; it defaults to `false`). Just before a statement is
+sent to that source, ` WITH (NOLOCK)` is inserted after each physical table
+reference (after the alias, when there is one) in `FROM`, every `JOIN`,
+subqueries, CTE bodies and each branch of a `UNION`. The rest of the text is
+not touched. This applies to every statement the executor sends to that
+source: the generated query, and also the value resolver's and the vocabulary
+prefetch's reads. CTE names, derived tables, table-valued functions, `#temp` tables, `@table`
+variables, `INFORMATION_SCHEMA` and `sys` objects, and tables that already have a
+`WITH (...)` hint are left as they are (`database/table_hints.py` lists
+everything). A statement that cannot be parsed, or whose rewrite does not pass a
+second parse, is sent unchanged and one warning naming the reason is logged. The
+audit trail's `generated_sql` is the validated SQL without hints.
+
+Table hints are T-SQL, so start-up is refused if a source sets `nolock: true`
+and `SQL_DIALECT` is not `tsql`; anything but a YAML `true` or `false` is
+refused naming the source. **`NOLOCK` allows dirty reads**: a query can see
+rows another transaction has not committed (and may roll back), and
+occasionally a row twice or not at all while pages split. It is the operator's
+decision, made per source, and needs a restart like the rest of
+`datasources.yaml`. To let the DBA tell this application's sessions apart in
+`sys.dm_exec_sessions`, every connection carries `APP=<DB_APPLICATION_NAME>` as
+its `program_name`; a source can use another name with `options: {APP: ...}` (or
+`application_name:`). Why the hint is inserted rather than produced by
+regenerating the SQL: `docs/design/DATASOURCES.md`, decision DS4.
+
+### 16.8 Reading the admin panel
+
+Open `http://<ui-host>/admin/` with a key that holds the capabilities of §1.1.
+Two cards matter for data sources, and a third helps when something looks off.
+Both are read-only and apply nothing by themselves. The drift card reads
+catalogues, so it loads when the panel opens and on its own refresh button, not
+on the 30-second timer (its result is cached for
+`ADMIN_EXPENSIVE_CACHE_TTL_SECONDS`); the vocabulary card reads in-process
+bookkeeping and follows the timer.
+
+**Schema drift** (`GET /admin/schema-drift`; operations or security). It
+compares `schema.yaml` with each source's live catalogue and shows, in this order:
+
+- *جدول در منبع دادهٔ دیگری است*: a table every one of whose columns is missing
+  from a source it is assigned to while another source has it, with the
+  source it is missing from, the source where it was found and the value to
+  write: `datasource: inventory`, or `datasource: [sales, inventory]`. This is
+  the misplaced-table finding of §16.5, shown at any time. It costs one
+  `INFORMATION_SCHEMA.TABLES` query per other source, and only when such a
+  table exists.
+- *فقط در انبار داده*: tables and columns the warehouse has that `schema.yaml`
+  does not. They cannot be queried, because the guard refuses anything outside
+  the allowlist.
+- *فقط در schema.yaml*: tables and columns `schema.yaml` lists that the warehouse
+  no longer has. A query that uses one fails when it runs.
+- *نوع ستون تغییر کرده*: a column whose type changed since the previous time
+  the check ran. The first run has no baseline and says so.
+
+A table listed under several sources is compared on each of them, and a
+column missing from one copy reads `Table.Column [source]`. Fixing a finding
+is an edit of `schema.yaml`: an operations key proposes it as a draft, a
+security key approves it, and the guard picks it up at the next restart.
+
+**Dimension vocabulary** (`GET /admin/vocabulary`; operations or security to
+read, operations to refresh). One row per prefetched dimension column
+(`prefetchable_columns` in `schema.yaml`), with `table.column`, a status, the
+number of values, the time of the last refresh and a «بازخوانی» button:
+
+- *تازه*: fetched within `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`).
+- *کهنه*: older than that. It is still used, and a background refresh is
+  triggered by the next question that needs it.
+- *هرگز*: never fetched. A question that names this dimension cannot be
+  checked against its values, so the answer is not filtered by the value and
+  the analyst gets a warning saying so, until a refresh succeeds. Such a
+  question also starts a background refresh itself (after a failed attempt, at
+  most one automatic retry a minute), so a transient failure mends on its own;
+  «بازخوانی» tries at once. With `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true`
+  (the default) this should only appear after a failed warm-up, which is logged
+  and does not stop the server.
+- *آخرین تلاش ناموفق*: the last attempt, automatic or manual, failed. Press
+  «بازخوانی» and read the message: it is the database's own error for the
+  source that holds the table.
+
+With several sources a column is read from one copy of its table, the default
+source when the table lives there, otherwise the first source listed in
+`datasources.yaml`. A hall or product added to the warehouse and never
+refreshed makes value resolution miss silently, which is why the card exists.
+
+**Deployment checks** (`GET /admin/health/checks`; `admin`). The same checks as
+§3, once per source. The panel leaves out three on its own (the rolled-back
+`CREATE TABLE`, the `WAITFOR` probe, and `Tables are in their data source`)
+unless an operator presses "deep checks" and confirms; the command line always
+runs all of them.
+
+### 16.9 Watch which source answers
+
+Each audit record carries `datasource` (where the generated SQL routed) and
+`datasource_selection` (`chosen`, `reason`, `candidates`, `fallback_from`;
+`null` with one source and for an answer served from the cache). `reason` is
+`keyword`, `session`, `retrieval` or `default`. To find the questions that
+needed the one retry, which usually means a keyword is missing:
+
+```bash
+grep '"fallback_from": "' logs/audit_log.jsonl
+```
+
+`prefix_cache_hit` in the audit `llm` block is measured against the chosen
+source's own prefix estimate.
+
+### 16.10 A query that spans two sources
+
+A statement is refused before it opens a connection (the guard reason
+`cross_datasource`, with an analyst-facing Persian explanation asking for the
+question to be split) only when **no** source has every table it reads. The
+refusal names every source with its tables and says which tables are available
+in several. This is expected, not a bug to investigate: combining sources in
+one answer is not supported yet (`docs/design/DATASOURCES.md`, "Roadmap"). A
+table listed under several sources counts for each of them, so a statement
+mixing it with the tables of one source is not refused.
+
+### 16.11 Moving a `url_env` source to the structured form
+
+A source written for 6.1 or 6.2 keeps working unchanged. To move it: copy the
+host, port, database, login and query parameters (`TrustServerCertificate=yes`
+and the like, which become `options`) from the URL into the YAML; put only the
+raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
+with `password_env`; restart and run `python scripts/verify_deployment.py`.
+Remove the old `DB_URL_*` variable afterwards.
+
+## 17. Upgrading from 6.0 to 6.6
+
+One checklist for an installation that is running 6.0.0 and is moving to
+6.6.1. It puts the **Upgrading** notes of 6.0.1 to 6.6.1 in the order to do
+them; `CHANGELOG.md` has each release's full text. From 5.x, do the 6.0.0
+notes first: copy `prompts/system_prompt.md` to
+`<PROJECT_CONFIG_DIR>/system_prompt.md` before the first start (the server
+refuses to start without it), and check a relative `PROJECT_CONFIG_DIR`,
+which is now resolved against the repository root.
+
+Steps 1 to 4 and 9 apply to every installation. Steps 5 to 8 are each
+optional: do the ones that fit (a password move, a key file, a UI on another
+origin, several databases).
+
+1. **Back up** `.env` and `project_config/`. Both are outside the repository.
+2. **Pull, then re-run the install.** Every upgrade starts with
+   `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
+   `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
+   python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
+   loads its first variable; 6.3.0: urllib3 2.8.0).
+3. **Run the preflight before restarting**, in its own process:
+   `python scripts/verify_deployment.py` (§3). Two releases made the server
+   refuse input it used to accept silently, and this is where each refusal shows
+   up with its cause:
+   - *6.3.1, a YAML key written twice.* `[datasources.yaml] is not valid YAML:
+     duplicate key 'datasources' (first on line 12, again on line 21)`. A
+     duplicate in `datasources.yaml` or `schema.yaml` stops the server; one in
+     another file fails when that file is first read; `relationships.yaml` is
+     skipped with a warning. Remove the duplicate. The later one was the one in
+     effect, so keep that block's content if it is what you meant.
+   - *6.4.0, a `.env` line python-dotenv cannot use.* `Invalid configuration:`
+     with each line number and variable name. A multi-line `API_KEYS_JSON` must
+     be wrapped in single quotes with no apostrophe inside, or moved to
+     `API_KEYS_FILE` (step 6); a variable assigned twice with different values
+     must lose the stale one (the later one was in effect).
+   - *6.4.0, a repeated field inside one key object.* `Invalid API key
+     configuration:`. Delete the repeat (a pasted second `denied_columns`
+     used to replace the first silently).
+4. **Check `schema.yaml`** (6.2.0). A generated query that names the wrong
+   schema is now refused, and the model's retry corrects it, so nothing needs
+   doing for unique table names. If the same table name exists in several
+   schemas, key each one with its schema (`sales.Customer:`, `ref.Customer:`).
+   Set `db_schema` on every bare-keyed table, or its schema cannot be checked
+   (`docs/design/TABLE-NAMES.md`).
+5. **Choose how the database password is given** (6.3.0, optional). With one
+   database, remove the password from `DB_CONNECTION_URL` and put it, raw, in
+   `DB_PASSWORD`; a raw password written inside the URL is not detected or
+   re-encoded. To move a `url_env` data source to the structured form, follow
+   §16.11.
+6. **Move the keys to a file** (6.4.0, optional but recommended for more than
+   one key): `cp project_config.example/api_keys.example.json
+   project_config/api_keys.json`, replace each `key_sha256` with the digest
+   `scripts/issue_api_key.py` printed (6.6.1: an entry still holding the
+   template's placeholder stops start-up), set
+   `API_KEYS_FILE=project_config/api_keys.json`, **remove** `API_KEYS_JSON`
+   (setting both is refused), and run the preflight again.
+7. **Set the bind address and the CORS origin** if they matter (6.0.2).
+   `python -m api` listens on `127.0.0.1` unless `API_HOST=0.0.0.0` is set,
+   and a UI served from anywhere other than `localhost:8080` needs
+   `CORS_ALLOWED_ORIGINS` set to that origin (for example
+   `http://172.16.101.42:8077`).
+8. **Several databases only** (6.1.0, 6.3.0, 6.5.0, 6.6.0): do §16 in its order,
+   which is the combined form of these notes: describe the sources
+   (`datasources.yaml`, one `DB_PASSWORD_*` per source) and create the
+   read-only login on every server (6.1.0); run
+   `python scripts/assign_datasources.py` and replace `schema.yaml` with
+   `schema.with_datasources.yaml` (6.5.0); add `description:` and `keywords:` to
+   each source (6.5.0, optional); run `python scripts/prompt_budget.py` and set
+   the `PROMPT_RETRIEVAL_TOKEN_BUDGET` it prints (6.6.0). If the DBA requires
+   `WITH (NOLOCK)`, set `nolock: true` on that source (6.5.0).
+9. **Restart** (every change above, including `datasources.yaml` and
+   `schema.yaml`, takes effect at a restart). Then run the preflight once more
+   with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
+   start-up log (§5): the provenance banner, `CORS allowed origins`, and with
+   several sources one `Prompt path for data source` line each.
+10. **After the first day**, read the new audit field (6.5.0): a reader of
+    `audit_log.jsonl` that does not know `datasource_selection` can ignore
+    it. And note what changed on screen, because analysts will ask: the SQL
+    shown in a conversation is laid out in a fixed style (6.5.0; display only,
+    the statement that ran is unchanged), and a refused statement can be
+    opened with the same layout.
+
+Nothing in 6.0.1 (`DB_POOL_PING_IDLE_SECONDS` defaults to `60`; `0` keeps
+pinging on every checkout), 6.3.2 (one warning per key instead of one per key
+read) or 6.6.1 (the template of step 6) needs an action of its own.
+
+## 18. Measuring accuracy on the real warehouse, and gating an upgrade on it
 
 Until a deployment has a golden set built from its own questions, it has no
 measured accuracy: the committed `eval_data.example/` is made-up data and
@@ -918,7 +1213,7 @@ the same stance as `scripts/analyze_audit_log.py`, and is safe to paste into
 a chat; `--include-examples` on the harvest is the one opt-in that prints a
 few verbatim questions.
 
-### 17.1 Build the set (once, then top it up)
+### 18.1 Build the set (once, then top it up)
 
 ```bash
 # 1. Harvest ~150 candidates from the audit log (stratified by data source,
@@ -962,7 +1257,7 @@ one: that is what makes source-selection accuracy measurable.
 Re-harvest later with `--exclude eval_data/golden.jsonl` to add questions
 that are not already in the set.
 
-### 17.2 Before an upgrade: the release gate
+### 18.2 Before an upgrade: the release gate
 
 The warehouse changes every day, so a result recorded last month is no longer
 the answer to "trades yesterday". The gate therefore runs each case's
@@ -993,7 +1288,7 @@ with a message saying how to re-record it. Without `--reference live`, `--live`
 still compares with each case's recorded `expected_fingerprint`, which goes
 stale as the data moves; keep that for a warehouse that does not change.
 
-### 17.3 What the numbers mean
+### 18.3 What the numbers mean
 
 - **Execution accuracy** is the share of active cases whose generated SQL
   returned the same answer as the reference. It is *execution* accuracy:

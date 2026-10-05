@@ -83,8 +83,8 @@ CREATE USER [auction_nlq_reader] FOR LOGIN [auction_nlq_reader];
 GO
 
 -- db_datareader grants SELECT on every table/view in the database. That is
--- broader than this application needs (schema_data/columns.py::TABLE_COLUMNS
--- lists 12 tables), but is a reasonable starting point that is still far
+-- broader than this application needs (the tables in schema.yaml with a
+-- `columns` map are the ones it ever queries), but is a reasonable starting point that is still far
 -- narrower than the trusted-connection default this app currently ships
 -- with. Tighten to per-table GRANT SELECT once the schema stabilises:
 --
@@ -110,7 +110,8 @@ After this login exists, `DB_CONNECTION_URL` in `.env` should be changed
 from the trusted-connection default to this login explicitly, e.g.:
 
 ```
-DB_CONNECTION_URL=mssql+pyodbc://auction_nlq_reader:<password>@<host>:1433/Auction_DM?driver=ODBC+Driver+17+for+SQL+Server
+DB_CONNECTION_URL=mssql+pyodbc://auction_nlq_reader@<host>:1433/Auction_DM?driver=ODBC+Driver+18+for+SQL+Server
+DB_PASSWORD=<the raw password, no URL encoding>
 ```
 
 With `project_config/datasources.yaml` configured, there is no single
@@ -120,7 +121,20 @@ With `project_config/datasources.yaml` configured, there is no single
 document for each other source's own server and its own login. A source
 written with the legacy `url_env` form takes the login in its `DB_URL_<NAME>`
 URL instead. With a single `DB_CONNECTION_URL`, leave the password out of
-the URL and set it, raw, in `DB_PASSWORD`.
+the URL and set it, raw, in `DB_PASSWORD` (as above).
+
+Two things in the operator tooling read this login's metadata, so check that
+the grants above leave it able to see the tables `schema.yaml` lists:
+`scripts/assign_datasources.py` reads `INFORMATION_SCHEMA.TABLES` and
+`INFORMATION_SCHEMA.COLUMNS` of every source through it (names only, never
+rows) and reports a column it cannot see as missing, and the admin panel's
+schema-drift card reflects every table and column of each source through the
+same login. If the DBA's rule is that every read carries
+`WITH (NOLOCK)`, that is the application's setting, not a grant: `nolock: true`
+on that source in `datasources.yaml` (`docs/deployment-runbook.md` §16.7). To
+pick this application's sessions out of `sys.dm_exec_sessions`, filter on
+`program_name` (`DB_APPLICATION_NAME`, default `local-sql-agent`; see
+`docs/dba/README.md`).
 
 ## 2. Explicit `DENY` grants
 

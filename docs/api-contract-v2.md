@@ -424,6 +424,9 @@ block: on a cache hit `prompt_tokens` collapses to roughly the size of
 the variable suffix instead of the full ~4.6k-token prefix. Rule:
 `prefix_cache_hit = prompt_tokens < (static_prefix_tokens * 0.5)`.
 Record `static_prefix_tokens` per skill version so the ratio stays meaningful.
+With several data sources the static prefix is per source, so the estimate used
+is the prefix of the source whose tables the model was shown (the audit record's
+`datasource_selection.chosen`), not the whole schema's.
 
 `seed_honored` is deliberately not a plain assertion of determinism:
 `seed`/`temperature`/`top_p` are sent on every request, honoured by
@@ -514,6 +517,11 @@ KV-cache reuse (see architecture Decision 1).
   the new question
 [ /VARIABLE SUFFIX ]
 ```
+
+With several data sources the prefix is built per data source (one source is
+chosen for the question before the prompt exists, and the prefix describes only
+that source), so "byte-identical" holds across the requests of one source:
+`docs/design/DATASOURCES.md`, "Choosing a source per question".
 
 Three rules:
 
@@ -737,4 +745,7 @@ falling back to the pre-Phase-8 IP-based key otherwise.
 `observability.audit.AuditRecord` carries `principal_id` on every query —
 the field that makes the audit trail an actual "who ran this" record. The
 existing hard rule is unchanged and unweakened: no result row values are
-ever written to the audit log, only column names.
+ever written to the audit log, only column names. A record also carries
+`datasource` (where the generated SQL runs) and, with more than one data
+source, `datasource_selection` (which source the model was shown, and why);
+both are additive and described in `docs/design/DATASOURCES.md`.

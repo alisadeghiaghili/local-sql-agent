@@ -28,8 +28,8 @@ Rather than writing the real set by hand, build it from real usage -- see
 # Offline / CI mode — no database, no LLM, replays the recorded answers:
 .venv/Scripts/python.exe -m eval.cli run --golden eval_data.example/golden.jsonl
 
-# Live mode — real Ollama + real database, for recording baselines and
-# measuring latency:
+# Live mode — a real model endpoint (OPENAI_BASE_URL) + real database, for
+# recording baselines and measuring latency:
 .venv/Scripts/python.exe -m eval.cli run --golden eval_data.example/golden.jsonl --live
 
 # Live mode, judged against the data as it is *today* (the release gate):
@@ -155,7 +155,7 @@ exactly), `NULL` equals `NULL`. Without it, `--live` compares fingerprints
 recorded once, which go stale on a warehouse that changes. A baseline can only
 be compared with a run that used the same `--reference`. The report adds
 per-source execution accuracy and source-selection accuracy for cases that
-name a `datasource`. See section 17 of `docs/deployment-runbook.md` for what
+name a `datasource`. See section 18 of `docs/deployment-runbook.md` for what
 each number means and how to read a failure.
 
 ## Adding a real case
