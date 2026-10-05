@@ -33,8 +33,21 @@ determinism
     same question across repeats -- a per-endpoint property, not a global
     assumption. Refuses to run against offline replay, which would report
     100% determinism unconditionally by construction.
+compare
+    Execution-accuracy comparison of two result sets for ``--reference live``
+    (multiset of rows, column names ignored, numeric tolerance, row order
+    only when the reference's ``ORDER BY ... TOP`` makes it part of the
+    answer), so a warehouse that changes daily cannot stale a recorded hash.
+verify
+    ``python -m eval.cli verify``: runs each reviewed case's reference SQL
+    read-only, records its rows/fingerprint and, with ``--accept``, activates it.
+store
+    Atomic ``.jsonl`` read/write for the golden-set files (temp file +
+    replace, ``.bak`` kept, owner-only).
 cli
-    ``python -m eval.cli run --golden <path> [--live] [--baseline <path>]``
+    ``python -m eval.cli run --golden <path> [--live] [--reference live]
+    [--baseline <path>]`` and ``python -m eval.cli verify --golden <path>
+    [--accept]``
 
 Design constraints
 -------------------

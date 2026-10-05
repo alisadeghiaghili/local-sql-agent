@@ -98,6 +98,18 @@ class ComparisonResult:
     messages:
         Human-readable description of each violated threshold. Empty when
         ``regressed`` is ``False``.
+    source_deltas_pct:
+        ``{source: current - baseline}`` execution-accuracy change in
+        percentage points for every data source present in both reports.
+        Informational: it does not trigger ``regressed`` on its own (a
+        single case is a large share of a small source), because a source
+        that really broke already lowers the overall accuracy the gate
+        checks. Empty when either report has no per-source figures (a
+        baseline written before they existed).
+    source_selection_delta_pct:
+        Change in source-selection accuracy in percentage points, or
+        ``None`` when either report has none. Informational, like
+        ``source_deltas_pct``.
     """
 
     regressed: bool
@@ -105,6 +117,8 @@ class ComparisonResult:
     latency_p95_delta_pct: float | None
     guard_rejection_delta: int
     messages: list[str] = field(default_factory=list)
+    source_deltas_pct: dict[str, float] = field(default_factory=dict)
+    source_selection_delta_pct: float | None = None
 
 
 def save_baseline(report: EvalReport, path: str | Path) -> None:
@@ -200,6 +214,11 @@ def load_baseline(path: str | Path) -> EvalReport:
                 actual_fingerprint=r["actual_fingerprint"],
                 error=r["error"],
                 latency_seconds=r["latency_seconds"],
+                # Additive fields: absent from a baseline written before
+                # they existed.
+                expected_datasource=r.get("expected_datasource"),
+                selected_datasource=r.get("selected_datasource"),
+                reference_fingerprint=r.get("reference_fingerprint"),
             )
             for r in data["results"]
         ]
@@ -207,6 +226,14 @@ def load_baseline(path: str | Path) -> EvalReport:
             tag: (counts["passed"], counts["total"])
             for tag, counts in data["tag_accuracy"].items()
         }
+        reference = data.get("reference", "stored")
+        if reference not in ("stored", "live"):
+            raise ValueError(f"{baseline_path}: unknown reference {reference!r}")
+        source_accuracy = {
+            source: (counts["passed"], counts["total"])
+            for source, counts in (data.get("source_accuracy") or {}).items()
+        }
+        selection = data.get("source_selection")
         return EvalReport(
             mode=data["mode"],
             total=data["total"],
@@ -220,6 +247,11 @@ def load_baseline(path: str | Path) -> EvalReport:
             latency_p99=data["latency_p99"],
             results=results,
             generated_at=data["generated_at"],
+            reference=reference,
+            source_accuracy=source_accuracy,
+            source_selection=(
+                None if not selection else (selection["correct"], selection["total"])
+            ),
         )
     except KeyError as exc:
         raise ValueError(f"{baseline_path}: missing expected key {exc}") from exc
@@ -256,6 +288,14 @@ def compare_to_baseline(
         replays the golden set's own ``expected_sql``). Gating a live run
         against an offline baseline would therefore report "no
         regression" no matter how badly the engine had degraded.
+
+        Also if they judged results differently (``reference`` ``"stored"``
+        against ``"live"``). A stored fingerprint goes stale as the
+        warehouse changes, so a stored-reference baseline understates
+        accuracy by an unknown amount, and a live-reference run compared
+        with it would report an improvement that is only the end of the
+        staleness (or, the other way round, a regression that is only its
+        return). Re-record the baseline with the reference you gate on.
 
     Examples
     --------
@@ -297,6 +337,15 @@ def compare_to_baseline(
             f"golden set's own expected_sql. Re-record the baseline in the same "
             f"mode you intend to gate on."
         )
+    if current.reference != baseline.reference:
+        raise ValueError(
+            f"Cannot compare a run judged against {current.reference!r} references "
+            f"with a baseline judged against {baseline.reference!r} ones "
+            f"(--reference). A stored fingerprint goes stale as the warehouse "
+            f"changes while a live reference does not, so the two accuracy figures "
+            f"are not measuring the same thing. Re-record the baseline with "
+            f"--reference {current.reference} (--save-baseline)."
+        )
 
     if thresholds is None:
         thresholds = BaselineThresholds()
@@ -334,12 +383,33 @@ def compare_to_baseline(
             f"exceeding the allowed increase of {thresholds.max_guard_rejection_increase}"
         )
 
+    source_deltas_pct: dict[str, float] = {}
+    for source, (cur_p, cur_t) in current.source_accuracy.items():
+        if source not in baseline.source_accuracy:
+            continue
+        base_p, base_t = baseline.source_accuracy[source]
+        if cur_t and base_t:
+            source_deltas_pct[source] = 100.0 * cur_p / cur_t - 100.0 * base_p / base_t
+    source_selection_delta_pct: float | None = None
+    if (
+        current.source_selection is not None
+        and baseline.source_selection is not None
+        and current.source_selection[1]
+        and baseline.source_selection[1]
+    ):
+        source_selection_delta_pct = (
+            100.0 * current.source_selection[0] / current.source_selection[1]
+            - 100.0 * baseline.source_selection[0] / baseline.source_selection[1]
+        )
+
     return ComparisonResult(
         regressed=bool(messages),
         accuracy_delta_pct=accuracy_delta_pct,
         latency_p95_delta_pct=latency_p95_delta_pct,
         guard_rejection_delta=guard_rejection_delta,
         messages=messages,
+        source_deltas_pct=source_deltas_pct,
+        source_selection_delta_pct=source_selection_delta_pct,
     )
 
 

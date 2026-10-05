@@ -1,0 +1,6 @@
+﻿id,question,proposed_sql,correct_sql,verdict,expect,datasource,notes
+cand_example01,How many customers are there?,SELECT COUNT(*) AS CustomerCount FROM [sales].[Customer],,correct,success,sales,Harvested from audit record req_example01. The proposal is right as it is.
+cand_example02,چند مشتری فعال داریم؟,SELECT COUNT(*) AS ActiveCustomerCount FROM [sales].[Customer],SELECT COUNT(*) AS ActiveCustomerCount FROM [sales].[Customer] WHERE IsActive = 1,wrong,success,sales,Harvested from audit record req_example02. The proposal forgot the active filter; the right SQL is in correct_sql.
+cand_example03,What will the weather be in the capital tomorrow?,,,correct,out_of_scope,,"Harvested from audit record req_example03. Nothing in the schema can answer it, so the system should decline."
+cand_example04,hello,,,skip,success,,Harvested from audit record req_example04. A greeting is not a test question: dropped.
+cand_example05,How many suppliers do we have?,SELECT COUNT(*) AS SupplierCount FROM [ref].[Supplier],,,success,inventory,"Harvested from audit record req_example05. Verdict left blank: not reviewed yet, so the import leaves this row alone."

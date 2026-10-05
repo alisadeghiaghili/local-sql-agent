@@ -74,7 +74,54 @@ def _percentile(sorted_values: Sequence[float], pct: float) -> float:
     return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
 
 
-def build_report(results: Sequence[CaseResult], mode: Literal["offline", "live"]) -> EvalReport:
+def _source_stats(
+    results: Sequence[CaseResult], mode: Literal["offline", "live"]
+) -> tuple[dict[str, tuple[int, int]], tuple[int, int] | None]:
+    """Per-source execution accuracy and (live only) source-selection accuracy.
+
+    Only results whose case named a ``datasource`` take part. Selection
+    accuracy compares :attr:`~eval.models.CaseResult.selected_datasource`
+    with the case's; a run that never got as far as selecting counts as a
+    miss. Offline, the "selection" replays the reference, so no figure is
+    produced (it would be right by construction).
+
+    Examples
+    --------
+    >>> from eval.models import CaseResult
+    >>> rs = [
+    ...     CaseResult("a", "q", [], "pass", "SELECT 1", "f", None, 0.1, "sales", "sales"),
+    ...     CaseResult("b", "q", [], "fingerprint_mismatch", "SELECT 2", "f", "x", 0.1, "sales", "inventory"),
+    ...     CaseResult("c", "q", [], "pass", "SELECT 3", "f", None, 0.1, None, None),
+    ... ]
+    >>> _source_stats(rs, "live")
+    ({'sales': (1, 2)}, (1, 2))
+    >>> _source_stats(rs, "offline")[1] is None
+    True
+    """
+    totals: dict[str, int] = {}
+    passed: dict[str, int] = {}
+    correct = 0
+    named = 0
+    for result in results:
+        expected = result.expected_datasource
+        if expected is None:
+            continue
+        named += 1
+        totals[expected] = totals.get(expected, 0) + 1
+        if result.passed:
+            passed[expected] = passed.get(expected, 0) + 1
+        if result.selected_datasource == expected:
+            correct += 1
+    source_accuracy = {src: (passed.get(src, 0), totals[src]) for src in sorted(totals)}
+    selection = (correct, named) if (mode == "live" and named) else None
+    return source_accuracy, selection
+
+
+def build_report(
+    results: Sequence[CaseResult],
+    mode: Literal["offline", "live"],
+    reference: Literal["stored", "live"] = "stored",
+) -> EvalReport:
     """Aggregate *results* into an :class:`~eval.models.EvalReport`.
 
     Parameters
@@ -87,6 +134,10 @@ def build_report(results: Sequence[CaseResult], mode: Literal["offline", "live"]
     mode:
         Which pipeline wiring produced *results* — recorded on the report
         for downstream display and baseline comparison.
+    reference:
+        How each result was judged (``"stored"`` fingerprint or ``"live"``
+        reference execution) — recorded on the report; a baseline can only
+        be compared with a run that used the same one.
 
     Returns
     -------
@@ -113,6 +164,8 @@ def build_report(results: Sequence[CaseResult], mode: Literal["offline", "live"]
     1
     >>> report.status_counts["pass"]
     1
+    >>> report.reference
+    'stored'
     """
     total = len(results)
     passed = sum(1 for r in results if r.passed)
@@ -135,6 +188,7 @@ def build_report(results: Sequence[CaseResult], mode: Literal["offline", "live"]
     guard_rejections = status_counts.get("guard_rejected", 0)
 
     latencies = sorted(r.latency_seconds for r in results)
+    source_accuracy, source_selection = _source_stats(results, mode)
 
     return EvalReport(
         mode=mode,
@@ -149,6 +203,9 @@ def build_report(results: Sequence[CaseResult], mode: Literal["offline", "live"]
         latency_p99=_percentile(latencies, 99),
         results=list(results),
         generated_at=datetime.now(timezone.utc).isoformat(),
+        reference=reference,
+        source_accuracy=source_accuracy,
+        source_selection=source_selection,
     )
 
 
@@ -193,6 +250,16 @@ def render_text(report: EvalReport) -> str:
             "this accuracy is true by construction and is NOT a measure of "
             "generation quality. Run with --live for that."
         )
+    if report.mode == "live":
+        if report.reference == "live":
+            lines.append(
+                "Reference: live -- each case's expected_sql was executed in this run "
+                "and the two results compared (rows as a multiset, column names ignored)."
+            )
+        else:
+            lines.append(
+                "Reference: stored -- results compared with each case's recorded fingerprint."
+            )
     lines.append("")
 
     lines.append("Per-tag accuracy:")
@@ -203,6 +270,17 @@ def render_text(report: EvalReport) -> str:
     else:
         lines.append("  (no tagged cases)")
     lines.append("")
+
+    if report.source_accuracy:
+        lines.append("Per-source execution accuracy:")
+        for source, (src_passed, src_total) in report.source_accuracy.items():
+            pct = (100.0 * src_passed / src_total) if src_total else 0.0
+            lines.append(f"  {source:<24s} {src_passed:>3d}/{src_total:<3d} ({pct:5.1f}%)")
+        if report.source_selection is not None:
+            sel_ok, sel_total = report.source_selection
+            sel_pct = (100.0 * sel_ok / sel_total) if sel_total else 0.0
+            lines.append(f"Source-selection accuracy: {sel_pct:.2f}% ({sel_ok}/{sel_total})")
+        lines.append("")
 
     lines.append("Error taxonomy:")
     for status in ALL_STATUSES:

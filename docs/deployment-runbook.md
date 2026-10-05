@@ -1195,3 +1195,143 @@ origin, several databases).
 Nothing in 6.0.1 (`DB_POOL_PING_IDLE_SECONDS` defaults to `60`; `0` keeps
 pinging on every checkout), 6.3.2 (one warning per key instead of one per key
 read) or 6.6.1 (the template of step 6) needs an action of its own.
+
+## 18. Measuring accuracy on the real warehouse, and gating an upgrade on it
+
+Until a deployment has a golden set built from its own questions, it has no
+measured accuracy: the committed `eval_data.example/` is made-up data and
+says nothing about your warehouse. This section builds the real set from the
+audit log and turns it into the check you run before every upgrade.
+
+**The set lives only on the server.** `eval_data/` is git-ignored and holds
+real questions, the SQL that answers them and, after step 4, real result
+rows. Create it, read it and run the gate on the server; do not copy
+`candidates.jsonl`, `review.csv`, `golden.jsonl`, their `.bak` files or a
+JSON report (`--out`, `--save-baseline`: they carry each case's question and
+SQL) off it. What the commands below **print** is counts and case ids only,
+the same stance as `scripts/analyze_audit_log.py`, and is safe to paste into
+a chat; `--include-examples` on the harvest is the one opt-in that prints a
+few verbatim questions.
+
+### 18.1 Build the set (once, then top it up)
+
+```bash
+# 1. Harvest ~150 candidates from the audit log (stratified by data source,
+#    outcome and language; de-duplicated with the Persian/Arabic folding).
+python scripts/harvest_golden.py --n 150
+#    -> eval_data/candidates.jsonl, status "pending_review". The model's own
+#       SQL is only a proposal. Refuses to overwrite without --force.
+
+# 2. Give the analysts a spreadsheet (UTF-8 with BOM: Persian opens correctly).
+python scripts/golden_sheet.py export
+#    -> eval_data/review.csv. Each analyst fills `verdict` (correct / wrong /
+#       skip) and, where it is wrong, `correct_sql`. See
+#       eval_data.example/golden_review_template.csv for a filled-in example.
+
+# 3. Bring the verdicts back; every SQL goes through the guard.
+python scripts/golden_sheet.py import
+#    -> eval_data/golden.jsonl, status "reviewed". Problems are listed by
+#       spreadsheet row; fix the cell and import again (rows already
+#       imported are recognised).
+
+# 4. Run each reviewed case's reference SQL read-only, record its rows, and
+#    activate the ones that held up.
+python -m eval.cli verify --golden eval_data/golden.jsonl            # look first
+python -m eval.cli verify --golden eval_data/golden.jsonl --accept   # then activate
+```
+
+`verify` goes through the application's own executor (routing, `NOLOCK`,
+timeouts, always-rolled-back transaction), so it sees exactly what a user's
+query sees. It reports a guard rejection, a database error, an empty result
+where `expect` says `success`, and a result that hit the row cap; only cases
+without a problem move to `active`, and the file is replaced atomically with
+the previous version kept as `golden.jsonl.bak`. Cases with any other status
+(`pending_review`, `pending_expected`, `reviewed`) are skipped by
+`eval.cli run`, so a half-reviewed set is safe to keep in the file.
+
+Aim for questions that cover each data source and each kind of question
+(counts, rankings, date filters in Jalali, empty answers, and a few that
+should be declined as out of scope). Give a case a `datasource`
+(`sales`, `inventory`, ...) in the sheet's column when the answer lives in
+one: that is what makes source-selection accuracy measurable.
+Re-harvest later with `--exclude eval_data/golden.jsonl` to add questions
+that are not already in the set.
+
+### 18.2 Before an upgrade: the release gate
+
+The warehouse changes every day, so a result recorded last month is no longer
+the answer to "trades yesterday". The gate therefore runs each case's
+`expected_sql` in the same run, against the same data, and compares the two
+results (`--reference live`). Record the baseline once on the version you run
+today, upgrade, and run the same command with `--baseline`:
+
+```bash
+# On the current version, before upgrading (once per baseline):
+python -m eval.cli run --live --reference live \
+    --golden eval_data/golden.jsonl --save-baseline eval_data/baseline.json
+
+# ... upgrade ...
+
+# On the new version:
+python -m eval.cli run --live --reference live \
+    --golden eval_data/golden.jsonl --baseline eval_data/baseline.json
+```
+
+Exit code `0` is "no regression versus the baseline", `1` is a regression
+(accuracy dropped by more than `EVAL_MAX_ACCURACY_DROP_PCT` points, latency
+p95 rose by more than `EVAL_MAX_LATENCY_P95_INCREASE_PCT`, or more guard
+rejections than `EVAL_MAX_GUARD_REJECTION_INCREASE` allows). Do not go
+live on a `1` without understanding it. A baseline can only be compared with
+a run that used the same `--reference`, and live with live: an offline
+baseline, or one recorded with the default `--reference stored`, is refused
+with a message saying how to re-record it. Without `--reference live`, `--live`
+still compares with each case's recorded `expected_fingerprint`, which goes
+stale as the data moves; keep that for a warehouse that does not change.
+
+### 18.3 What the numbers mean
+
+- **Execution accuracy** is the share of active cases whose generated SQL
+  returned the same answer as the reference. It is *execution* accuracy:
+  two different queries that return the same result both count as right, and
+  a query that looks right but returns something else does not.
+- **"The same answer"** (`eval/compare.py`): rows are compared as a multiset
+  (duplicates count, order does not); **column names are ignored** (an alias
+  does not matter) but the **column order as selected** does; row order only
+  matters when the reference has a top-level `ORDER BY` with `TOP` /
+  `OFFSET` (then the sort-key columns must match position by position and
+  rows tied on the key may come in any order); numbers match within a
+  relative tolerance of `1e-6` (change it with `--float-tolerance`; `0` is
+  exact), **integers always exactly**; `NULL` equals `NULL` and nothing else;
+  a midnight datetime equals the plain date; text is compared exactly. Known
+  limit: when a `TOP n` cuts through rows tied on the sort key, a correct
+  answer can differ from the reference; give such a reference a tie-breaking
+  second sort key.
+- **Per-tag accuracy** breaks the figure down by the case's tags (the harvest
+  adds `lang:`, `source:` and `outcome:` tags). **Per-source execution
+  accuracy** and **source-selection accuracy** appear when cases name a
+  `datasource`: the second is how often the pipeline picked the source the
+  case belongs to, the first how often the answer was right per source. A
+  wrong source is usually also a wrong answer, so the overall figure already
+  moves; the per-source lines and the deltas printed under a baseline
+  comparison say where. They are informational and do not by themselves
+  fail the gate.
+- **Error taxonomy.** `fingerprint_mismatch` (in `--reference live`: the
+  result differs from the reference; the message gives counts, never
+  values); `guard_rejected`, `execution_error`, `generation_error`;
+  `unexpected_out_of_scope` / `missed_out_of_scope` (the model declined a
+  question it should answer, or answered one it should decline);
+  `reference_error` means the **case's own** `expected_sql` was rejected by
+  the guard or failed to run today (a table was renamed, say): it counts as
+  a failure so it is seen, but the fix is the case, not the model. Re-run
+  `eval.cli verify` to find such cases.
+- **Offline mode** (`eval.cli run` without `--live`, what CI does) replays
+  each case's recorded rows, so its 100% is true by construction and only
+  proves the harness, the guard and the fingerprinting work. It is not a
+  measure of accuracy and `--reference live` refuses to run offline.
+- The sample is stratified so that rare sources and outcomes are present;
+  with 150 cases a single source can have only a handful, so read a
+  per-source percentage with its denominator.
+- Keep the set alive: `reference_error` cases and cases whose answer changed
+  for a real reason (a business rule changed) are fixed in `golden.jsonl`
+  and re-verified (`eval.cli verify --refresh` also re-records the stored
+  rows of active cases for the offline replay).

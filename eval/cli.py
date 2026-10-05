@@ -11,6 +11,18 @@ Usage::
     python -m eval.cli run --golden eval_data/golden.jsonl --live \\
         --save-baseline eval_data/baseline.json
 
+    # Release gate against a warehouse that changes daily: run every case's
+    # expected_sql in the same run and compare the two results (execution
+    # accuracy, see eval.compare) instead of a fingerprint recorded once.
+    python -m eval.cli run --golden eval_data/golden.jsonl --live \\
+        --reference live --baseline eval_data/baseline.json
+
+    # Last step of building a golden set: run each reviewed case's
+    # expected_sql read-only, record its rows/fingerprint, and (only with
+    # --accept) activate the cases that passed. See eval.verify.
+    python -m eval.cli verify --golden eval_data/golden.jsonl
+    python -m eval.cli verify --golden eval_data/golden.jsonl --accept
+
     # Phase 2 task 3: compare free-text-plus-clean_sql against constrained
     # JSON output on the same golden set (requires a real, reachable endpoint):
     python -m eval.cli run --golden eval_data.example/golden.jsonl --live
@@ -38,7 +50,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import config as cfg
@@ -49,12 +61,14 @@ from eval.baseline import (
     load_baseline,
     save_baseline,
 )
+from eval.compare import ComparisonOptions
 from eval.determinism import DEFAULT_REPEATS as DEFAULT_DETERMINISM_REPEATS
 from eval.models import GoldenCase
 from eval.report import build_report, render_text, save_json_report
 from eval.runner import (
     ExecuteFn,
     GenerateFn,
+    SourceTrace,
     load_golden_cases,
     make_live_generator,
     make_live_structured_generator,
@@ -62,6 +76,8 @@ from eval.runner import (
     make_offline_generator,
     run_golden_set,
 )
+from eval.store import write_golden_cases
+from eval.verify import render_verify_text, verify_cases
 from knowledge.config_loader import resolve_system_prompt_path
 
 _DEFAULT_SYSTEM_PROMPT_PATH = resolve_system_prompt_path()
@@ -99,7 +115,9 @@ def _load_system_prompt(path: Path = _DEFAULT_SYSTEM_PROMPT_PATH) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _build_live_callables(structured: bool = False) -> tuple[GenerateFn, ExecuteFn]:
+def _build_live_callables(
+    structured: bool = False, trace: SourceTrace | None = None
+) -> tuple[GenerateFn, ExecuteFn]:
     """Lazily construct a real ``(generate_fn, execute_fn)`` pair for ``--live`` mode.
 
     Every import here is deferred to call time so that plain ``import
@@ -113,6 +131,9 @@ def _build_live_callables(structured: bool = False) -> tuple[GenerateFn, Execute
         (Phase 2 task 3's constrained-JSON path) instead of
         :func:`~eval.runner.make_live_generator` (free text + ``clean_sql``).
         This is what ``--structured`` compares against the default.
+    trace:
+        Optional :class:`~eval.runner.SourceTrace` the generator records
+        its data-source choice on, for source-selection accuracy.
 
     Returns
     -------
@@ -124,11 +145,22 @@ def _build_live_callables(structured: bool = False) -> tuple[GenerateFn, Execute
     system_prompt = _load_system_prompt()
     backend = OpenAIBackend.from_settings()
     generate_fn = (
-        make_live_structured_generator(backend, system_prompt)
+        make_live_structured_generator(backend, system_prompt, trace)
         if structured
-        else make_live_generator(backend, system_prompt)
+        else make_live_generator(backend, system_prompt, trace)
     )
     return generate_fn, execute_sql
+
+
+def _build_executor() -> ExecuteFn:
+    """The application's own executor, imported lazily (see the module docstring).
+
+    Used by ``verify``: the same routing, ``NOLOCK`` rewriting, timeouts and
+    rolled-back read-only transaction as a production query.
+    """
+    from database.executor import execute_sql
+
+    return execute_sql
 
 
 def _build_offline_callables(cases: Sequence[GoldenCase]) -> tuple[GenerateFn, ExecuteFn]:
@@ -253,31 +285,65 @@ def _print_determinism_probe(
         print(f"Determinism report written to {out}")
 
 
+def _refuse_offline_reference() -> None:
+    """Raise the explicit refusal for ``--reference live`` without ``--live``.
+
+    Raises
+    ------
+    ValueError
+        Always. Offline mode has no database: its "executor" serves each
+        case's recorded rows, so running the reference query through it
+        would compare a recorded answer with itself and report 100%
+        unconditionally.
+    """
+    raise ValueError(
+        "--reference live requires --live: offline mode has no database, its executor "
+        "replays each case's recorded expected_rows, so the reference result would be "
+        "compared with itself and every case would pass by construction. Pass --live to "
+        "run the reference queries against the real warehouse."
+    )
+
+
 def _run(args: argparse.Namespace) -> int:
     """Execute the ``run`` subcommand. Returns the process exit code."""
     if args.determinism and not args.live:
         _refuse_offline_determinism()
+    if args.reference == "live" and not args.live:
+        _refuse_offline_reference()
 
     cases = load_golden_cases(args.golden)
+    # Only active cases are replayed, determinism-probed or counted; a
+    # pending/reviewed case must not trip the offline fixture's
+    # duplicate-question check either.
+    runnable = [c for c in cases if c.is_runnable]
 
+    trace: SourceTrace | None = None
     if args.live:
-        generate_fn, execute_fn = _build_live_callables(structured=args.structured)
+        trace = SourceTrace()
+        generate_fn, execute_fn = _build_live_callables(structured=args.structured, trace=trace)
         mode = "live"
     else:
-        generate_fn, execute_fn = _build_offline_callables(cases)
+        generate_fn, execute_fn = _build_offline_callables(runnable)
         mode = "offline"
 
-    results = run_golden_set(cases, generate_fn, execute_fn)
-    report = build_report(results, mode=mode)
+    results = run_golden_set(
+        cases,
+        generate_fn,
+        execute_fn,
+        reference=args.reference,
+        options=ComparisonOptions(tolerance=args.float_tolerance),
+        source_trace=trace,
+    )
+    report = build_report(results, mode=mode, reference=args.reference)
 
     print(render_text(report))
 
-    if args.live:
-        _print_prefix_cache_probe(cases[0].question)
+    if args.live and runnable:
+        _print_prefix_cache_probe(runnable[0].question)
 
     if args.determinism:
         _print_determinism_probe(
-            cases,
+            runnable,
             structured=args.structured,
             repeats=args.determinism_repeats,
             out=args.determinism_out,
@@ -305,11 +371,40 @@ def _run(args: argparse.Namespace) -> int:
                 print(f"  - {message}")
         else:
             print("\nNo regression versus baseline.")
+        for source, delta in comparison.source_deltas_pct.items():
+            print(f"  source {source}: execution accuracy {delta:+.2f} points versus baseline")
+        if comparison.source_selection_delta_pct is not None:
+            print(
+                "  source-selection accuracy "
+                f"{comparison.source_selection_delta_pct:+.2f} points versus baseline"
+            )
         return exit_code(comparison)
 
     # No baseline was supplied: printing the report is the whole job, and
     # there is nothing to regress against.
     return 0
+
+
+def _verify(
+    args: argparse.Namespace,
+    executor_factory: Callable[[], ExecuteFn] | None = None,
+) -> int:
+    """Execute the ``verify`` subcommand. Returns the process exit code.
+
+    ``0`` when every examined case's reference held up, ``1`` when any
+    had a problem. Prints counts and case ids only -- never a question or
+    a row.
+    """
+    cases = load_golden_cases(args.golden)
+    execute_fn = (executor_factory or _build_executor)()
+    result = verify_cases(cases, execute_fn, accept=args.accept, refresh=args.refresh)
+
+    written = False
+    if result.changed and not args.dry_run:
+        write_golden_cases(args.golden, result.cases, backup=True)
+        written = True
+    print(render_verify_text(result, accept=args.accept, written=written))
+    return 1 if result.problems else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -384,6 +479,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to save the determinism probe's report as JSON. Ignored without --determinism.",
     )
     run_parser.add_argument(
+        "--reference",
+        choices=("stored", "live"),
+        default="stored",
+        help=(
+            "How a --live run decides a result is right. 'stored' (default) compares "
+            "the result's fingerprint with the case's recorded expected_fingerprint. "
+            "'live' executes each case's expected_sql in the same run and compares the "
+            "two results (eval.compare: rows as a multiset, column names ignored, row "
+            "order only when the reference has ORDER BY with TOP/OFFSET, numeric "
+            "tolerance, NULL equals NULL) -- use it against a warehouse whose data "
+            "changes, where a recorded fingerprint goes stale. A baseline can only be "
+            "compared with a run that used the same reference. Requires --live."
+        ),
+    )
+    run_parser.add_argument(
+        "--float-tolerance",
+        type=float,
+        default=ComparisonOptions().tolerance,
+        dest="float_tolerance",
+        help=(
+            "With --reference live: relative tolerance for numbers that are not both "
+            "integers (|a-b| <= tol * max(1, |a|, |b|)). Integers always compare "
+            "exactly. Default %(default)g; 0 demands exact equality."
+        ),
+    )
+    run_parser.add_argument(
         "--baseline",
         default=None,
         help="Path to a baseline JSON file to compare this run against (non-zero exit on regression).",
@@ -432,6 +553,43 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.set_defaults(func=_run)
+
+    verify_parser = subparsers.add_parser(
+        "verify",
+        help=(
+            "Run each reviewed case's expected_sql read-only against the database, "
+            "report failures and record expected_rows / expected_fingerprint."
+        ),
+    )
+    verify_parser.add_argument(
+        "--golden", required=True, help="Path to the golden.jsonl file to verify (rewritten in place)."
+    )
+    verify_parser.add_argument(
+        "--accept",
+        action="store_true",
+        default=False,
+        help=(
+            "Move 'reviewed' cases that passed to 'active' so the regression gate runs "
+            "them. Without it the recorded rows are written but statuses stay."
+        ),
+    )
+    verify_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        default=False,
+        help=(
+            "Also overwrite the recorded expected_rows / expected_fingerprint of "
+            "'active' cases that already have them (by default only missing ones are filled)."
+        ),
+    )
+    verify_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help="Report only; do not rewrite the golden file.",
+    )
+    verify_parser.set_defaults(func=_verify)
 
     return parser
 
