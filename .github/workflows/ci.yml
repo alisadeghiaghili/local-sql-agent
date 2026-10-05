@@ -8,7 +8,12 @@ on:
 
 jobs:
   test:
-    name: "${{ matrix.os }} / Python ${{ matrix.python-version }}"
+    # The floors legs keep the name they have always had
+    # ("ubuntu-latest / Python 3.12"), because branch protection and
+    # anything else that refers to a check refers to it by that string.
+    # Only the locked legs carry a suffix, so the two kinds can be told
+    # apart in the checks list without renaming the existing ones.
+    name: "${{ matrix.os }} / Python ${{ matrix.python-version }}${{ matrix.deps == 'lock' && ' / locked deps' || '' }}"
     runs-on: ${{ matrix.os }}
 
     # A crash during interpreter finalisation reports as a bare exit code
@@ -39,6 +44,28 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        # Two questions, so two installs of the same suite.
+        #
+        # floors  = requirements.txt (lower bounds only), so whatever the
+        #           newest releases are today. This is the early warning:
+        #           it fails when an upstream release breaks us, before any
+        #           deployment is asked to take that release.
+        # lock    = requirements.lock (exact pins), the tree a deployment
+        #           actually installs (see docs/deployment-runbook.md).
+        #           Floors alone meant CI never ran what was deployed:
+        #           sqlglot is pinned at 30.18.0 because
+        #           security/sql_guard.py makes every allow/deny decision
+        #           from its AST, yet CI was running whatever newer
+        #           sqlglot had been released.
+        #
+        # The lock was generated on CPython 3.13, but every pin in it has a
+        # wheel for CPython 3.11, 3.12 and 3.13 on Linux (x86_64), Windows
+        # (x86_64) and macOS (arm64, as macos-latest is), so the lock runs
+        # across the full OS x Python grid rather than only on the one
+        # interpreter it was generated on. If a future lock regeneration
+        # drops a combination, exclude it here rather than letting that leg
+        # fail on a missing wheel.
+        deps: [floors, lock]
 
     steps:
       - name: Checkout
@@ -49,6 +76,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          # The pip cache is keyed on a hash of the files named here. The
+          # default (**/requirements.txt) never looks at requirements.lock,
+          # so a locked leg would share its key with the floors leg of the
+          # same OS and Python and keep an out-of-date cache when the lock
+          # changes. Naming the lock for the locked legs gives each kind of
+          # leg its own cache.
+          cache-dependency-path: ${{ matrix.deps == 'lock' && '**/requirements.lock' || '**/requirements.txt' }}
 
       # pyodbc ships binary wheels for macOS, so pip install succeeds without
       # this, but the wheel isn't self-contained: it dynamically links
@@ -64,15 +98,29 @@ jobs:
         run: brew install unixodbc
 
       - name: Install dependencies
+        env:
+          # Locked legs pass the lock to the two installs below as a
+          # constraint as well. webapp/requirements.txt and pytest are not
+          # in the lock, and without a constraint either could move a
+          # pinned package (for instance by requiring a newer markupsafe),
+          # which would leave the leg testing something other than the lock
+          # while still being named after it. With the constraint pip
+          # either keeps every pin or fails loudly on the conflict. Left
+          # empty for the floors legs, which are meant to float.
+          CONSTRAINT: ${{ matrix.deps == 'lock' && '-c requirements.lock' || '' }}
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ "${{ matrix.deps }}" = "lock" ]; then
+            pip install -r requirements.lock
+          else
+            pip install -r requirements.txt
+          fi
           # webapp/ is a second Flask app with its own deps; its security
           # tests (test_flask_hardening, test_webapp_http_surface, the webapp
           # file-permission cases) import webapp.app, so CI must install its
           # requirements or those tests ModuleNotFoundError on a clean runner.
-          pip install -r webapp/requirements.txt
-          pip install pytest pytest-cov
+          pip install $CONSTRAINT -r webapp/requirements.txt
+          pip install $CONSTRAINT pytest pytest-cov
 
       # Findings 5 + 9 (2026 audit): requirements.lock (above) stops a
       # dependency changing without this repo's consent; this step is the
@@ -85,10 +133,12 @@ jobs:
       # exactly the gap this step exists to close, so it is not allowed
       # to pass silently. The lockfile is one tree shared by every leg of
       # the matrix, not a per-OS resolution, so auditing it once (Linux,
-      # the deployment target) says exactly as much as auditing it six
-      # times would.
+      # the deployment target) says exactly as much as auditing it
+      # eighteen times would. That includes the locked legs: they install
+      # the same file, so they do not repeat the audit either; it runs on
+      # the one floors leg below.
       - name: Dependency vulnerability audit (pip-audit)
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' && matrix.deps == 'floors'
         run: |
           pip install pip-audit
           pip-audit -r requirements.lock
@@ -124,8 +174,13 @@ jobs:
           api llm security session database core knowledge prompt_engine
           retrieval schema_data logs exporters observability eval config.py
 
+      # Coverage is measured and uploaded from one leg only, the floors leg
+      # that has always done it. A second upload from the locked leg of the
+      # same commit would be a competing report for the same lines, and the
+      # locked legs exist to answer "does the pinned tree pass", not to
+      # produce a number.
       - name: Run tests with coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' && matrix.deps == 'floors'
         env:
           PROJECT_CONFIG_DIR: project_config.example
         run: pytest tests/ eval/tests --cov --cov-report=term-missing --cov-report=xml
@@ -140,7 +195,7 @@ jobs:
         run: python -m eval.cli run --golden eval_data.example/golden.jsonl
 
       - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' && matrix.deps == 'floors'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
