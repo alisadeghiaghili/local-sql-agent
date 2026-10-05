@@ -216,11 +216,15 @@ ORDER BY qs.total_physical_reads DESC;
 --      audit log is a reliable historical attribution; a DMV-side join is
 --      not available for this.
 --   3. Recognise this application's queries by shape, as a heuristic: every
---      query local-sql-agent runs is guard-validated read-only SELECT
---      against this application's warehouse tables (never a system
---      catalog view, never DDL/DML) -- see docs/db-hardening.md. A
---      statement in 4a that is DDL, references sys.*/INFORMATION_SCHEMA,
---      or writes data did not come from this application.
+--      query local-sql-agent runs for a user's question is a
+--      guard-validated read-only SELECT against this application's
+--      warehouse tables (never a system catalog view, never DDL/DML) --
+--      see docs/db-hardening.md. A statement in 4a that writes data did
+--      not come from this application. One that is DDL, or that reads
+--      INFORMATION_SCHEMA or sys.*, may have: when an operator runs them,
+--      the deep deployment checks attempt one rolled-back CREATE TABLE,
+--      and schema-drift checks and scripts/assign_datasources.py read the
+--      catalogue (docs/deployment-runbook.md section 12).
 
 -- 4c. If Query Store is enabled on <your_database> (check with the query
 -- just below), it survives restarts and plan-cache eviction, and is the

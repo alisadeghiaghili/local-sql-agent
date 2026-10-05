@@ -22,8 +22,8 @@ actual evaluation set is built from.
 # Offline / CI mode — no database, no LLM, replays the recorded answers:
 .venv/Scripts/python.exe -m eval.cli run --golden eval_data.example/golden.jsonl
 
-# Live mode — real Ollama + real database, for recording baselines and
-# measuring latency:
+# Live mode — a real model endpoint (OPENAI_BASE_URL) + real database, for
+# recording baselines and measuring latency:
 .venv/Scripts/python.exe -m eval.cli run --golden eval_data.example/golden.jsonl --live
 ```
 

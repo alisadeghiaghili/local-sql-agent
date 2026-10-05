@@ -1,8 +1,11 @@
 # Admin panel — architecture
 
-Status: **agreed, not implemented.** This is the design contract, in the
-spirit of `api-contract-v2.md`: decisions with their reasons, so a later
-implementation can be checked against intent rather than guessed at.
+Status: **implemented** (phases 1 to 7; the panel has twelve sections and
+`/admin/*` routes behind four capability dependencies). This is the design
+contract, in the spirit of `api-contract-v2.md`: decisions with their reasons,
+so the implementation can be checked against intent. Sections written before
+the build keep their original wording where it records a reason; §5.4, §7 and
+§9 say what was built and what is still open.
 
 ---
 
@@ -274,9 +277,11 @@ the environment and accepts a restart.
 
 A deployment with more than one warehouse data source
 (`project_config/datasources.yaml`, see `docs/design/DATASOURCES.md`)
-gets the identical treatment, generalised: the file names sources and
-which environment variable holds each one's connection string, never a
-connection string itself, and it is deliberately **not** one of the nine
+gets the identical treatment, generalised: the file describes each
+connection (host, port, database, driver, login, options) and names the
+environment variable that holds only the raw password, never a password or a
+whole connection string (the legacy `url_env` form names a variable holding a
+complete URL), and it is deliberately **not** one of the nine
 files `appdb.config_versions.CONFIG_FILENAMES` versions — it is
 deployment topology edited on disk, like `.env`, and a change to it
 accepts the same restart `DB_CONNECTION_URL` always has. Each table's
@@ -541,15 +546,19 @@ recorded in the same audit trail.
 
 ## 7. Prerequisites in today's code
 
-Four concrete gaps, each of which blocks part of the above:
+Four concrete gaps, each of which blocked part of the above. All four are
+closed now (audit records carry `session_id`, `turn_id` and
+`config_version_id`; `Principal` carries capabilities; keys live in the
+application database and are read at call time through a short cache, `KEY_CACHE_TTL_SECONDS`; `session/persistence.py` runs
+on SQLAlchemy); the list is kept as the record of why each was needed:
 
 1. **`AuditRecord` has no `session_id` or `turn_id`.** Feedback triage
    cannot link a flagged answer back to the conversation it came from.
    Nothing else in §3 works without this.
 2. **`Principal` has no role concept** — only `id`, `name`,
    `denied_columns`.
-3. **`API_KEYS_JSON` is read at start-up**, so revocation cannot be
-   immediate (§5.6).
+3. **`API_KEYS_JSON` (or `API_KEYS_FILE`) is read at start-up**, so revocation
+   cannot be immediate (§5.6).
 4. **`session/persistence.py` is hardcoded to `sqlite3`**, so no other
    backend is reachable (§5.4).
 

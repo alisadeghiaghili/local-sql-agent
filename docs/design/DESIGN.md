@@ -1,6 +1,6 @@
 # Design Policy — Local SQL Agent UI
 
-> **Status:** proposal · **Target release:** 5.0.0 · **Owner:** product + engineering  
+> **Status:** implemented in 5.0.0 (kept as the record of the decisions; the log in §13 continues after it) · **Owner:** product + engineering  
 > **Supersedes:** ad-hoc styling in `web/`, `webapp/`, `site/` as three independent surfaces  
 > **Does not supersede:** `docs/admin-panel-architecture.md` (ops contract), API contract v2
 
@@ -179,9 +179,11 @@ for reading a SELECT list against near-black.
 **Prettify + highlight pipeline (display only) — `web/js/sql-display.js`:**
 
 1. Copy always uses `Turn.sql_display || Turn.sql` from the Turn object.
-2. Display: multi-line strings (backend `pretty_sql`, scenario SQL) stay
-   as-is; one-liners are prettified with vendored sql-formatter
-   (`tsql`, upper keywords, tabWidth 2).
+2. Display: multi-line strings (the server's `sql_display`, laid out by
+   `pretty_sql` in the house style of `security/sql_format.py`; scenario SQL)
+   stay as-is; one-liners are prettified with vendored sql-formatter
+   (`tsql`, upper keywords, tabWidth 2). The server-side layout is decision
+   D13.
 3. Prism + T-SQL patch colours the block (`[Bracketed]` ids, `N'…'`).
 4. Any formatter/highlighter failure falls back to the previous layer's
    text; the SQL never disappears.
@@ -404,6 +406,55 @@ Release checklist (each train):
 | D10 | 5.0.0 major | Analyst muscle memory breaks; call it out |
 | D11 | User menu owns theme + language + API key | Topbar stays readable; identity and prefs in one place |
 | D12 | Chrome i18n fa/en via `web/js/i18n.js` | Engine is bilingual; shell must not be Persian-only forever |
+| D13 | The SQL an analyst reads is laid out by the server in one house style, **for display only**, and only when the layout parses back to the same statement | See "D13 in full" below |
+
+### D13 in full — the house SQL layout (6.5)
+
+*Context.* The SQL a client shows is whatever the model happened to emit, and
+models are inconsistent: the same deployment gives a clean multi-line
+statement for one question and a single 300-character line for the next. The
+reader cannot tell that this says nothing about the query; it looks as if the
+system formats sometimes and not others. A client-side formatter cannot fix
+it alone, because the stream's first paint and a refused statement's reveal
+would still differ from what the server later reports.
+
+*Decision.* The server lays the statement out (`security/sql_format.format_sql`,
+reached through `security.sql_guard.pretty_sql`): `SELECT` alone on its line,
+one item per line with a leading comma, aliases and join conditions in aligned
+columns, `AND` / `OR` right-aligned under `WHERE`, `HAVING` and `ON`. It is for
+T-SQL; any other dialect gets sqlglot's printer under the same check. Four
+rules keep it honest:
+
+1. **Display only.** `Turn.sql` is the text that was validated, executed and
+   audited and is never touched; `Turn.sql_display` is what the UI renders and
+   the copy button copies. Re-rendering the executed SQL would make the audit
+   trail record a statement nobody ran. A refused statement gets
+   `rejected_sql_display` the same way, and the streamed `sql` event carries
+   `sql_display` so the first paint is the final text.
+2. **Equivalence is checked, not assumed.** After laying a statement out, the
+   result is parsed again and compared with the parse of the input; a layout
+   whose tree differs is thrown away. The expression text itself still comes
+   from sqlglot's T-SQL generator.
+3. **A fixed fallback order.** A statement with a comment, a non-`SELECT`,
+   or a clause the layout does not handle (`PIVOT`, `OPTION`, `INTO`,
+   `ROLLUP`, comma joins, ...) goes to sqlglot's pretty printer, used only
+   when its output parses back to the same tree (it rewrites some
+   expressions: `DATEDIFF(day, a, b)` gains `CAST` calls, `dbo.fn(1)` becomes
+   `dbo.FN(1)`); otherwise the input comes back unchanged, as several
+   statements in one string always do.
+4. **It never raises.** Nothing about presentation is worth failing a
+   successful query over.
+
+*Alternatives.* Formatting only in the browser leaves two formatters
+disagreeing and cannot cover the first paint or a refused statement; sqlglot's
+default layout alone is rejected because it neither matches how the
+maintainers write T-SQL nor leaves function names alone.
+
+*Consequences.* The web client needs no change: it shows a multi-line
+`sql_display` as it is, in a `white-space: pre` block, and runs its own
+formatter only on one-liners. `/query` and the CLI return the validated SQL
+unchanged: the layout belongs to conversation turns. The API fields are in
+`docs/api-contract-v2.md` §4 and §7.
 
 ---
 

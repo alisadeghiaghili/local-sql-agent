@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The documentation is brought up to 6.6 and reorganised around one place per topic.** `docs/deployment-runbook.md` gains an install step (`pip install -r requirements.lock`, with the reason, and what CI tests: the pinned lock and the newest floors), §16 rewritten as the operator's ordered procedure for several data sources (describing the sources, `scripts/assign_datasources.py`, `keywords:`, preflight, `scripts/prompt_budget.py`, `nolock`, reading the schema-drift and vocabulary cards, reading `datasource_selection`) and a new §17, "Upgrading from 6.0 to 6.6", which sequences the **Upgrading** notes of 6.0.1 to 6.6.1 into one checklist; `docs/design/DATASOURCES.md` stays the one full explanation and gets four decision records (DS1 to DS4), and `docs/design/DESIGN.md` gets D13 for the display-only SQL layout. The Persian guide and tutorial cover the same operator path, with the duplicated long explanations in the README, the tutorials and the guides replaced by short pointers. Corrected against the code: the prompt has a static path (whole schema, the default) and a retrieval path (over `PROMPT_RETRIEVAL_TOKEN_BUDGET`) rather than always being scoped; the guard is parser-based, not a keyword list; the tutorials' domain-authoring steps are the YAML files in `project_config/`, not `knowledge/*.py`; `/query` responses, `/health`, rate-limit and cache descriptions, the admin panel's twelve sections and their capabilities, the `DIMENSION_VOCABULARY_WARM_ON_STARTUP` default (`true`), `DEFAULT_TOP_N`, the CLI banner and log file names, and the test count. `PROMPT_RETRIEVAL_TOKEN_BUDGET` is now in `.env.example` and the README's configuration table; `SCHEMA_CACHE_TTL`, which nothing reads, is removed from `.env.example`; and `AUTO_DISCOVER_SCHEMA` is documented as read only by `database/relationship_map.py`, which nothing in the server imports. No code changed.
+
 ## [6.6.1] — 2026-10-04
 
 A template for the `API_KEYS_FILE` key array.
