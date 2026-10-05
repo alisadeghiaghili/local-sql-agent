@@ -14,7 +14,13 @@ actual evaluation set is built from.
 2. Replace `eval_data/golden.jsonl` with real, hand-verified questions and
    reference SQL from actual usage (see "Adding a real case" below).
 3. Never commit `eval_data/` to git — it contains real customer questions
-   and, in `expected_rows`, real data values.
+   and, in `expected_rows`, real data values. **The real set lives only on
+   the server** that has the audit log and the database: build it there, run
+   the release gate there, and do not copy the files (or a JSON report, which
+   carries each case's question and SQL) off it.
+
+Rather than writing the real set by hand, build it from real usage -- see
+"Building the real set" below.
 
 ## Running against this template set
 
@@ -25,6 +31,11 @@ actual evaluation set is built from.
 # Live mode — real Ollama + real database, for recording baselines and
 # measuring latency:
 .venv/Scripts/python.exe -m eval.cli run --golden eval_data.example/golden.jsonl --live
+
+# Live mode, judged against the data as it is *today* (the release gate):
+# each case's expected_sql is executed in the same run and the two results
+# are compared, so a recorded fingerprint going stale cannot fail a case.
+.venv/Scripts/python.exe -m eval.cli run --golden eval_data/golden.jsonl --live --reference live
 ```
 
 ## File format
@@ -42,6 +53,8 @@ actual evaluation set is built from.
 | `expected_fingerprint` | required for offline mode | The order-insensitive result hash from `eval.fingerprint.fingerprint_dataframe`, precomputed from `expected_rows`. |
 | `expected_rows` | required for offline mode (unless `out_of_scope`) | The reference query's result rows, as a list of `{column: value}` dicts. Used only by the offline replay executor — never sent to a real database. |
 | `notes` | no | Free text explaining *why* this case exists / what it guards against. |
+| `datasource` | no | The data source (`datasources.yaml`) the answer lives in, e.g. `"sales"` or `"inventory"`. A live run compares it with the source the pipeline selected: that is source-selection accuracy, and cases that name one also feed the per-source execution accuracy. Absent means "not stated". |
+| `status` | no (default `"active"`) | `"active"` runs and counts. `"pending_expected"` (a flagged answer promoted from the admin panel, no reference yet), `"pending_review"` (an unreviewed candidate from `scripts/harvest_golden.py`; its `expected_sql` is only the model's proposal and it may not carry rows) and `"reviewed"` (a person confirmed the SQL; `eval.cli verify` has not run it yet) are all skipped by `eval.cli run`. |
 
 ### One example row
 
@@ -85,6 +98,66 @@ once:
   distinct from an aggregate query, which always returns exactly one row
   even when the count is zero.
 
+## Building the real set
+
+Harvest candidates from the audit log, let the analysts review them in
+Excel, bring the verdicts back, and verify them against the database. Run
+every step on the server; each prints counts and case ids only.
+
+```bash
+# 1. ~150 candidates from logs/audit_log.jsonl*, stratified by data source,
+#    outcome (answered / empty / out of scope / failed) and language,
+#    de-duplicated with the Persian/Arabic folding. Never overwrites an
+#    existing file without --force; never copies row data.
+python scripts/harvest_golden.py --n 150            # -> eval_data/candidates.jsonl
+
+# 2. A review sheet: UTF-8 with BOM, so Excel shows Persian correctly.
+python scripts/golden_sheet.py export               # -> eval_data/review.csv
+#    Columns: id, question, proposed_sql, correct_sql, verdict, expect,
+#    datasource, notes. The analyst sets verdict to correct / wrong / skip
+#    (blank = not reviewed yet) and fills correct_sql when the proposal is
+#    wrong. golden_review_template.csv in this directory is a filled-in example.
+
+# 3. Apply the verdicts. correct -> the proposed SQL; wrong + correct_sql ->
+#    that SQL; skip -> dropped. Every SQL goes through the SQL guard and a
+#    problem is reported by spreadsheet row. Cases land as status "reviewed".
+python scripts/golden_sheet.py import               # -> eval_data/golden.jsonl
+
+# 4. Run each reviewed case's expected_sql read-only through the application's
+#    own executor, report failures, record expected_rows / expected_fingerprint,
+#    and -- only with --accept -- make the ones that held up "active".
+python -m eval.cli verify --golden eval_data/golden.jsonl
+python -m eval.cli verify --golden eval_data/golden.jsonl --accept
+```
+
+`expect` in the sheet is `success`, `empty` (the right answer has no rows) or
+`out_of_scope` (the system should decline; leave the SQL blank). The write-back
+of `verify` is atomic and keeps the previous file as `golden.jsonl.bak`.
+
+## Running the release gate
+
+Before an upgrade, record a baseline on the version you run today, then run
+the same command after upgrading (exit code `1` is a regression):
+
+```bash
+python -m eval.cli run --live --reference live \
+    --golden eval_data/golden.jsonl --save-baseline eval_data/baseline.json
+python -m eval.cli run --live --reference live \
+    --golden eval_data/golden.jsonl --baseline eval_data/baseline.json
+```
+
+`--reference live` runs each case's `expected_sql` in the same run and
+compares the two results as execution accuracy: rows as a multiset, column
+names ignored (column order as selected counts), row order only when the
+reference has a top-level `ORDER BY` with `TOP`/`OFFSET`, numbers within a
+relative tolerance (`--float-tolerance`, default `1e-6`; integers always
+exactly), `NULL` equals `NULL`. Without it, `--live` compares fingerprints
+recorded once, which go stale on a warehouse that changes. A baseline can only
+be compared with a run that used the same `--reference`. The report adds
+per-source execution accuracy and source-selection accuracy for cases that
+name a `datasource`. See section 17 of `docs/deployment-runbook.md` for what
+each number means and how to read a failure.
+
 ## Adding a real case
 
 1. Pick a real question a user asked (or a representative variant —
@@ -99,6 +172,8 @@ once:
    rows = [...]  # the rows you just recorded
    print(fingerprint_dataframe(pd.DataFrame(rows)))
    ```
+   (`python -m eval.cli verify` does steps 3 and 4 for you, for every
+   reviewed case at once.)
 5. Append one JSON line to `eval_data/golden.jsonl` with `expected_sql`,
    `expected_rows`, and the `expected_fingerprint` from step 4.
 6. Run `python -m eval.cli run --golden eval_data/golden.jsonl` and

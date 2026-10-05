@@ -18,7 +18,7 @@ to/from JSON trivially (see :mod:`eval.report` and :mod:`eval.baseline`).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 #: What a case is expected to do when run through the pipeline.
 #:
@@ -54,16 +54,35 @@ CaseExpectation = Literal["success", "empty", "out_of_scope", "error"]
 #:     golden set's *size*, including its still-pending cases, remains
 #:     visible to anyone reading the file directly), and moves to
 #:     ``"active"`` the moment someone edits its ``expected_sql``.
-GoldenCaseStatus = Literal["active", "pending_expected"]
+#: ``"pending_review"``
+#:     An unreviewed candidate harvested from real usage
+#:     (``scripts/harvest_golden.py``). Its ``expected_sql``, when present,
+#:     is only the model's own *proposal*: nobody has said it is right.
+#:     Skipped by the runner exactly like ``"pending_expected"``, and
+#:     forbidden from carrying recorded rows or a fingerprint (there is
+#:     nothing verified to record).
+#: ``"reviewed"``
+#:     A person has confirmed (or supplied) the ``expected_sql``
+#:     (``scripts/golden_sheet.py import``) but ``python -m eval.cli verify``
+#:     has not yet run it against the database. Skipped by the runner;
+#:     ``verify --accept`` moves it to ``"active"``.
+GoldenCaseStatus = Literal["active", "pending_expected", "pending_review", "reviewed"]
+
+#: The statuses whose cases never reach the generator or the executor.
+#: Everything except ``"active"``.
+NON_RUNNABLE_STATUSES: tuple[str, ...] = tuple(
+    s for s in get_args(GoldenCaseStatus) if s != "active"
+)
 
 #: Coarse bucket a finished case falls into — used for the error taxonomy
 #: in :class:`EvalReport` and to decide pass/fail.
 CaseStatus = Literal[
     "pass",                 # matched expectation, fingerprint matched (or N/A)
-    "fingerprint_mismatch", # SQL executed but result != expected
+    "fingerprint_mismatch", # SQL executed but result != expected (stored fingerprint or live reference)
     "guard_rejected",       # security.sql_guard.validate_sql raised
     "generation_error",     # LLM/generator raised something unexpected
     "execution_error",      # execute_fn raised RuntimeError
+    "reference_error",      # --reference live: the case's own expected_sql failed to run
     "unexpected_out_of_scope",  # generator said OUT_OF_SCOPE but case expected data
     "missed_out_of_scope",  # case expected OUT_OF_SCOPE but generator returned SQL
 ]
@@ -112,6 +131,14 @@ class GoldenCase:
         in its JSON line at all, and :meth:`from_dict` treats an absent
         key exactly like this default, so no existing golden set changes
         behaviour.
+    datasource:
+        Optional name of the data source (``datasources.yaml``) the
+        reference answer lives in, e.g. ``"sales"``. A live run compares
+        it with the source the pipeline selected, which is how
+        source-selection accuracy is measured. ``None`` (the default, and
+        what every case written before this field existed has) means "not
+        stated": the case still counts toward overall accuracy but not
+        toward the per-source figures.
 
     Examples
     --------
@@ -138,6 +165,22 @@ class GoldenCase:
     ... )
     >>> pending.expected_sql is None
     True
+
+    A ``"pending_review"`` candidate keeps the model's proposed SQL but is
+    never run, and may not carry recorded rows:
+
+    >>> candidate = GoldenCase(
+    ...     id="cand_1", question="How many customers?",
+    ...     expected_sql="SELECT COUNT(*) FROM [sales].[Customer]",
+    ...     status="pending_review", datasource="sales",
+    ... )
+    >>> candidate.is_runnable
+    False
+    >>> GoldenCase(id="cand_2", question="q", status="pending_review",
+    ...            expected_rows=[{"n": 1}])
+    Traceback (most recent call last):
+        ...
+    ValueError: GoldenCase 'cand_2': a 'pending_review' case cannot carry expected_rows or expected_fingerprint (nothing has been verified yet)
     """
 
     id: str
@@ -149,12 +192,34 @@ class GoldenCase:
     expected_rows: list[dict[str, Any]] | None = None
     notes: str = ""
     status: GoldenCaseStatus = "active"
+    datasource: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
             raise ValueError("GoldenCase.id must be a non-empty string")
         if not self.question or not self.question.strip():
             raise ValueError(f"GoldenCase {self.id!r}: question must be non-empty")
+        if self.status not in get_args(GoldenCaseStatus):
+            raise ValueError(
+                f"GoldenCase {self.id!r}: unknown status {self.status!r} "
+                f"(expected one of {list(get_args(GoldenCaseStatus))})"
+            )
+        if self.datasource is not None and (
+            not isinstance(self.datasource, str) or not self.datasource.strip()
+        ):
+            raise ValueError(
+                f"GoldenCase {self.id!r}: datasource must be a non-empty string or None"
+            )
+        if self.status == "pending_review":
+            if self.expected_rows is not None or self.expected_fingerprint is not None:
+                raise ValueError(
+                    f"GoldenCase {self.id!r}: a 'pending_review' case cannot carry "
+                    "expected_rows or expected_fingerprint (nothing has been verified yet)"
+                )
+            # The model's proposal may be present or absent (an
+            # out-of-scope or failed record has none); either is fine
+            # until a person has looked at it.
+            return
         if self.status == "pending_expected":
             # No expectation exists yet, by definition (spec §4) -- neither
             # branch below applies until someone supplies one and moves
@@ -175,6 +240,19 @@ class GoldenCase:
     def is_out_of_scope(self) -> bool:
         """True when this case documents an out-of-scope question."""
         return self.expect == "out_of_scope"
+
+    @property
+    def is_runnable(self) -> bool:
+        """True when the regression gate runs this case (``status == "active"``).
+
+        Examples
+        --------
+        >>> GoldenCase(id="a", question="q", expected_sql="SELECT 1").is_runnable
+        True
+        >>> GoldenCase(id="b", question="q", status="pending_expected").is_runnable
+        False
+        """
+        return self.status == "active"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GoldenCase":
@@ -215,6 +293,7 @@ class GoldenCase:
             "expected_rows": self.expected_rows,
             "notes": self.notes,
             "status": self.status,
+            "datasource": self.datasource,
         }
 
 
@@ -246,7 +325,25 @@ class CaseResult:
         Human-readable error message when ``status != "pass"``, else
         ``None``.
     latency_seconds:
-        Wall-clock time for the full case (generation + guard + execution).
+        Wall-clock time for the full case (generation + guard + execution,
+        plus the reference query in ``--reference live`` mode).
+    expected_datasource:
+        Copied from :attr:`GoldenCase.datasource` (``None`` when the case
+        does not state one). Additive: a report written before this field
+        existed loads with ``None``.
+    selected_datasource:
+        The data source the pipeline picked for this question in a live
+        run: the source routing's ``chosen`` source when several sources
+        are configured, otherwise the source the generated SQL routes to
+        (:func:`database.routing.target_datasource_or_none`). ``None`` when
+        nothing was generated, in offline mode, or in a report written
+        before this field existed.
+    reference_fingerprint:
+        Fingerprint of the reference query's result when the run used
+        ``--reference live`` (``None`` otherwise). Compared with
+        :attr:`actual_fingerprint` only for diagnosis -- the verdict comes
+        from :func:`eval.compare.compare_frames`, which ignores column
+        names that the fingerprint includes.
     """
 
     case_id: str
@@ -257,6 +354,9 @@ class CaseResult:
     actual_fingerprint: str | None
     error: str | None
     latency_seconds: float
+    expected_datasource: str | None = None
+    selected_datasource: str | None = None
+    reference_fingerprint: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -275,6 +375,9 @@ class CaseResult:
             "actual_fingerprint": self.actual_fingerprint,
             "error": self.error,
             "latency_seconds": self.latency_seconds,
+            "expected_datasource": self.expected_datasource,
+            "selected_datasource": self.selected_datasource,
+            "reference_fingerprint": self.reference_fingerprint,
         }
 
 
@@ -309,6 +412,22 @@ class EvalReport:
         The full list of per-case results, for drill-down.
     generated_at:
         ISO-8601 UTC timestamp of when the report was built.
+    reference:
+        How a live run decided a result was right: ``"stored"`` (compare
+        with each case's recorded ``expected_fingerprint``, the only
+        option offline and the long-standing live behaviour) or ``"live"``
+        (run each case's ``expected_sql`` in the same run and compare the
+        two results, see :mod:`eval.compare`). A report written before
+        this field existed loads as ``"stored"``. A baseline can only be
+        compared with a run that used the same reference.
+    source_accuracy:
+        Per-data-source execution accuracy, ``{source: (passed, total)}``,
+        over the cases that name a ``datasource``. Empty when no case does.
+    source_selection:
+        ``(correct, total)`` source-selection accuracy of a *live* run over
+        the cases that name a ``datasource`` and expect SQL; ``None`` for
+        an offline run (where the "selection" replays the reference and is
+        right by construction) and when no case names a source.
     """
 
     mode: Literal["offline", "live"]
@@ -323,6 +442,9 @@ class EvalReport:
     latency_p99: float
     results: list[CaseResult]
     generated_at: str
+    reference: Literal["stored", "live"] = "stored"
+    source_accuracy: dict[str, tuple[int, int]] = field(default_factory=dict)
+    source_selection: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict (used by :mod:`eval.baseline`)."""
@@ -341,5 +463,15 @@ class EvalReport:
             "latency_p95": self.latency_p95,
             "latency_p99": self.latency_p99,
             "generated_at": self.generated_at,
+            "reference": self.reference,
+            "source_accuracy": {
+                source: {"passed": p, "total": t}
+                for source, (p, t) in self.source_accuracy.items()
+            },
+            "source_selection": (
+                None
+                if self.source_selection is None
+                else {"correct": self.source_selection[0], "total": self.source_selection[1]}
+            ),
             "results": [r.to_dict() for r in self.results],
         }

@@ -53,9 +53,11 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
+from eval.compare import ComparisonOptions, compare_to_reference
 from eval.fingerprint import fingerprint_dataframe
 from eval.models import CaseResult, CaseStatus, GoldenCase
 from llm.base import LLMBackend
@@ -70,7 +72,48 @@ GenerateFn = Callable[[str], str]
 #: A callable that executes a validated SQL string and returns a DataFrame.
 ExecuteFn = Callable[[str], pd.DataFrame]
 
+#: How a run decides a result is right. ``"stored"`` compares the executed
+#: result's fingerprint with the case's recorded ``expected_fingerprint``
+#: (the only choice offline, and the long-standing live behaviour).
+#: ``"live"`` executes the case's ``expected_sql`` in the same run and
+#: compares the two results with :func:`eval.compare.compare_to_reference`,
+#: so a warehouse that changes daily cannot make a recorded hash stale.
+ReferenceMode = Literal["stored", "live"]
+
 _OUT_OF_SCOPE_SENTINEL = "OUT_OF_SCOPE"
+
+
+class SourceTrace:
+    """Remembers which data source the live generator picked for its last question.
+
+    A :data:`GenerateFn` returns only SQL, so the source routing decision
+    (``llm.source_routing.choose_source``) would otherwise be invisible to
+    the harness. The live generators call :meth:`record`; :func:`run_case`
+    resets the trace before each question and reads :attr:`chosen` after.
+
+    Examples
+    --------
+    >>> trace = SourceTrace()
+    >>> trace.chosen is None
+    True
+    >>> trace.record("sales")
+    >>> trace.chosen
+    'sales'
+    >>> trace.reset()
+    >>> trace.chosen is None
+    True
+    """
+
+    def __init__(self) -> None:
+        self.chosen: str | None = None
+
+    def record(self, source: str | None) -> None:
+        """Store *source* as the choice made for the current question."""
+        self.chosen = source
+
+    def reset(self) -> None:
+        """Forget the previous question's choice."""
+        self.chosen = None
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +185,16 @@ def load_golden_cases(path: str | Path) -> list[GoldenCase]:
 # ---------------------------------------------------------------------------
 
 
-def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -> CaseResult:
-    """Run one :class:`~eval.models.GoldenCase` through generate → guard → execute → fingerprint.
+def run_case(
+    case: GoldenCase,
+    generate_fn: GenerateFn,
+    execute_fn: ExecuteFn,
+    *,
+    reference: ReferenceMode = "stored",
+    options: ComparisonOptions | None = None,
+    source_trace: SourceTrace | None = None,
+) -> CaseResult:
+    """Run one :class:`~eval.models.GoldenCase` through generate → guard → execute → compare.
 
     Parameters
     ----------
@@ -155,6 +206,26 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
         See :data:`ExecuteFn`. Called with the generator's cleaned SQL,
         only after :func:`~security.sql_guard.validate_sql` has accepted
         it.
+    reference:
+        ``"stored"`` (default) compares the result's fingerprint with
+        ``case.expected_fingerprint``. ``"live"`` validates and executes
+        ``case.expected_sql`` through *execute_fn* right after the
+        generated SQL and compares the two results with
+        :func:`eval.compare.compare_to_reference` (execution accuracy:
+        multiset of rows, column names ignored, tolerance for numbers; see
+        :mod:`eval.compare`). The reference run is not counted in
+        ``latency_seconds``, so a live-reference run's latency stays
+        comparable with a stored one. A reference that is rejected by the
+        guard or fails to execute yields the ``"reference_error"`` status:
+        the case, not the generator, is at fault.
+    options:
+        Comparison tolerance for ``reference="live"``.
+    source_trace:
+        The :class:`SourceTrace` the live generator writes the selected
+        data source to. When given, :attr:`CaseResult.selected_datasource`
+        is that choice, or -- when the deployment has one source and
+        nothing was selected -- the source the generated SQL routes to.
+        ``None`` (offline) leaves it unset.
 
     Returns
     -------
@@ -203,8 +274,39 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
     ...     raise ValueError("OUT_OF_SCOPE")
     >>> run_case(oos_case, oos_generate, lambda sql: df).status
     'pass'
+
+    With ``reference="live"`` the stored fingerprint is not consulted: the
+    reference SQL is executed too and the two results are compared (here
+    the generated query only differs by a column alias, which does not
+    matter):
+
+    >>> stale = GoldenCase(
+    ...     id="c3", question="how many?",
+    ...     expected_sql="SELECT COUNT(*) AS n FROM Customer",
+    ...     expected_fingerprint="0" * 64,
+    ... )
+    >>> run_case(stale, lambda q: "SELECT COUNT(*) AS total FROM Customer",
+    ...          lambda sql: df, reference="live").status
+    'pass'
+    >>> run_case(stale, lambda q: "SELECT COUNT(*) AS total FROM Customer",
+    ...          lambda sql: df).status
+    'fingerprint_mismatch'
     """
     start = time.perf_counter()
+    if source_trace is not None:
+        source_trace.reset()
+
+    def _selected(sql: str | None) -> str | None:
+        """The source the pipeline picked: the routing's choice, else where *sql* routes."""
+        if source_trace is None:
+            return None
+        if source_trace.chosen is not None:
+            return source_trace.chosen
+        if not sql:
+            return None
+        from database.routing import target_datasource_or_none
+
+        return target_datasource_or_none(sql)
 
     def _finish(
         status: CaseStatus,
@@ -212,6 +314,8 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
         generated_sql: str | None = None,
         actual_fingerprint: str | None = None,
         error: str | None = None,
+        latency: float | None = None,
+        reference_fingerprint: str | None = None,
     ) -> CaseResult:
         return CaseResult(
             case_id=case.id,
@@ -221,7 +325,10 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
             generated_sql=generated_sql,
             actual_fingerprint=actual_fingerprint,
             error=error,
-            latency_seconds=time.perf_counter() - start,
+            latency_seconds=time.perf_counter() - start if latency is None else latency,
+            expected_datasource=case.datasource,
+            selected_datasource=_selected(generated_sql),
+            reference_fingerprint=reference_fingerprint,
         )
 
     try:
@@ -255,7 +362,63 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
     except Exception as exc:  # noqa: BLE001 - any execution failure is a harness result, not a crash
         return _finish("execution_error", generated_sql=raw_sql, error=f"{type(exc).__name__}: {exc}")
 
-    actual_fingerprint = fingerprint_dataframe(df)
+    try:
+        actual_fingerprint: str | None = fingerprint_dataframe(df)
+    except Exception:  # noqa: BLE001 - e.g. two output columns with the same name
+        # The fingerprint is keyed by column name and cannot represent such a
+        # result; one odd query must not abort the whole run. The live
+        # reference comparison is positional and does not need it.
+        actual_fingerprint = None
+
+    if reference == "live":
+        # The pipeline's own work ends here; the reference run below is
+        # harness overhead and must not inflate the latency percentiles.
+        pipeline_latency = time.perf_counter() - start
+        assert case.expected_sql is not None  # guaranteed for a runnable, non-out-of-scope case
+        try:
+            validate_sql(case.expected_sql)
+        except ValueError as exc:
+            return _finish(
+                "reference_error",
+                generated_sql=raw_sql,
+                actual_fingerprint=actual_fingerprint,
+                error=f"reference expected_sql rejected by the guard: {exc}",
+                latency=pipeline_latency,
+            )
+        try:
+            reference_df = execute_fn(case.expected_sql)
+        except Exception as exc:  # noqa: BLE001 - a broken reference is a harness result, not a crash
+            return _finish(
+                "reference_error",
+                generated_sql=raw_sql,
+                actual_fingerprint=actual_fingerprint,
+                error=f"reference expected_sql failed: {type(exc).__name__}: {exc}",
+                latency=pipeline_latency,
+            )
+        try:
+            reference_fingerprint: str | None = fingerprint_dataframe(reference_df)
+        except Exception:  # noqa: BLE001 - diagnostic only; the verdict does not depend on it
+            reference_fingerprint = None
+        comparison = compare_to_reference(
+            case.expected_sql, reference_df, df, options=options
+        )
+        if comparison.equal:
+            return _finish(
+                "pass",
+                generated_sql=raw_sql,
+                actual_fingerprint=actual_fingerprint,
+                latency=pipeline_latency,
+                reference_fingerprint=reference_fingerprint,
+            )
+        return _finish(
+            "fingerprint_mismatch",
+            generated_sql=raw_sql,
+            actual_fingerprint=actual_fingerprint,
+            error=f"result differs from the live reference: {comparison.reason}",
+            latency=pipeline_latency,
+            reference_fingerprint=reference_fingerprint,
+        )
+
     if case.expected_fingerprint is None or actual_fingerprint == case.expected_fingerprint:
         return _finish("pass", generated_sql=raw_sql, actual_fingerprint=actual_fingerprint)
 
@@ -271,12 +434,20 @@ def run_case(case: GoldenCase, generate_fn: GenerateFn, execute_fn: ExecuteFn) -
 
 
 def run_golden_set(
-    cases: Sequence[GoldenCase], generate_fn: GenerateFn, execute_fn: ExecuteFn
+    cases: Sequence[GoldenCase],
+    generate_fn: GenerateFn,
+    execute_fn: ExecuteFn,
+    *,
+    reference: ReferenceMode = "stored",
+    options: ComparisonOptions | None = None,
+    source_trace: SourceTrace | None = None,
 ) -> list[CaseResult]:
     """Run every case in *cases* through :func:`run_case`, in order.
 
-    A case whose ``status`` is ``"pending_expected"`` (admin panel phase 4
-    -- see :data:`~eval.models.GoldenCaseStatus`) is skipped entirely and
+    A case whose ``status`` is not ``"active"`` -- ``"pending_expected"``
+    (admin panel phase 4, see :data:`~eval.models.GoldenCaseStatus`), an
+    unreviewed ``"pending_review"`` candidate, or a ``"reviewed"`` case not
+    yet verified -- is skipped entirely and
     produces no :class:`~eval.models.CaseResult` at all, rather than one
     reported as a pass or a failure. This is what makes the regression
     gate genuinely *ignore* such a case instead of merely not counting it
@@ -290,15 +461,14 @@ def run_golden_set(
     ----------
     cases:
         The golden set to run.
-    generate_fn, execute_fn:
+    generate_fn, execute_fn, reference, options, source_trace:
         See :func:`run_case`.
 
     Returns
     -------
     list[CaseResult]
-        One result per non-``"pending_expected"`` input case, same
-        relative order (fewer entries than *cases* whenever any case is
-        still pending its expectation).
+        One result per ``"active"`` input case, same relative order
+        (fewer entries than *cases* whenever any case is still pending).
 
     Examples
     --------
@@ -323,11 +493,25 @@ def run_golden_set(
     >>> results = run_golden_set([*cases, pending], lambda q: "SELECT 1", lambda sql: df)
     >>> [r.case_id for r in results]
     ['a', 'b']
+
+    So is an unreviewed candidate, even though it carries proposed SQL:
+
+    >>> candidate = GoldenCase(id="d", question="q4", expected_sql="SELECT 4",
+    ...                        status="pending_review")
+    >>> [r.case_id for r in run_golden_set([*cases, candidate], lambda q: "SELECT 1", lambda sql: df)]
+    ['a', 'b']
     """
     return [
-        run_case(case, generate_fn, execute_fn)
+        run_case(
+            case,
+            generate_fn,
+            execute_fn,
+            reference=reference,
+            options=options,
+            source_trace=source_trace,
+        )
         for case in cases
-        if case.status != "pending_expected"
+        if case.is_runnable
     ]
 
 
@@ -379,6 +563,8 @@ def make_offline_generator(cases: Sequence[GoldenCase]) -> GenerateFn:
     """
     by_question: dict[str, GoldenCase] = {}
     for case in cases:
+        if not case.is_runnable:
+            continue  # a pending case is never replayed (see run_golden_set)
         if case.question in by_question:
             raise ValueError(
                 f"duplicate question in golden set: {case.question!r} "
@@ -423,7 +609,7 @@ def make_offline_executor(cases: Sequence[GoldenCase]) -> ExecuteFn:
     ------
     ValueError
         At construction time, if two cases share the same
-        ``expected_sql``.
+        ``expected_sql`` without both recording the same ``expected_rows``.
 
     Examples
     --------
@@ -445,13 +631,20 @@ def make_offline_executor(cases: Sequence[GoldenCase]) -> ExecuteFn:
     """
     by_sql: dict[str, GoldenCase] = {}
     for case in cases:
-        if case.expected_sql is None:
+        if case.expected_sql is None or not case.is_runnable:
             continue
-        if case.expected_sql in by_sql:
-            raise ValueError(
-                f"duplicate expected_sql in golden set: case ids "
-                f"{by_sql[case.expected_sql].id!r} and {case.id!r}"
-            )
+        earlier = by_sql.get(case.expected_sql)
+        if earlier is not None:
+            # Two questions may legitimately share one reference query (a
+            # paraphrase); that is only a problem when the recorded
+            # answers disagree or are missing, because then the replay
+            # cannot tell which one to serve.
+            if earlier.expected_rows is None or earlier.expected_rows != case.expected_rows:
+                raise ValueError(
+                    f"duplicate expected_sql in golden set: case ids "
+                    f"{earlier.id!r} and {case.id!r}"
+                )
+            continue
         by_sql[case.expected_sql] = case
 
     def _execute(sql: str) -> pd.DataFrame:
@@ -474,7 +667,9 @@ def make_offline_executor(cases: Sequence[GoldenCase]) -> ExecuteFn:
 # ---------------------------------------------------------------------------
 
 
-def make_live_structured_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
+def make_live_structured_generator(
+    backend: LLMBackend, system_prompt: str, trace: SourceTrace | None = None
+) -> GenerateFn:
     """Build a :data:`GenerateFn` using Phase 2 task 3's constrained JSON output.
 
     Mirrors :func:`make_live_generator` exactly, except the LLM is asked
@@ -494,7 +689,7 @@ def make_live_structured_generator(backend: LLMBackend, system_prompt: str) -> G
 
     Parameters
     ----------
-    backend, system_prompt:
+    backend, system_prompt, trace:
         Same as :func:`make_live_generator`.
 
     Returns
@@ -519,9 +714,12 @@ def make_live_structured_generator(backend: LLMBackend, system_prompt: str) -> G
 
     def _generate(question: str) -> str:
         context = ContextRetriever.retrieve(question)
+        source = choose_source(question, context)
+        if trace is not None:
+            trace.record(source)
         segments = build_prompt_segments(
             question, system_prompt, context,
-            source=choose_source(question, context),
+            source=source,
         )
         obj, _meta = backend.generate_structured(segments, SQL_GENERATION_SCHEMA)
         sql = sql_from_structured(obj)  # raises ValueError("OUT_OF_SCOPE") if flagged
@@ -623,7 +821,9 @@ def measure_prefix_cache(
     return {"first": first, "second": second, "prefix_cache_hit": prefix_cache_hit}
 
 
-def make_live_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
+def make_live_generator(
+    backend: LLMBackend, system_prompt: str, trace: SourceTrace | None = None
+) -> GenerateFn:
     """Build a :data:`GenerateFn` backed by a real :class:`~llm.base.LLMBackend`.
 
     Runs the same retrieval → prompt → generate → clean pipeline as
@@ -641,6 +841,10 @@ def make_live_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
         own.
     system_prompt:
         The system prompt text (see ``<PROJECT_CONFIG_DIR>/system_prompt.md``).
+    trace:
+        Optional :class:`SourceTrace`; the data source chosen for each
+        question (``None`` with a single source) is recorded on it so
+        :func:`run_case` can report source-selection accuracy.
 
     Returns
     -------
@@ -660,12 +864,15 @@ def make_live_generator(backend: LLMBackend, system_prompt: str) -> GenerateFn:
 
     def _generate(question: str) -> str:
         context = ContextRetriever.retrieve(question)
+        # None (nothing changes) unless several data sources are configured.
+        source = choose_source(question, context)
+        if trace is not None:
+            trace.record(source)
         prompt = PromptBuilder.build(
             question=question,
             system_prompt=system_prompt,
             context=context,
-            # None (nothing changes) unless several data sources are configured.
-            source=choose_source(question, context),
+            source=source,
         )
         raw = backend.generate(prompt)
         return clean_sql(raw)
