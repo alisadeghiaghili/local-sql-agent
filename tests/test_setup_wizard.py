@@ -17,6 +17,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -316,3 +321,92 @@ class TestEnvExampleWizardKeys:
             assert key in values
         assert values["WIZARD_LLM_MODEL"] == ""
         assert values["WIZARD_LLM_BASE_URL"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Step 7 on a project_config/ that is not complete
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_EXAMPLE_DIR = _REPO_ROOT / "project_config.example"
+_WIZARD_FILES = ("entities.yaml", "aliases.yaml", "business_rules.yaml", "examples.yaml")
+
+
+def _seed(directory: Path, names: tuple[str, ...]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        shutil.copy(_EXAMPLE_DIR / name, directory / name)
+
+
+class TestStep7WithMissingFiles:
+    """On a fresh checkout step 7 died with a ``ConfigNotFoundError``
+    traceback: ``import knowledge`` reads five files of the default
+    ``project_config/`` at import time, before the wizard could look."""
+
+    def test_a_fresh_checkout_gets_a_report_not_a_traceback(self, tmp_path):
+        db = tmp_path / "wizard.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.commit()
+        conn.close()
+        out = tmp_path / "out"
+        env = {**os.environ, "PROJECT_CONFIG_DIR": str(tmp_path / "no_such_project_config")}
+        for name in ("WIZARD_LLM_PROVIDER", "WIZARD_LLM_MODEL", "WIZARD_LLM_BASE_URL"):
+            env.pop(name, None)
+        done = subprocess.run(
+            [sys.executable, "setup_project.py", "--db-url", f"sqlite:///{db}",
+             "--llm-provider", "mock", "--language", "en", "--non-interactive",
+             "--output", str(out)],
+            cwd=_REPO_ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "Traceback" not in done.stdout + done.stderr
+        text = " ".join(done.stdout.split())
+        for name in ("metrics.yaml", "schema.yaml", "system_prompt.md"):
+            assert name in text
+        assert "project_config.example" in text
+        assert "NOT complete" in text
+        assert (out / "entities.yaml").is_file()
+
+    def test_the_missing_files_are_returned_and_logged(self, tmp_path):
+        _seed(tmp_path, _WIZARD_FILES)
+        log: dict = {}
+        missing = sp.step7_validate(tmp_path, log)
+        assert missing == [
+            "metrics.yaml", "schema.yaml", "retrieval_hints.yaml",
+            "session_policy.yaml", "memory_policy.yaml", "system_prompt.md",
+        ]
+        assert log["step7_validate"]["missing_files"] == missing
+
+    def test_it_does_not_claim_completion_while_files_are_missing(self, tmp_path, capsys):
+        _seed(tmp_path, _WIZARD_FILES)
+        sp.step7_validate(tmp_path, {})
+        out = capsys.readouterr().out
+        assert "Setup complete" not in out
+        assert "NOT complete" in out
+
+    def test_nothing_is_copied_in_for_the_operator(self, tmp_path):
+        _seed(tmp_path, _WIZARD_FILES)
+        before = sorted(p.name for p in tmp_path.iterdir())
+        sp.step7_validate(tmp_path, {})
+        assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+    def test_a_complete_directory_validates_and_reports_completion(self, tmp_path, capsys):
+        from core.project_config_files import REQUIRED_PROJECT_CONFIG_FILES
+
+        _seed(tmp_path, REQUIRED_PROJECT_CONFIG_FILES)
+        log: dict = {}
+        assert sp.step7_validate(tmp_path, log) == []
+        out = capsys.readouterr().out
+        assert "Setup complete" in out
+        assert log["step7_validate"]["entity_count"] > 0
+
+    def test_an_invalid_generated_file_is_reported_not_raised(self, tmp_path, capsys):
+        from core.project_config_files import REQUIRED_PROJECT_CONFIG_FILES
+
+        _seed(tmp_path, REQUIRED_PROJECT_CONFIG_FILES)
+        (tmp_path / "entities.yaml").write_text("entities: [not, a, mapping]\n", encoding="utf-8")
+        sp.step7_validate(tmp_path, {})
+        out = capsys.readouterr().out
+        assert "entities.yaml: FAILED" in out
+        assert "Setup complete" not in out

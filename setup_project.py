@@ -442,21 +442,78 @@ def _relationships_yaml(relationships: list[dict], generated_at: str = "") -> st
 # Validation against Pydantic models
 # ===========================================================================
 
+_REPO_ROOT = Path(__file__).resolve().parent
+_EXAMPLE_CONFIG_DIR = _REPO_ROOT / "project_config.example"
+
+
+def _config_loader():
+    """Return the ``knowledge.config_loader`` module, importable on a fresh checkout.
+
+    Importing anything under ``knowledge`` runs ``knowledge/__init__.py``,
+    which reads five files of the *default* ``project_config/`` (aliases,
+    business rules, entities, examples, metrics) on the spot. On a fresh
+    checkout, or a ``project_config/`` the wizard has only half filled, that
+    raises ``ConfigNotFoundError`` before the wizard can validate or even name
+    what is missing. The import is therefore made once with the loaders
+    pointed at the committed ``project_config.example/``, which always
+    complete; the wizard never reads those values, only the loader functions
+    and models, and re-points them at the output directory before use.
+
+    Returns:
+        The imported ``knowledge.config_loader`` module.
+
+    Raises:
+        ImportError: When the module cannot be imported at all, e.g. the
+            wizard is run outside a full checkout.
+    """
+    import sys
+
+    module = sys.modules.get("knowledge.config_loader")
+    if module is not None:
+        return module
+    from config import override_settings
+
+    try:
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            import knowledge.config_loader as module
+    except Exception as exc:  # noqa: BLE001 - ConfigNotFoundError, ValueError, ...
+        raise ImportError(
+            f"could not import knowledge.config_loader ({type(exc).__name__}: {exc}); "
+            "run the wizard from a complete checkout"
+        ) from exc
+    return module
+
+
 def _validate_yaml_str(yaml_str: str, filename: str) -> list[str]:
     """Parse *yaml_str* and validate against the relevant Pydantic model.
 
-    Returns a list of error strings (empty list = valid).
+    Args:
+        yaml_str: The generated file content.
+        filename: Which project_config file it is (selects the model). Files
+            without a model here are not checked and count as valid.
+
+    Returns:
+        A list of error strings (empty list = valid).
+
+    Raises:
+        Nothing. Any failure, including an unimportable loader, is returned
+        as an error string.
+
+    Examples:
+        >>> _validate_yaml_str("entities: {}", "entities.yaml")
+        []
+        >>> _validate_yaml_str("anything", "relationships.yaml")
+        []
+        >>> bool(_validate_yaml_str("entities: [1, 2]", "entities.yaml"))
+        True
     """
     try:
-        from knowledge.config_loader import (
-            AliasesConfig, EntitiesConfig, BusinessRulesConfig,
-            ExamplesConfig,
-        )
+        loader = _config_loader()
         model_map = {
-            "entities.yaml":       EntitiesConfig,
-            "aliases.yaml":        AliasesConfig,
-            "business_rules.yaml": BusinessRulesConfig,
-            "examples.yaml":       ExamplesConfig,
+            "entities.yaml":       loader.EntitiesConfig,
+            "aliases.yaml":        loader.AliasesConfig,
+            "business_rules.yaml": loader.BusinessRulesConfig,
+            "examples.yaml":       loader.ExamplesConfig,
         }
         model = model_map.get(filename)
         if model is None:
@@ -1202,70 +1259,145 @@ def step6_review_and_write(
     _mark_done(log, "step6_write", {"files_written": written})
 
 
-def step7_validate(output_dir: Path, log: dict) -> None:
-    """Run a quick smoke test against the knowledge layer."""
-    console.rule("[bold blue]Step 7: Validation[/bold blue]" if _RICH else "Step 7: Validation")
+def _copy_hints(missing: list[str], output_dir: Path) -> list[str]:
+    """Return one shell command per missing file that copies its template.
 
-    # Point the knowledge layer at our output dir for the duration of this
-    # step, via the same Settings.project_config_dir seam every other
-    # consumer reads through (config.override_settings) rather than poking
-    # a module-private attribute directly.
-    import knowledge.config_loader as cl
-    from config import override_settings
+    Args:
+        missing: Names from ``core.project_config_files.REQUIRED_PROJECT_CONFIG_FILES``.
+        output_dir: Directory the files belong in.
 
-    results: dict[str, str] = {}
-    loaders = [
-        ("entities.yaml",       cl.load_entities),
-        ("aliases.yaml",        cl.load_aliases),
-        ("business_rules.yaml", cl.load_business_rules),
-        ("examples.yaml",       cl.load_examples),
+    Returns:
+        Commands in the syntax of the current platform (``cp`` or ``copy``).
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> hints = _copy_hints(["metrics.yaml"], Path("project_config"))
+        >>> len(hints), "metrics.yaml" in hints[0]
+        (1, True)
+    """
+    verb = "copy" if os.name == "nt" else "cp"
+    return [
+        f'{verb} "{Path("project_config.example") / name}" "{output_dir / name}"'
+        for name in missing
     ]
 
-    with override_settings(project_config_dir=str(output_dir)):
-        for fname, loader_fn in loaders:
-            if not (output_dir / fname).exists():
-                results[fname] = "skipped (file not written)"
-                continue
-            try:
-                loader_fn()
-                results[fname] = "OK"
-            except Exception as exc:  # noqa: BLE001
-                results[fname] = f"FAILED: {exc}"
+
+def step7_validate(output_dir: Path, log: dict) -> list[str]:
+    """Check the files the wizard wrote, and name the required ones still missing.
+
+    The wizard writes five files. A working ``project_config/`` needs ten
+    (``core.project_config_files.REQUIRED_PROJECT_CONFIG_FILES``); the rest
+    come from ``project_config.example/``. They are never copied in
+    automatically: running the application on sample aliases and business
+    rules against a real warehouse would give confidently wrong SQL, which is
+    why the application has no such fall-back either (see
+    ``config.Settings.project_config_dir``). Instead this step lists what is
+    missing, with the command that copies each template, and does not claim
+    that setup is complete. It never raises for a missing file.
+
+    Args:
+        output_dir: The directory the wizard wrote to.
+        log: The setup log, updated in place.
+
+    Returns:
+        The names of required files that are still missing (empty when the
+        directory is complete).
+
+    Raises:
+        Nothing for missing or invalid configuration files; each is reported.
+    """
+    from core.project_config_files import (
+        REQUIRED_PROJECT_CONFIG_FILES,
+        missing_project_config_files,
+    )
+
+    console.rule("[bold blue]Step 7: Validation[/bold blue]" if _RICH else "Step 7: Validation")
+
+    results: dict[str, str] = {}
+    entity_count = rule_count = example_count = 0
+
+    try:
+        cl = _config_loader()
+    except ImportError as exc:
+        cl = None
+        results["(config loader)"] = f"FAILED: {exc}"
+
+    if cl is not None:
+        from config import override_settings
+
+        loaders = [
+            ("entities.yaml",       cl.load_entities),
+            ("aliases.yaml",        cl.load_aliases),
+            ("business_rules.yaml", cl.load_business_rules),
+            ("examples.yaml",       cl.load_examples),
+        ]
+        loaded: dict[str, Any] = {}
+        # Point the knowledge layer at our output dir for the duration of this
+        # step, via the same Settings.project_config_dir seam every other
+        # consumer reads through (config.override_settings). Absolute, because
+        # the loaders resolve a relative path against the repository root,
+        # not against the directory the wizard was started from.
+        with override_settings(project_config_dir=str(output_dir.resolve())):
+            for fname, loader_fn in loaders:
+                if not (output_dir / fname).exists():
+                    results[fname] = "skipped (file not written)"
+                    continue
+                try:
+                    loaded[fname] = loader_fn()
+                    results[fname] = "OK"
+                except Exception as exc:  # noqa: BLE001
+                    results[fname] = f"FAILED: {exc}"
+        if "entities.yaml" in loaded:
+            entity_count = len(loaded["entities.yaml"].entities)
+        if "business_rules.yaml" in loaded:
+            rule_count = len(loaded["business_rules.yaml"].rules)
+        if "examples.yaml" in loaded:
+            example_count = len(loaded["examples.yaml"].examples)
 
     for fname, status in results.items():
         colour = "green" if status == "OK" else "yellow" if "skipped" in status else "red"
         if _RICH:
-            console.print(f"  [{colour}]{fname}: {status}[/{colour}]")
+            console.print(f"  {fname}: {status}", style=colour, markup=False)
         else:
             print(f"  {fname}: {status}")
 
-    entity_count  = 0
-    rule_count    = 0
-    example_count = 0
-    try:
-        with override_settings(project_config_dir=str(output_dir)):
-            ec = cl.load_entities()
-            entity_count = len(ec.entities)
-            rc = cl.load_business_rules()
-            rule_count = len(rc.rules)
-            ex = cl.load_examples()
-            example_count = len(ex.examples)
-    except Exception:  # noqa: BLE001
-        pass
+    missing = missing_project_config_files(output_dir)
+    failed = [f for f, status in results.items() if status.startswith("FAILED")]
+    if missing:
+        console.print(
+            f"\n  The wizard wrote the files above, but {len(missing)} of the "
+            f"{len(REQUIRED_PROJECT_CONFIG_FILES)} files a deployment needs are still "
+            f"missing from {output_dir}:"
+        )
+        for name in missing:
+            console.print(f"    - {name}")
+        console.print(
+            "  They are not generated: copy each template from project_config.example/ "
+            "and edit it for your data, e.g.:"
+        )
+        for hint in _copy_hints(missing, output_dir):
+            console.print(f"    {hint}")
+        console.print(
+            "  Then run python scripts/verify_deployment.py. Setup is NOT complete until "
+            "those files exist."
+        )
+    elif failed:
+        console.print("\n  Setup is NOT complete: fix the files reported FAILED above.")
+    else:
+        console.print(
+            f"\n  Setup complete. Registry: {entity_count} entities, "
+            f"{rule_count} rules, {example_count} examples."
+        )
 
-    console.print(
-        f"\n  [bold green]Setup complete.[/bold green] "
-        f"Registry: [cyan]{entity_count}[/cyan] entities, "
-        f"[cyan]{rule_count}[/cyan] rules, "
-        f"[cyan]{example_count}[/cyan] examples."
-        if _RICH else
-        f"\n  Setup complete. {entity_count} entities, {rule_count} rules, {example_count} examples."
-    )
     _mark_done(log, "step7_validate", {
         "entity_count": entity_count,
         "rule_count": rule_count,
         "example_count": example_count,
+        "missing_files": missing,
     })
+    return missing
 
 
 # ===========================================================================
