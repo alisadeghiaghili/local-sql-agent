@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from appdb import key_store
 from config import override_settings
+from core.project_config_files import REQUIRED_PROJECT_CONFIG_FILES
 from database.datasources import reset_datasources_cache
 from scripts.issue_api_key import build_entry, issue_key
 from scripts.verify_deployment import (
@@ -351,6 +352,79 @@ class TestCheckProjectConfigLoads:
             result = check_project_config_loads()
         assert result.status == "FAIL"
         assert "schema.yaml" in result.detail
+
+
+class TestCheckProjectConfigLoadsCoversEveryRequiredFile:
+    """The check loaded six of the ten required files: a broken
+    ``session_policy.yaml``, ``memory_policy.yaml``, ``retrieval_hints.yaml``
+    or ``system_prompt.md`` passed it and failed on the first real question."""
+
+    @pytest.fixture()
+    def config_dir(self, tmp_path):
+        dest = tmp_path / "project_config"
+        shutil.copytree(_EXAMPLE_CONFIG_DIR, dest)
+        return dest
+
+    def _check(self, directory):
+        with override_settings(project_config_dir=str(directory)):
+            return check_project_config_loads()
+
+    def test_the_loaders_are_exactly_the_required_files(self):
+        from scripts.verify_deployment import _project_config_loaders
+
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            names = [name for name, _ in _project_config_loaders()]
+        assert sorted(names) == sorted(REQUIRED_PROJECT_CONFIG_FILES)
+        assert len(names) == 10
+
+    def test_a_pass_says_how_many_files_it_loaded(self, config_dir):
+        result = self._check(config_dir)
+        assert result.status == "PASS"
+        assert "all 10 files" in result.detail
+
+    @pytest.mark.parametrize(
+        "filename",
+        ["retrieval_hints.yaml", "session_policy.yaml", "memory_policy.yaml"],
+    )
+    def test_an_invalid_policy_or_hints_file_fails_naming_it(self, config_dir, filename):
+        (config_dir / filename).write_text("- not\n- a mapping\n", encoding="utf-8")
+        result = self._check(config_dir)
+        assert result.status == "FAIL"
+        assert filename in result.detail
+
+    def test_an_empty_system_prompt_fails(self, config_dir):
+        (config_dir / "system_prompt.md").write_text("  \n", encoding="utf-8")
+        result = self._check(config_dir)
+        assert result.status == "FAIL"
+        assert "system_prompt.md" in result.detail
+
+    @pytest.mark.parametrize("filename", REQUIRED_PROJECT_CONFIG_FILES)
+    def test_each_missing_file_is_a_failure_naming_it(self, config_dir, filename):
+        (config_dir / filename).unlink()
+        result = self._check(config_dir)
+        assert result.status == "FAIL"
+        assert filename in result.detail
+        assert "not found" in result.detail
+
+    def test_every_missing_file_is_named_at_once(self, config_dir):
+        for filename in ("metrics.yaml", "session_policy.yaml", "system_prompt.md"):
+            (config_dir / filename).unlink()
+        result = self._check(config_dir)
+        assert result.status == "FAIL"
+        for filename in ("metrics.yaml", "session_policy.yaml", "system_prompt.md"):
+            assert filename in result.detail
+        assert "3 of 10" in result.detail
+
+    def test_an_empty_directory_is_reported_without_a_traceback(self, tmp_path):
+        result = self._check(tmp_path)
+        assert result.status == "FAIL"
+        assert "10 of 10" in result.detail
+        assert "project_config.example" in result.detail
+
+    def test_a_relative_directory_is_read_from_the_repository_root(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        with override_settings(project_config_dir="project_config.example"):
+            assert check_project_config_loads().status == "PASS"
 
 
 # ---------------------------------------------------------------------------
