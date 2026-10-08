@@ -148,7 +148,7 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   ```json
   [
     {"id": "analyst-1", "name": "Jane Analyst",
-     "key_sha256": "<64 hex>", "denied_columns": ["NationalID"]},
+     "key_sha256": "<64 hex>", "denied_columns": ["NationalID", "sales.Order.ID"]},
     {"id": "admin-1", "name": "Admin", "key_sha256": "<64 hex>",
      "denied_columns": [], "admin": true, "operations": true, "security": true}
   ]
@@ -159,6 +159,36 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   out gets **no** column restriction (a key issued from the admin panel starts
   with every column denied instead) and the server logs one warning for it;
   write `"denied_columns": []` once that is what you mean.
+
+  **Restricting one table, or one data source.** A plain name denies the
+  column on every table of every source and refuses every reference. To keep a
+  column usable for joins while hiding its values, write a scoped entry; the
+  column is then *join-only* (allowed only as one side of `a.col = b.col`
+  inside a `JOIN ... ON`):
+
+  | Entry | Effect |
+  |---|---|
+  | `sales.Order.ID` | join-only on that table (written as `schema.Table.Column`, case-insensitive), whichever source the query runs on |
+  | `Warehouse:sales.Order.ID` | the same, only when the query runs on data source `Warehouse` |
+  | `Warehouse:ID` | join-only on every table of `Warehouse` that has an `ID` column |
+
+  A table listed under several sources (`datasource: [A, B]`) runs on the
+  default source when it is one of them, else the first in `datasources.yaml`;
+  that is the source an entry's `Source:` is compared with. Every scoped entry
+  is checked at start-up (and when saved from the admin panel): the source
+  must be in `datasources.yaml`, the table in `schema.yaml` and in that
+  source, the column on the table. A mistake stops the server and names the
+  entry. Anything else (the select list, `WHERE`, `GROUP BY`, `ORDER BY`,
+  `HAVING`, `USING`, a function, `ON` against a literal) is refused as
+  `join_only_column`, and the model is asked to rewrite the query.
+
+  What join-only does not do: it hides a column's **value**, not the fact
+  that a row exists, so a join on a filtered foreign key can still probe it.
+  If the foreign key pointing at a hidden primary key is visible in another
+  table, hiding the primary key is cosmetic; restrict the foreign key as
+  well. A reference with no table qualifier counts as restricted when any
+  table in its `SELECT` is restricted for that name, so qualify columns.
+  Entry names cannot contain `.` or `:`.
 
   The file is read once at start-up, so **restart the server after editing
   it** (the preflight below runs in its own process and always sees the

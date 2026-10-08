@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+A `denied_columns` entry can now be limited to one table, or to one data source, and then makes the column usable only as a join key.
+
+### Added
+
+- **Scoped, join-only column restrictions in `denied_columns`.** Alongside the plain name (`NationalID`, unchanged: denied everywhere, every reference), an entry may be `schema.Table.Col` (join-only on that table, in any source that holds it), `Source:schema.Table.Col` (only when the query executes on `Source`) or `Source:Col` (every table of `Source` that has the column). A join-only column may appear only as one side of `a.col = b.col` inside a `JOIN ... ON`; the select list, `WHERE`, `GROUP BY`, `ORDER BY`, `HAVING`, a function argument, `ON` against a literal, `USING (...)`, a comma join's `WHERE` predicate and a `*` that expands to it are refused with the new, correctable guard reason `join_only_column` (its `subject` is the whole entry, so "Request access" removes exactly that entry). The data source is the one `database.routing.choose_datasource` picks, the same call the executor makes. Entries are parsed by the new `security/column_policy.py` and checked against `schema.yaml` and `datasources.yaml` when keys are loaded and when the admin panel saves an ACL, so a typo stops start-up (or answers 422) naming the entry. The model is told which columns are join-only by one line in the per-question part of the prompt; the cached static prefix is unchanged. The admin key editor shows and accepts the new forms.
+
+### Changed
+
+- **`scope_key` hashes the sorted `denied_columns` as a JSON array instead of joining them on `":"`.** Scoped entries contain `:`, so the old join could give `("a:b",)` and `("a", "b")` the same key. Cached query results are keyed afresh once after the upgrade.
+- **The value resolver and the dimension vocabulary skip join-only columns**, so their distinct values cannot reach the prompt.
+
+### Security
+
+- Join-only hides a column's value from the output, not its existence: a join on a filtered foreign key can still probe it, and hiding a primary key whose foreign key is visible elsewhere is cosmetic. Restrict the foreign keys as well. An unqualified reference counts as restricted when any table in its `SELECT` is restricted for that name. An entry name cannot contain `.` or `:`; a legacy entry that did is now read as a scoped one and fails start-up if it names nothing real. See `docs/deployment-runbook.md` and `docs/design/DESIGN.md` D14.
+
 ## [6.7.0] — 2026-10-05
 
 A real evaluation set can now be built from real usage and used to gate an upgrade; CI tests the pinned dependency set as well as the newest releases; the documentation is brought up to date.

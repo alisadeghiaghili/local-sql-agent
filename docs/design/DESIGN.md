@@ -407,6 +407,7 @@ Release checklist (each train):
 | D11 | User menu owns theme + language + API key | Topbar stays readable; identity and prefs in one place |
 | D12 | Chrome i18n fa/en via `web/js/i18n.js` | Engine is bilingual; shell must not be Persian-only forever |
 | D13 | The SQL an analyst reads is laid out by the server in one house style, **for display only**, and only when the layout parses back to the same statement | See "D13 in full" below |
+| D14 | A `denied_columns` entry can be scoped to a table and/or data source, and then makes the column **join-only** | See "D14 in full" below |
 
 ### D13 in full — the house SQL layout (6.5)
 
@@ -455,6 +456,74 @@ maintainers write T-SQL nor leaves function names alone.
 formatter only on one-liners. `/query` and the CLI return the validated SQL
 unchanged: the layout belongs to conversation turns. The API fields are in
 `docs/api-contract-v2.md` §4 and §7.
+
+### D14 in full — scoped, join-only column restrictions (6.8)
+
+*Context.* `denied_columns` matched a column by bare name across every table
+and every data source, and refused every reference. A warehouse where every
+table has an `ID` could not hide one table's `ID` without breaking almost
+every join, and a date dimension replicated into two data sources could not
+be restricted in one of them only.
+
+*Decision.* Entries of the same `denied_columns` array may be scoped:
+
+| Entry | Meaning |
+|---|---|
+| `Col` | Unchanged: denied everywhere, every reference. |
+| `schema.Table.Col` | Join-only on that table, in every source that holds it. |
+| `Source:schema.Table.Col` | Join-only on that table, only when the query runs on `Source`. |
+| `Source:Col` | Join-only on every table of `Source` that has `Col`. |
+
+A join-only column may appear in exactly one place: as one side of an equality
+between two columns inside a `JOIN ... ON` (directly or under `AND` / parentheses).
+Everywhere else (select list, `WHERE`, `GROUP BY`, `ORDER BY`, `HAVING`, a
+function argument, `ON` against a literal, `USING (...)`, a comma join's `WHERE`
+predicate, a `*` that expands to it) the guard refuses with the correctable
+reason `join_only_column`, whose `subject` is the whole entry. It is correctable
+where a full denial is not, because a rewrite can still answer the question.
+Rules that keep it honest:
+
+1. **Checked when written, not guessed.** `security/column_policy.py` parses
+   entries into a frozen `ColumnPolicy`. At key load and in the admin ACL
+   writer every scoped entry is checked against `schema.yaml` and
+   `datasources.yaml` (the source exists, the table exists and is in it, the
+   column exists), so a typo stops start-up instead of restricting nothing.
+   If the schema cannot be loaded at that moment the check is deferred and the
+   guard repeats it on every query, refusing on failure.
+2. **The source is the executor's.** The guard asks
+   `database.routing.choose_datasource` which source the query runs on (the
+   default source when it is a candidate, else the first in
+   `datasources.yaml`), and only entries for that source (or for none) apply.
+3. **Resolution follows scope.** A qualified reference resolves through the
+   nearest enclosing select that defines the alias. A CTE or derived-table alias
+   is not a restricted table: its body is checked where it is written, so outer
+   references to its output are fine. An unqualified reference counts as
+   restricted when any table in its own `SELECT` is restricted for that name.
+4. **`*` cannot read around it.** `*` and `alias.*` are expanded against their
+   tables; `COUNT(*)` reads no value and is allowed.
+5. **The model is told up front.** One line naming the principal's join-only
+   columns goes in the per-question part of the prompt (never the cached static
+   prefix, which stays byte-identical across principals).
+6. **Cache and access requests.** `scope_key` hashes the entries as JSON (they
+   now contain `:`); "Request access" removes exactly the entry that blocked
+   the query.
+7. **Values too.** The value resolver and the dimension vocabulary do not read
+   distinct values of a join-only column into the prompt.
+
+*Limits, stated plainly.*
+
+- Join-only hides a value from the **output**, not its **existence**: a join on
+  a filtered foreign key can still probe it.
+- If the foreign key that points at a hidden primary key is visible elsewhere,
+  hiding the primary key is cosmetic. Restrict the foreign key too.
+- Unqualified references are treated conservatively, so a valid query may be
+  refused once; the message tells the model to qualify the column.
+- A name containing `.` or `:` cannot be written in an entry.
+
+*Alternatives.* Making scoped entries full denials would keep every join broken.
+A policy block beside `denied_columns` would need a second storage format for
+keys in the admin database; reusing the array keeps storage, admin API and
+access requests as they were.
 
 ---
 

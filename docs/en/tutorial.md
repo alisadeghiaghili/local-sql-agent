@@ -456,13 +456,13 @@ print(ensure_top("SELECT TOP 10 Name FROM [sales].[Customer]", n=500))
 | Read-only shape | A `SELECT`/`WITH` root, or a top-level `UNION`/`INTERSECT`/`EXCEPT`; DDL, DML, `EXEC`, `SELECT ... INTO` and `xp_*`/`sp_*`/`OPENROWSET`-style calls are refused wherever they appear |
 | Table allowlist | Every table must resolve to a table in `schema.yaml` that has a `columns` map (or be a CTE of the same query), and a schema written in front of a name must match the table's known schema |
 | Column allowlist | A qualified column must exist on its table; an unqualified one is allowed rather than risk a false refusal |
-| Column ACL | Columns in the caller's `denied_columns` are refused, including through `*` |
+| Column ACL | Columns in the caller's `denied_columns` are refused, including through `*`. An entry written `schema.Table.Col`, `Source:schema.Table.Col` or `Source:Col` makes the column join-only instead: allowed only as a `JOIN ... ON a.col = b.col` key, refused as `join_only_column` anywhere else |
 | No comments, no catalogues | A comment is refused outright; `INFORMATION_SCHEMA`, `sys.*` and the other dialects' catalogues are refused |
 | Functions | A function outside the allowlist, or one that reads server or session state, is refused |
 | At least one table | A statement that reads no table is refused |
 | One data source | With several sources, a statement for which no source has every table is refused as `cross_datasource` |
 
-Each refusal carries a `reason` (`denied_column`, `unknown_table`, `cross_datasource`, ...) that clients use to pick a next step (`docs/api-contract-v2.md` §4). `LIMIT` is **not refused** — `clean_sql` rewrites it to `TOP n` for SQL Server before validation. The README's "Security model" section has the full list.
+Each refusal carries a `reason` (`denied_column`, `join_only_column`, `unknown_table`, `cross_datasource`, ...) that clients use to pick a next step (`docs/api-contract-v2.md` §4). `LIMIT` is **not refused** — `clean_sql` rewrites it to `TOP n` for SQL Server before validation. The README's "Security model" section has the full list.
 
 ### Showing the SQL: `pretty_sql`
 

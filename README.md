@@ -570,7 +570,7 @@ dialect and assumed for another has unknown holes.
 - **Table allowlist, strictly enforced:** every table reference must resolve to the allowlist derived from your `project_config/schema.yaml` (case-insensitively, brackets ignored) or be a CTE defined earlier in the same query — an unresolvable table (hallucinated, out-of-domain, or malicious) is refused outright, independent of whether the DB login is itself scoped to just these tables (see `docs/db-hardening.md`). This is why `schema.yaml` is a security file: adding a table widens what generated SQL may touch, and a typo silently narrows the allowlist. A table's schema/db qualifier is checked too, not ignored: a `schema.yaml` key may itself be qualified (`sales.Customer`) for a warehouse with the same table name in more than one schema, and a query that writes some *other* schema in front of an allowlisted table's bare name is refused (`unknown_table`) rather than silently resolved — see `docs/design/TABLE-NAMES.md`
 - **One data source per statement:** with several data sources the guard works out which source has every table the statement reads (`database.routing.choose_datasource`, the same function the executor uses) and refuses the statement as `cross_datasource` when none does; the source is derived from the tables, never taken from the model — see `docs/design/DATASOURCES.md`
 - **Column allowlist, deliberately lenient:** every resolvable qualified column reference is checked against its table's known columns; an unqualified column, or one qualified by a CTE name or derived-table alias, is allowed rather than risk a false-positive rejection — this leniency applies to *columns* only, not table names
-- **Column-level ACL seam:** `validate_sql(sql, denied_columns=...)` refuses any query touching a named column, regardless of table — the foundation for future multi-tenant column policies; `*`/`alias.*` cannot be used to read around an active policy (it is expanded against its resolved table(s) and checked, or refused outright if it can't be resolved with confidence)
+- **Column-level ACL seam:** `validate_sql(sql, denied_columns=...)` refuses any query touching a named column, regardless of table (an entry written `schema.Table.Col`, `Source:schema.Table.Col` or `Source:Col` instead makes that column join-only: allowed only as a `JOIN ... ON` equality key, refused as `join_only_column` anywhere else) — the foundation for future multi-tenant column policies; `*`/`alias.*` cannot be used to read around an active policy (it is expanded against its resolved table(s) and checked, or refused outright if it can't be resolved with confidence)
 - **No SQL comments:** any comment is refused outright because it is present — its content is never inspected for keywords, since scanning comment text would repeat the same substring-matching mistake this module was rewritten to fix, just in a new place
 - **System catalogues blocked by AST node, not substring,** per dialect: `INFORMATION_SCHEMA`/`sys.*` for T-SQL, `pg_catalog`/`pg_*` for PostgreSQL, `sqlite_*` for SQLite, and so on. A dialect with no catalogue list configured is refused **at start-up** — an empty blocklist is indistinguishable from "nothing to block", which is the failure direction that loses
 - **LIMIT→TOP:** `LIMIT n` is rewritten to `TOP n` for T-SQL before execution; for other targets the row cap is applied on the AST and rendered in that dialect's own syntax
@@ -607,7 +607,12 @@ deliberately not supported — one way in is one thing to reason about.
   with different visibility can never collide.
 - **Column-level ACL:** a key's `denied_columns` feeds straight into
   `security/sql_guard.py`'s existing `denied_columns` seam — no new
-  enforcement machinery, just the first thing that populates it.
+  enforcement machinery, just the first thing that populates it. A plain name
+  denies the column everywhere. A scoped entry (`schema.Table.Col`,
+  `Source:schema.Table.Col`, `Source:Col`) makes it *join-only*: usable as a
+  `JOIN ... ON a.col = b.col` key and nowhere else. Join-only hides a value,
+  not its existence (a join on a filtered foreign key can still probe it), so
+  restrict the foreign keys too; see `docs/deployment-runbook.md`.
 - **Sessions are owned:** a `/v2/sessions` session belongs to the principal
   that created it; a non-owner gets `404`, never `403` — a `403` would itself
   confirm the session exists to a caller who has no business knowing that.
