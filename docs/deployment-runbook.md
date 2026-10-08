@@ -1075,7 +1075,7 @@ each step links to the part you need.
 |---|---|---|
 | 1 | Choose: two sources, or one source with a multi-part `db_schema` | §16.1 |
 | 2 | Describe each connection, put each raw password in `.env` | §16.2 |
-| 3 | Write each table's `datasource:` with `assign_datasources.py` | §16.3 |
+| 3 | Write each table's `datasource:` with `assign_datasources.py`, replace `schema.yaml`, fix the columns it reports missing | §16.3 |
 | 4 | Give each source a `description:` and `keywords:` | §16.4 |
 | 5 | Preflight and restart | §16.5 |
 | 6 | Size `PROMPT_RETRIEVAL_TOKEN_BUDGET` with `prompt_budget.py` | §16.6 |
