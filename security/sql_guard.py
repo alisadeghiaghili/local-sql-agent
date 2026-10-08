@@ -125,6 +125,15 @@ checks the resulting **AST**, not the source text:
   refused outright if it cannot be resolved that way (a derived table, a
   CTE, or an unrecognised source), since "cannot prove it's safe" and
   "unsafe" get the same answer when a column policy is actually in force.
+* Entries of ``denied_columns`` that carry a ``.`` or ``:`` are *scoped*
+  (``schema.Table.Col``, ``Source:schema.Table.Col``, ``Source:Col`` --
+  :mod:`security.column_policy`): the column becomes **join-only** on the
+  named table (on the named data source's tables), usable solely as one
+  side of ``a.col = b.col`` inside a ``JOIN ... ON``. Anywhere else it is a
+  :class:`CorrectableRejection` with ``reason="join_only_column"`` -- unlike a
+  legacy full denial, a rewrite of the query can still answer the question.
+  The entry is enforced only when the data source the query executes on
+  (:func:`database.routing.choose_datasource`) is one it applies to.
 
 Functions and session variables were, until ADR-001, the one construct
 still governed by a denylist (the ``xp_*``/``sp_*``/
@@ -251,6 +260,7 @@ output with sqlglot.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -261,7 +271,16 @@ from sqlglot.errors import SqlglotError
 
 from schema_data.columns import TABLE_COLUMNS
 from schema_data.registry import get_table_schema_qualifiers, table_ref_parts, table_reference_sql
+from security.column_policy import (
+    ColumnPolicyError,
+    JoinOnlyRestrictions,
+    SchemaView,
+    cached_column_policy,
+    resolve_join_only,
+)
 from security.dialects import get_dialect_profile
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy
@@ -293,8 +312,14 @@ from security.dialects import get_dialect_profile
 #: caller can always tell "this rejection was considered and has no more
 #: specific category" from "the raise site never set a reason at all"
 #: (``reason is None``, which no raise site below actually produces).
+#:
+#: ``"join_only_column"`` is the scoped counterpart of ``"denied_column"``: a
+#: column restricted to ``JOIN ... ON`` keys was used elsewhere. Its
+#: ``subject`` is the whole ``denied_columns`` entry (for example
+#: ``sales.Order.ID``), not a bare column name, so that "Request access"
+#: removes exactly the entry that blocked the query.
 _REASONS = frozenset({
-    "denied_column", "forbidden_statement", "unknown_table",
+    "denied_column", "join_only_column", "forbidden_statement", "unknown_table",
     "system_catalogue", "no_table_reference", "cross_datasource",
     "ambiguous_table", "other",
 })
@@ -1035,6 +1060,306 @@ def _resolve_star_tables(
 
 
 # ---------------------------------------------------------------------------
+# Join-only columns (scoped entries of ``denied_columns``)
+# ---------------------------------------------------------------------------
+#
+# A join-only column may appear in exactly one place: as one side of an
+# equality between two columns inside a ``JOIN ... ON``. Everything below
+# decides, for each reference the query makes, (a) which restricted table it
+# can belong to and (b) whether it sits in that one allowed place. The
+# whole-name legacy check (``denied``) is separate and runs first.
+
+#: What a join-only rejection tells the model, appended to the part that names
+#: the column. The retry that follows can answer the question (join on the
+#: column, show another one), which is why this is correctable and the
+#: legacy full denial is not.
+_JOIN_ONLY_ADVICE = (
+    "it may only be used in JOIN ... ON a.col = b.col (an equality between two "
+    "columns); remove it from the SELECT list, WHERE, GROUP BY, ORDER BY, HAVING, "
+    "function arguments and USING()"
+)
+
+#: A select's directly visible sources: ``(names, tables)``. *names* maps each
+#: lower-cased alias (or bare table name, for an unaliased table) to the
+#: canonical tables behind it -- ``None`` for a derived table or CTE, whose
+#: columns are checked where its body is written; *tables* is every canonical
+#: table directly in that select's ``FROM``/``JOIN``.
+_SelectScope = tuple[dict[str, list[str | None]], list[str]]
+
+
+def _select_scope(
+    select: exp.Select, cte_names: frozenset[str], cache: dict[int, _SelectScope],
+) -> _SelectScope:
+    """The sources *select* reads directly (memoised in *cache* by node id)."""
+    cached = cache.get(id(select))
+    if cached is not None:
+        return cached
+    names: dict[str, list[str | None]] = {}
+    tables: list[str] = []
+    for source in _direct_from_sources(select):
+        canonical: str | None = None
+        if isinstance(source, exp.Table):
+            canonical = _resolve_table_name(source, cte_names)
+            if canonical is not None:
+                tables.append(canonical)
+            # An aliased table is addressed by its alias only.
+            label = (source.alias or source.name or "").lower()
+        else:
+            label = (getattr(source, "alias", "") or "").lower()
+        if label:
+            names.setdefault(label, []).append(canonical)
+    result = (names, tables)
+    cache[id(select)] = result
+    return result
+
+
+def _executing_source(tree: exp.Expression, cte_names: frozenset[str]) -> str | None:
+    """The data source the query will execute on, as the executor picks it.
+
+    The same rule as :func:`_require_single_datasource` and the executor
+    (:func:`database.routing.choose_datasource`): the sources that have every
+    table, the default one when it is among them. ``None`` for a query that
+    reads no configured table.
+    """
+    tables = {
+        canonical
+        for table in tree.find_all(exp.Table)
+        if (canonical := _resolve_table_name(table, cte_names)) is not None
+    }
+    if not tables:
+        return None
+
+    from database.routing import choose_datasource
+
+    return choose_datasource(tables)
+
+
+def _is_join_key_operand(column: exp.Column) -> bool:
+    """Whether *column* is one side of ``col = col`` inside a ``JOIN ... ON``.
+
+    The only place a join-only column may appear. Both operands of the
+    equality must be plain columns (``a.ID = 5`` and ``CAST(a.ID AS INT) =
+    b.ID`` do not qualify), and the equality must sit in a join's ``ON``
+    directly or under ``AND``/parentheses -- not under ``OR`` or ``NOT``,
+    where it no longer says "these rows pair up". ``join.args.get("on")``
+    rather than an attribute, which differs between sqlglot versions.
+    """
+    equality = column.parent
+    if not isinstance(equality, exp.EQ):
+        return False
+    if not (isinstance(equality.this, exp.Column) and isinstance(equality.expression, exp.Column)):
+        return False
+    node: exp.Expression = equality
+    while isinstance(node.parent, (exp.And, exp.Paren)):
+        node = node.parent
+    join = node.parent
+    return isinstance(join, exp.Join) and join.args.get("on") is node
+
+
+def _restricted_tables_of(
+    column: exp.Column,
+    restrictions: JoinOnlyRestrictions,
+    cte_names: frozenset[str],
+    alias_map: dict[str, str],
+    all_tables: set[str],
+    cache: dict[int, _SelectScope],
+) -> list[str]:
+    """The restricted tables *column* may be a reference to (empty: none).
+
+    Qualified: the table behind the qualifier, looked up in the nearest
+    enclosing select that has it (so a correlated reference reaches the outer
+    query's table). A qualifier naming a derived table or a CTE resolves to
+    nothing: that body is checked where it is written, so an outer reference
+    to its output is fine.
+
+    Unqualified: conservative. The column counts as restricted when any table
+    in the enclosing select's ``FROM``/``JOIN`` is restricted for that name,
+    even if another table there also has an unrestricted column of that name.
+    The search moves to the outer select only when no table of this one has
+    the column at all (a correlated reference).
+    """
+    name = column.name.lower()
+    qualifier = (column.table or "").lower()
+    scope = _enclosing_select(column)
+
+    if qualifier:
+        while scope is not None:
+            names, _ = _select_scope(scope, cte_names, cache)
+            if qualifier in names:
+                return [
+                    t for t in names[qualifier]
+                    if t is not None and restrictions.entry(t, name)
+                ]
+            scope = _enclosing_select(scope)
+        # Not a source of any enclosing select (a set operation's ORDER BY, say):
+        # fall back to the query-wide alias map.
+        canonical = alias_map.get(qualifier)
+        return [canonical] if canonical and restrictions.entry(canonical, name) else []
+
+    if scope is None:
+        # Outside every select (the ORDER BY of a UNION): any table of the query.
+        return [t for t in sorted(all_tables) if restrictions.entry(t, name)]
+    while scope is not None:
+        _, tables = _select_scope(scope, cte_names, cache)
+        hit = [t for t in tables if restrictions.entry(t, name)]
+        if hit:
+            return hit
+        if any(name in _COLUMNS_BY_TABLE[t] for t in tables):
+            return []
+        scope = _enclosing_select(scope)
+    return []
+
+
+def _join_only_rejection(
+    entry: str, table: str, column: str, *, unqualified: bool = False,
+) -> CorrectableRejection:
+    """The correctable rejection for a join-only column used outside ``JOIN ... ON``."""
+    advice = _JOIN_ONLY_ADVICE
+    if unqualified:
+        advice += (
+            "; if this column belongs to another table, qualify it with that table's alias"
+        )
+    exc = CorrectableRejection(
+        f"Forbidden keyword detected: column '{column}' of table '{table}' is restricted "
+        f"(policy entry '{entry}'): {advice}",
+        reason="join_only_column", subject=entry,
+    )
+    # A refusal on the HTTP axis too: when the retries run out, the request was
+    # refused by a rule, not garbled by the model (see SqlGuardRejection).
+    exc.is_refusal = True
+    return exc
+
+
+def _enforce_join_only(
+    tree: exp.Expression,
+    cte_names: frozenset[str],
+    restrictions: JoinOnlyRestrictions,
+    alias_map: dict[str, str],
+) -> None:
+    """Refuse every use of a join-only column except as a ``JOIN ... ON`` key.
+
+    Raises
+    ------
+    CorrectableRejection
+        ``reason="join_only_column"``, ``subject`` the policy entry (when one
+        entry is at fault), for: a restricted column anywhere but one side of
+        ``col = col`` in a join's ``ON``; a restricted column named in
+        ``USING (...)``; a ``NATURAL JOIN`` over a table with a restricted
+        column; a ``*``/``alias.*`` that would expose one; or a ``*`` over a
+        source this function cannot enumerate.
+    """
+    cache: dict[int, _SelectScope] = {}
+    all_tables = {
+        canonical
+        for table in tree.find_all(exp.Table)
+        if (canonical := _resolve_table_name(table, cte_names)) is not None
+    }
+
+    for column in tree.find_all(exp.Column):
+        name = column.name
+        if not name or name == "*" or name.lower() not in restrictions.names:
+            continue
+        tables = _restricted_tables_of(
+            column, restrictions, cte_names, alias_map, all_tables, cache,
+        )
+        if not tables or _is_join_key_operand(column):
+            continue
+        table = tables[0]
+        raise _join_only_rejection(
+            restrictions.entry(table, name) or name, table, name,
+            unqualified=not column.table,
+        )
+
+    for join in tree.find_all(exp.Join):
+        scope_select = _enclosing_select(join)
+        if scope_select is None:
+            continue
+        _, tables = _select_scope(scope_select, cte_names, cache)
+        for ident in join.args.get("using") or ():
+            written = getattr(ident, "name", "") or ""
+            if written.lower() in restrictions.names:
+                for table in tables:
+                    entry = restrictions.entry(table, written)
+                    if entry:
+                        raise _join_only_rejection(entry, table, written)
+        if str(join.args.get("method") or "").upper() == "NATURAL":
+            for table in tables:
+                columns = restrictions.by_table.get(table)
+                if columns:
+                    column_name, entry = next(iter(columns.items()))
+                    exc = CorrectableRejection(
+                        f"Forbidden keyword detected: NATURAL JOIN would join on every "
+                        f"column the tables share, including restricted column "
+                        f"'{column_name}' of table '{table}' (policy entry '{entry}'): "
+                        "write an explicit JOIN ... ON a.col = b.col instead",
+                        reason="join_only_column", subject=entry,
+                    )
+                    exc.is_refusal = True
+                    raise exc
+
+    for star in tree.find_all(exp.Star):
+        if isinstance(star.parent, exp.Count):
+            continue  # COUNT(*) reads no column value
+        parent = star.parent
+        star_tables: list[str] = []
+        unresolved = False
+        if isinstance(parent, exp.Column) and parent.table:
+            label = f"{parent.table}.*"
+            qualifier = parent.table.lower()
+            scope = _enclosing_select(parent)
+            found = False
+            while scope is not None and not found:
+                names, _ = _select_scope(scope, cte_names, cache)
+                if qualifier in names:
+                    star_tables = [t for t in names[qualifier] if t is not None]
+                    found = True
+                scope = _enclosing_select(scope)
+            if not found and qualifier in alias_map:
+                star_tables = [alias_map[qualifier]]
+        else:
+            label = "*"
+            select = _enclosing_select(star)
+            if select is None:
+                unresolved = True
+            else:
+                for source in _direct_from_sources(select):
+                    if isinstance(source, exp.Table):
+                        canonical = _resolve_table_name(source, cte_names)
+                        if canonical is not None:
+                            star_tables.append(canonical)
+                        elif (source.name or "").lower() not in cte_names:
+                            unresolved = True
+                    elif not isinstance(source, exp.Subquery):
+                        unresolved = True
+            # A CTE or derived table cannot hold a restricted column: the
+            # body that would have produced it was refused where it is written.
+
+        entries = sorted({
+            entry
+            for table in dict.fromkeys(star_tables)
+            for entry in restrictions.by_table.get(table, {}).values()
+        })
+        if entries:
+            exc = CorrectableRejection(
+                f"Forbidden keyword detected: '{label}' would expose restricted "
+                f"column(s) {entries}: name the columns instead of using '*' and leave "
+                "those out; they may only be used in JOIN ... ON a.col = b.col",
+                reason="join_only_column",
+                subject=entries[0] if len(entries) == 1 else None,
+            )
+            exc.is_refusal = True
+            raise exc
+        if unresolved:
+            exc = CorrectableRejection(
+                f"Forbidden keyword detected: cannot verify whether '{label}' exposes a "
+                "restricted column -- name the columns explicitly instead of using '*'",
+                reason="join_only_column",
+            )
+            exc.is_refusal = True
+            raise exc
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1272,7 +1597,19 @@ def validate_sql(
         or refused outright if it cannot be resolved that way. This check
         is intentionally *not* pragmatic like rule 9: a denied column
         should never slip through just because this module couldn't prove
-        which table a reference came from.
+        which table a reference came from. *denied_columns* may also hold
+        **scoped** entries (see :mod:`security.column_policy`), which make a
+        column join-only on one table, optionally only on one data source:
+        it may then appear solely as one side of ``a.col = b.col`` inside a
+        ``JOIN ... ON`` (directly or under ``AND``/parentheses). Any other
+        use -- the select list, ``WHERE``, ``GROUP BY``, ``ORDER BY``,
+        ``HAVING``, a function argument, ``ON`` against a literal,
+        ``USING (...)``, a comma join's ``WHERE`` predicate, a ``*`` that
+        expands to it -- is refused with ``reason="join_only_column"``.
+        A qualified reference is resolved through its alias (a CTE or
+        derived-table alias is not a restricted table: its body is checked
+        where it is written); an unqualified one counts as restricted when
+        any table of its own ``SELECT`` is restricted for that name.
     11. **Forbidden state-reading nodes (ADR-001, run anywhere in the
         tree)** — ``exp.Parameter`` (``@@version``, ``@@spid``, ...),
         ``exp.CurrentUser``, ``exp.SessionUser``, ``exp.CurrentSchema``,
@@ -1320,7 +1657,10 @@ def validate_sql(
         outright wherever they are referenced. This is a seam for
         column-level access control (e.g. multi-tenant row/column
         policies) — no default policy is applied; pass ``None`` (the
-        default) to skip this check entirely.
+        default) to skip this check entirely. An entry containing ``.``
+        or ``:`` is a scoped, join-only restriction instead (rule 10,
+        :mod:`security.column_policy`); a malformed one is refused as a
+        :class:`PolicyRejection` rather than ignored.
     dialect:
         A sqlglot dialect key (see
         :data:`security.dialects.DIALECT_PROFILES`). Defaults to
@@ -1440,6 +1780,18 @@ def validate_sql(
     Traceback (most recent call last):
         ...
     security.sql_guard.PolicyRejection: Forbidden keyword detected: '*' would expose denied column(s): ['name']
+
+    A scoped entry makes a column join-only on one table: fine as a join
+    key, refused anywhere else (the retry can still answer the question):
+
+    >>> validate_sql(
+    ...     "SELECT a.Name FROM Customer a JOIN Customer b ON a.ID = b.ID",
+    ...     denied_columns={"Customer.ID"},
+    ... )
+    >>> validate_sql("SELECT ID FROM Customer", denied_columns={"Customer.ID"})
+    Traceback (most recent call last):
+        ...
+    security.sql_guard.CorrectableRejection: Forbidden keyword detected: column 'ID' of table 'Customer' is restricted (policy entry 'Customer.ID'): it may only be used in JOIN ... ON a.col = b.col (an equality between two columns); remove it from the SELECT list, WHERE, GROUP BY, ORDER BY, HAVING, function arguments and USING(); if this column belongs to another table, qualify it with that table's alias
     """
     if not sql or not sql.strip():
         raise CorrectableRejection("Empty SQL", reason="other")
@@ -1724,7 +2076,19 @@ def validate_sql(
 
     _require_single_datasource(tree, cte_names)
 
-    denied = frozenset(c.upper() for c in denied_columns) if denied_columns else frozenset()
+    try:
+        policy = cached_column_policy(denied_columns)
+    except ColumnPolicyError as exc:
+        # Unreachable for a key that passed load-time checking; reached for a
+        # malformed entry that got into storage some other way. Refuse rather
+        # than ignore it: an entry that cannot be read is an entry that
+        # restricts nothing, and nothing is the wrong default for an ACL.
+        logger.error("column policy unreadable: %s", exc)
+        raise PolicyRejection(
+            f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
+            reason="other",
+        ) from None
+    denied = policy.denied
     alias_map = _collect_table_alias_map(tree, cte_names)
 
     for col in tree.find_all(exp.Column):
@@ -1810,6 +2174,27 @@ def validate_sql(
                     reason="denied_column",
                     subject=exposed_denied[0] if len(exposed_denied) == 1 else None,
                 )
+
+    if policy.join_only:
+        # Scoped entries: join-only columns, for the data source this query
+        # will run on. Resolving the entries checks them against the schema
+        # and the configured sources again (cheap), so a key whose entries
+        # were never checked at load fails here, loudly, instead of
+        # restricting nothing.
+        try:
+            restrictions = resolve_join_only(
+                policy,
+                SchemaView(columns_by_table=_COLUMNS_BY_TABLE, qualifiers=_QUALIFIER_STR),
+                _executing_source(tree, cte_names),
+            )
+        except ColumnPolicyError as exc:
+            logger.error("column policy invalid: %s", exc)
+            raise PolicyRejection(
+                f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
+                reason="other",
+            ) from None
+        if restrictions:
+            _enforce_join_only(tree, cte_names, restrictions, alias_map)
 
     # -------------------------------------------------------------------
     # ADR-001 -- the projection-allowlist rule (R1/R2/R3, run last)

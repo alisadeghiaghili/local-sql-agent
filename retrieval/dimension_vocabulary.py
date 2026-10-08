@@ -291,6 +291,7 @@ from core.persian import normalize_for_matching
 from retrieval.value_resolver import ExecuteParamsFn
 from schema_data.registry import bare_table_name, get_prefetchable_columns, get_table_schema_qualifiers, table_reference_sql
 from security.auth import ANONYMOUS, Principal
+from security.column_policy import hidden_value_columns
 from security.dialects import get_dialect_profile, quote_tsql_identifier
 from security.sql_guard import transpile_sql
 from session.models import Clarification
@@ -900,6 +901,9 @@ def match_question_against_vocabulary(
     >>> clear_vocabulary_cache()
     """
     denied = {c.lower() for c in principal.denied_columns}
+    # A join-only column (a scoped denied_columns entry) is not matched
+    # against the question: its values would reach the prompt.
+    hidden = hidden_value_columns(principal.column_policy)
     filters: dict[str, str] = {}
     clarifications: list[Clarification] = []
     resolved_columns: list[str] = []
@@ -911,7 +915,10 @@ def match_question_against_vocabulary(
         if columns is None:
             continue
 
-        allowed_columns = [c for c in columns if c.lower() not in denied]
+        allowed_columns = [
+            c for c in columns
+            if c.lower() not in denied and (table, c.lower()) not in hidden
+        ]
         if not allowed_columns:
             # Every column ACL-denied: a policy exclusion, not an outage --
             # never counted as "unavailable" (see VocabularyMatchResult's

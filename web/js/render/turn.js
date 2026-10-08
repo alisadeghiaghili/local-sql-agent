@@ -389,9 +389,9 @@ function isGuardRejected(turn) {
 /**
  * One Persian, analyst-facing lead sentence per `GuardVerdict.reason`
  * (session/models.py -- the same closed literal set enumerated there:
- * "denied_column", "forbidden_statement", "unknown_table",
- * "system_catalogue", "no_table_reference", "cross_datasource",
- * "ambiguous_table", "other").
+ * "denied_column", "join_only_column", "forbidden_statement",
+ * "unknown_table", "system_catalogue", "no_table_reference",
+ * "cross_datasource", "ambiguous_table", "other").
  * `denied_column` is built dynamically below (it names the specific
  * `subject` column when one is known) and so is NOT in this table; every
  * other reason maps straight to its sentence here, and a reason this table does not recognise --
@@ -401,6 +401,9 @@ function isGuardRejected(turn) {
  * existed.
  */
 const GUARD_REASON_LEADS = Object.freeze({
+  join_only_column:
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده از ستونی استفاده کرد که برای حساب شما فقط برای اتصال جدول‌ها " +
+    "(JOIN) مجاز است، نه برای نمایش، فیلتر، گروه‌بندی یا مرتب‌سازی. این به معنای «نتیجه‌ای یافت نشد» نیست.",
   forbidden_statement:
     "این پرسش اجرا نشد — پرس‌وجوی تولیدشده کاری می‌خواست که این سامانه اجازه نمی‌دهد: " +
     "تغییر داده، یا خواندن اطلاعات خودِ سرور به‌جای داده‌های انبار.",
@@ -633,7 +636,12 @@ function renderFailureState(turn, ctx) {
     // plain onClick -- see handleRequestAccessClick for how it shows its
     // own outcome inline instead of silently doing something elsewhere on
     // the page.
-    if (reason === "denied_column" && subject && ctx.onRequestAccess) {
+    // A join-only rejection (`join_only_column`) is correctable, so the
+    // server normally retries it before this banner is ever shown; when it
+    // does surface, `subject` is the whole `denied_columns` entry (e.g.
+    // `sales.Order.ID`), which "request access" sends back unchanged. There
+    // is no "ask without that column" for it: the entry is not a bare name.
+    if ((reason === "denied_column" || reason === "join_only_column") && subject && ctx.onRequestAccess) {
       actions.push([
         "درخواست دسترسی",
         (evt) => handleRequestAccessClick(evt, turn.turn_id, subject, ctx.onRequestAccess),

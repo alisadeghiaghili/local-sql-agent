@@ -21,9 +21,16 @@ being requested from the caller at all. It re-derives that column itself,
 by joining ``session_id``/``turn_id`` to the audit record
 (``observability.audit.find_record_by_turn``) and reading
 ``guard.subject`` -- and only when ``guard.reason`` is genuinely
-``"denied_column"``. A client that posts a different column name is
-silently overruled, not merely validated against; there is no code path
-here that ever reads a column name out of a request body.
+``"denied_column"`` or ``"join_only_column"``. A client that posts a
+different column name is silently overruled, not merely validated against;
+there is no code path here that ever reads a column name out of a request
+body.
+
+For a join-only rejection the subject is the whole ``denied_columns``
+entry that blocked the query (``sales.Order.ID``, ``Source:sales.Order.ID``)
+and is stored in ``column_name`` as it is. Approval then removes exactly
+that entry from the requester's keys, and leaves every other entry alone --
+including a legacy full denial of the same bare column name.
 
 Dedup (owner decision)
 -----------------------
@@ -83,6 +90,11 @@ from appdb.models import access_requests, admin_api_keys
 from observability.audit import find_record_by_turn
 
 
+#: The guard rejections a request can be raised from: a column denied
+#: outright, and one restricted to ``JOIN ... ON`` keys (a scoped entry).
+_ACCESS_REQUEST_REASONS = frozenset({"denied_column", "join_only_column"})
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -96,8 +108,9 @@ class TurnNotAuditedError(LookupError):
 
 class NotDeniedColumnError(ValueError):
     """The turn's own audit record is not a denied-column guard rejection
-    (``guard.reason != "denied_column"``, or it names no ``guard.subject``)
-    -- there is no single column here to request access to."""
+    (``guard.reason`` is neither ``"denied_column"`` nor
+    ``"join_only_column"``, or it names no ``guard.subject``) -- there is no
+    single column here to request access to."""
 
 
 class RequestNotFoundError(LookupError):
@@ -162,7 +175,8 @@ def submit_request(
     TurnNotAuditedError
         No audit record joins to *session_id*/*turn_id*.
     NotDeniedColumnError
-        The joined audit record is not a denied-column guard rejection.
+        The joined audit record is neither a denied-column nor a
+        join-only-column guard rejection.
     """
     audit_record = find_record_by_turn(session_id, turn_id)
     if audit_record is None:
@@ -173,7 +187,7 @@ def submit_request(
 
     guard = audit_record.get("guard") or {}
     column_name = guard.get("subject")
-    if guard.get("reason") != "denied_column" or not column_name:
+    if guard.get("reason") not in _ACCESS_REQUEST_REASONS or not column_name:
         raise NotDeniedColumnError(
             f"session_id={session_id!r} turn_id={turn_id!r} was not a "
             "denied-column guard rejection -- there is no single column "

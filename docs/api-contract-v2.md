@@ -124,7 +124,9 @@ turn. It does not mutate the original turn.
 body: the caller is stamped server-side from the authenticated principal, and
 the column is re-derived server-side by joining `session_id`/`turn_id` back to
 the audit record and reading `guard.subject` — it must be a turn whose
-`guard.reason == "denied_column"`, and nothing here ever accepts a column name
+`guard.reason` is `"denied_column"` or `"join_only_column"` (for the latter the
+subject is the whole `denied_columns` entry, and approval removes exactly that
+entry), and nothing here ever accepts a column name
 from the client. Session/turn ownership is enforced the same way as every
 other route in this module (404, never 403, for a turn on someone else's
 session). While an open request already exists for the same principal and
@@ -216,6 +218,7 @@ as before this phase.
                                      // trail and security/sql_guard.py's own
                                      // tests key off it verbatim
     "reason": null,                 // populated on rejection: "denied_column"
+                                     // | "join_only_column"
                                      // | "forbidden_statement" | "unknown_table"
                                      // | "system_catalogue" | "no_table_reference"
                                      // | "cross_datasource" | "ambiguous_table"
@@ -225,7 +228,9 @@ as before this phase.
                                      // parsing `rule`'s free text
     "subject": null,                // the one column/table/keyword `reason`
                                      // is about, when there is exactly one
-                                     // (e.g. "NationalID" for a denied column;
+                                     // (e.g. "NationalID" for a denied column,
+                                     // or the whole denied_columns entry such as
+                                     // "sales.Order.ID" for "join_only_column";
                                      // null when the rejection is about the
                                      // query's shape rather than one identifier)
     "rejected_sql": null,           // the exact statement that was refused and
@@ -649,7 +654,17 @@ is a decision every `API_KEYS_JSON` entry has to make explicitly.
 `security/auth.py::_parse_api_keys` logs a `WARNING` for any entry that
 omits the field entirely; write `"denied_columns": []` once unrestricted
 access is actually intended, and the warning stops (see Finding 6, 2026
-audit). Only the
+audit).
+
+An entry may also be **scoped**: `schema.Table.Col` makes that column
+*join-only* on that table, `Source:schema.Table.Col` only when the query runs
+on data source `Source`, and `Source:Col` on every table of `Source` that has
+the column. A join-only column may appear only as one side of `a.col = b.col`
+inside a `JOIN ... ON`; any other use is rejected with
+`guard.reason == "join_only_column"` (correctable: the model is re-prompted).
+Scoped entries are checked against `schema.yaml` and `datasources.yaml` when
+the keys are loaded, so a typo stops start-up instead of restricting nothing
+(see `docs/deployment-runbook.md`). Only the
 SHA-256 hex digest of a key is ever stored — never the raw key. Comparison
 is `hmac.compare_digest`, walking every configured key with no early exit
 on a prefix match. Plain SHA-256, not bcrypt/argon2, is correct here: those
@@ -701,7 +716,7 @@ shared org tool where most questions repeat. Instead the cache keys on a
 **scope key**:
 
 ```
-scope_key = sha256(":".join(sorted(principal.denied_columns)) or "all").hexdigest()[:16]
+scope_key = sha256(json.dumps(sorted(principal.denied_columns), separators=(",", ":")) or "all").hexdigest()[:16]
 ```
 
 Two principals with identical data visibility share cache entries safely;

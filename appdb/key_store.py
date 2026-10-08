@@ -72,6 +72,7 @@ import security.auth as auth
 from appdb.engine import get_app_engine
 from appdb.models import admin_api_keys, admin_principal_roles
 from security.auth import ApiKeyConfigError, Principal
+from security.column_policy import parse_column_policy
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +408,23 @@ def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> None:
     """Set the key identified by *key_sha256*'s ``denied_columns`` — the
     security-gated ACL loosening/tightening endpoint
     (``PATCH /admin/keys/{id}/acl``). An empty list means "no column
-    restriction", exactly as it does for an ``API_KEYS_JSON`` entry."""
+    restriction", exactly as it does for an ``API_KEYS_JSON`` entry.
+
+    Scoped (join-only) entries are checked here, against the loaded
+    ``schema.yaml`` and ``datasources.yaml``, before anything is written —
+    the same check :func:`security.auth.load_api_keys` applies to an
+    environment-configured key, so a typo is refused with a message naming
+    the entry instead of being stored as an ACL that restricts nothing.
+    Plain column names are not looked up, as before.
+
+    Raises
+    ------
+    security.column_policy.ColumnPolicyError
+        An entry is malformed or names an unknown source, table or column.
+    KeyNotFoundError
+        No such key.
+    """
+    parse_column_policy(denied_columns)
     now = _now_iso()
     engine = get_app_engine()
     with engine.begin() as conn:

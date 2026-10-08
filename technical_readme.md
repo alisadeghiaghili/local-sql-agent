@@ -885,6 +885,8 @@ Each sub-retriever uses a **two-tier matching strategy**:
        a bare name that two schemas share is refused       → ambiguous_table
   6. every qualified column exists on its table; denied_columns refused
        (also through * )                                   → denied_column
+       scoped entries (schema.Table.Col, Source:...): the
+       column may only be a `a.col = b.col` key in a JOIN ON → join_only_column
   7. function calls: only allowlisted data functions; anything that reads
        server or session state is refused
   8. at least one non-CTE table                 → no_table_reference
