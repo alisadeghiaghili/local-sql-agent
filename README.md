@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen)](setup.cfg)
-[![Tests](https://img.shields.io/badge/tests-5%2C170-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-5%2C470-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://python.org)
 [![Release](https://img.shields.io/github/v/release/alisadeghiaghili/local-sql-agent)](https://github.com/alisadeghiaghili/local-sql-agent/releases)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)  
@@ -17,7 +17,7 @@
 <sub>The CI and release badges read GitHub directly. Coverage is enforced
 on every push — the build fails below the 90% gate in
 [`setup.cfg`](setup.cfg) — and the coverage and test figures shown were
-measured at v6.6.1 (`pytest tests/ eval/tests --cov`);
+measured at v6.7.0 (`pytest tests/ eval/tests --cov`);
 `tests/test_readme_claims.py` fails the build if the badge ever claims
 more than the gate actually holds. The three purple badges are claims a
 build step enforces, not aspirations: each links to the guard that makes
@@ -169,17 +169,22 @@ its KV cache instead of re-reading the schema on every question.
 | 🏛️ | **Several warehouses** | `datasources.yaml` describes each database or server; every statement runs on the one source that has all its tables (a table may live in several), and each question is routed to one source so the model sees only that source's schema. Per-source `WITH (NOLOCK)` where a DBA requires it. See [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md). |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
 | 💾 | **LRU query cache** | Thread-safe TTL + LRU cache, partitioned by visibility scope so two principals never share a result they should not. |
-| 📊 | **Evaluation harness** | Golden set, execution accuracy, error taxonomy, latency percentiles, determinism measurement, baseline regression gate. |
+| 📊 | **Evaluation harness** | A golden set built from your own audit log and reviewed in Excel, execution accuracy against a reference SQL run live on the same data, error taxonomy, latency percentiles, determinism measurement, and a baseline regression gate to run before an upgrade (`docs/deployment-runbook.md` §18). |
 | 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 5,170 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
+| 🧪 | **Test suite** | 5,470 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
 ## Quick start
 
-**Requires:** Python 3.11+, an OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) reachable via `OPENAI_BASE_URL`, SQL Server + an ODBC driver (17 or 18)
+**Requires:** Python 3.11+, an OpenAI-compatible endpoint (vLLM / LM Studio / Ollama `/v1`) reachable via `OPENAI_BASE_URL`, SQL Server + an ODBC driver (17 or 18) and a read-only login ([`docs/db-hardening.md`](docs/db-hardening.md))
+
+The steps below are the short form. The full, ordered first install, with the
+command and a "done when" check for every step, is "First install, in order" at
+the top of [`docs/deployment-runbook.md`](docs/deployment-runbook.md) (Persian:
+[`docs/fa/getting-started.md`](docs/fa/getting-started.md)).
 
 ```bash
 # 1. Clone and install
@@ -197,22 +202,30 @@ cp .env.example .env
 #   DB_PASSWORD=<the raw password -- no URL encoding>
 #   OPENAI_BASE_URL=http://your-llm-host:8000/v1
 #   OPENAI_MODEL=gpt-oss-20:F16
-#   OPENAI_API_KEY=your-key
+#   OPENAI_API_KEY=your-key   # may stay empty for a local endpoint that checks none
 # Querying more than one database? Describe each source in
 # project_config/datasources.yaml (host, database, login; one DB_PASSWORD_*
 # variable each) instead of setting DB_CONNECTION_URL, then follow
 # docs/deployment-runbook.md §16: it covers `python scripts/assign_datasources.py`
 # (writes each table's `datasource:`), `keywords:` for routing,
 # `python scripts/prompt_budget.py` (sizes PROMPT_RETRIEVAL_TOKEN_BUDGET) and
-# `nolock`. docs/design/DATASOURCES.md explains why it is shaped this way.
+# `nolock` (per source). docs/design/DATASOURCES.md explains why it is shaped this way.
 
 # 3. Provide the domain config — the server will NOT start without it
 cp -r project_config.example project_config
-# Then fill in your own schema, aliases, metrics, business rules,
-# examples and system_prompt.md (the LLM's system instructions -- the
+# Then replace the placeholders with your own schema, aliases, metrics, business
+# rules, examples and system_prompt.md (the LLM's system instructions -- the
 # only non-YAML file in the directory). project_config/ is gitignored on
 # purpose: it is your data, not the engine's. There is deliberately no
 # silent fallback to the example files.
+# Two optional helpers draft files from the live database (see
+# docs/deployment-runbook.md §2.1-§2.3):
+#   python -m database.schema_inspector_cli --output-dir project_config_draft
+#       drafts schema.yaml (the SQL guard's allowlist) for you to review;
+#   python setup_project.py
+#       an LLM-assisted wizard that drafts entities.yaml, aliases.yaml,
+#       business_rules.yaml and examples.yaml (it overwrites those files, and
+#       does not write schema.yaml or set `datasource:`).
 
 # 4. Issue an API key (every route but /health requires one)
 python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
@@ -222,18 +235,21 @@ python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin
 # project_config.example/api_keys.example.json) and set API_KEYS_FILE; see
 # docs/deployment-runbook.md §2.
 
-# 5a. CLI
+# 5. Run the preflight (database, read-only login, keys, model, config; once per
+#    data source) — it must end with `0 failed`. Every line, and the fix for a
+#    [FAIL], is in docs/deployment-runbook.md §3.1.
+python -m scripts.verify_deployment
+#    Then size the prompt budget and put the line it prints in .env:
+python scripts/prompt_budget.py
+
+# 6a. CLI
 python app.py
 
-# 5b. HTTP API (--no-server-header: uvicorn adds `Server: uvicorn` at the
+# 6b. HTTP API (--no-server-header: uvicorn adds `Server: uvicorn` at the
 #     protocol layer, which the app's middleware cannot strip; drop it here)
 uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header
 # ...or, once API_HOST/API_PORT are set in .env, the equivalent launcher:
 python -m api
-
-# 6. Before a real deployment, run the preflight (database, read-only login,
-#    keys, model, config; once per data source) — it must end with `0 failed`
-python -m scripts.verify_deployment
 ```
 
 **→ Step-by-step guide to running the CLI and the web UI:**  
@@ -370,6 +386,7 @@ Full step-by-step guide: **[English tutorial](docs/en/tutorial.md)** · **[آم�
 ```
 local-sql-agent/
 ├── app.py                    # CLI entry point (REPL)
+├── setup_project.py          # optional LLM-assisted wizard that drafts entities/aliases/rules/examples (docs/deployment-runbook.md §2.2)
 ├── config.py                 # Typed Settings singleton (env-based)
 ├── api/                      # FastAPI HTTP service
 │   ├── server.py             #   app factory + endpoints
@@ -449,8 +466,13 @@ local-sql-agent/
 │   ├── audit.py              #   compliance-grade records — never result rows
 │   ├── llm_status.py         #   the 21-field per-request status block
 │   └── timing.py             #   per-stage timings
-├── eval/                     # Evaluation harness
+├── eval/                     # Evaluation harness (python -m eval.cli run | verify)
+│   ├── cli.py                #   run, verify and baseline commands
 │   ├── runner.py             #   golden set → CaseResult
+│   ├── compare.py            #   execution accuracy against the reference SQL's live result
+│   ├── verify.py             #   run reviewed cases read-only and activate the ones that hold up
+│   ├── store.py              #   read and atomically rewrite golden-set files
+│   ├── models.py             #   GoldenCase and result records
 │   ├── report.py             #   accuracy, error taxonomy, latency percentiles
 │   ├── fingerprint.py        #   order-insensitive result hash
 │   ├── determinism.py        #   repeat-and-compare against a live endpoint
@@ -460,31 +482,37 @@ local-sql-agent/
 │   ├── datasources.py        #   datasources.yaml — named sources, DB_CONNECTION_URL fallback
 │   ├── routing.py            #   which data source a query's tables belong to
 │   ├── catalogue.py          #   read-only INFORMATION_SCHEMA table/column lists
+│   ├── schema_inspector.py   #   schema discovery behind the drafting tools
+│   ├── schema_inspector_cli.py #  python -m database.schema_inspector_cli: drafts schema.yaml into project_config_draft/
 │   ├── table_hints.py        #   WITH (NOLOCK) after each table, for sources with nolock: true
 │   └── executor.py           #   timeout + row cap + always-rolled-back transaction
 ├── web/                      # Static Persian/RTL client (no build step)
 ├── webapp/                   # Flask web application (bilingual FA/EN)
 ├── exporters/                # Excel / CSV / JSON exporters
 ├── scripts/
-│   ├── verify_deployment.py  #   pre-flight check for the four things that stop a week
+│   ├── verify_deployment.py  #   the preflight: 13 checks (database, read-only login, keys, model, config), once per data source
 │   ├── issue_api_key.py      #   mint a new API key
 │   ├── assign_datasources.py #   write each schema.yaml table's datasource: from the databases
 │   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
 │   ├── migrate_app_db.py     #   move the application database between backends
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis
 │   ├── analyze_misses.py     #   offline retrieval miss diagnostics
+│   ├── harvest_golden.py     #   candidate golden cases from the audit log (counts only on screen)
+│   ├── golden_sheet.py       #   export/import the golden-case review spreadsheet (CSV for Excel)
+│   ├── create_db.py          #   build a small sample SQLite database for local trials
+│   ├── dev_v2_demo_server.py #   the real API on in-memory SQLite and a stub model, for UI demos
 │   └── release_notes.py      #   version, summary and notes for the release workflow
 ├── docs/
 │   ├── api-contract-v2.md    #   the frozen conversational-session contract
 │   ├── admin-panel-architecture.md  # design of the admin panel
-│   ├── deployment-runbook.md #   ordered deployment steps, several data sources (§16), upgrading 6.0 to 6.6 (§17)
+│   ├── deployment-runbook.md #   first install in order, preflight reference (§3.1), several data sources (§16), upgrading 6.0 to 6.7 (§17), accuracy gate (§18), sharing diagnostics safely (§19)
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── dba/                  #   read-only diagnostic kit for the DBA
 │   ├── design/               #   decision records: DATASOURCES.md, TABLE-NAMES.md, UI design
 │   ├── en/tutorial.md        #   full English tutorial
 │   ├── fa/getting-started.md #   Persian setup guide — راهنمای راه‌اندازی
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 5,170 unit + integration tests
+└── tests/                    # 5,470 unit + integration tests
 ```
 
 ---
@@ -497,7 +525,7 @@ pytest tests/test_sql_guard.py -v       # one module
 pytest tests/ eval/tests --cov          # exactly what CI measures
 ```
 
-**5,170 tests at 94% branch coverage**, with the build failing below 90%
+**5,470 tests at 94% branch coverage**, with the build failing below 90%
 (`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
 cover is stated in the same file rather than left to be discovered: the
 interactive wizards and CLI front-ends are excluded by policy — their
@@ -683,7 +711,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 5,170 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 5,470 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
 
 ---
 
