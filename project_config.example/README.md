@@ -13,6 +13,20 @@ and comments explaining every field.
 2. Edit each file under `project_config/` with your real domain data.
 3. Never commit `project_config/` to git — it contains domain-specific data.
 
+Two optional tools draft files from the live database instead of writing them
+by hand; both produce drafts to review, not files to deploy as they are:
+
+- `python -m database.schema_inspector_cli --output-dir project_config_draft`
+  drafts `schema.yaml` (and `entities.yaml`, `aliases.yaml`,
+  `relationships.yaml`). It never writes into `project_config/`.
+- `python setup_project.py` (the setup wizard) drafts `entities.yaml`,
+  `aliases.yaml`, `business_rules.yaml`, `examples.yaml` and `relationships.yaml`
+  with the help of a model. It overwrites those files in the directory it writes
+  to, and does not write `schema.yaml` or assign `datasource:`.
+
+Both are described in `docs/deployment-runbook.md` §2.1 to §2.3, which also
+lists what each one sends where and which flags they take.
+
 ## Files
 
 | File | Purpose | Exposed variable |
@@ -74,7 +88,9 @@ then applies to each source's prompt separately; run
 `python scripts/prompt_budget.py` from the repository root to see what each
 source's prompt costs in real tokens and which budget to set. The whole
 sequence, with the commands, is `docs/deployment-runbook.md` §16; a source
-that must read its tables `WITH (NOLOCK)` sets `nolock: true` (§16.7).
+that must read its tables `WITH (NOLOCK)` sets `nolock: true`, and it does so
+under each source that needs it: the flag belongs to one source and does not
+spread to the others (§16.7).
 
 ## What happens if project_config/ is missing?
 

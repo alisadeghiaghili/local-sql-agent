@@ -11,11 +11,116 @@ accuracy and latency numbers. If the deployment stumbles, or the log is
 lost, that week (and the users' confidence) does not come back. Everything
 below is ordered so each step is verified before the next depends on it.
 
-Where to start: a first deployment on one warehouse database follows §1 to
-§8 in order. A deployment that queries more than one database adds §16, in
-the order it gives. An installation already running 6.0 that is moving to
-6.6 follows §17, which sequences the upgrade notes of every release in
-between into one checklist.
+Where to start: a first deployment, on one database or several, follows
+"First install, in order" just below: one list from an empty machine to a
+verified, running server, with the command for each step and how to tell it
+worked. The numbered sections hold the detail it links to. A deployment that
+queries more than one database also follows §16, in the order it gives. An
+installation already running 6.0 that is moving to 6.7 follows §17, which
+sequences the upgrade notes of every release in between into one checklist.
+Before sending logs or configuration to anyone for help, read §19.
+
+### First install, in order
+
+Do these in order; each one assumes the ones before it. A step marked
+*several databases only* is skipped on a one-database deployment. "Done when"
+is the sign you can move on: do not continue past a step that did not show it.
+
+1. **Check the prerequisites.** Python 3.11 or newer; an ODBC driver for SQL
+   Server (17 or 18) on the machine that runs the server; an
+   OpenAI-compatible model endpoint it can reach; a read-only login on every
+   database (`docs/db-hardening.md`, which the DBA applies).
+   *Done when:* `python --version` shows 3.11 or newer and, once step 2 is
+   done, `python -c "import pyodbc; print(pyodbc.drivers())"` lists
+   `ODBC Driver 18 for SQL Server` or `ODBC Driver 17 for SQL Server`.
+2. **Install the dependencies**, in a virtual environment, from the
+   repository root: `pip install -r requirements.lock` (next section).
+   *Done when:* pip ends without an error.
+3. **Create `.env`**: `cp .env.example .env`, then set `DB_CONNECTION_URL`
+   and `DB_PASSWORD` (with several databases, one `DB_PASSWORD_*` per source
+   in step 5 instead), `OPENAI_BASE_URL` and `OPENAI_MODEL`, and
+   `OPENAI_API_KEY` only if your endpoint checks one (§2).
+   *Done when:* `python -c "import config as cfg; cfg.settings.validate(); print('settings ok')"`
+   prints `settings ok`. Anything else is a `ValueError` whose message names
+   the variable to fix.
+4. **Create `project_config/`**: `cp -r project_config.example project_config`,
+   then replace the example's content with your own domain. Two optional
+   helpers draft it from the live database: `python -m database.schema_inspector_cli`
+   drafts `schema.yaml`, and the setup wizard `python setup_project.py` drafts
+   `entities.yaml`, `aliases.yaml`, `business_rules.yaml` and `examples.yaml`
+   (§2.1 and §2.2; the wizard does not write `schema.yaml` and does not set
+   `datasource:`). *Done when:* `project_config/` holds the nine YAML files
+   and `system_prompt.md`, `schema.yaml` lists your tables, and, if you ran
+   the wizard, its last line reads `Setup complete.` followed by the counts.
+5. **Describe the databases** (*several databases only*): write
+   `project_config/datasources.yaml` from `project_config.example/datasources.example.yaml`
+   (§16.1, §16.2) and put each source's raw password in `.env` under the
+   variable its `password_env` names.
+   *Done when:* `python -c "from database.datasources import datasource_names; print(datasource_names())"`
+   prints every source name, and the check of step 3 still prints `settings ok`.
+6. **Work out each table's `datasource:`** (*several databases only*):
+   `python scripts/assign_datasources.py`. Skipping it makes the preflight in
+   step 11 fail with `Tables are in their data source` as soon as a table
+   lives outside the default source (§3.1).
+   *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
+   (§16.3).
+7. **Review the proposal, replace `schema.yaml`, check** (*several databases
+   only*): read `project_config/schema.with_datasources.yaml`, copy
+   `schema.yaml` to `schema.yaml.bak`, move the proposal over `schema.yaml`,
+   then run `python scripts/assign_datasources.py --check`.
+   *Done when:* it prints `CHECK OK: every table's datasource: matches the databases`
+   (exit code 0).
+8. **Fix the columns the report lists as missing.** The report's last section
+   is `== columns listed in schema.yaml that the database does not have: N ==`,
+   one `Table [source]: Column, ...` row each. Remove a column the database
+   does not have from `schema.yaml`, correct a misspelt one, or have the DBA
+   lift a `DENY` that hides it (§16.3). `--check` does not fail on these, so
+   read the section. A one-database deployment can run
+   `python scripts/assign_datasources.py` for the same report; it writes
+   nothing there.
+   *Done when:* that section reads `: 0 ==`.
+9. **Set what each source needs** (*several databases only*): `description:`
+   and `keywords:` so questions reach the right source (§16.4), and
+   `nolock: true` on exactly the sources whose DBA requires `WITH (NOLOCK)`;
+   it is a per-source switch (§16.7). *Done when:* the command of step 5
+   still prints the names.
+10. **Issue the first API keys** (§1, §1.1):
+    `python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin`,
+    add the printed entry to `project_config/api_keys.json` (start from
+    `project_config.example/api_keys.example.json`) and set
+    `API_KEYS_FILE=project_config/api_keys.json` in `.env`. This comes before
+    the preflight because its `API key authentication` check fails while no
+    key exists. *Done when:* you hold the raw key (it is printed once) and
+    its entry is in the file. One key per analyst follows in step 16.
+11. **Run the preflight**: `python scripts/verify_deployment.py`, with
+    `VERIFY_API_KEY` set to the raw key of step 10 (§3). *Done when:* the last
+    line reads `N passed, 0 failed, N skipped` and the exit code is 0. §3.1
+    says what each line means and how to fix a `[FAIL]`.
+12. **Size the prompt budget**: `python scripts/prompt_budget.py` (§16.6; it
+    applies with one database too), then put the `PROMPT_RETRIEVAL_TOKEN_BUDGET=`
+    line it prints in `.env`. *Done when:* the line is in `.env`. Exit code 1
+    means a source does not fit the model's context window, and the output
+    says which.
+13. **Start the server** (§4): `uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header`
+    (or `python -m api`), and for the web UI the static server of
+    `web/README.md` (`python -m http.server 8080`, started from `web/`).
+    *Done when:* the log shows the provenance banner, `CORS allowed origins: ...`
+    and `System prompt loaded (N chars)` (with several sources also one
+    `Prompt path for data source '<name>'` line each, §5), and
+    `curl http://localhost:8000/health` answers with `status` set to `ok`.
+14. **Ask one real question and confirm it was audited** (§6): the `curl` of
+    §6, then `tail -n 1 logs/audit_log.jsonl`. *Done when:* the line carries
+    today's `timestamp` and the `request_id` of the response.
+15. **Run the preflight again** after the `.env` change of step 12, and after
+    any later change to `.env` or `project_config/`, with the same command as
+    step 11. *Done when:* `0 failed` each time.
+16. **Issue one key per analyst** (§1), add each entry to the key file and
+    restart the server (the file is read once at start-up). *Done when:* each
+    analyst can open the UI and ask a question.
+17. **Build the golden set** once real questions are in the audit log, and
+    keep it for upgrades (§18). *Done when:*
+    `python -m eval.cli verify --golden eval_data/golden.jsonl --accept` has
+    activated the cases that held up.
 
 ### Install the dependencies
 
@@ -183,6 +288,29 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   use an absolute path if you want to be certain regardless of the
   process's working directory.
 
+- `DB_APPLICATION_NAME` — optional; default `local-sql-agent`. The name every
+  warehouse connection reports to SQL Server as its `program_name`, so the DBA
+  can tell this application's sessions from every other client's. It is added
+  only to `mssql+pyodbc` connections, and never replaces an `APP=` or
+  `Application Name=` the URL already sets. A source in `datasources.yaml` can
+  use its own with `application_name:`. To see the application's sessions and
+  whether any holds an open transaction, the DBA (or you, with the right to
+  read the DMVs) runs, with the name you configured in place of the default:
+
+  ```sql
+  SELECT s.session_id, s.login_name, s.host_name, s.program_name, s.status,
+         s.last_request_start_time, s.open_transaction_count
+  FROM sys.dm_exec_sessions AS s
+  WHERE s.program_name = N'local-sql-agent'
+  ORDER BY s.last_request_start_time DESC;
+  ```
+
+  This is the first query of `docs/dba/warehouse-load-diagnostics.sql` §2a with
+  fewer columns; §2b there lists the statements running right now and §2c the
+  blocking, and `docs/dba/README.md` says how to read them. An
+  `open_transaction_count` above zero on an idle session is worth a question:
+  the executor's transaction is always rolled back, never left open.
+
 Leave `RATE_LIMIT_*`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`, `AUTH_REQUIRED`,
 and `MAX_CONCURRENT_REQUESTS` at their shipped defaults unless step 3 below
 tells you otherwise for your specific expected concurrency — see
@@ -207,6 +335,170 @@ than discovering the gap once the UI is already showing three red lights:
   cross-origin check does not silently block every call the UI makes.
   See its dedicated warning in step 4 below — this is the single most
   common cause of "the UI shows the backend as down when it is not."
+
+### 2.1 Create `project_config/`
+
+`.env` says how to reach the database and the model; `project_config/` says
+what is in the database. It is your domain data, git-ignored on purpose, and
+the server will not start without it: there is no fallback to
+`project_config.example/`. Nine YAML files and one text file must be there:
+`aliases.yaml`, `business_rules.yaml`, `entities.yaml`, `examples.yaml`,
+`memory_policy.yaml`, `metrics.yaml`, `retrieval_hints.yaml`, `schema.yaml`,
+`session_policy.yaml`, and `system_prompt.md`.
+
+Start from the template, which has all of them with placeholder content:
+
+```bash
+cp -r project_config.example project_config
+```
+
+(PowerShell: `Copy-Item -Recurse project_config.example project_config`.) The
+copy also holds `README.md`, `datasources.example.yaml`, `api_keys.example.json`
+and `_test_fixtures/`; the templates are not read under those names, and the
+folder is yours to tidy. Then replace the placeholders with your own domain.
+Who writes what:
+
+| File | How it is made |
+|---|---|
+| `schema.yaml` | By hand, or drafted from the live database by `python -m database.schema_inspector_cli` (§2.3). It is the SQL guard's allowlist: a table you add widens what generated SQL may touch. Give every table a `db_schema` (§16.3). |
+| `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` | By hand, or drafted with an LLM by the setup wizard `python setup_project.py` (§2.2). |
+| `metrics.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml` | By hand. Neither tool writes them, so after the copy they still hold the template's content. `docs/en/tutorial.md` shows how each one steers retrieval and the prompt. |
+| `system_prompt.md` | By hand: the model's instructions for your schema, rules and dialect (§5 says what happens without it). |
+| `relationships.yaml` | Optional; the server does not read it (the prompt's relationships come from `schema.yaml`). |
+| `datasources.yaml` | Only for more than one database (§16). |
+| `api_keys.json` | The key array that `API_KEYS_FILE` names (§1, §2 above). |
+
+`python scripts/verify_deployment.py` (§3) loads six of these (`aliases`,
+`entities`, `business_rules`, `examples`, `metrics`, `schema`) as `project_config/ loads`.
+`session_policy.yaml`, `memory_policy.yaml`, `retrieval_hints.yaml` and
+`system_prompt.md` are not part of that check, so a missing one is not caught
+there; the server reads the system prompt at start-up (§5) and the others when
+they are first needed.
+
+### 2.2 The setup wizard, `setup_project.py`
+
+A one-time helper that drafts four of those files (and `relationships.yaml`)
+from the live database with the help of a model. It is optional: everything it
+writes can be written by hand, and everything it writes must be reviewed,
+because each file starts with `# AUTO-GENERATED by setup_project.py — review before use`.
+Run it from the repository root, after §2.1 and with `.env` filled in (it reads
+`.env`):
+
+```bash
+python setup_project.py \
+    --db-url "mssql+pyodbc://reader:p%40ss@dbhost:1433/WarehouseDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+    --llm-base-url http://<llm-host>:<llm-port>/v1 \
+    --llm-model <model name served by that endpoint> \
+    --language fa
+```
+
+It asks questions as it goes, unless told not to. Its options:
+
+| Option | Meaning |
+|---|---|
+| `--db-url URL` | The database to describe. Without it: `DB_CONNECTION_URL`, then `DATABASE_URL`; if there is none, interactive mode asks and `--non-interactive` stops. |
+| `--llm-provider openai\|mock` | `openai` (default) is any OpenAI-compatible endpoint; `mock` calls no model and leaves aliases, rules and examples empty. Also `WIZARD_LLM_PROVIDER`. |
+| `--llm-model NAME` | Default `gpt-4o-mini` when `WIZARD_LLM_MODEL` is not set. |
+| `--llm-base-url URL` | Default `https://api.openai.com/v1` when `WIZARD_LLM_BASE_URL` is not set. |
+| `--language fa\|en\|both` | The language analysts ask in. Also `WIZARD_LANGUAGE`. Unset: asked interactively (default `en`), `en` when not interactive. |
+| `--output DIR` | Where to write (default `project_config`). |
+| `--review interactive\|auto` | `auto` is the same as `--non-interactive`. |
+| `--non-interactive` | Accept every suggestion without asking; for scripts. |
+| `--include-schemas a,b` | Only these database schemas. |
+| `--dry-run` | Print the files, write none, and skip the validation step. |
+| `--resume` | Do not write a file that already exists. |
+
+What it does, in order. Each step is recorded in `<output>/.setup_log.json`
+under the key shown:
+
+| Key | Step | What happens |
+|---|---|---|
+| `step1_connection` | Database connection | Opens the URL and runs `SELECT 1`; on failure it prints the error and, interactively, offers a retry. |
+| `step2_schema` | Schema discovery | Reads tables, columns, foreign keys and up to five sample values per text column, and calls each table a fact or a dimension table. Interactively it asks which tables to leave out. |
+| `step3_aliases` | Aliases | One model call per table for aliases and a one-line description; interactively you accept, edit or clear each. |
+| `step4_rules` | Business rules | One model call per fact table for its value and volume columns and a rule text. |
+| `step5_examples` | Examples | One model call that asks for ten question-and-SQL pairs. |
+| `step6_write` | Review and write | Writes `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` and `relationships.yaml` into `--output`. Interactively each file is shown first: Accept, Edit in `$EDITOR`, Regenerate or Skip. |
+| `step7_validate` | Validation | Loads the four files that have a loader through the application's own validators and prints `OK`, `FAILED: ...` or `skipped` for each, then `Setup complete.` and the number of entities, rules and examples. |
+
+What it does not do:
+
+- **It does not write `schema.yaml`**, so it cannot make the SQL guard's
+  allowlist; use §2.3 or write it by hand. It does not write `metrics.yaml`,
+  `retrieval_hints.yaml`, the two policy files, `system_prompt.md`,
+  `datasources.yaml`, `.env` or any API key.
+- **It does not assign `datasource:` to any table.** It describes one database
+  per run and knows nothing of `datasources.yaml`; for several databases that
+  is `python scripts/assign_datasources.py` (§16.3).
+- **It does not read `DB_PASSWORD`, `DB_PASSWORD_*` or `datasources.yaml`.** The
+  URL it is given must carry the password itself, percent-encoded (`@` is
+  `%40`). Passing it as `--db-url` leaves it in the shell history; the
+  `DATABASE_URL` environment variable avoids that.
+- **It does not read `OPENAI_BASE_URL` or `OPENAI_MODEL`.** It has its own
+  settings, which win over those: the options above, or the variables
+  `WIZARD_LLM_PROVIDER`, `WIZARD_LLM_MODEL`, `WIZARD_LLM_BASE_URL` and
+  `WIZARD_LANGUAGE`. With none of them set it asks `https://api.openai.com/v1`
+  for `gpt-4o-mini`. `.env.example` sets all four, so a `.env` copied from it
+  gives the wizard the model name `gpt-oss-20b`, the language `fa` and an
+  **empty** endpoint address (`WIZARD_LLM_BASE_URL=`); an empty address cannot be
+  reached, so set that variable or pass `--llm-base-url` with your endpoint
+  (`http://<llm-host>:<llm-port>/v1`). It also needs a non-empty
+  `OPENAI_API_KEY`. If the key is missing or the endpoint cannot be reached it
+  prints `Warning: LLM unavailable (...)` and carries on with the mock
+  provider, so aliases, rules and examples come out empty. It does not apply `LLM_ALLOW_REMOTE`. What it sends to the model
+  is table and column names, up to ten sample values per table read from the
+  warehouse, and a schema summary: do not point it at a remote endpoint if
+  those values may not leave your network.
+
+Things to know before you run it:
+
+- **It overwrites.** If `project_config/` was copied from the template (§2.1),
+  the five files above are replaced by the wizard's output with no backup, in
+  interactive mode as well after you accept them. Copy the directory first, or
+  run it with `--output project_config_draft` and move over what you want.
+  `--resume` writes nothing into a directory that already has those files, and
+  it does not skip steps 1 to 5 either (the model is still called): the log is
+  a record, not a checkpoint.
+- **At the time of writing, step 7 needs a populated `project_config/`.** It
+  imports the application's knowledge package, which loads `aliases`,
+  `business_rules`, `entities`, `examples` and `metrics` from
+  `PROJECT_CONFIG_DIR`, not from `--output`. On a tree without the template
+  copy (§2.1) it can end with `ConfigNotFoundError: ... metrics.yaml not found`
+  after step 6 has already written its files. Do §2.1 first and it does not
+  arise.
+- **`.setup_log.json` may contain the database URL, including a password written
+  in it.** Do not share it (§19), and delete it when the run is done. (The
+  `# Source:` comment in the generated `entities.yaml` has the password masked.)
+- **In the review menu use Accept, Edit or Skip;** at the time of writing
+  Regenerate shows the same text again.
+
+### 2.3 Drafting `schema.yaml`: `database.schema_inspector_cli`
+
+```bash
+python -m database.schema_inspector_cli \
+    --db-url "mssql+pyodbc://reader:p%40ss@dbhost:1433/WarehouseDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+    --output-dir project_config_draft \
+    --include-schemas sales,ref
+```
+
+Without `--db-url` it reads the `DATABASE_URL` or `DB_CONNECTION_URL`
+environment variable of the shell it runs in (unlike the wizard it does not
+read `.env`); like the wizard it does not apply `DB_PASSWORD`, so the URL needs
+the password percent-encoded in it. Other options: `--exclude-tables a,b`,
+`--sample-rows N` (default 10; `0` skips reading sample values),
+`--no-row-counts` (skip `COUNT(*)` per table) and `--dry-run` (print instead
+of writing). It writes `schema.yaml`, `entities.yaml`, `aliases.yaml` and
+`relationships.yaml` into the draft directory, never into `project_config/` or
+`project_config.example/` (it refuses those two names with exit code 2), and it
+prints `Done.` at the end. The draft directory is git-ignored.
+
+The draft is a starting point, not a `schema.yaml` to deploy: every description
+is a placeholder (`TO BE FILLED`), column notes may quote real values read from
+live rows, and there is no `db_schema` on any table. Treat the directory as
+sensitive until you have rewritten those notes, write real descriptions, add
+`db_schema` to every table (§16.3), and then copy `schema.yaml` into
+`project_config/`. Run `tests/test_schema_registry_snapshot.py` after editing it,
+as the README says, and `python scripts/verify_deployment.py` (§3) to load it.
 
 ## 3. Run the preflight
 
@@ -267,6 +559,40 @@ $env:VERIFY_API_KEY = $null   # do not leave the raw key in the shell
 The script prints whichever form matches the shell it is running in.
 
 Do not proceed to step 4 with any `[FAIL]` outstanding.
+
+### 3.1 What each check means, and what to do about a `[FAIL]`
+
+A line is `[PASS]`, `[FAIL]` or `[SKIP]` followed by the check's name and a
+reason; there is no warning status. `[FAIL]` is a problem to fix before going
+on, and any `[FAIL]` makes the exit code 1. `[SKIP]` means the check could not
+run (nothing to test against, or deliberately switched off) and does not fail
+the run. In the order they run, with the name exactly as printed (with several
+data sources, the four marked * print once per source, as
+`Database connectivity [sales]`):
+
+| Check | What it does | `[FAIL]` means, and the fix | `[SKIP]` means |
+|---|---|---|---|
+| `Settings.validate()` | Runs the same validation the server runs at start-up: required settings, leftover placeholders, `.env` lines python-dotenv cannot use, a `SQL_DIALECT` that matches the connection, every warehouse connection, `LLM_EXTRA_BODY`. | The reason is the error text: `OPENAI_MODEL is not configured`; `DB_CONNECTION_URL still has the factory-default placeholder host (username@server)`; `SQL_DIALECT=... does not match ...`; a `.env` problem listed by line number and variable name; a source whose `password_env` or `username_env` variable is unset or empty (named). Fix `.env` (§2) and run again. | Never. |
+| `Tables map to data sources` | Loads `datasources.yaml` and checks that every `datasource:` in `schema.yaml` names a configured source. PASS prints `N data source(s): a, b` (`1 data source(s): default` without a `datasources.yaml`). | `schema.yaml assigns tables to data sources that are not configured: Order -> elsewhere. Configured sources: [...]`: a misspelt name (the letter case must match `datasources.yaml`) or a source missing from the file. Or the message of an invalid `datasources.yaml` (§16.2). | Never. |
+| `Database connectivity`* | Opens a connection through the application's own engine and runs `SELECT 1`. PASS names the target with its password masked. | `could not connect to <target>: <driver error>`. Host, port, firewall, ODBC driver name (`ODBC Driver 18 for SQL Server`), login, password, `TrustServerCertificate`. Nothing after it can be trusted until it passes. | Never. |
+| `Login is read-only`* | Tries `CREATE TABLE` on a scratch table (`_nlq_agent_deploy_verify_probe`) inside a transaction that is always rolled back, then checks nothing persisted; it also drops that scratch table if a previous run left one. | `... PERSISTED -- the login can write ...`: the login is not read-only. Stop and have the DBA apply `docs/db-hardening.md`. Or `could not verify: ...`. A `[PASS]` that says the `CREATE TABLE` did not raise but the rollback held means the login *could* create tables and only the rollback saved it: have the DBA tighten it anyway. | There is no database connection. |
+| `Row cap`* | Runs `SELECT TOP (10 x cap + 10) name FROM sys.all_objects` through the executor and counts the rows. | `returned 1500 rows, expected <= 1000`: the executor returned more rows than `MAX_ROWS_RETURNED` allows. Do not deploy until it holds; there is no setting that fixes it, so report it. | The database is unreachable, or the probe query cannot run (it is T-SQL). |
+| `Query timeout`* | Runs `WAITFOR DELAY` with the timeout cut to at most 5 seconds and times how long the executor takes to abort it. | `took Ns -- longer than the Ms timeout should allow`, or `WAITFOR DELAY completed ... without the timeout firing`: the driver timeout is not applied, or the server does not support `WAITFOR` (some serverless Azure SQL tiers). Check `QUERY_TIMEOUT_SECONDS` and the driver. | The database is unreachable, or the probe cannot run. |
+| `Tables are in their data source` | Compares `schema.yaml` with each source's catalogue and fails for a table whose columns are all missing from the source it is assigned to while another source has it. | `N table(s): <table>: not in <assigned>, found in <other> — set datasource: <other>; ...` (ten hints, then `and N more`). The table has no `datasource:` (so it runs on the default source) or the wrong one. Run `python scripts/assign_datasources.py` and replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". Or `could not compare schema.yaml with the data sources: ...` when a catalogue cannot be read. | One data source (`one data source -- nothing to place`). |
+| `OpenAI-compatible model exists` | Asks `OPENAI_BASE_URL` for `/models` (5 second timeout, `OPENAI_API_KEY` as the bearer token) and looks for `OPENAI_MODEL` among the ids it lists. | `could not reach <base>: ...`: wrong URL or port, endpoint down, a proxy, or an endpoint with no `/models` route. Or `'<model>' not found among models <base> lists: [...]`: set `OPENAI_MODEL` to one of the listed ids. | Never. |
+| `API key authentication` | Checks that at least one key is configured (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) so that the server would start, and, with `VERIFY_API_KEY` set, that this raw key authenticates. | `API key configuration is invalid: ...` (the server would refuse to start; §5); `AUTH_REQUIRED is true but there are no configured keys ...` (issue one, §1); every key revoked or disabled in the application database; or `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (a truncated paste, or the `key_sha256` pasted instead of the raw key). With `AUTH_REQUIRED=false` it passes and says so; do not use that in production. | Never. |
+| `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
+| `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
+| `project_config/ loads` | Loads `aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml` and `schema.yaml` under the current code's models. | `<file> not found under '<dir>'` (§2.1), or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
+| `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
+
+The most common first-install `[FAIL]` with several data sources is
+`Tables are in their data source -- 44 table(s): ... not in sales, found in inventory — set datasource: inventory`.
+It means `scripts/assign_datasources.py` was never run, or its proposal was not
+moved over `schema.yaml`. The same findings are on the admin panel's schema-drift
+card (§16.8). `GET /admin/health/checks` runs these checks from the panel; it
+leaves out `Login is read-only`, `Query timeout` and `Tables are in their data
+source` unless "deep checks" is pressed (§12).
 
 ## 4. Start the server
 
@@ -749,7 +1075,7 @@ each step links to the part you need.
 |---|---|---|
 | 1 | Choose: two sources, or one source with a multi-part `db_schema` | §16.1 |
 | 2 | Describe each connection, put each raw password in `.env` | §16.2 |
-| 3 | Write each table's `datasource:` with `assign_datasources.py` | §16.3 |
+| 3 | Write each table's `datasource:` with `assign_datasources.py`, replace `schema.yaml`, fix the columns it reports missing | §16.3 |
 | 4 | Give each source a `description:` and `keywords:` | §16.4 |
 | 5 | Preflight and restart | §16.5 |
 | 6 | Size `PROMPT_RETRIEVAL_TOKEN_BUDGET` with `prompt_budget.py` | §16.6 |
@@ -856,16 +1182,38 @@ Then:
 1. Review `schema.with_datasources.yaml`: look at the tables found nowhere and
    at every `[A, B]`, because a list asserts that the table has the same shape
    in each source.
-2. Replace `schema.yaml` with it. `schema.yaml` is the guard's allowlist, so a
-   change to it takes effect at the next restart whichever way it is made
-   (by hand, or through the admin panel's draft and approval).
-3. Run `python scripts/assign_datasources.py --check`. It writes nothing and
-   exits 0 when every `datasource:` matches what was found (a table with none
-   counts as being on the default source), 1 when one differs. Put it in the deploy pipeline to keep the assignments honest. Exit
-   code 2 means a source's catalogue could not be read (the run stops rather
-   than guess, because an unreadable source would make a shared table look
-   single), `schema.yaml` could not be edited, or the output would not
-   validate.
+2. Keep a copy of the current file, then replace it with the proposal:
+
+   ```bash
+   cp project_config/schema.yaml project_config/schema.yaml.bak
+   mv project_config/schema.with_datasources.yaml project_config/schema.yaml
+   ```
+
+   (PowerShell: `Copy-Item project_config\schema.yaml project_config\schema.yaml.bak`,
+   then `Move-Item -Force project_config\schema.with_datasources.yaml project_config\schema.yaml`.)
+   `schema.yaml` is the guard's allowlist, so a change to it takes effect at
+   the next restart whichever way it is made (by hand, or through the admin
+   panel's draft and approval).
+3. Fix the columns the report lists as missing. Its last section reads
+   `== columns listed in schema.yaml that the database does not have: N ==`, one
+   `Table [source]: Column, ...` row per table and source. A column that stays in
+   `schema.yaml` without existing in the database is still allowed by the guard,
+   so a question that uses it fails when the query runs (the admin panel shows it
+   as *فقط در schema.yaml*, §16.8). For each row: delete the column from
+   `schema.yaml`, correct its spelling, or, if it exists but the read-only login
+   cannot see it through `INFORMATION_SCHEMA`, ask the DBA about the `DENY`
+   grants (`docs/db-hardening.md`) before deleting it. Run the script again
+   until the section reads `: 0 ==`. The exit code does not tell you: only the
+   `datasource:` mismatches in step 4 change it.
+4. Run `python scripts/assign_datasources.py --check`. It writes nothing,
+   prints `CHECK OK: every table's datasource: matches the databases` and exits 0
+   when every `datasource:` matches what was found (a table with none counts as
+   being on the default source); otherwise it prints
+   `CHECK FAILED: N table(s) disagree with the databases` and exits 1. Put it in
+   the deploy pipeline to keep the assignments honest. Exit code 2 means a
+   source's catalogue could not be read (the run stops rather than guess,
+   because an unreadable source would make a shared table look single),
+   `schema.yaml` could not be edited, or the output would not validate.
 
 If the same table name exists in several schemas (`sales.Customer` and
 `ref.Customer`), give each its own qualified `schema.yaml` key instead of
@@ -999,6 +1347,39 @@ everything). A statement that cannot be parsed, or whose rewrite does not pass a
 second parse, is sent unchanged and one warning naming the reason is logged. The
 audit trail's `generated_sql` is the validated SQL without hints.
 
+**`nolock` belongs to one source and does not spread to the others.** The flag
+is read from the definition of the source a statement is routed to. Setting
+`nolock: true` on `sales` leaves `inventory`, and every other source, reading
+with ordinary locking; a source that does not mention it is `false`. There is no
+global switch and nothing is inherited from the default source, so a DBA rule
+that covers several servers is written once under each source. With two sources
+and the hint on the first only:
+
+```yaml
+default: sales
+datasources:
+  sales:
+    host: 10.0.0.5
+    database: SalesDW
+    username: nlq_reader
+    password_env: DB_PASSWORD_SALES
+    nolock: true                    # statements routed to sales get WITH (NOLOCK)
+  inventory:
+    host: 10.0.0.6
+    database: InventoryDW
+    username: nlq_reader
+    password_env: DB_PASSWORD_INVENTORY
+                                    # no nolock: statements routed here are sent as validated
+```
+
+A statement routed to `sales` reaches the server with ` WITH (NOLOCK)` after each
+table; one routed to `inventory` does not. If the DBA of the second server
+requires it too, add `nolock: true` under `inventory` as well. The audit
+record's `datasource` says which source a statement ran on (§16.9). A
+deployment without `datasources.yaml` cannot use the hint at all, because the
+one implicit source always reads as `false`: describe the single database in a
+`datasources.yaml` (one source; `default` is optional then) to set it.
+
 Table hints are T-SQL, so start-up is refused if a source sets `nolock: true`
 and `SQL_DIALECT` is not `tsql`; anything but a YAML `true` or `false` is
 refused naming the source. **`NOLOCK` allows dirty reads**: a query can see
@@ -1110,11 +1491,13 @@ raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
 with `password_env`; restart and run `python scripts/verify_deployment.py`.
 Remove the old `DB_URL_*` variable afterwards.
 
-## 17. Upgrading from 6.0 to 6.6
+## 17. Upgrading from 6.0 to 6.7
 
 One checklist for an installation that is running 6.0.0 and is moving to
-6.6.1. It puts the **Upgrading** notes of 6.0.1 to 6.6.1 in the order to do
-them; `CHANGELOG.md` has each release's full text. From 5.x, do the 6.0.0
+6.7.0. It puts the **Upgrading** notes of 6.0.1 to 6.6.0 in the order to do
+them, and adds what 6.7.0 brings that you will want to use (6.6.1 and 6.7.0
+have no **Upgrading** notes of their own); `CHANGELOG.md` has each release's
+full text. From 5.x, do the 6.0.0
 notes first: copy `prompts/system_prompt.md` to
 `<PROJECT_CONFIG_DIR>/system_prompt.md` before the first start (the server
 refuses to start without it), and check a relative `PROJECT_CONFIG_DIR`,
@@ -1122,7 +1505,7 @@ which is now resolved against the repository root.
 
 Steps 1 to 4 and 9 apply to every installation. Steps 5 to 8 are each
 optional: do the ones that fit (a password move, a key file, a UI on another
-origin, several databases).
+origin, several databases). Step 11 is recommended, and comes last on purpose.
 
 1. **Back up** `.env` and `project_config/`. Both are outside the repository.
 2. **Pull, then re-run the install.** Every upgrade starts with
@@ -1176,10 +1559,12 @@ origin, several databases).
    (`datasources.yaml`, one `DB_PASSWORD_*` per source) and create the
    read-only login on every server (6.1.0); run
    `python scripts/assign_datasources.py` and replace `schema.yaml` with
-   `schema.with_datasources.yaml` (6.5.0); add `description:` and `keywords:` to
+   `schema.with_datasources.yaml` after copying the old one aside, then fix
+   the columns its report lists as missing (6.5.0); add `description:` and `keywords:` to
    each source (6.5.0, optional); run `python scripts/prompt_budget.py` and set
    the `PROMPT_RETRIEVAL_TOKEN_BUDGET` it prints (6.6.0). If the DBA requires
-   `WITH (NOLOCK)`, set `nolock: true` on that source (6.5.0).
+   `WITH (NOLOCK)`, set `nolock: true` on that source, and on each other
+   source that needs it: the flag is per source (6.5.0, §16.7).
 9. **Restart** (every change above, including `datasources.yaml` and
    `schema.yaml`, takes effect at a restart). Then run the preflight once more
    with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
@@ -1191,10 +1576,26 @@ origin, several databases).
     shown in a conversation is laid out in a fixed style (6.5.0; display only,
     the statement that ran is unchanged), and a refused statement can be
     opened with the same layout.
+11. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
+    adds the tools that turn real usage into an evaluation set and a release
+    gate: `python scripts/harvest_golden.py` (candidates from the audit log),
+    `python scripts/golden_sheet.py export` and `import` (the analysts' review
+    in Excel), `python -m eval.cli verify --accept` (run and activate the
+    cases) and `python -m eval.cli run --live --reference live` (execution
+    accuracy against the reference SQL, run in the same session on the same
+    data). They do not exist before 6.7.0, so the first baseline is recorded
+    on 6.7.0 itself, once the audit log holds real questions; from then on you
+    record a baseline on the running version *before* each upgrade and compare
+    after it (§18, which has every command). A baseline file written by an
+    older version still loads, but cannot be compared with a
+    `--reference live` run: the tool refuses and says how to record it again.
+    Nothing else in 6.7.0 changes how the server runs.
 
 Nothing in 6.0.1 (`DB_POOL_PING_IDLE_SECONDS` defaults to `60`; `0` keeps
 pinging on every checkout), 6.3.2 (one warning per key instead of one per key
-read) or 6.6.1 (the template of step 6) needs an action of its own.
+read), 6.6.1 (the template of step 6) or the CI change of 6.7.0 (the
+`requirements.lock` you install is now also what CI tests) needs an action of
+its own.
 
 ## 18. Measuring accuracy on the real warehouse, and gating an upgrade on it
 
@@ -1335,3 +1736,54 @@ stale as the data moves; keep that for a warehouse that does not change.
   for a real reason (a business rule changed) are fixed in `golden.jsonl`
   and re-verified (`eval.cli verify --refresh` also re-records the stored
   rows of active cases for the offline replay).
+
+## 19. Sharing diagnostics safely
+
+When something goes wrong you will be asked for logs, configuration or command
+output. Send what helps and nothing that opens a door. Read every file before
+you attach it, and prefer pasting the few lines that matter to attaching a whole
+file.
+
+**Never send these with their real contents:**
+
+- `.env`. It holds `DB_PASSWORD`, every `DB_PASSWORD_*` (and any variable a
+  `password_env:` names), `OPENAI_API_KEY`, `API_KEYS_JSON`, and possibly a
+  password written inside `DB_CONNECTION_URL`, `APP_DB_URL` or a `url_env`
+  variable. If someone needs to see your settings, make a copy, blank every
+  secret in the copy (`DB_PASSWORD=`, `OPENAI_API_KEY=`, the password part of
+  every URL, the whole `API_KEYS_JSON` value, which may span several lines),
+  read the copy through, and send that.
+- `project_config/api_keys.json` (or the `API_KEYS_JSON` value). It holds
+  SHA-256 digests, not keys, but it is the list of who may use the system and
+  which columns each may not see (§10). The same goes for any key export.
+- A raw API key, and `VERIFY_API_KEY`. If a raw key reached a chat or a ticket,
+  treat it as leaked: revoke it from the admin panel and issue a new one (§1).
+- `project_config/.setup_log.json`, which may contain the database URL with its
+  password (§2.2).
+- `logs/audit_log.jsonl*` and `logs/query_log.jsonl*` (real questions and the
+  SQL generated for them), the SQLite files under `logs/` (`app.db`,
+  `sessions.db` and their `-wal` and `-shm` files), `exports/` (result sets),
+  `eval_data/` and every report written from it (§18), and
+  `project_config_draft/` (drafts may quote real values, §2.3).
+
+**Safe to send, after you have looked at it:**
+
+- The output of `python scripts/verify_deployment.py`. It never prints a
+  password: connection targets are shown with the password masked, and
+  `VERIFY_API_KEY` is not echoed. It does name hosts, databases and tables.
+- `python scripts/assign_datasources.py` and `python scripts/prompt_budget.py`
+  output: table names and numbers; no credential or API key is printed.
+- The aggregate report of `python scripts/analyze_audit_log.py` (§8), but not
+  the `--include-examples` one.
+- `project_config/schema.yaml`: table and column names and their descriptions.
+  Check that no description quotes a real value (a draft from §2.3 can).
+- `project_config/datasources.yaml`. It cannot hold a password: a `password:`,
+  `pwd:` or `url:` key is refused, and the file names the *variable* that holds
+  the secret (`password_env: DB_PASSWORD_SALES`), never its value. It does
+  contain server names, database names and login names; blank them if how your
+  servers are laid out is itself confidential.
+- The start-up log lines named in §5 (banner, `CORS allowed origins`,
+  `Prompt path for data source`), and the `[FAIL]` line you are asking about.
+
+Whatever you send, say what you removed, so the reader does not mistake a
+blanked value for a missing one.
