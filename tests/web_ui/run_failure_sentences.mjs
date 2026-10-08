@@ -349,6 +349,10 @@ for (const code of ["LLM_OUTPUT_TRUNCATED", "FORBIDDEN_SQL"]) {
 
 const GUARD_REASON_TABLE = [
   [
+    "join_only_column",
+    "این پرسش اجرا نشد — پرس‌وجوی تولیدشده از ستونی استفاده کرد که برای حساب شما فقط برای اتصال جدول‌ها (JOIN) مجاز است، نه برای نمایش، فیلتر، گروه‌بندی یا مرتب‌سازی. این به معنای «نتیجه‌ای یافت نشد» نیست.",
+  ],
+  [
     "forbidden_statement",
     "این پرسش اجرا نشد — پرس‌وجوی تولیدشده کاری می‌خواست که این سامانه اجازه نمی‌دهد: تغییر داده، یا خواندن اطلاعات خودِ سرور به‌جای داده‌های انبار.",
   ],
@@ -416,6 +420,24 @@ for (const [reason, expectedLead] of GUARD_REASON_TABLE) {
   btn.click();
   assert.equal(calls.askWithoutColumn, 1, "the targeted action must still be wired to onAskWithoutColumn");
   console.log("[ok] guard reason \"denied_column\": unchanged sentence, targeted action still wired");
+}
+
+// join_only_column: offers "request access" (subject is the whole policy
+// entry) and the generic rephrase action, but not "ask without that column".
+{
+  const { ctx, calls } = fullCtx();
+  const requested = [];
+  ctx.onRequestAccess = async (turnId, column) => { requested.push([turnId, column]); return { already_pending: false }; };
+  const turn = baseGuardTurn({
+    guard: { verdict: "rejected", rule: "synthetic rule text", reason: "join_only_column", subject: "synthetic.Table.Col", rejected_sql: null, injected_top: null, tables_touched: [] },
+  });
+  const card = createTurnCard(turn, ctx);
+  const labels = actionLabels(card);
+  assert.ok(labels.includes("درخواست دسترسی"), "join_only_column: request-access action must render");
+  assert.ok(labels.includes("ویرایش پرسش"), "join_only_column: generic rephrase action must render");
+  assert.ok(!labels.some((l) => l.startsWith("پرسش بدون")), "join_only_column: no 'ask without that column' action");
+  assert.equal(calls.askWithoutColumn || 0, 0, "join_only_column: ask-without-column must not be wired");
+  console.log("[ok] guard reason \"join_only_column\": request access offered, ask-without-column not");
 }
 
 /* ── Scenario G: the guard-rejection banner no longer shows the guard's

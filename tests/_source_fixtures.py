@@ -101,3 +101,28 @@ def configured_sources(
 def tables_of(source: str, sets: Mapping[str, Sequence[str]]) -> list[str]:
     """The tables of *source* under *sets*, in schema order."""
     return [t for t in SchemaRegistry.tables_for_source(None) if source in sets.get(t, ())]
+
+
+@contextmanager
+def routed_sources(
+    table_sets: Mapping[str, Sequence[str]],
+    *,
+    names: Sequence[str] = ("main", "archive"),
+    default: str = "main",
+) -> Iterator[None]:
+    """Make the router and the guard see *table_sets* as the table-to-sources map.
+
+    :func:`configured_sources` patches :mod:`database.datasources`, but
+    :mod:`database.routing` binds ``table_datasource_sets`` and
+    ``default_datasource_name`` by name when it is imported, so a test that
+    drives the SQL guard's source choice (``choose_datasource``) patches
+    those two there, as ``tests/test_routing.py`` does. A table not in
+    *table_sets* lives in the *default* source.
+    """
+    sets = {table: tuple(sources) for table, sources in table_sets.items()}
+    with patch("database.datasources.datasource_names", return_value=tuple(names)), patch.multiple(
+        "database.routing",
+        table_datasource_sets=lambda: sets,
+        default_datasource_name=lambda: default,
+    ):
+        yield
