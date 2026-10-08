@@ -150,6 +150,7 @@ import pandas as pd
 import config as cfg
 from schema_data.registry import bare_table_name, get_resolvable_columns, get_table_schema_qualifiers, table_reference_sql
 from security.auth import ANONYMOUS, Principal, scope_key
+from security.column_policy import hidden_value_columns
 from security.dialects import get_dialect_profile, quote_tsql_identifier
 from security.sql_guard import transpile_sql
 from session.models import Clarification
@@ -704,6 +705,9 @@ def resolve_value(
         execute_fn = _default_execute_fn
 
     denied = {c.lower() for c in principal.denied_columns}
+    # A join-only column (a scoped denied_columns entry) may not show its
+    # values here either: this lookup hands distinct values to the prompt.
+    hidden = hidden_value_columns(principal.column_policy)
     # memory_used=None named explicitly (Finding 8, 2026 audit): this
     # resolver has no memory entries to fold in -- it is a plain
     # (mention, table, column) lookup against the warehouse, not a
@@ -719,7 +723,7 @@ def resolve_value(
             continue
         any_allowlisted = True
         for column in columns:
-            if column.lower() in denied:
+            if column.lower() in denied or (table, column.lower()) in hidden:
                 continue
             pairs.append((table, column))
 

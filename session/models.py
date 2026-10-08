@@ -98,9 +98,9 @@ class GuardVerdict(BaseModel):
     rule: str | None = None
     reason: (
         Literal[
-            "denied_column", "forbidden_statement", "unknown_table",
-            "system_catalogue", "no_table_reference", "cross_datasource",
-            "ambiguous_table", "other",
+            "denied_column", "join_only_column", "forbidden_statement",
+            "unknown_table", "system_catalogue", "no_table_reference",
+            "cross_datasource", "ambiguous_table", "other",
         ]
         | None
     ) = None
@@ -119,7 +119,9 @@ class GuardVerdict(BaseModel):
     names exactly one (``None`` when it is about the query's shape rather
     than a single identifier — e.g. a stacked-statement query with no one
     dangerous statement, or a ``*`` that could expose more than one denied
-    column at once). Server-supplied text originating from the analyst's
+    column at once). For ``reason="join_only_column"`` it is the whole
+    ``denied_columns`` entry that blocked the query (``sales.Order.ID``,
+    ``Source:sales.Order.ID``), not a bare column name. Server-supplied text originating from the analyst's
     own question and the schema — never internal infrastructure detail —
     but still untrusted input from the UI's perspective: render it with
     ``textContent``/``dataset``, exactly like any other field on this

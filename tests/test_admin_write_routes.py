@@ -479,3 +479,46 @@ class TestMutualVisibility:
 # (TestEveryMutatingAdminRouteDeclaresARoleDependency), as the literal
 # replacement for that phase 1 test the frozen phase 2 spec calls for,
 # rather than duplicated here.
+
+
+class TestScopedAclEntries:
+    """``PATCH /admin/keys/{hash}/acl`` checks scoped (join-only) entries
+    against ``schema.yaml`` and ``datasources.yaml`` before storing them."""
+
+    def _issue(self, client) -> str:
+        return client.post(
+            "/admin/keys",
+            json={"principal_id": "scoped-target", "name": "Scoped Target"},
+            headers=_auth(RAW_OPS_KEY),
+        ).json()["key_sha256"]
+
+    def test_a_valid_scoped_entry_is_stored(self, client):
+        key_hash = self._issue(client)
+        resp = client.patch(
+            f"/admin/keys/{key_hash}/acl",
+            json={"denied_columns": ["NationalID", "sales.Order.ID"]},
+            headers=_auth(RAW_SECURITY_KEY),
+        )
+        assert resp.status_code == 200
+        from appdb.key_store import list_keys
+
+        stored = next(k for k in list_keys() if k["key_sha256"] == key_hash)
+        assert stored["denied_columns"] == ["NationalID", "sales.Order.ID"]
+
+    @pytest.mark.parametrize("entry", [
+        "sales.NoSuchTable.ID", "nowhere:sales.Order.ID", "sales.Order.Nope", "a:b:c",
+    ])
+    def test_a_bad_entry_is_refused_naming_it_and_nothing_is_stored(self, client, entry):
+        key_hash = self._issue(client)
+        from appdb.key_store import list_keys
+
+        before = next(k for k in list_keys() if k["key_sha256"] == key_hash)["denied_columns"]
+        resp = client.patch(
+            f"/admin/keys/{key_hash}/acl",
+            json={"denied_columns": [entry]},
+            headers=_auth(RAW_SECURITY_KEY),
+        )
+        assert resp.status_code == 422
+        assert repr(entry) in resp.json()["detail"]
+        after = next(k for k in list_keys() if k["key_sha256"] == key_hash)["denied_columns"]
+        assert after == before

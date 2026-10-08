@@ -44,6 +44,12 @@ from pathlib import Path
 from typing import Mapping
 
 import config as cfg
+from security.column_policy import (
+    ColumnPolicy,
+    ColumnPolicyError,
+    cached_column_policy,
+    parse_column_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +118,14 @@ class Principal:
     name:
         Human-readable label, for logs and operator-facing output only.
     denied_columns:
-        Column names this principal must never see. Fed into two
+        Column restrictions for this principal, as the raw strings of the
+        key's ``denied_columns`` array. A plain name (``NationalID``) denies
+        that column everywhere. An entry with a ``.`` or ``:`` is a scoped,
+        *join-only* restriction (``sales.Order.ID``,
+        ``Source:sales.Order.ID``, ``Source:ID`` -- see
+        :mod:`security.column_policy`): the column may then be used only as
+        a ``JOIN ... ON`` key. :attr:`column_policy` is the parsed form.
+        Fed into two
         independent places, both HTTP-only (the CLI/REPL paths --
         ``app.py``, ``llm/wizard_llm.py`` -- have no ``Principal`` and
         call :func:`~security.sql_guard.validate_sql` unchanged):
@@ -147,6 +160,22 @@ class Principal:
     name: str
     denied_columns: tuple[str, ...] = field(default_factory=tuple)
     capabilities: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def column_policy(self) -> ColumnPolicy:
+        """:attr:`denied_columns` parsed into a :class:`~security.column_policy.ColumnPolicy`.
+
+        Syntax only, and memoised on the entries: the schema is not touched
+        here (the guard checks scoped entries against it on use, and
+        :func:`load_api_keys` / the key-store writers check them when a key
+        is loaded or changed).
+
+        Raises
+        ------
+        security.column_policy.ColumnPolicyError
+            An entry is malformed.
+        """
+        return cached_column_policy(self.denied_columns)
 
     @property
     def is_admin(self) -> bool:
@@ -373,6 +402,14 @@ def _parse_api_keys(raw_json: str, source: str = "API_KEYS_JSON") -> dict[str, P
                 )
         elif isinstance(raw_denied, list) and all(isinstance(c, str) for c in raw_denied):
             denied_columns = tuple(raw_denied)
+            # Scoped (join-only) entries are checked against schema.yaml and
+            # datasources.yaml here, so a typo stops the server at start-up
+            # instead of silently restricting nothing. Legacy plain names are
+            # never looked up: they keep meaning exactly what they did.
+            try:
+                parse_column_policy(denied_columns)
+            except ColumnPolicyError as exc:
+                raise ApiKeyConfigError(f"{source}[{i}].denied_columns: {exc}") from exc
         else:
             # Deliberately NOT coerced (e.g. a bare "Price" string would
             # otherwise silently become ('P','r','i','c','e') via
@@ -700,22 +737,35 @@ def scope_key(principal: Principal, memory_used: Mapping[str, str] | None) -> st
     ...     scope_key(Principal(id="b", name="B"), memory_used={"scope": "x"})
     True
 
-    Collision assumption
-    ---------------------
-    The sorted column names are joined on ``":"`` before hashing, so in
-    principle ``("Price:Volume",)`` and ``("Price", "Volume")`` would hash
-    identically. This is treated as a non-issue rather than fixed with a
-    length-prefixed/JSON encoding: a T-SQL identifier cannot contain a
-    colon at all, so ``denied_columns`` (validated as plain column-name
-    strings by :func:`load_api_keys`) can never actually contain one. The
-    same reasoning covers *memory_used*: its keys are declared identifiers
-    (``project_config/memory_policy.yaml``) and its values are already
-    newline/control-character-free (:func:`session.memory.validate_memory_value`),
-    so a ``"|"``-joined ``key=value`` encoding cannot collide across two
-    genuinely different *memory_used* mappings for any value this codebase
-    ever stores.
+    Encoding
+    --------
+    The sorted entries are hashed as a JSON array, not joined on a
+    separator. Scoped entries (``Source:schema.Table.Col``) contain ``:``
+    and ``.``, so a join on ``":"`` would let ``("a:b",)`` and
+    ``("a", "b")`` hash identically -- two keys with different visibility
+    sharing cached rows. JSON quoting makes the encoding unambiguous:
+
+    >>> scope_key(Principal(id="a", name="A", denied_columns=("a:b",)), memory_used=None) == \\
+    ...     scope_key(Principal(id="a", name="A", denied_columns=("a", "b")), memory_used=None)
+    False
+    >>> scope_key(Principal(id="a", name="A", denied_columns=("Src:sales.Order.ID",)), memory_used=None) == \\
+    ...     scope_key(Principal(id="a", name="A", denied_columns=("sales.Order.ID",)), memory_used=None)
+    False
+
+    Changing from the earlier ``":"``-joined form changed every key once,
+    so cached results from before the change are simply not found and are
+    rebuilt on the next request.
+
+    *memory_used* is still joined on ``"|"`` as ``key=value`` pairs. That
+    cannot collide across two genuinely different mappings: its keys are
+    declared identifiers (``project_config/memory_policy.yaml``) and its
+    values are already newline/control-character-free
+    (:func:`session.memory.validate_memory_value`).
     """
-    joined = ":".join(sorted(principal.denied_columns)) or "all"
+    if principal.denied_columns:
+        joined = json.dumps(sorted(principal.denied_columns), separators=(",", ":"))
+    else:
+        joined = "all"
     if memory_used:
         memory_part = "|".join(f"{k}={v}" for k, v in sorted(memory_used.items()))
         joined = f"{joined}#mem:{memory_part}"

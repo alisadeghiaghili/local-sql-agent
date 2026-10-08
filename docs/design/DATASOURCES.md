@@ -627,6 +627,13 @@ cannot see would make a shared table look single. Schema drift checks
 each copy ("Tables that live in several sources"). The value resolver and the
 dimension vocabulary read one copy, not each.
 
+*Column restrictions follow the same rule.* A `denied_columns` entry written
+`Source:schema.Table.Col` or `Source:Col` (docs/design/DESIGN.md, D14) is active
+only when `choose_datasource` picks `Source` for the statement, so a table
+shared by two sources can be restricted in one and not the other. The guard
+asks the same function the executor uses, so the restriction cannot apply to a
+statement that runs elsewhere, or be skipped for one that runs there.
+
 ### DS3. The source is chosen per question, before the prompt, without a model call (6.5)
 
 *Context.* A prompt that describes every table of every source is far larger

@@ -214,7 +214,11 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         dest="denied_columns",
         default=[],
-        help="Column name this principal must never see. Repeatable.",
+        help=(
+            "Column name this principal must never see. Repeatable. "
+            "schema.Table.Col, Source:schema.Table.Col or Source:Col makes the "
+            "column usable only as a JOIN ... ON key instead."
+        ),
     )
     for dest, _field, description in _CAPABILITY_FLAGS:
         parser.add_argument(

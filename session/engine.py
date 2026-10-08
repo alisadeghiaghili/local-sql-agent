@@ -918,6 +918,7 @@ class TurnEngine:
             build=lambda source: build_prompt_segments(
                 question, system_prompt, ctx,
                 session_context=session_context_text, source=source,
+                denied_columns=denied_columns,
             ),
             previous_source=previous_source if is_carry_forward else None,
         )
@@ -925,6 +926,7 @@ class TurnEngine:
             routing.segments if routing is not None
             else build_prompt_segments(
                 question, system_prompt, ctx, session_context=session_context_text,
+                denied_columns=denied_columns,
             )
         )
 

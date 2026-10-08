@@ -92,6 +92,7 @@ from appdb.roles import (
     revoke,
 )
 from security.auth import OPERATIONS_CAPABILITY, SECURITY_CAPABILITY, Principal
+from security.column_policy import ColumnPolicyError
 
 router = APIRouter(prefix="/admin", tags=["admin-write"])
 
@@ -229,7 +230,12 @@ def admin_update_acl(
     principal: Principal = Depends(require_security),
     _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
-    _handle_not_found(key_sha256, update_denied_columns, req.denied_columns)
+    try:
+        _handle_not_found(key_sha256, update_denied_columns, req.denied_columns)
+    except ColumnPolicyError as exc:
+        # A scoped entry naming a source, table or column that does not exist
+        # (or a malformed one): refused with the entry named, nothing stored.
+        raise HTTPException(status_code=422, detail=str(exc))
     record_admin_action(
         principal.id, SECURITY_CAPABILITY, "key.acl.update", key_sha256,
         detail={"denied_columns": req.denied_columns},

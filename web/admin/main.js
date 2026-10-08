@@ -1173,8 +1173,21 @@ function keyState(row) {
   return { label: "فعال", cls: "pass" };
 }
 
+/** Each key's current `denied_columns`, by key hash, so the ACL prompt can
+ * start from what is stored instead of an empty box (saving an empty box
+ * clears the whole restriction). Filled by `renderKeys`. */
+const deniedByHash = new Map();
+
+/** A scoped entry (join-only: `schema.Table.Col`, `Source:schema.Table.Col`,
+ * `Source:Col`) is any entry with a `.` or `:`; a plain name denies the
+ * column everywhere. Mirrors security/column_policy.py. */
+function isScopedEntry(entry) {
+  return entry.includes(".") || entry.includes(":");
+}
+
 function renderKeys({ keys, operations, security }) {
   const body = $("keys-body");
+  deniedByHash.clear();
   if (!keys.length) {
     body.innerHTML = '<p class="admin-loading">هیچ کلیدی ثبت نشده است.</p>';
     return;
@@ -1195,7 +1208,11 @@ function renderKeys({ keys, operations, security }) {
     /* "No restriction" and "some columns" are different kinds of fact, and
      * a bare count makes the first one read as zero of something rather
      * than the absence of a restriction. */
-    const deniedLabel = denied.length === 0 ? "بدون محدودیت" : `${fmtNum(denied.length)} ستون`;
+    deniedByHash.set(row.key_sha256, denied);
+    const joinOnly = denied.filter(isScopedEntry).length;
+    const deniedLabel = denied.length === 0
+      ? "بدون محدودیت"
+      : `${fmtNum(denied.length)} ستون` + (joinOnly ? ` (${fmtNum(joinOnly)} فقط برای JOIN)` : "");
     const roleTags =
       (operations.has(row.principal_id) ? '<span class="key-role">operations</span>' : "") +
       (security.has(row.principal_id) ? '<span class="key-role">security</span>' : "");
@@ -1271,9 +1288,13 @@ async function onKeyAction(btn) {
       await api.revokeKey(hash);
     } else if (act === "acl") {
       const answer = window.prompt(
-        "ستون‌هایی که این کلید هرگز نباید ببیند، جدا شده با کاما.\n" +
+        "محدودیت‌های ستونی این کلید، جدا شده با کاما. مقدار فعلی در کادر است.\n" +
+        "نام ساده (مثلاً NationalID): ستون در همه‌جا ممنوع است.\n" +
+        "schema.Table.Col : ستون فقط در JOIN ... ON مجاز است (در هر منبع).\n" +
+        "Source:schema.Table.Col : همان، فقط وقتی پرس‌وجو روی منبع Source اجرا می‌شود.\n" +
+        "Source:Col : همان، برای هر جدول Source که این ستون را دارد.\n" +
         "خالی بگذارید تا هیچ محدودیتی نداشته باشد.",
-        "",
+        (deniedByHash.get(hash) || []).join(", "),
       );
       if (answer === null) return;
       const columns = answer.split(",").map((c) => c.trim()).filter(Boolean);

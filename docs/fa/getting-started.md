@@ -638,6 +638,16 @@ python -m scripts.issue_api_key --id analyst-2 --name "..." --denied-column Nati
 
 آن ستون در guard رد می‌شود، نه فقط در کش جدا می‌شود.
 
+برای اینکه ستونی فقط در اتصال جدول‌ها (`JOIN ... ON a.col = b.col`) قابل استفاده باشد و مقدارش هرگز نمایش داده نشود یا فیلتر و گروه‌بندی نشود، ورودی را با دامنه بنویسید:
+
+```powershell
+python -m scripts.issue_api_key --id analyst-3 --name "..." --denied-column sales.Order.ID
+python -m scripts.issue_api_key --id analyst-3 --name "..." --denied-column Warehouse:sales.Order.ID
+python -m scripts.issue_api_key --id analyst-3 --name "..." --denied-column Warehouse:ID
+```
+
+شکل اول روی آن جدول در هر منبع، شکل دوم فقط وقتی پرس‌وجو روی منبع `Warehouse` اجرا می‌شود، و شکل سوم روی هر جدولِ `Warehouse` که این ستون را دارد اعمال می‌شود. نام منبع، جدول و ستون هنگام راه‌اندازی با `datasources.yaml` و `schema.yaml` سنجیده می‌شود و غلط‌نویسی راه‌اندازی را متوقف می‌کند. محدودیت: «فقط اتصال» مقدار ستون را پنهان می‌کند، نه وجود آن را؛ اگر کلید خارجیِ اشاره‌کننده به آن ستون جای دیگر دیده شود، پنهان کردن کلید اصلی ظاهری است و باید کلید خارجی را هم محدود کرد. ستونِ بدون پیشوند جدول محافظه‌کارانه محدود حساب می‌شود.
+
 > **کلید جدا برای هر تحلیل‌گر بدهید، نه یک کلید مشترک.** دو دلیل عملی:
 > رکورد audit `principal_id` را ثبت می‌کند — با یک کلید مشترک، لاگ کل هفته
 > همه را یک نفر نشان می‌دهد. و سطل rate limit روی جفتِ (principal, ip) است —

@@ -170,6 +170,7 @@ class TestSingleSourceIsByteForByteUnchanged:
             relationships="\n".join(ctx.relationships),
             filters="PersianYear: 1402",
             resolved_values="",
+            access_notes="",
             examples="Question:\nq\n\nSQL:\nSELECT 1",
             question="how many?",
         )
