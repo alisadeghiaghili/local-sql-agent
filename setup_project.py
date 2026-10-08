@@ -1185,7 +1185,8 @@ def step2_schema(args, db_url: str, log: dict):
                 fetch_row_counts=False,
             )
         except ConnectionError as exc:
-            console.print(f"[red]Schema inspection failed: {exc}[/red]" if _RICH else str(exc))
+            reason = _scrub_secrets(str(exc), db_url)
+            console.print(f"[red]Schema inspection failed: {reason}[/red]" if _RICH else reason)
             sys.exit(1)
         finally:
             inspector.close()

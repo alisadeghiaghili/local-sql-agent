@@ -118,6 +118,18 @@ class TestStep1DoesNotStoreThePassword:
         assert SECRET not in captured.out + captured.err
 
 
+class TestStep2DoesNotEchoThePassword:
+    def test_a_failed_inspection_is_scrubbed(self, capsys):
+        args = sp._build_parser().parse_args(["--non-interactive"])
+        inspector = MagicMock()
+        inspector.inspect.side_effect = ConnectionError(f"Cannot connect to {_URL}")
+        with patch("database.schema_inspector.SchemaInspector", return_value=inspector):
+            with pytest.raises(SystemExit):
+                sp.step2_schema(args, _URL, {})
+        captured = capsys.readouterr()
+        assert SECRET not in captured.out + captured.err
+
+
 class TestWizardWritesNoPassword:
     def test_nothing_on_disk_or_on_screen_holds_the_password(self, tmp_path, capsys, monkeypatch):
         monkeypatch.delenv("WIZARD_LLM_BASE_URL", raising=False)
