@@ -61,6 +61,39 @@ from prompt_engine.untrusted import UNTRUSTED_INSTRUCTION, fence_untrusted
 from schema_data.registry import SchemaRegistry
 
 
+def _render_access_notes(access_notes: str) -> str:
+    """Render *access_notes* as its own ``COLUMN ACCESS`` section, or ``""``.
+
+    The returned text starts with a newline and ends with one, so that
+    dropped between the two blank-line-separated sections of
+    :data:`~prompt_engine.templates.SUFFIX_TEMPLATE` /
+    :data:`~prompt_engine.templates.PROMPT_TEMPLATE` it reads as one more
+    section, and an empty *access_notes* leaves the template exactly as it
+    was.
+
+    Examples
+    --------
+    >>> _render_access_notes("")
+    ''
+    >>> print(_render_access_notes("Use X only in JOIN ... ON."))
+    <BLANKLINE>
+    ==================================================
+    COLUMN ACCESS
+    ==================================================
+    <BLANKLINE>
+    Use X only in JOIN ... ON.
+    <BLANKLINE>
+    """
+    if not access_notes:
+        return ""
+    return (
+        "\n==================================================\n"
+        "COLUMN ACCESS\n"
+        "==================================================\n\n"
+        f"{access_notes}\n"
+    )
+
+
 def _render_resolved_values(resolved_values: dict[str, list[str]] | None) -> str:
     """Render *resolved_values* as a fenced, explicitly-labelled block.
 
@@ -128,6 +161,7 @@ class PromptBuilder:
         session_context: str = "",
         resolved_values: dict[str, list[str]] | None = None,
         source: str | None = None,
+        access_notes: str = "",
     ) -> str:
         """Build a complete prompt string for the LLM backend.
 
@@ -177,6 +211,13 @@ class PromptBuilder:
             the module docstring); ``None`` (the default, and the only
             value that does anything with one source) describes the whole
             schema, as before.
+        access_notes:
+            One line naming the columns the calling principal may use only
+            as ``JOIN ... ON`` keys (:func:`security.column_policy.join_only_prompt_line`).
+            Rendered under its own ``COLUMN ACCESS`` heading in the variable
+            suffix -- never in the cached static prefix, so the prefix stays
+            byte-identical across principals. ``""`` (the default) renders
+            nothing, byte-identical to a prompt built before this existed.
 
         Returns
         -------
@@ -247,12 +288,12 @@ class PromptBuilder:
             return PromptBuilder.build_static(
                 question, system_prompt, context,
                 session_context=session_context, resolved_values=resolved_values,
-                source=source,
+                source=source, access_notes=access_notes,
             )
         return PromptBuilder._build_retrieval(
             question, system_prompt, context,
             session_context=session_context, resolved_values=resolved_values,
-            source=source,
+            source=source, access_notes=access_notes,
         )
 
     @staticmethod
@@ -264,6 +305,7 @@ class PromptBuilder:
         session_context: str = "",
         resolved_values: dict[str, list[str]] | None = None,
         source: str | None = None,
+        access_notes: str = "",
     ) -> str:
         """Static-prefix path: cached prefix + a small variable suffix.
 
@@ -301,6 +343,7 @@ class PromptBuilder:
             filters=filters,
             resolved_values=_render_resolved_values(resolved_values),
             session_context=session_context,
+            access_notes=_render_access_notes(access_notes),
             question=question,
         )
         return prefix + suffix
@@ -314,6 +357,7 @@ class PromptBuilder:
         session_context: str = "",
         resolved_values: dict[str, list[str]] | None = None,
         source: str | None = None,
+        access_notes: str = "",
     ) -> str:
         """Retrieval-fallback path: only the retrieved tables/rules/examples.
 
@@ -367,6 +411,7 @@ class PromptBuilder:
             relationships=relationships,
             filters=filter_context,
             resolved_values=_render_resolved_values(resolved_values),
+            access_notes=_render_access_notes(access_notes),
             examples=example_context,
             question=question,
         )

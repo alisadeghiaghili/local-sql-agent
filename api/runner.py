@@ -872,11 +872,14 @@ def _safe_generate_sql_only(
             question, context,
             build=lambda source: build_prompt_segments(
                 question, system_prompt, context, source=source,
+                denied_columns=denied_columns,
             ),
         )
         segments = (
             routing.segments if routing is not None
-            else build_prompt_segments(question, system_prompt, context)
+            else build_prompt_segments(
+                question, system_prompt, context, denied_columns=denied_columns,
+            )
         )
 
     try:

@@ -56,6 +56,13 @@ EXAMPLES
 #: warehouse-sourced ones, fenced and explicitly labelled as data rather
 #: than instructions. See ``prompt_engine/untrusted.py``'s module
 #: docstring for the full reasoning.
+#:
+#: ``{access_notes}`` carries the calling principal's column restrictions that
+#: the model can comply with up front (join-only columns). It is empty --
+#: and the template renders byte-for-byte as it did before the field existed
+#: -- for a principal with none; when present it brings its own
+#: ``COLUMN ACCESS`` heading, which is why it sits flush against the blank
+#: line on either side instead of having one of its own.
 SUFFIX_TEMPLATE = """
 ==================================================
 DETECTED FILTERS
@@ -92,7 +99,7 @@ SESSION CONTEXT
 ==================================================
 
 {session_context}
-
+{access_notes}
 ==================================================
 USER QUESTION
 ==================================================
@@ -156,7 +163,7 @@ RESOLVED WAREHOUSE VALUES
 ==================================================
 
 {resolved_values}
-
+{access_notes}
 ==================================================
 EXAMPLES
 ==================================================

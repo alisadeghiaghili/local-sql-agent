@@ -60,12 +60,14 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 import config as cfg
 from llm.base import LLMBackend
+from security.column_policy import join_only_prompt_line
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +183,7 @@ def build_prompt_segments(
     *,
     session_context: str = "",
     source: str | None = None,
+    denied_columns: Iterable[str] | None = None,
 ) -> PromptSegments:
     """Build a :class:`PromptSegments` for the SQL-generation task.
 
@@ -209,6 +212,13 @@ def build_prompt_segments(
         from retrieval restricted to its tables. ``None`` (the default, and
         the only value any single-source deployment passes) is the whole
         schema, exactly as before.
+    denied_columns:
+        The calling principal's ``denied_columns``. Its join-only entries
+        that apply on *source* become one line in the per-question part of
+        the prompt (``COLUMN ACCESS``), so the model's first attempt already
+        keeps those columns to ``JOIN ... ON``. The cacheable static prefix
+        never changes with it. ``None`` (the default), or an ACL with no
+        scoped entry, adds nothing: the prompt is byte-identical to before.
 
     Returns
     -------
@@ -252,12 +262,13 @@ def build_prompt_segments(
     # before this field existed conceptually, or a minimal stand-in, and
     # neither should raise AttributeError over an optional signal.
     resolved_values = getattr(context, "resolved_values", None) or None
+    access_notes = join_only_prompt_line(denied_columns, source)
 
     if not should_use_static_prefix(system_prompt, source):
         full = PromptBuilder.build(
             question, system_prompt, context,
             session_context=session_context, resolved_values=resolved_values,
-            source=source,
+            source=source, access_notes=access_notes,
         )
         return PromptSegments(question=full)
 
@@ -265,7 +276,7 @@ def build_prompt_segments(
     full = PromptBuilder.build_static(
         question, system_prompt, context,
         session_context=session_context, resolved_values=resolved_values,
-        source=source,
+        source=source, access_notes=access_notes,
     )
     if not full.startswith(prefix):
         # Defensive fallback only — should_use_static_prefix() already
