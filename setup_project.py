@@ -35,6 +35,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -85,6 +86,158 @@ _DB_EXAMPLES = """
   MySQL  : mysql+pymysql://user:pass@host:3306/db
   SQLite : sqlite:///path/to/file.db
 """
+
+
+# ===========================================================================
+# Credential redaction
+# ===========================================================================
+
+#: Placeholder shown when a connection string cannot be parsed at all.
+_UNPARSEABLE_URL = "<unparseable connection URL>"
+
+#: Mask substituted for every credential.
+_MASK = "***"
+
+#: Query-string keys whose value is a credential, compared lower-cased.
+_SECRET_QUERY_KEYS = frozenset(
+    {"pwd", "password", "passwd", "secret", "token", "access_token", "api_key", "apikey"}
+)
+
+#: ``PWD=...`` / ``Password=...`` inside an ODBC connection string (the
+#: ``odbc_connect`` query value of an ``mssql+pyodbc`` URL carries the whole
+#: string, password included).
+_ODBC_SECRET_RE = re.compile(r"(?i)(\b(?:pwd|password|passwd)\s*=\s*)[^;&]*")
+
+#: ``://user:password@`` in a string SQLAlchemy could not parse. Greedy up to
+#: the last ``@`` before the first ``/``, because a password may itself
+#: contain ``@`` or ``:``.
+_RAW_USERINFO_RE = re.compile(r"(?<=://)([^:/@\s]*):([^/\s]*)@")
+
+
+def _redact_db_url(url: str) -> str:
+    """Return *url* with every credential masked, safe to print or write.
+
+    The URL is parsed by SQLAlchemy (``make_url(...).render_as_string(
+    hide_password=True)``) rather than matched with a pattern, so a password
+    containing ``@``, ``:`` or ``/`` is still masked. Credentials carried in
+    the query string (``?PWD=...``, or inside ``odbc_connect``) are masked as
+    well. A string SQLAlchemy cannot parse is never returned as it came: a
+    string that does not look like a URL becomes a placeholder, and one that
+    does has its ``user:password@`` and ``PWD=`` parts masked by pattern.
+
+    Args:
+        url: A SQLAlchemy connection string, possibly with credentials.
+
+    Returns:
+        The same URL with the password (and any secret query value) replaced
+        by ``***``, or a placeholder when nothing safe can be shown.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _redact_db_url("mssql+pyodbc://nlq:s3cret@db1/Sales")
+        'mssql+pyodbc://nlq:***@db1/Sales'
+        >>> "s3cret" in _redact_db_url("mssql+pyodbc://nlq:p@s3cret@db1/Sales")
+        False
+        >>> "s3cret" in _redact_db_url("mssql+pyodbc:///?odbc_connect=UID=a;PWD=s3cret")
+        False
+        >>> _redact_db_url("not a url")
+        '<unparseable connection URL>'
+    """
+    from sqlalchemy.engine import make_url
+
+    try:
+        parsed = make_url(url)
+        if "@" in (parsed.host or ""):
+            # An unescaped "@" inside the password: SQLAlchemy ended the
+            # password early and put the rest in the host. Mask by pattern.
+            raise ValueError("ambiguous user information")
+        query: dict[str, Any] = {}
+        for key, value in parsed.query.items():
+            lowered = key.lower()
+            values = value if isinstance(value, tuple) else (value,)
+            if lowered in _SECRET_QUERY_KEYS:
+                masked = tuple(_MASK for _ in values)
+            else:
+                masked = tuple(_ODBC_SECRET_RE.sub(rf"\1{_MASK}", v) for v in values)
+            query[key] = masked if isinstance(value, tuple) else masked[0]
+        return parsed.set(query=query).render_as_string(hide_password=True)
+    except Exception:  # noqa: BLE001 - never fall back to the raw string
+        if "://" not in url:
+            return _UNPARSEABLE_URL
+        masked_raw = _RAW_USERINFO_RE.sub(rf"\1:{_MASK}@", url)
+        return _ODBC_SECRET_RE.sub(rf"\1{_MASK}", masked_raw)
+
+
+def _url_secrets(url: str) -> list[str]:
+    """Return every credential value found in *url*, longest first.
+
+    Used to scrub third-party error text (a driver may echo part of the
+    connection string). Includes the URL-encoded spelling of the password,
+    because SQLAlchemy renders it that way.
+
+    Args:
+        url: A SQLAlchemy connection string.
+
+    Returns:
+        Distinct non-empty secret strings, longest first. Empty when *url*
+        cannot be parsed or carries no credential.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _url_secrets("mssql+pyodbc://nlq:s3cret@db1/Sales")
+        ['s3cret']
+        >>> _url_secrets("sqlite:///x.db")
+        []
+    """
+    from urllib.parse import quote, quote_plus
+
+    from sqlalchemy.engine import make_url
+
+    found: set[str] = {m.group(2) for m in _RAW_USERINFO_RE.finditer(url)}
+    try:
+        parsed = make_url(url)
+        if parsed.password and "@" not in (parsed.host or ""):
+            found.update({parsed.password, quote(parsed.password, safe=""),
+                          quote_plus(parsed.password)})
+        for key, value in parsed.query.items():
+            for item in (value if isinstance(value, tuple) else (value,)):
+                if key.lower() in _SECRET_QUERY_KEYS:
+                    found.add(item)
+                else:
+                    found.update(m.group(0).split("=", 1)[1].strip()
+                                 for m in _ODBC_SECRET_RE.finditer(item))
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted((s for s in found if s), key=len, reverse=True)
+
+
+def _scrub_secrets(text: str, db_url: str) -> str:
+    """Return *text* with *db_url* and any credential from it masked.
+
+    Args:
+        text: Text about to be printed, e.g. a driver's exception message.
+        db_url: The connection string the text may have come from.
+
+    Returns:
+        *text* with the raw URL replaced by its redacted form and every
+        credential value replaced by ``***``.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _scrub_secrets("login failed for nlq:s3cret", "mssql+pyodbc://nlq:s3cret@db1/Sales")
+        'login failed for nlq:***'
+    """
+    if db_url:
+        text = text.replace(db_url, _redact_db_url(db_url))
+    for secret in _url_secrets(db_url):
+        text = text.replace(secret, _MASK)
+    return text
 
 
 # ===========================================================================
@@ -156,7 +309,9 @@ def _spinner(message: str):
             transient=True,
         )
     class _NoOp:
-        def __enter__(self): print(message); return self
+        def __enter__(self):
+            print(message)
+            return self
         def __exit__(self, *_): pass
         def add_task(self, *a, **kw): return None
     return _NoOp()
@@ -283,7 +438,6 @@ def _validate_yaml_str(yaml_str: str, filename: str) -> list[str]:
             AliasesConfig, EntitiesConfig, BusinessRulesConfig,
             ExamplesConfig,
         )
-        from pydantic import ValidationError
         model_map = {
             "entities.yaml":       EntitiesConfig,
             "aliases.yaml":        AliasesConfig,
@@ -455,7 +609,7 @@ def step1_connection(args, log: dict) -> str:
             default="mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server",
         )
 
-    console.print(f"  Testing connection...", end=" ")
+    console.print("  Testing connection...", end=" ")
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(db_url, pool_pre_ping=True, pool_size=1, max_overflow=0)
@@ -464,14 +618,14 @@ def step1_connection(args, log: dict) -> str:
         engine.dispose()
         console.print("[green]OK[/green]" if _RICH else "OK")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]FAILED[/red]" if _RICH else "FAILED")
-        console.print(f"  Error: {exc}")
+        console.print("[red]FAILED[/red]" if _RICH else "FAILED")
+        console.print(f"  Error: {_scrub_secrets(str(exc), db_url)}")
         console.print("  Connection string formats:" + _DB_EXAMPLES)
         if not args.non_interactive and _yn("Retry with a different URL?", non_interactive=False):
             return step1_connection(args, log)
         sys.exit(1)
 
-    _mark_done(log, "step1_connection", {"db_url_redacted": re.sub(r':[^:@/]+@', ':***@', db_url) if 're' in dir() else db_url})
+    _mark_done(log, "step1_connection", {"db_url_redacted": _redact_db_url(db_url)})
     return db_url
 
 
@@ -821,9 +975,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    import re  # used in step1 for URL redaction
-    _patch_re_into_step1(re)  # make re available inside step1_connection
-
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -890,7 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
         console.print(
             f"[yellow]  Warning: LLM unavailable ({exc}). "
             "Using mock provider — aliases/rules/examples will be empty.[/yellow]"
-            if _RICH else f"  Warning: LLM unavailable. Using mock provider."
+            if _RICH else "  Warning: LLM unavailable. Using mock provider."
         )
         llm = WizardLLM(provider="mock", model="mock")
 
@@ -909,7 +1060,7 @@ def main(argv: list[str] | None = None) -> int:
     _save_log(log_path, log)
 
     # ---- Step 6: Review & write ----
-    source_url = re.sub(r':[^:@/]+@', ':***@', db_url)
+    source_url = _redact_db_url(db_url)
     step6_review_and_write(
         args=args,
         output_dir=output_dir,
@@ -932,13 +1083,5 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _patch_re_into_step1(re_module) -> None:
-    """Make ``re`` available inside step1_connection without a global import."""
-    import builtins
-    # re is already importable globally; this is a no-op but makes intent clear
-    pass
-
-
 if __name__ == "__main__":
-    import re  # noqa: F811
     sys.exit(main())
