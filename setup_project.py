@@ -22,6 +22,19 @@ Flags
 --dry-run           Print generated YAML to stdout; do not write files.
 --resume            Skip steps whose output files already exist.
 
+LLM endpoint
+------------
+The model that suggests aliases, rules and examples is chosen, for each of
+endpoint / model / key, from the command-line flag, then ``WIZARD_LLM_BASE_URL``
+/ ``WIZARD_LLM_MODEL``, then the application's own ``OPENAI_BASE_URL`` /
+``OPENAI_MODEL`` / ``OPENAI_API_KEY`` (an empty ``WIZARD_*`` value counts as
+unset). The wizard prints one line naming the provider, model and endpoint
+(never the key). It sends table and column names and sample column values to
+that endpoint, so it obeys the application's data-governance rule: an endpoint
+that is not local (see ``llm/trust.py``, ``LLM_TRUSTED``) is refused unless
+``LLM_ALLOW_REMOTE=true``. If the endpoint does not answer, the wizard says so
+loudly and continues with the mock LLM, which generates nothing.
+
 The wizard writes ``project_config/.setup_log.json`` recording every step
 that was executed and when, so it can be resumed safely.
 
@@ -39,9 +52,10 @@ import re
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 # ---------------------------------------------------------------------------
 # Rich / questionary — graceful fallback if not installed
@@ -588,6 +602,312 @@ def _build_schema_summary(snapshot) -> str:
 
 
 # ===========================================================================
+# Wizard LLM: which endpoint, and whether it may see the schema
+# ===========================================================================
+
+_WIZARD_PROVIDERS = ("openai", "mock")
+
+
+class RemoteLLMNotAllowedError(RuntimeError):
+    """The wizard's LLM endpoint is remote and ``LLM_ALLOW_REMOTE`` is not true."""
+
+
+@dataclass(frozen=True)
+class WizardLLMConfig:
+    """The LLM endpoint the wizard will use, and where each value came from.
+
+    Attributes:
+        provider: ``"openai"`` (any OpenAI-compatible endpoint) or ``"mock"``.
+        model: Model tag sent to the endpoint.
+        base_url: Endpoint base URL. Empty for the mock provider.
+        api_key: Bearer token, possibly empty (many local servers need none).
+            Never printed or logged.
+        trusted: Whether the endpoint counts as local under the main
+            application's rule (see :func:`resolve_wizard_llm`).
+        sources: Where ``provider``, ``model`` and ``base_url`` were taken
+            from, e.g. ``{"model": "OPENAI_MODEL"}``.
+    """
+
+    provider: str
+    model: str
+    base_url: str
+    api_key: str
+    trusted: bool
+    sources: dict[str, str]
+
+    @property
+    def remote(self) -> bool:
+        """Whether this endpoint is outside the deployment's own infrastructure."""
+        return self.provider != "mock" and not self.trusted
+
+    def describe(self) -> str:
+        """One line naming the provider, model, endpoint and their origin.
+
+        The API key is never part of it.
+
+        Returns:
+            A single line of text.
+
+        Examples:
+            >>> WizardLLMConfig("openai", "m", "http://localhost:8000/v1", "k", True,
+            ...                 {"model": "OPENAI_MODEL", "base_url": "OPENAI_BASE_URL"}).describe()
+            'LLM: openai, model m (from OPENAI_MODEL), endpoint http://localhost:8000/v1 (from OPENAI_BASE_URL), local'
+            >>> WizardLLMConfig("mock", "mock", "", "", True, {}).describe()
+            'LLM: mock (no model is called; aliases, rules and examples will be empty)'
+        """
+        if self.provider == "mock":
+            return "LLM: mock (no model is called; aliases, rules and examples will be empty)"
+        where = "remote" if self.remote else "local"
+        return (
+            f"LLM: {self.provider}, model {self.model} (from {self.sources.get('model', '?')}), "
+            f"endpoint {_strip_url_userinfo(self.base_url)} (from {self.sources.get('base_url', '?')}), "
+            f"{where}"
+        )
+
+
+def _strip_url_userinfo(url: str) -> str:
+    """Return an HTTP(S) *url* without any ``user:password@`` part.
+
+    Args:
+        url: An endpoint URL.
+
+    Returns:
+        *url* with the userinfo removed; unchanged when there is none.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _strip_url_userinfo("https://u:p@host:8000/v1")
+        'https://host:8000/v1'
+        >>> _strip_url_userinfo("http://localhost:8000/v1")
+        'http://localhost:8000/v1'
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url)
+        if "@" not in parts.netloc:
+            return url
+        return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
+    except ValueError:
+        return "<unparseable endpoint URL>"
+
+
+def resolve_wizard_llm(
+    args: argparse.Namespace,
+    environ: Mapping[str, str] | None = None,
+) -> WizardLLMConfig:
+    """Work out which LLM endpoint the wizard uses.
+
+    For the endpoint, the model and the key the order is: the command-line
+    flag, then the ``WIZARD_LLM_*`` variable, then the main application's own
+    ``OPENAI_BASE_URL`` / ``OPENAI_MODEL`` / ``OPENAI_API_KEY`` settings. An
+    empty ``WIZARD_*`` value counts as unset, so a copied ``.env.example``
+    with blank lines behaves as "use the application's endpoint". The key is
+    only ever the application's ``OPENAI_API_KEY``.
+
+    Whether the endpoint is *remote* follows the main application: its trust
+    is the explicit ``LLM_TRUSTED`` override when the endpoint is the
+    application's own ``OPENAI_BASE_URL``, otherwise
+    :func:`llm.trust.default_trust_for_url` (loopback, private-network and
+    ``*.local`` hosts are local, everything else is remote).
+
+    Args:
+        args: Parsed command line (``llm_provider``, ``llm_model``,
+            ``llm_base_url``).
+        environ: Environment to read ``WIZARD_*`` variables from. Defaults to
+            ``os.environ``.
+
+    Returns:
+        The resolved configuration.
+
+    Raises:
+        ValueError: When the provider is not ``openai`` or ``mock``.
+
+    Examples:
+        >>> import config as cfg
+        >>> ns = argparse.Namespace(llm_provider=None, llm_model=None, llm_base_url=None)
+        >>> with cfg.override_settings(openai_base_url="http://localhost:8000/v1",
+        ...                            openai_model="local-model", openai_api_key=""):
+        ...     resolved = resolve_wizard_llm(ns, {"WIZARD_LLM_MODEL": ""})
+        >>> resolved.model, resolved.sources["model"], resolved.remote
+        ('local-model', 'OPENAI_MODEL', False)
+    """
+    import config as cfg
+    from llm.trust import default_trust_for_url
+
+    env = os.environ if environ is None else environ
+
+    def pick(flag_value: str | None, flag: str, name: str, fallback: str, fallback_name: str) -> tuple[str, str]:
+        if flag_value and flag_value.strip():
+            return flag_value.strip(), flag
+        value = (env.get(name) or "").strip()
+        if value:
+            return value, name
+        return (fallback or "").strip(), fallback_name
+
+    provider, provider_src = pick(args.llm_provider, "--llm-provider", "WIZARD_LLM_PROVIDER", "openai", "default")
+    provider = provider.lower()
+    if provider not in _WIZARD_PROVIDERS:
+        raise ValueError(
+            f"Unsupported wizard LLM provider {provider!r} (from {provider_src}). "
+            f"Choose one of: {', '.join(_WIZARD_PROVIDERS)}."
+        )
+    if provider == "mock":
+        return WizardLLMConfig("mock", "mock", "", "", True, {"provider": provider_src})
+
+    model, model_src = pick(args.llm_model, "--llm-model", "WIZARD_LLM_MODEL",
+                            cfg.settings.openai_model, "OPENAI_MODEL")
+    base_url, url_src = pick(args.llm_base_url, "--llm-base-url", "WIZARD_LLM_BASE_URL",
+                             cfg.settings.openai_base_url, "OPENAI_BASE_URL")
+
+    app_url = (cfg.settings.openai_base_url or "").rstrip("/")
+    if cfg.settings.llm_trusted is not None and base_url.rstrip("/") == app_url:
+        trusted = cfg.settings.llm_trusted
+    else:
+        trusted = default_trust_for_url(base_url)
+
+    return WizardLLMConfig(
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key=cfg.settings.openai_api_key or "",
+        trusted=trusted,
+        sources={"provider": provider_src, "model": model_src, "base_url": url_src},
+    )
+
+
+def enforce_remote_policy(llm_config: WizardLLMConfig) -> None:
+    """Refuse to use a remote endpoint unless ``LLM_ALLOW_REMOTE`` is true.
+
+    The wizard sends table and column names, sample column values and a
+    schema summary to the model, which is exactly the data the main
+    application's governance gate (``LLM_ALLOW_REMOTE``, see
+    ``llm/router.py``) keeps off hosted providers. Same rule here, same
+    definition of "remote" (see :func:`resolve_wizard_llm`).
+
+    Args:
+        llm_config: The resolved wizard LLM configuration.
+
+    Returns:
+        None. Returns normally for the mock provider, for a local endpoint, and
+        for a remote one when ``LLM_ALLOW_REMOTE`` is true.
+
+    Raises:
+        RemoteLLMNotAllowedError: When the endpoint is remote and
+            ``cfg.settings.llm_allow_remote`` is false.
+
+    Examples:
+        >>> import config as cfg
+        >>> remote = WizardLLMConfig("openai", "m", "https://api.openai.com/v1", "k", False, {})
+        >>> with cfg.override_settings(llm_allow_remote=False):
+        ...     enforce_remote_policy(remote)
+        Traceback (most recent call last):
+            ...
+        setup_project.RemoteLLMNotAllowedError: Refusing to send ...
+    """
+    import config as cfg
+
+    if not llm_config.remote or cfg.settings.llm_allow_remote:
+        return
+    raise RemoteLLMNotAllowedError(
+        f"Refusing to send schema data to the remote LLM endpoint "
+        f"{_strip_url_userinfo(llm_config.base_url)} (from {llm_config.sources.get('base_url', '?')}): "
+        "the wizard sends table and column names and sample column values to the model, "
+        "and LLM_ALLOW_REMOTE is not true. Either point WIZARD_LLM_BASE_URL (or OPENAI_BASE_URL) "
+        "at a local endpoint, set LLM_TRUSTED=true if this endpoint is on your own infrastructure, "
+        "set LLM_ALLOW_REMOTE=true to opt in deliberately, or run with --llm-provider mock."
+    )
+
+
+def _build_wizard_llm(llm_config: WizardLLMConfig):
+    """Return a ``WizardLLM`` talking to the endpoint in *llm_config*.
+
+    Built from the already-resolved values, so the endpoint, key and trust
+    flag are exactly the ones that were checked and announced, instead of
+    being re-read from the environment by ``WizardLLM`` (which would use its
+    own default endpoint and insist on a key even for a local server).
+
+    Args:
+        llm_config: The resolved wizard LLM configuration.
+
+    Returns:
+        A ``llm.wizard_llm.WizardLLM`` instance.
+
+    Raises:
+        ValueError: When the provider is unsupported.
+    """
+    from llm.providers import OpenAIBackend
+    from llm.wizard_llm import WizardLLM
+
+    class _ResolvedWizardLLM(WizardLLM):
+        def _build_backend(self, provider, model, base_url):  # type: ignore[override]
+            if provider == "openai":
+                return OpenAIBackend(
+                    model=model,
+                    api_key=llm_config.api_key,
+                    base_url=llm_config.base_url,
+                    trusted=llm_config.trusted,
+                )
+            return WizardLLM._build_backend(provider, model, base_url)
+
+    return _ResolvedWizardLLM(
+        provider=llm_config.provider, model=llm_config.model, base_url=llm_config.base_url or None
+    )
+
+
+def setup_wizard_llm(args: argparse.Namespace):
+    """Resolve, vet, announce and connect the wizard's LLM.
+
+    Prints one line saying which provider, model and endpoint is used (never
+    the key). A remote endpoint without ``LLM_ALLOW_REMOTE`` is refused
+    before anything is sent. An endpoint that does not answer falls back to
+    the mock LLM with a loud notice, because the generated files will then
+    hold no aliases, rules or examples.
+
+    Args:
+        args: Parsed command line.
+
+    Returns:
+        A ``WizardLLM`` ready for ``generate()``.
+
+    Raises:
+        ValueError: When the configured provider is unsupported.
+        RemoteLLMNotAllowedError: When the endpoint is remote and not allowed.
+    """
+    from llm.wizard_llm import WizardLLM
+
+    llm_config = resolve_wizard_llm(args)
+    enforce_remote_policy(llm_config)
+    console.print(f"  {llm_config.describe()}")
+    if llm_config.provider == "mock":
+        return WizardLLM(provider="mock", model="mock")
+    if llm_config.remote:
+        console.print(
+            "  NOTICE: LLM_ALLOW_REMOTE=true. Table and column names and sample column values "
+            "are sent to the remote endpoint above."
+        )
+
+    reason = ""
+    try:
+        llm = _build_wizard_llm(llm_config)
+        if llm.test_connection():
+            return llm
+        reason = "the endpoint did not answer a model-list request"
+    except Exception as exc:  # noqa: BLE001
+        reason = str(exc)
+    if llm_config.api_key:
+        reason = reason.replace(llm_config.api_key, "***")
+    console.print(
+        f"\n  !!! WARNING: the LLM is unavailable ({reason}). FALLING BACK TO THE MOCK LLM. !!!\n"
+        "  !!! Aliases, business rules and examples will be EMPTY. Fix the endpoint "
+        "(WIZARD_LLM_BASE_URL / OPENAI_BASE_URL) and run the wizard again. !!!\n"
+    )
+    return WizardLLM(provider="mock", model="mock")
+
+
+# ===========================================================================
 # Step implementations
 # ===========================================================================
 
@@ -959,9 +1279,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--db-url",       metavar="URL",  default=None)
     p.add_argument("--llm-provider", metavar="NAME", default=None,
-                   choices=["openai", "mock"])
-    p.add_argument("--llm-model",    metavar="NAME", default=None)
-    p.add_argument("--llm-base-url", metavar="URL",  default=None)
+                   choices=["openai", "mock"],
+                   help="openai (any OpenAI-compatible endpoint) or mock. "
+                        "Default: WIZARD_LLM_PROVIDER, else openai.")
+    p.add_argument("--llm-model",    metavar="NAME", default=None,
+                   help="Model tag. Default: WIZARD_LLM_MODEL, else OPENAI_MODEL.")
+    p.add_argument("--llm-base-url", metavar="URL",  default=None,
+                   help="Endpoint base URL. Default: WIZARD_LLM_BASE_URL, else "
+                        "OPENAI_BASE_URL. A remote endpoint is refused unless "
+                        "LLM_ALLOW_REMOTE=true, as in the application itself.")
     p.add_argument("--language",     metavar="LANG", default=None,
                    choices=["fa", "en", "both"])
     p.add_argument("--output",       metavar="DIR",  default=str(_DEFAULT_OUTPUT))
@@ -1018,6 +1344,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
+    # ---- LLM: resolved and vetted before any step touches the database ----
+    try:
+        llm = setup_wizard_llm(args)
+    except (ValueError, RemoteLLMNotAllowedError) as exc:
+        console.print(f"ERROR: {exc}")
+        return 2
+
     # ---- Step 1: Connection ----
     db_url = step1_connection(args, log)
     _save_log(log_path, log)
@@ -1025,25 +1358,6 @@ def main(argv: list[str] | None = None) -> int:
     # ---- Step 2: Schema ----
     snapshot = step2_schema(args, db_url, log)
     _save_log(log_path, log)
-
-    # ---- Setup LLM ----
-    provider = args.llm_provider or os.getenv("WIZARD_LLM_PROVIDER", "openai")
-    model    = args.llm_model    or os.getenv("WIZARD_LLM_MODEL",    "gpt-4o-mini")
-    base_url = args.llm_base_url or os.getenv("WIZARD_LLM_BASE_URL") or None
-
-    from llm.wizard_llm import WizardLLM
-    console.print(f"  LLM: {provider} / {model}")
-    try:
-        llm = WizardLLM(provider=provider, model=model, base_url=base_url)
-        if not llm.test_connection():
-            raise RuntimeError("LLM backend unreachable")
-    except Exception as exc:  # noqa: BLE001
-        console.print(
-            f"[yellow]  Warning: LLM unavailable ({exc}). "
-            "Using mock provider — aliases/rules/examples will be empty.[/yellow]"
-            if _RICH else "  Warning: LLM unavailable. Using mock provider."
-        )
-        llm = WizardLLM(provider="mock", model="mock")
 
     # ---- Step 3: Aliases ----
     alias_result = step3_aliases(args, snapshot, llm, log, language)

@@ -15,6 +15,7 @@ schema snapshot is a small fake.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import config as cfg
 import setup_project as sp
 
 #: Appears only as a password in the fixtures below. Any output containing
@@ -128,3 +130,189 @@ class TestWizardWritesNoPassword:
         log = json.loads((out / ".setup_log.json").read_text(encoding="utf-8"))
         assert "***" in log["step1_connection"]["db_url_redacted"]
         assert "***" in (out / "entities.yaml").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Which LLM endpoint the wizard uses, and whether it may see the schema
+# ---------------------------------------------------------------------------
+
+LLM_KEY = "sk-distinctive-llm-key"
+_LOCAL = "http://localhost:8000/v1"
+_HOSTED = "https://api.openai.com/v1"
+
+
+def _llm_args(*extra: str) -> argparse.Namespace:
+    return sp._build_parser().parse_args(["--non-interactive", *extra])
+
+
+@pytest.fixture()
+def clean_wizard_env(monkeypatch):
+    for name in ("WIZARD_LLM_PROVIDER", "WIZARD_LLM_MODEL", "WIZARD_LLM_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _app(**overrides):
+    values = dict(
+        openai_base_url=_LOCAL, openai_model="app-model", openai_api_key=LLM_KEY,
+        llm_allow_remote=False, llm_trusted=None,
+    )
+    values.update(overrides)
+    return cfg.override_settings(**values)
+
+
+class TestResolveWizardLlm:
+    """``.env.example`` ships blank WIZARD_LLM_BASE_URL: it used to mean
+    "silently use api.openai.com" rather than "use the application's"."""
+
+    def test_empty_wizard_values_fall_back_to_the_application_settings(self, clean_wizard_env, monkeypatch):
+        monkeypatch.setenv("WIZARD_LLM_MODEL", "")
+        monkeypatch.setenv("WIZARD_LLM_BASE_URL", "")
+        with _app():
+            resolved = sp.resolve_wizard_llm(_llm_args())
+        assert (resolved.model, resolved.base_url, resolved.api_key) == ("app-model", _LOCAL, LLM_KEY)
+        assert resolved.sources["model"] == "OPENAI_MODEL"
+        assert resolved.sources["base_url"] == "OPENAI_BASE_URL"
+
+    def test_wizard_variables_override_the_application(self, clean_wizard_env, monkeypatch):
+        monkeypatch.setenv("WIZARD_LLM_MODEL", "wizard-model")
+        monkeypatch.setenv("WIZARD_LLM_BASE_URL", "http://192.168.1.5:9000/v1")
+        with _app():
+            resolved = sp.resolve_wizard_llm(_llm_args())
+        assert resolved.model == "wizard-model"
+        assert resolved.base_url == "http://192.168.1.5:9000/v1"
+        assert resolved.sources["model"] == "WIZARD_LLM_MODEL"
+
+    def test_a_flag_beats_the_environment(self, clean_wizard_env, monkeypatch):
+        monkeypatch.setenv("WIZARD_LLM_MODEL", "wizard-model")
+        with _app():
+            resolved = sp.resolve_wizard_llm(_llm_args("--llm-model", "flag-model"))
+        assert resolved.model == "flag-model"
+        assert resolved.sources["model"] == "--llm-model"
+
+    def test_the_description_names_the_endpoint_and_never_the_key(self, clean_wizard_env):
+        with _app():
+            line = sp.resolve_wizard_llm(_llm_args()).describe()
+        assert "app-model" in line and _LOCAL in line
+        assert "OPENAI_MODEL" in line and "OPENAI_BASE_URL" in line
+        assert LLM_KEY not in line
+
+    def test_an_unsupported_provider_is_an_error(self, clean_wizard_env, monkeypatch):
+        monkeypatch.setenv("WIZARD_LLM_PROVIDER", "ollama")
+        with _app(), pytest.raises(ValueError, match="Unsupported"):
+            sp.resolve_wizard_llm(_llm_args())
+
+
+class TestRemoteMeansWhatTheApplicationMeans:
+    def test_a_local_address_is_not_remote(self, clean_wizard_env):
+        with _app(openai_base_url="http://192.168.1.50:8000/v1"):
+            assert sp.resolve_wizard_llm(_llm_args()).remote is False
+
+    def test_a_hosted_address_is_remote(self, clean_wizard_env):
+        with _app(openai_base_url=_HOSTED):
+            assert sp.resolve_wizard_llm(_llm_args()).remote is True
+
+    def test_the_application_trust_override_applies_to_the_application_endpoint(self, clean_wizard_env):
+        with _app(openai_base_url="https://llm.corp.example/v1", llm_trusted=True):
+            assert sp.resolve_wizard_llm(_llm_args()).remote is False
+        with _app(openai_base_url=_LOCAL, llm_trusted=False):
+            assert sp.resolve_wizard_llm(_llm_args()).remote is True
+
+    def test_the_override_does_not_vouch_for_a_different_wizard_endpoint(self, clean_wizard_env):
+        with _app(openai_base_url=_LOCAL, llm_trusted=True):
+            resolved = sp.resolve_wizard_llm(_llm_args("--llm-base-url", _HOSTED))
+        assert resolved.remote is True
+
+    def test_the_mock_provider_is_never_remote(self, clean_wizard_env):
+        with _app(openai_base_url=_HOSTED):
+            assert sp.resolve_wizard_llm(_llm_args("--llm-provider", "mock")).remote is False
+
+
+class TestWizardHonoursLlmAllowRemote:
+    """The wizard sent sample column values to whatever endpoint it was
+    pointed at, with no regard for ``LLM_ALLOW_REMOTE``."""
+
+    def test_a_remote_endpoint_is_refused_without_the_opt_in(self, clean_wizard_env):
+        with _app(openai_base_url=_HOSTED, llm_allow_remote=False):
+            with pytest.raises(sp.RemoteLLMNotAllowedError, match="LLM_ALLOW_REMOTE"):
+                sp.enforce_remote_policy(sp.resolve_wizard_llm(_llm_args()))
+
+    def test_a_remote_endpoint_is_allowed_with_the_opt_in(self, clean_wizard_env):
+        with _app(openai_base_url=_HOSTED, llm_allow_remote=True):
+            sp.enforce_remote_policy(sp.resolve_wizard_llm(_llm_args()))
+
+    def test_a_local_endpoint_needs_no_opt_in(self, clean_wizard_env):
+        with _app(llm_allow_remote=False):
+            sp.enforce_remote_policy(sp.resolve_wizard_llm(_llm_args()))
+
+    def test_nothing_is_sent_and_the_database_is_not_touched_when_refused(
+        self, clean_wizard_env, tmp_path, capsys
+    ):
+        with _app(openai_base_url=_HOSTED, llm_allow_remote=False), \
+             patch("requests.get") as get, patch("requests.post") as post, \
+             patch.object(sp, "step1_connection") as step1:
+            code = sp.main([
+                "--db-url", "sqlite://", "--language", "en", "--non-interactive",
+                "--output", str(tmp_path / "out"),
+            ])
+        assert code == 2
+        assert not get.called and not post.called and not step1.called
+        out = capsys.readouterr().out
+        assert "LLM_ALLOW_REMOTE" in out
+        assert LLM_KEY not in out
+        assert not (tmp_path / "out").exists()
+
+
+class TestSetupWizardLlm:
+    def test_a_reachable_local_endpoint_is_used_and_announced(self, clean_wizard_env, capsys):
+        ok = MagicMock(status_code=200)
+        with _app(openai_api_key=""), patch("requests.get", return_value=ok):
+            llm = sp.setup_wizard_llm(_llm_args())
+        assert llm.provider == "openai"
+        assert llm._backend.endpoint == _LOCAL
+        assert llm._backend.trusted is True
+        out = capsys.readouterr().out
+        assert "app-model" in out and "OPENAI_BASE_URL" in out
+
+    def test_the_key_is_never_printed(self, clean_wizard_env, capsys):
+        ok = MagicMock(status_code=200)
+        with _app(), patch("requests.get", return_value=ok):
+            sp.setup_wizard_llm(_llm_args())
+        captured = capsys.readouterr()
+        assert LLM_KEY not in captured.out + captured.err
+
+    def test_an_unreachable_endpoint_falls_back_to_mock_loudly(self, clean_wizard_env, capsys):
+        with _app(), patch("requests.get", side_effect=ConnectionError(f"refused for {LLM_KEY}")):
+            llm = sp.setup_wizard_llm(_llm_args())
+        assert llm.provider == "mock"
+        out = capsys.readouterr().out
+        assert "FALLING BACK TO THE MOCK LLM" in out
+        assert "EMPTY" in out
+        assert LLM_KEY not in out
+
+    def test_an_allowed_remote_endpoint_says_what_is_sent(self, clean_wizard_env, capsys):
+        ok = MagicMock(status_code=200)
+        with _app(openai_base_url=_HOSTED, llm_allow_remote=True), patch("requests.get", return_value=ok):
+            llm = sp.setup_wizard_llm(_llm_args())
+        assert llm._backend.trusted is False
+        out = capsys.readouterr().out
+        assert "remote" in out and "sample column values" in out
+
+    def test_the_mock_provider_is_announced_as_such(self, clean_wizard_env, capsys):
+        with _app():
+            llm = sp.setup_wizard_llm(_llm_args("--llm-provider", "mock"))
+        assert llm.provider == "mock"
+        assert "mock" in capsys.readouterr().out
+
+
+class TestEnvExampleWizardKeys:
+    """The shipped example must make the fallback reachable: a non-empty
+    default for the model or endpoint would shadow the application's."""
+
+    def test_the_endpoint_values_are_empty_and_the_keys_remain(self):
+        from dotenv import dotenv_values
+
+        values = dotenv_values(Path(__file__).resolve().parent.parent / ".env.example")
+        for key in ("WIZARD_LLM_PROVIDER", "WIZARD_LLM_MODEL", "WIZARD_LLM_BASE_URL", "WIZARD_LANGUAGE"):
+            assert key in values
+        assert values["WIZARD_LLM_MODEL"] == ""
+        assert values["WIZARD_LLM_BASE_URL"] == ""
