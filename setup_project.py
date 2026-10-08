@@ -19,8 +19,17 @@ Usage
 Flags
 -----
 --non-interactive   Accept all LLM suggestions without prompting (CI mode).
---dry-run           Print generated YAML to stdout; do not write files.
---resume            Skip steps whose output files already exist.
+--dry-run           Print generated YAML to stdout; do not write files (the
+                    setup log included).
+--resume            Continue an interrupted run from the first step that
+                    ``.setup_log.json`` does not record as completed. Steps 1
+                    and 2 (connection, schema) run again, because the
+                    connection string is never stored; the aliases, rules and
+                    examples of completed LLM steps are reused rather than
+                    generated again, unless the schema or language changed; a
+                    file that already exists is not rewritten; when steps 1-6
+                    are all done and every file exists only the validation
+                    runs. Without ``--resume`` a new log is started.
 
 LLM endpoint
 ------------
@@ -36,7 +45,9 @@ that is not local (see ``llm/trust.py``, ``LLM_TRUSTED``) is refused unless
 loudly and continues with the mock LLM, which generates nothing.
 
 The wizard writes ``project_config/.setup_log.json`` recording every step
-that was executed and when, so it can be resumed safely.
+that was executed and when (and the aliases, rules and examples the model
+produced), so it can be resumed safely. The connection string is stored only
+with its password masked.
 
 The wizard is idempotent: running it multiple times never corrupts existing
 configuration.
@@ -55,7 +66,7 @@ import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 # ---------------------------------------------------------------------------
 # Rich / questionary — graceful fallback if not installed
@@ -359,6 +370,130 @@ def _mark_done(log: dict, step: str, meta: dict | None = None) -> None:
     }
 
 
+#: The wizard's steps in execution order, as keyed in ``.setup_log.json``.
+_STEP_KEYS = (
+    "step1_connection",
+    "step2_schema",
+    "step3_aliases",
+    "step4_rules",
+    "step5_examples",
+    "step6_write",
+    "step7_validate",
+)
+
+#: The files step 6 writes.
+_WIZARD_OUTPUT_FILES = (
+    "entities.yaml",
+    "aliases.yaml",
+    "business_rules.yaml",
+    "examples.yaml",
+    "relationships.yaml",
+)
+
+
+def _step_done(log: dict, step: str) -> bool:
+    """Whether *step* has a completion record in *log*.
+
+    Args:
+        log: The parsed ``.setup_log.json``.
+        step: A key from ``_STEP_KEYS``.
+
+    Returns:
+        True when the step's entry is a mapping with a ``completed_at``.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _step_done({"step1_connection": {"completed_at": "2026-01-01T00:00:00+00:00"}}, "step1_connection")
+        True
+        >>> _step_done({}, "step1_connection")
+        False
+        >>> _step_done({"step1_connection": "garbage"}, "step1_connection")
+        False
+    """
+    entry = log.get(step)
+    return isinstance(entry, dict) and bool(entry.get("completed_at"))
+
+
+def _schema_fingerprint(snapshot) -> str:
+    """Return a digest of the tables and columns in *snapshot*.
+
+    Stored with step 2 so that a resumed run can tell whether the aliases,
+    rules and examples generated earlier still describe the schema it just
+    read.
+
+    Args:
+        snapshot: A schema snapshot with ``tables`` (each with ``full_name``
+            and ``columns``).
+
+    Returns:
+        A hex SHA-256 digest, independent of table and column order.
+
+    Raises:
+        Nothing for a well-formed snapshot.
+
+    Examples:
+        >>> from types import SimpleNamespace as NS
+        >>> t = NS(full_name="dbo.A", columns=[NS(name="x"), NS(name="y")])
+        >>> u = NS(full_name="dbo.A", columns=[NS(name="y"), NS(name="x")])
+        >>> _schema_fingerprint(NS(tables=[t])) == _schema_fingerprint(NS(tables=[u]))
+        True
+        >>> _schema_fingerprint(NS(tables=[t])) == _schema_fingerprint(NS(tables=[]))
+        False
+    """
+    import hashlib
+
+    lines = sorted(
+        f"{t.full_name}:{','.join(sorted(c.name for c in t.columns))}" for t in snapshot.tables
+    )
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _stored_result(log: dict, step: str, *, language: str | None = None) -> Any:
+    """Return the result a previous run stored for *step*, or ``None``.
+
+    Args:
+        log: The parsed ``.setup_log.json``.
+        step: One of the LLM steps (``step3_aliases``, ``step4_rules``,
+            ``step5_examples``).
+        language: When given, the stored result is only returned if it was
+            generated for this language.
+
+    Returns:
+        The stored result, or ``None`` when the step did not complete, kept no
+        result (a log written by an older version), was generated for another
+        language, or was produced by the mock LLM.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> log = {"step5_examples": {"completed_at": "t", "language": "en", "result": [1]}}
+        >>> _stored_result(log, "step5_examples", language="en")
+        [1]
+        >>> _stored_result(log, "step5_examples", language="fa") is None
+        True
+        >>> _stored_result({}, "step5_examples") is None
+        True
+        >>> mocked = {"step5_examples": {"completed_at": "t", "provider": "mock", "result": []}}
+        >>> _stored_result(mocked, "step5_examples") is None
+        True
+    """
+    if not _step_done(log, step):
+        return None
+    entry = log[step]
+    if "result" not in entry:
+        return None
+    if language is not None and entry.get("language") != language:
+        return None
+    if entry.get("provider") == "mock":
+        # Generated by the stub, i.e. empty: a later run with a working
+        # model must not be handed that as if it were a result.
+        return None
+    return entry["result"]
+
+
 # ===========================================================================
 # YAML helpers — produce strings that pass config_loader validators
 # ===========================================================================
@@ -535,9 +670,30 @@ def _review_file(
     non_interactive: bool,
     dry_run: bool,
     output_dir: Path,
-    llm_regenerate_fn=None,
+    llm_regenerate_fn: Callable[[], str] | None = None,
 ) -> str | None:
-    """Show *content* to the user and return the accepted version (or None to skip)."""
+    """Show *content* to the user and return the accepted version (or None to skip).
+
+    Args:
+        filename: Name of the file under review (shown in the panel and used
+            to pick the validation model).
+        content: The generated file content.
+        non_interactive: Accept *content* as it is, without prompting.
+        dry_run: Print *content* and return ``None``; nothing is accepted.
+        output_dir: Directory the file will be written to (not used here).
+        llm_regenerate_fn: Produces a fresh version of the whole file by
+            asking the LLM again. When ``None`` the "Regenerate" choice is not
+            offered, because there is nothing it could do (e.g. the file is
+            built from the schema alone, or there is no LLM).
+
+    Returns:
+        The accepted content, or ``None`` when the file is skipped (or on a
+        dry run).
+
+    Raises:
+        Nothing from regeneration: a failing *llm_regenerate_fn* is reported
+        and the current content is kept.
+    """
     if dry_run:
         console.print(f"\n[bold cyan]--- DRY RUN: {filename} ---[/bold cyan]" if _RICH else f"\n--- {filename} ---")
         console.print(content)
@@ -558,18 +714,21 @@ def _review_file(
         if errs:
             console.print(f"[red]Validation warnings: {errs}[/red]" if _RICH else f"Validation: {errs}")
 
-        action = _choose(
-            "Action?",
-            choices=["Accept", "Edit in $EDITOR", "Regenerate", "Skip"],
-            default="Accept",
-        )
+        choices = ["Accept", "Edit in $EDITOR"]
+        if llm_regenerate_fn is not None:
+            choices.append("Regenerate")
+        choices.append("Skip")
+        action = _choose("Action?", choices=choices, default="Accept")
 
         if action == "Accept":
             return content
         if action == "Edit in $EDITOR":
             content = _edit_in_editor(content)
-        elif action == "Regenerate" and llm_regenerate_fn:
-            content = llm_regenerate_fn()
+        elif action == "Regenerate" and llm_regenerate_fn is not None:
+            try:
+                content = llm_regenerate_fn()
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"  Regeneration failed ({exc}); keeping the current version.", markup=False)
         elif action == "Skip":
             return None
 
@@ -1067,6 +1226,7 @@ def step2_schema(args, db_url: str, log: dict):
             console.print(f"  Excluded {len(excluded)} table(s).")
 
     _mark_done(log, "step2_schema", {
+        "schema_fingerprint": _schema_fingerprint(snapshot),
         "table_count": len(snapshot.tables),
         "fact_count": len(snapshot.fact_tables),
         "dim_count": len(snapshot.dim_tables),
@@ -1123,7 +1283,12 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str) -> dict:
         if aliases:
             ring_aliases[table.name] = aliases
 
-    _mark_done(log, "step3_aliases", {"entity_count": len(entities)})
+    _mark_done(log, "step3_aliases", {
+        "entity_count": len(entities),
+        "language": language,
+        "provider": llm.provider,
+        "result": {"entities": entities, "ring_aliases": ring_aliases},
+    })
     return {"entities": entities, "ring_aliases": ring_aliases}
 
 
@@ -1135,7 +1300,7 @@ def step4_business_rules(args, snapshot, llm, log: dict) -> dict:
     fact_tables = snapshot.fact_tables
     if not fact_tables:
         console.print("  No fact tables detected — skipping.")
-        _mark_done(log, "step4_rules", {"rule_count": 0})
+        _mark_done(log, "step4_rules", {"rule_count": 0, "provider": llm.provider, "result": {}})
         return rules
 
     # Build FK → dim table map
@@ -1168,7 +1333,11 @@ def step4_business_rules(args, snapshot, llm, log: dict) -> dict:
         console.print("[green]done[/green]" if _RICH else "done")
         rules[table.name] = rule_text
 
-    _mark_done(log, "step4_rules", {"rule_count": len(rules)})
+    _mark_done(log, "step4_rules", {
+        "rule_count": len(rules),
+        "provider": llm.provider,
+        "result": rules,
+    })
     return rules
 
 
@@ -1186,8 +1355,36 @@ def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:
         examples = []
 
     console.print(f"  Generated [bold]{len(examples)}[/bold] examples." if _RICH else f"  Generated {len(examples)} examples.")
-    _mark_done(log, "step5_examples", {"example_count": len(examples)})
+    _mark_done(log, "step5_examples", {
+        "example_count": len(examples),
+        "language": language,
+        "provider": llm.provider,
+        "result": examples,
+    })
     return examples
+
+
+def _quiet(args: argparse.Namespace) -> argparse.Namespace:
+    """Return a copy of *args* that never prompts.
+
+    Used to re-run an LLM step from the review screen without asking the
+    per-table questions again.
+
+    Args:
+        args: Parsed command line.
+
+    Returns:
+        A new namespace equal to *args* except ``non_interactive`` is true.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> ns = argparse.Namespace(non_interactive=False, dry_run=False)
+        >>> _quiet(ns).non_interactive, ns.non_interactive
+        (True, False)
+    """
+    return argparse.Namespace(**{**vars(args), "non_interactive": True})
 
 
 def step6_review_and_write(
@@ -1201,8 +1398,45 @@ def step6_review_and_write(
     examples: list,
     snapshot,
     log: dict,
+    llm=None,
+    language: str = "en",
 ) -> None:
-    """Review generated files and write to disk."""
+    """Review generated files and write to disk.
+
+    Each file is shown for review (accept, edit, regenerate, skip). With
+    ``--resume``, a file that already exists is left alone.
+
+    "Regenerate" asks the LLM again and shows the new version: for
+    ``business_rules.yaml`` and ``examples.yaml`` that re-runs step 4 or 5;
+    for ``entities.yaml`` and ``aliases.yaml``, which are both built from the
+    step 3 aliases, it re-runs step 3 for every table without the per-table
+    questions and re-renders both files (one already written earlier in this
+    run is not rewritten, and the screen says so). ``relationships.yaml`` comes
+    from the schema, not the model, so it has no "Regenerate". Without *llm*
+    (or on a dry run) the choice is not offered at all.
+
+    Args:
+        args: Parsed command line.
+        output_dir: Directory the files are written to.
+        generated_at: Timestamp for the file headers.
+        source_url: Redacted connection string for the ``entities.yaml`` header.
+        entities_data: Step 3 entities.
+        ring_aliases: Step 3 aliases per table.
+        rules: Step 4 business rules.
+        examples: Step 5 examples.
+        snapshot: The schema snapshot.
+        log: The setup log, updated in place.
+        llm: The wizard LLM used to regenerate a file, or ``None``.
+        language: Language the examples and aliases are generated in.
+
+    Returns:
+        None. Marks ``step6_write`` in *log* with the files written and the
+        files not written.
+
+    Raises:
+        Nothing for an LLM failure while regenerating; it is reported and the
+        current version is kept.
+    """
     console.rule("[bold blue]Step 6: Review & Write[/bold blue]" if _RICH else "Step 6: Review")
 
     synonyms: dict[str, list[str]] = {}
@@ -1213,12 +1447,25 @@ def step6_review_and_write(
                 if len(key) >= 2 and key not in synonyms:
                     synonyms[key] = [t.name.lower()]
 
-    files = {
-        "entities.yaml":       _entities_yaml(entities_data, source_url, generated_at),
-        "aliases.yaml":        _aliases_yaml(ring_aliases, synonyms, generated_at),
-        "business_rules.yaml": _business_rules_yaml(rules, generated_at),
-        "examples.yaml":       _examples_yaml(examples, generated_at),
-        "relationships.yaml":  _relationships_yaml(
+    # The generated data, which a regeneration replaces.
+    state: dict[str, Any] = {
+        "entities_data": entities_data,
+        "ring_aliases": ring_aliases,
+        "rules": rules,
+        "examples": examples,
+    }
+    written: list[str] = []
+
+    def render(filename: str) -> str:
+        if filename == "entities.yaml":
+            return _entities_yaml(state["entities_data"], source_url, generated_at)
+        if filename == "aliases.yaml":
+            return _aliases_yaml(state["ring_aliases"], synonyms, generated_at)
+        if filename == "business_rules.yaml":
+            return _business_rules_yaml(state["rules"], generated_at)
+        if filename == "examples.yaml":
+            return _examples_yaml(state["examples"], generated_at)
+        return _relationships_yaml(
             [
                 {
                     "from_table":  r.from_table,
@@ -1230,11 +1477,31 @@ def step6_review_and_write(
                 for r in snapshot.relationships
             ],
             generated_at,
-        ),
-    }
+        )
 
-    written: list[str] = []
-    for filename, content in files.items():
+    def regenerate(filename: str) -> str:
+        quiet = _quiet(args)
+        if filename in ("entities.yaml", "aliases.yaml"):
+            result = step3_aliases(quiet, snapshot, llm, log, language)
+            state["entities_data"], state["ring_aliases"] = result["entities"], result["ring_aliases"]
+            other = "aliases.yaml" if filename == "entities.yaml" else "entities.yaml"
+            if other in written:
+                console.print(
+                    f"  Note: {other} was written earlier in this run from the previous aliases "
+                    "and is not rewritten; review it again or run the wizard again.",
+                    markup=False,
+                )
+        elif filename == "business_rules.yaml":
+            state["rules"] = step4_business_rules(quiet, snapshot, llm, log)
+        else:
+            state["examples"] = step5_examples(quiet, snapshot, llm, log, language)
+        return render(filename)
+
+    can_regenerate = llm is not None and not args.dry_run
+    regenerable = ("entities.yaml", "aliases.yaml", "business_rules.yaml", "examples.yaml")
+
+    not_written: list[str] = []
+    for filename in _WIZARD_OUTPUT_FILES:
         target = output_dir / filename
 
         # Resume: skip if file already exists and --resume flag is set
@@ -1242,12 +1509,14 @@ def step6_review_and_write(
             console.print(f"  [yellow]Skipped (exists): {filename}[/yellow]" if _RICH else f"  Skipped: {filename}")
             continue
 
+        fn = (lambda name=filename: regenerate(name)) if can_regenerate and filename in regenerable else None
         accepted = _review_file(
             filename=filename,
-            content=content,
+            content=render(filename),
             non_interactive=args.non_interactive,
             dry_run=args.dry_run,
             output_dir=output_dir,
+            llm_regenerate_fn=fn,
         )
 
         if accepted is not None and not args.dry_run:
@@ -1255,8 +1524,10 @@ def step6_review_and_write(
             target.write_text(accepted, encoding="utf-8")
             console.print(f"  [green]Written:[/green] {target}" if _RICH else f"  Written: {target}")
             written.append(filename)
+        elif not args.dry_run:
+            not_written.append(filename)
 
-    _mark_done(log, "step6_write", {"files_written": written})
+    _mark_done(log, "step6_write", {"files_written": written, "files_not_written": not_written})
 
 
 def _copy_hints(missing: list[str], output_dir: Path) -> list[str]:
@@ -1427,12 +1698,78 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["interactive", "auto"])
     p.add_argument("--include-schemas", metavar="SCHEMAS", default=None)
     p.add_argument("--non-interactive", action="store_true", default=False)
-    p.add_argument("--dry-run",         action="store_true", default=False)
-    p.add_argument("--resume",          action="store_true", default=False)
+    p.add_argument("--dry-run",         action="store_true", default=False,
+                   help="Print the generated files; write nothing, the setup log included.")
+    p.add_argument("--resume",          action="store_true", default=False,
+                   help="Continue an interrupted run from the first step "
+                        ".setup_log.json does not record as completed. The "
+                        "connection and schema steps run again (the connection "
+                        "string is not stored); aliases, rules and examples of "
+                        "completed steps are reused if the schema and language "
+                        "are unchanged; existing files are not rewritten; when "
+                        "steps 1-6 are all done only the validation runs.")
     return p
 
 
+def _restorable_results(
+    log: dict,
+    language: str,
+) -> tuple[dict | None, dict | None, list | None]:
+    """Return the step 3, 4 and 5 results a previous run stored, as far as usable.
+
+    Args:
+        log: The parsed ``.setup_log.json`` of the previous run.
+        language: The language of this run; results generated for another
+            language are not reused.
+
+    Returns:
+        ``(aliases, rules, examples)``. Each is ``None`` when it was not
+        stored, has the wrong shape, or was generated for another language.
+        *aliases* is ``{"entities": ..., "ring_aliases": ...}``.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _restorable_results({}, "en")
+        (None, None, None)
+    """
+    aliases = _stored_result(log, "step3_aliases", language=language)
+    if not (isinstance(aliases, dict) and isinstance(aliases.get("entities"), dict)
+            and isinstance(aliases.get("ring_aliases"), dict)):
+        aliases = None
+    rules = _stored_result(log, "step4_rules")
+    if not isinstance(rules, dict):
+        rules = None
+    examples = _stored_result(log, "step5_examples", language=language)
+    if not isinstance(examples, list):
+        examples = None
+    return aliases, rules, examples
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run the wizard.
+
+    With ``--resume`` the run continues from the first step that
+    ``.setup_log.json`` does not record as completed: when steps 1 to 6 are
+    all recorded and every file exists it goes straight to validation, without
+    touching the database or the LLM; otherwise it reconnects and re-reads the
+    schema (the connection string is never stored), reuses the stored aliases,
+    rules and examples of every completed LLM step (so the model is not asked
+    again) as long as the schema and language are unchanged, and writes only
+    the files that do not exist yet. Without ``--resume`` a fresh log is
+    started.
+
+    Args:
+        argv: Command-line arguments; ``sys.argv[1:]`` when ``None``.
+
+    Returns:
+        0 on success, 2 when the LLM configuration is refused or invalid.
+        A failed database connection exits the process with status 1.
+
+    Raises:
+        SystemExit: On a bad command line or a failed database connection.
+    """
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -1449,8 +1786,19 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = Path(args.output)
     log_path   = output_dir / ".setup_log.json"
-    log        = _load_log(log_path)
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    if args.dry_run and args.resume:
+        console.print("  Note: --resume is ignored with --dry-run (nothing is written).", markup=False)
+        args.resume = False
+    # A fresh run starts a fresh log: leftover entries of an earlier run would
+    # otherwise look like completed steps to a later --resume.
+    log: dict = _load_log(log_path) if args.resume else {}
+
+    def save() -> None:
+        # A dry run writes no files, the log included.
+        if not args.dry_run:
+            _save_log(log_path, log)
 
     if _RICH:
         console.print(Panel(
@@ -1464,6 +1812,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Output: {output_dir}")
         print("=" * 60)
 
+    # ---- Resume: everything through step 6 is already done ----
+    if (
+        args.resume
+        and all(_step_done(log, step) for step in _STEP_KEYS[:6])
+        and not [n for n in _WIZARD_OUTPUT_FILES if not (output_dir / n).exists()]
+    ):
+        console.print(
+            "  Resuming: steps 1-6 are recorded as completed in "
+            f"{log_path.name} and every file exists. Running validation only.",
+            markup=False,
+        )
+        step7_validate(output_dir, log)
+        save()
+        return 0
+    if args.resume and log:
+        done = [step for step in _STEP_KEYS if _step_done(log, step)]
+        console.print(f"  Resuming: recorded as completed: {', '.join(done) or 'nothing'}.", markup=False)
+
     # ---- Determine language ----
     language = (
         args.language
@@ -1476,34 +1842,76 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
+    # What an earlier run stored, taken before the steps below overwrite it.
+    stored_aliases, stored_rules, stored_examples = (
+        _restorable_results(log, language) if args.resume else (None, None, None)
+    )
+    stored_fingerprint = log.get("step2_schema", {}).get("schema_fingerprint") if args.resume else None
+    everything_stored = None not in (stored_aliases, stored_rules, stored_examples)
+
     # ---- LLM: resolved and vetted before any step touches the database ----
-    try:
-        llm = setup_wizard_llm(args)
-    except (ValueError, RemoteLLMNotAllowedError) as exc:
-        console.print(f"ERROR: {exc}")
-        return 2
+    llm = None
+    if not everything_stored:
+        try:
+            llm = setup_wizard_llm(args)
+        except (ValueError, RemoteLLMNotAllowedError) as exc:
+            console.print(f"ERROR: {exc}", markup=False)
+            return 2
 
     # ---- Step 1: Connection ----
     db_url = step1_connection(args, log)
-    _save_log(log_path, log)
+    save()
 
     # ---- Step 2: Schema ----
     snapshot = step2_schema(args, db_url, log)
-    _save_log(log_path, log)
+    save()
 
-    # ---- Step 3: Aliases ----
-    alias_result = step3_aliases(args, snapshot, llm, log, language)
-    entities_data = alias_result["entities"]
-    ring_aliases  = alias_result["ring_aliases"]
-    _save_log(log_path, log)
+    reuse = args.resume and stored_fingerprint == _schema_fingerprint(snapshot)
+    if args.resume and not reuse and any(x is not None for x in (stored_aliases, stored_rules, stored_examples)):
+        console.print(
+            "  The schema differs from the one the earlier run generated for: "
+            "aliases, rules and examples are generated again.",
+            markup=False,
+        )
+    if not reuse:
+        stored_aliases = stored_rules = stored_examples = None
 
-    # ---- Step 4: Business rules ----
-    rules = step4_business_rules(args, snapshot, llm, log)
-    _save_log(log_path, log)
+    def need_llm():
+        """The LLM, set up on first use when the early check was skipped."""
+        nonlocal llm
+        if llm is None:
+            llm = setup_wizard_llm(args)
+        return llm
 
-    # ---- Step 5: Examples ----
-    examples = step5_examples(args, snapshot, llm, log, language)
-    _save_log(log_path, log)
+    try:
+        # ---- Step 3: Aliases ----
+        if stored_aliases is not None:
+            console.print("  Step 3: reusing the aliases generated by the earlier run.", markup=False)
+            alias_result = stored_aliases
+        else:
+            alias_result = step3_aliases(args, snapshot, need_llm(), log, language)
+        entities_data = alias_result["entities"]
+        ring_aliases  = alias_result["ring_aliases"]
+        save()
+
+        # ---- Step 4: Business rules ----
+        if stored_rules is not None:
+            console.print("  Step 4: reusing the business rules generated by the earlier run.", markup=False)
+            rules = stored_rules
+        else:
+            rules = step4_business_rules(args, snapshot, need_llm(), log)
+        save()
+
+        # ---- Step 5: Examples ----
+        if stored_examples is not None:
+            console.print("  Step 5: reusing the examples generated by the earlier run.", markup=False)
+            examples = stored_examples
+        else:
+            examples = step5_examples(args, snapshot, need_llm(), log, language)
+        save()
+    except (ValueError, RemoteLLMNotAllowedError) as exc:
+        console.print(f"ERROR: {exc}", markup=False)
+        return 2
 
     # ---- Step 6: Review & write ----
     source_url = _redact_db_url(db_url)
@@ -1518,13 +1926,15 @@ def main(argv: list[str] | None = None) -> int:
         examples=examples,
         snapshot=snapshot,
         log=log,
+        llm=llm,
+        language=language,
     )
-    _save_log(log_path, log)
+    save()
 
     # ---- Step 7: Validate ----
     if not args.dry_run:
         step7_validate(output_dir, log)
-        _save_log(log_path, log)
+        save()
 
     return 0
 

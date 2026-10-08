@@ -410,3 +410,247 @@ class TestStep7WithMissingFiles:
         out = capsys.readouterr().out
         assert "entities.yaml: FAILED" in out
         assert "Setup complete" not in out
+
+
+# ---------------------------------------------------------------------------
+# "Regenerate" in the review screen
+# ---------------------------------------------------------------------------
+
+class _FakeLLM:
+    """A stand-in for ``WizardLLM`` that answers by prompt and counts calls."""
+
+    provider = "fake"
+    model = "fake"
+
+    def __init__(self, rule_text: str = "RULE-V1") -> None:
+        self.calls = 0
+        self.rule_text = rule_text
+
+    def test_connection(self) -> bool:
+        return True
+
+    def generate(self, prompt: str, expect_json: bool = True):
+        self.calls += 1
+        if "business rules expert" in prompt:
+            return {"rules": {"value_col": "amount", "volume_col": "qty", "rule_text": self.rule_text}}
+        if "NLQ-to-SQL example pairs" in prompt:
+            return [{"tags": ["count"], "question": "How many items?", "sql": "SELECT COUNT(*) FROM items"}]
+        return {"aliases": ["thing"], "description": "a thing"}
+
+
+def _col(name: str, sample_values: tuple[str, ...] = ()) -> SimpleNamespace:
+    return SimpleNamespace(name=name, type="int", sample_values=list(sample_values))
+
+
+def _fake_snapshot() -> SimpleNamespace:
+    dim = SimpleNamespace(
+        name="items", schema="", full_name="items", classification="dim",
+        columns=[_col("id"), _col("name", ("alpha", "beta"))], foreign_keys=[],
+    )
+    fact = SimpleNamespace(
+        name="sales", schema="", full_name="sales", classification="fact",
+        columns=[_col("id"), _col("item_id"), _col("amount")],
+        foreign_keys=[SimpleNamespace(referred_table="items")],
+    )
+    return SimpleNamespace(
+        tables=[dim, fact], fact_tables=[fact], dim_tables=[dim],
+        relationships=[SimpleNamespace(
+            from_table="sales", from_column="item_id", to_table="items", to_column="id",
+            join_hint="sales.item_id = items.id",
+        )],
+    )
+
+
+class TestReviewFileRegenerate:
+    """The "Regenerate" choice did nothing: no caller ever passed
+    ``llm_regenerate_fn``, so the loop just showed the same text again."""
+
+    def _review(self, answers, fn):
+        choices_seen: list[list[str]] = []
+
+        def choose(question, choices, default, non_interactive=False):
+            choices_seen.append(list(choices))
+            return answers.pop(0)
+
+        with patch.object(sp, "_choose", side_effect=choose):
+            accepted = sp._review_file(
+                "business_rules.yaml", "rules: {}\n", non_interactive=False, dry_run=False,
+                output_dir=Path("."), llm_regenerate_fn=fn,
+            )
+        return accepted, choices_seen
+
+    def test_regenerate_replaces_the_content_with_a_new_version(self):
+        accepted, seen = self._review(["Regenerate", "Accept"], lambda: "rules: {new: x}\n")
+        assert accepted == "rules: {new: x}\n"
+        assert "Regenerate" in seen[0]
+
+    def test_it_is_not_offered_when_there_is_nothing_to_regenerate_with(self):
+        accepted, seen = self._review(["Accept"], None)
+        assert accepted == "rules: {}\n"
+        assert "Regenerate" not in seen[0]
+
+    def test_a_failing_regeneration_keeps_the_current_version(self, capsys):
+        def boom() -> str:
+            raise RuntimeError("endpoint down")
+
+        accepted, _ = self._review(["Regenerate", "Accept"], boom)
+        assert accepted == "rules: {}\n"
+        assert "endpoint down" in capsys.readouterr().out
+
+
+class TestStep6Regenerate:
+    def _run(self, tmp_path, llm, answers):
+        args = sp._build_parser().parse_args(["--language", "en"])
+        seen: list[list[str]] = []
+
+        def choose(question, choices, default, non_interactive=False):
+            seen.append(list(choices))
+            return answers.pop(0) if answers else "Accept"
+
+        with patch.object(sp, "_choose", side_effect=choose):
+            sp.step6_review_and_write(
+                args, tmp_path, "2026-01-01T00:00:00+00:00", "sqlite://", {}, {},
+                {"sales": "RULE-V0"}, [], _fake_snapshot(), {}, llm=llm, language="en",
+            )
+        return seen
+
+    def test_regenerating_the_rules_asks_the_model_again_and_writes_the_new_text(self, tmp_path):
+        llm = _FakeLLM(rule_text="RULE-V1")
+        # entities, aliases, then business_rules (Regenerate, Accept), examples, relationships.
+        self._run(tmp_path, llm, ["Accept", "Accept", "Regenerate", "Accept"])
+        text = (tmp_path / "business_rules.yaml").read_text(encoding="utf-8")
+        assert "RULE-V1" in text and "RULE-V0" not in text
+        assert llm.calls == 1
+
+    def test_regenerating_the_examples_writes_the_new_examples(self, tmp_path):
+        llm = _FakeLLM()
+        self._run(tmp_path, llm, ["Accept", "Accept", "Accept", "Regenerate", "Accept"])
+        assert "How many items?" in (tmp_path / "examples.yaml").read_text(encoding="utf-8")
+
+    def test_regenerating_the_entities_re_runs_the_aliases_for_every_table(self, tmp_path):
+        llm = _FakeLLM()
+        self._run(tmp_path, llm, ["Regenerate", "Accept"])
+        assert llm.calls == 2  # one per table
+        assert "thing" in (tmp_path / "entities.yaml").read_text(encoding="utf-8")
+
+    def test_the_schema_only_file_has_no_regenerate_and_the_rest_do(self, tmp_path):
+        seen = self._run(tmp_path, _FakeLLM(), [])
+        offered = ["Regenerate" in choices for choices in seen]
+        assert offered == [True, True, True, True, False]
+
+    def test_without_an_llm_it_is_never_offered(self, tmp_path):
+        seen = self._run(tmp_path, None, [])
+        assert not any("Regenerate" in choices for choices in seen)
+
+
+# ---------------------------------------------------------------------------
+# --resume continues from the first incomplete step
+# ---------------------------------------------------------------------------
+
+class TestResume:
+    """``--resume`` only skipped files that already existed; it re-ran every
+    step, asking the model for everything again."""
+
+    @pytest.fixture()
+    def db(self, tmp_path):
+        path = tmp_path / "wizard.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("INSERT INTO items (name) VALUES ('alpha'), ('beta')")
+        conn.commit()
+        conn.close()
+        return path
+
+    def _argv(self, db, out, *extra):
+        return ["--db-url", f"sqlite:///{db}", "--language", "en", "--non-interactive",
+                "--output", str(out), *extra]
+
+    def _interrupted_first_run(self, db, out, llm):
+        with patch.object(sp, "setup_wizard_llm", return_value=llm), \
+             patch.object(sp, "step6_review_and_write", side_effect=RuntimeError("interrupted")):
+            with pytest.raises(RuntimeError):
+                sp.main(self._argv(db, out))
+
+    def test_the_log_records_the_generated_results(self, tmp_path, db):
+        out = tmp_path / "out"
+        self._interrupted_first_run(db, out, _FakeLLM())
+        log = json.loads((out / ".setup_log.json").read_text(encoding="utf-8"))
+        assert sp._step_done(log, "step5_examples") and not sp._step_done(log, "step6_write")
+        assert log["step3_aliases"]["result"]["entities"]["items"]["aliases"] == ["thing"]
+
+    def test_completed_llm_steps_are_not_run_again(self, tmp_path, db):
+        out = tmp_path / "out"
+        self._interrupted_first_run(db, out, _FakeLLM())
+        second = _FakeLLM()
+        with patch.object(sp, "setup_wizard_llm", return_value=second) as setup_llm:
+            assert sp.main(self._argv(db, out, "--resume")) == 0
+        assert second.calls == 0
+        assert not setup_llm.called  # no model needed, so none is configured or contacted
+        entities = (out / "entities.yaml").read_text(encoding="utf-8")
+        assert "thing" in entities  # the first run's aliases, reused
+
+    def test_a_run_whose_steps_are_all_done_only_validates(self, tmp_path, db, capsys):
+        out = tmp_path / "out"
+        with patch.object(sp, "setup_wizard_llm", return_value=_FakeLLM()):
+            assert sp.main(self._argv(db, out)) == 0
+        capsys.readouterr()
+        with patch.object(sp, "step1_connection", side_effect=AssertionError("connected")), \
+             patch.object(sp, "setup_wizard_llm", side_effect=AssertionError("llm")):
+            assert sp.main(self._argv(db, out, "--resume")) == 0
+        assert "Running validation only" in " ".join(capsys.readouterr().out.split())
+
+    def test_an_existing_file_is_still_not_rewritten(self, tmp_path, db):
+        out = tmp_path / "out"
+        self._interrupted_first_run(db, out, _FakeLLM())
+        out.mkdir(exist_ok=True)
+        (out / "entities.yaml").write_text("entities: {}  # hand edited\n", encoding="utf-8")
+        with patch.object(sp, "setup_wizard_llm", return_value=_FakeLLM()):
+            sp.main(self._argv(db, out, "--resume"))
+        assert "hand edited" in (out / "entities.yaml").read_text(encoding="utf-8")
+        assert (out / "aliases.yaml").is_file()
+
+    def test_a_changed_schema_generates_again(self, tmp_path, db):
+        out = tmp_path / "out"
+        self._interrupted_first_run(db, out, _FakeLLM())
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE extra (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        second = _FakeLLM()
+        with patch.object(sp, "setup_wizard_llm", return_value=second):
+            sp.main(self._argv(db, out, "--resume"))
+        assert second.calls > 0
+
+    def test_a_changed_language_generates_again(self, tmp_path, db):
+        out = tmp_path / "out"
+        self._interrupted_first_run(db, out, _FakeLLM())
+        second = _FakeLLM()
+        argv = self._argv(db, out, "--resume")
+        argv[argv.index("en")] = "fa"
+        with patch.object(sp, "setup_wizard_llm", return_value=second):
+            sp.main(argv)
+        assert second.calls > 0
+
+    def test_results_made_by_the_mock_llm_are_not_reused(self, tmp_path, db):
+        out = tmp_path / "out"
+        mock = SimpleNamespace(provider="mock", model="mock", test_connection=lambda: True,
+                               generate=lambda prompt, expect_json=True: {})
+        self._interrupted_first_run(db, out, mock)
+        second = _FakeLLM()
+        with patch.object(sp, "setup_wizard_llm", return_value=second):
+            sp.main(self._argv(db, out, "--resume"))
+        assert second.calls > 0
+
+    def test_without_resume_the_earlier_log_is_not_trusted(self, tmp_path, db):
+        out = tmp_path / "out"
+        self._interrupted_first_run(db, out, _FakeLLM())
+        second = _FakeLLM()
+        with patch.object(sp, "setup_wizard_llm", return_value=second):
+            sp.main(self._argv(db, out))
+        assert second.calls > 0
+
+    def test_a_dry_run_writes_no_log_and_nothing_resumes_from_it(self, tmp_path, db):
+        out = tmp_path / "out"
+        with patch.object(sp, "setup_wizard_llm", return_value=_FakeLLM()):
+            assert sp.main(self._argv(db, out, "--dry-run")) == 0
+        assert not out.exists()
