@@ -6,6 +6,7 @@ and what it never prints. The database layer is injected
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -283,7 +284,9 @@ class TestErrors:
         real = sync.render_synced_text
         monkeypatch.setattr(
             sync, "render_synced_text",
-            lambda o, s, p: (lambda r: (r[0].replace("    columns:\n", "    columns:\n    columns:\n", 1), r[1]))(real(o, s, p)),
+            # Newline-agnostic: a Windows checkout gives the example schema CRLF
+            # line endings, and the sync keeps whatever endings the file has.
+            lambda o, s, p: (lambda r: (re.sub(r"    columns:(\r?\n)", r"    columns:\1    columns:\1", r[0], count=1), r[1]))(real(o, s, p)),
         )
         assert main([], load_catalogue=loader()) == EXIT_ERROR
         assert "not written" in capsys.readouterr().err
