@@ -14,12 +14,19 @@ retrieved ones together.
 The graph
 ---------
 Nodes are the queryable tables (those with ``columns`` in ``schema.yaml``).
-An edge is a foreign key, from one of two places, strongest first:
+An edge is a foreign key, from one of three places, strongest first:
 
 1. ``schema.yaml``'s ``relationships`` (the joins the prompt already shows);
 2. ``<PROJECT_CONFIG_DIR>/relationships.yaml``, when present -- its
    ``from_table``/``to_table`` are bare names, so ``from_schema``/``to_schema``
    pick the right table where two schemas share a name;
+3. when ``retrieval_infer_relationships`` is on, the naming convention: a
+   column ``X_ID`` / ``XID`` of table ``T`` is a key to table ``X``'s ``ID``
+   (or to a column of the same name). Only an unambiguous, same-data-source
+   target counts, a table is never matched to itself, and an edge already
+   declared in (1) or (2) is not duplicated. Inferred edges steer retrieval
+   only: nothing is written to configuration and no join hint is added to
+   the prompt.
 
 Paths
 -----
@@ -53,11 +60,16 @@ from pathlib import Path
 
 __all__ = ["JoinEdge", "JoinGraph", "build_join_graph", "expand_join_paths"]
 
+#: ``CustomerID`` / ``Customer_ID`` / ``customer_id`` -> stem ``Customer``.
+#: A bare ``ID`` has no stem and does not match.
+_KEY_COLUMN_RE = re.compile(r"^(?P<stem>.*?[^_])_?id$", re.IGNORECASE)
+
+
 @dataclass(frozen=True, slots=True)
 class JoinEdge:
     """An undirected foreign key between two tables.
 
-    ``origin`` is ``"schema"`` or ``"relationships"``.
+    ``origin`` is ``"schema"``, ``"relationships"`` or ``"inferred"``.
     """
 
     a: str
@@ -126,6 +138,43 @@ def _resolve_bare(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _infer_edges(
+    columns: dict[str, dict[str, str]],
+    by_bare: dict[str, list[str]],
+    qualifiers: dict[str, str],
+    sources: dict[str, frozenset[str]],
+    known: set[frozenset[str]],
+) -> list[tuple[str, str]]:
+    """``(table, target)`` for each column that follows the ``X_ID`` convention.
+
+    *known* holds the pairs already joined; inferred pairs are added to it.
+    """
+    lowered = {t: {c.lower() for c in cols} for t, cols in columns.items()}
+    found: list[tuple[str, str]] = []
+    for table in sorted(columns):
+        for column in sorted(columns[table]):
+            match = _KEY_COLUMN_RE.match(column)
+            if match is None:
+                continue
+            candidates = [
+                t for t in by_bare.get(match.group("stem").lower(), [])
+                if t != table and ("id" in lowered[t] or column.lower() in lowered[t])
+            ]
+            if sources:
+                candidates = [t for t in candidates if sources[t] & sources[table]]
+            if len(candidates) > 1:
+                same_schema = [t for t in candidates if qualifiers.get(t) == qualifiers.get(table)]
+                candidates = same_schema if len(same_schema) == 1 else []
+            if len(candidates) != 1:
+                continue
+            pair = frozenset((table, candidates[0]))
+            if pair in known:
+                continue
+            known.add(pair)
+            found.append((table, candidates[0]))
+    return found
+
+
 _CACHE: dict[tuple, JoinGraph] = {}
 
 
@@ -133,8 +182,9 @@ def build_join_graph() -> JoinGraph:
     """Build (or fetch the cached) foreign-key graph of the loaded schema.
 
     The cache is keyed on everything the graph depends on -- the loaded
-    schema objects and ``relationships.yaml``'s and ``datasources.yaml``'s
-    modification times -- so a changed configuration yields a new graph.
+    schema objects, ``relationships.yaml``'s and ``datasources.yaml``'s
+    modification times, and the inference switch -- so a changed
+    configuration yields a new graph.
 
     Returns
     -------
@@ -146,6 +196,7 @@ def build_join_graph() -> JoinGraph:
     >>> all(isinstance(v, tuple) for v in graph.adjacency.values())
     True
     """
+    import config as cfg
     from database.datasources import datasource_names, datasources_path, table_datasource_sets
     from schema_data.registry import (
         bare_table_name,
@@ -166,8 +217,9 @@ def build_join_graph() -> JoinGraph:
         except OSError:
             return 0
 
+    infer = bool(cfg.settings.retrieval_infer_relationships)
     names = tuple(datasource_names())
-    key = (str(rel_path), id(columns), id(relationships), mtime(rel_path), mtime(ds_path), names)
+    key = (str(rel_path), id(columns), id(relationships), mtime(rel_path), mtime(ds_path), infer, names)
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
@@ -199,6 +251,9 @@ def build_join_graph() -> JoinGraph:
         b = _resolve_bare(str(entry.get("to_table", "")), entry.get("to_schema"), by_bare, qualifiers)
         if a and b:
             add(a, b, "relationships")
+    if infer:
+        for a, b in _infer_edges(columns, by_bare, qualifiers, sources, known):
+            edges.append(JoinEdge(a, b, "inferred"))
 
     neighbours: dict[str, dict[str, bool]] = {t: {} for t in columns}
     for edge in edges:

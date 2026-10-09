@@ -16,7 +16,7 @@ import pytest
 
 import config as cfg
 from retrieval import join_paths
-from retrieval.join_paths import JoinGraph, _best_path, build_join_graph, expand_join_paths
+from retrieval.join_paths import JoinGraph, _best_path, _infer_edges, build_join_graph, expand_join_paths
 
 
 def _graph(edges: list[tuple[str, str]], *, inferred=(), sources=None) -> JoinGraph:
@@ -132,6 +132,63 @@ class TestPaths:
         assert _best_path(graph, "A", {"Z"}, max_hops=3, max_hub_degree=10) is None
 
 
+class TestInference:
+    COLUMNS = {
+        "Order": {"ID": "", "CustomerID": "", "Region_ID": "", "OrderDate_ID": "", "Batch_ID": ""},
+        "Customer": {"ID": "", "Name": ""},
+        "sales.Region": {"ID": ""},
+        "ops.Region": {"ID": ""},
+        "Legacy": {"Order_Code": ""},
+    }
+    BY_BARE = {"order": ["Order"], "customer": ["Customer"], "region": ["sales.Region", "ops.Region"],
+               "legacy": ["Legacy"]}
+    QUAL = {"Order": "sales", "Customer": "sales", "sales.Region": "sales", "ops.Region": "ops", "Legacy": "sales"}
+
+    def _infer(self, **kw):
+        known = kw.pop("known", set())
+        return _infer_edges(kw.pop("columns", self.COLUMNS), self.BY_BARE, self.QUAL,
+                            kw.pop("sources", {}), known)
+
+    def test_x_id_columns_point_at_table_x(self):
+        pairs = set(self._infer())
+        assert ("Order", "Customer") in pairs
+
+    def test_same_name_tables_resolve_by_the_qualifier_of_the_source_table(self):
+        assert ("Order", "sales.Region") in set(self._infer())
+        assert ("Order", "ops.Region") not in set(self._infer())
+
+    def test_same_name_tables_without_a_qualifier_match_are_skipped_not_guessed(self):
+        qual = dict(self.QUAL, Order="elsewhere")
+        found = _infer_edges(self.COLUMNS, self.BY_BARE, qual, {}, set())
+        assert not [p for p in found if p[1].endswith("Region")]
+
+    def test_data_source_must_be_shared(self):
+        sources = {t: frozenset({"a"}) for t in self.COLUMNS}
+        sources["Customer"] = frozenset({"b"})
+        sources["ops.Region"] = frozenset({"a"})
+        sources["sales.Region"] = frozenset({"b"})
+        found = set(_infer_edges(self.COLUMNS, self.BY_BARE, self.QUAL, sources, set()))
+        assert ("Order", "Customer") not in found
+        assert ("Order", "ops.Region") in found          # the only same-source candidate
+
+    def test_columns_that_follow_no_convention_add_nothing(self):
+        found = set(self._infer())
+        assert not [p for p in found if p[0] == "Legacy"]          # Order_Code: not an id column
+        assert not [p for p in found if p[1] in ("Date", "Batch")]  # no such tables
+
+    def test_declared_pairs_are_not_duplicated(self):
+        known = {frozenset(("Order", "Customer"))}
+        assert ("Order", "Customer") not in set(self._infer(known=known))
+
+    def test_a_bare_id_column_and_a_self_reference_are_not_keys(self):
+        columns = {"Order": {"ID": "", "Order_ID": ""}}
+        assert _infer_edges(columns, {"order": ["Order"]}, {}, {}, set()) == []
+
+    def test_target_needs_an_id_column(self):
+        columns = {"Order": {"CustomerID": ""}, "Customer": {"Name": ""}}
+        assert _infer_edges(columns, {"customer": ["Customer"], "order": ["Order"]}, {}, {}, set()) == []
+
+
 class TestLoadedGraph:
     def test_example_schema_edges_load_from_schema_yaml(self):
         graph = build_join_graph()
@@ -144,7 +201,14 @@ class TestLoadedGraph:
     def test_two_dimensions_are_joined_through_their_fact(self):
         assert expand_join_paths(["Customer", "Ring"]) == ["Order"]
 
-    @pytest.mark.parametrize("name", ["retrieval_join_expansion"])
+    def test_inference_switch_is_part_of_the_cache_key(self):
+        on = build_join_graph()
+        with cfg.override_settings(retrieval_infer_relationships=False):
+            off = build_join_graph()
+        assert off is not on
+        assert not any(flag for edges in off.adjacency.values() for _, flag in edges)
+
+    @pytest.mark.parametrize("name", ["retrieval_join_expansion", "retrieval_infer_relationships"])
     def test_switches_default_on(self, name):
         assert getattr(cfg.settings, name) is True
 

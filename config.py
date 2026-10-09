@@ -725,7 +725,9 @@ class Settings:
     """When ``True``, the tables a question needs to be joined to each other
     but did not name (a bridge table, the dimension a classification hangs
     from) are added to the retrieved set, found on the foreign-key graph
-    (``schema.yaml`` relationships and ``relationships.yaml``). See ``retrieval.join_paths``."""
+    (``schema.yaml`` relationships, ``relationships.yaml`` and, see
+    :attr:`retrieval_infer_relationships`, the ``<Table>_ID`` naming
+    convention). See ``retrieval.join_paths``."""
 
     retrieval_join_max_hops: int = field(
         default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_HOPS", "2"))
@@ -750,6 +752,16 @@ class Settings:
     """A table that more than this many tables reference (a calendar or
     currency dimension shared by every fact) is never used as a stepping
     stone between two other tables; it still joins when the question names it."""
+
+    retrieval_infer_relationships: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_INFER_RELATIONSHIPS", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, a column named ``<Table>_ID`` / ``<Table>ID`` is taken as a
+    foreign key to that table's ``ID`` for join-path expansion when neither
+    ``schema.yaml`` nor ``relationships.yaml`` declares the edge. Used for
+    retrieval only; nothing is written to configuration and no join hint is
+    added to the prompt."""
 
     # ── Phase 2: deterministic decoding (docs/api-contract-v2.md §6) ───────
     llm_temperature: float = field(
