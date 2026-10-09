@@ -46,14 +46,6 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-# The release workflow runs this file from a sparse checkout that holds only it
-# and core/console.py (see .github/workflows/release.yml), so the repository
-# root is put on the path the way the other scripts do, and nothing else from
-# the repository may be imported here.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from core.console import use_utf8_console  # noqa: E402
-
 #: Separator between the version and the summary in the release commit's
 #: subject, the tag message and the Release title: an em dash, not a hyphen.
 _DASH = "—"
@@ -368,8 +360,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
+def _use_utf8_console() -> None:
+    """Make ``sys.stdout`` and ``sys.stderr`` write UTF-8.
+
+    This is a deliberate copy of :func:`core.console.use_utf8_console`, with
+    the same behaviour, and it must stay one. The release workflow fetches
+    this file alone, in a sparse checkout (``.github/workflows/release.yml``),
+    so it cannot import anything from the repository; a test
+    (``tests/test_cli_utf8_console.py``) keeps its imports to the standard
+    library and checks that the two behave the same.
+
+    Each stream with a ``reconfigure`` method is switched to UTF-8 and keeps
+    the ``errors`` handler it had (``reconfigure`` would reset it to
+    ``strict``). A stream without one is left as it is.
+
+    Returns:
+        None.
+
+    Raises:
+        Nothing: ``ValueError`` and ``OSError`` from ``reconfigure`` are
+        swallowed and that stream is left as it was.
+
+    Examples:
+        >>> import io
+        >>> stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="backslashreplace")
+        >>> saved = sys.stdout, sys.stderr
+        >>> sys.stdout, sys.stderr = stream, object()
+        >>> try:
+        ...     _use_utf8_console()
+        ... finally:
+        ...     sys.stdout, sys.stderr = saved
+        >>> stream.encoding, stream.errors
+        ('utf-8', 'backslashreplace')
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        errors = getattr(stream, "errors", None) or "strict"
+        try:
+            reconfigure(encoding="utf-8", errors=errors)
+        except (ValueError, OSError):  # already read from, or detached/closed
+            continue
+
+
 if __name__ == "__main__":
     # The summary contains an em dash, which a Windows console's code page
     # may not hold.
-    use_utf8_console()
+    _use_utf8_console()
     sys.exit(main())

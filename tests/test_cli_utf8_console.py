@@ -42,6 +42,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -449,8 +450,14 @@ def _is_pytest_runner(block: ast.If) -> bool:
     )
 
 
-def _calls_helper_first(block: ast.If) -> bool:
-    """``use_utf8_console()`` comes before anything runs.
+#: Modules that carry their own copy of the helper, by the name they call.
+#: ``scripts/release_notes.py`` is fetched alone by the release workflow
+#: (a sparse checkout of that one file), so it cannot import ``core``.
+LOCAL_HELPERS: dict[str, str] = {"scripts/release_notes.py": "_use_utf8_console"}
+
+
+def _calls_helper_first(block: ast.If, helper: str = "use_utf8_console") -> bool:
+    """The console helper is called before anything runs.
 
     Only imports and ``sys.path.insert(...)`` (needed to reach ``core`` when
     a script is run by path) may precede it.
@@ -460,7 +467,7 @@ def _calls_helper_first(block: ast.If) -> bool:
             continue
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             callee = _dotted(stmt.value.func)
-            if callee == "use_utf8_console":
+            if callee == helper:
                 return True
             if callee == "sys.path.insert":
                 continue
@@ -497,7 +504,7 @@ class TestEntryPointGuard:
             if rel in NOT_CONSOLE_ENTRY_POINTS:
                 continue
             for block in blocks:
-                if not _calls_helper_first(block):
+                if not _calls_helper_first(block, LOCAL_HELPERS.get(rel, "use_utf8_console")):
                     offenders.append(f"{rel}:{block.lineno}")
         assert not offenders, (
             "These `if __name__ == \"__main__\":` blocks do not call "
@@ -522,6 +529,53 @@ class TestEntryPointGuard:
             assert reason.strip(), rel
             assert rel in entry_points, f"{rel} no longer has a __main__ block; remove it from the allowlist"
 
+    def test_release_notes_stays_standalone(self) -> None:
+        # The release workflow fetches this file alone; an import from the
+        # repository would break the release pipeline, and only a real release
+        # would show it.
+        path = REPO_ROOT / "scripts" / "release_notes.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stdlib = set(sys.stdlib_module_names)
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                offenders += [a.name for a in node.names if a.name.split(".")[0] not in stdlib]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level or (node.module or "").split(".")[0] not in stdlib:
+                    offenders.append("." * node.level + (node.module or ""))
+        assert not offenders, f"scripts/release_notes.py must import only the standard library: {offenders}"
+        assert not any(
+            isinstance(n, ast.Call) and _dotted(n.func) == "sys.path.insert" for n in ast.walk(tree)
+        ), "scripts/release_notes.py must not extend sys.path"
+
+    def test_release_notes_copy_behaves_like_the_shared_helper(self) -> None:
+        import io
+
+        from core.console import use_utf8_console
+        from scripts.release_notes import _use_utf8_console
+
+        def run(helper: Callable[[], None], out: Any, err: Any) -> None:
+            saved = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = out, err
+            try:
+                helper()
+            finally:
+                sys.stdout, sys.stderr = saved
+
+        def state(helper: Callable[[], None]) -> list[object]:
+            out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+            err = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="backslashreplace")
+            run(helper, out, err)
+            read = io.TextIOWrapper(io.BytesIO(b"x"), encoding="cp1252")
+            read.read()  # a stream already read from: whatever happens, it must not raise
+            run(helper, io.StringIO(), object())  # no `reconfigure`: skipped
+            run(helper, read, io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="replace"))
+            return [out.encoding, out.errors, err.encoding, err.errors, read.encoding]
+
+        local, shared = state(_use_utf8_console), state(use_utf8_console)
+        assert local == shared
+        assert local[:4] == ["utf-8", "strict", "utf-8", "backslashreplace"]
+
     def test_a_block_that_forgets_the_helper_is_caught(self) -> None:
         source = 'import sys\n\nif __name__ == "__main__":\n    sys.exit(main())\n'
         block = next(n for n in ast.parse(source).body if _is_main_guard(n))
@@ -537,6 +591,18 @@ class TestEntryPointGuard:
     def test_a_block_that_calls_it_first_passes(self, body: str) -> None:
         block = next(n for n in ast.parse(f'if __name__ == "__main__":\n    {body}\n').body if _is_main_guard(n))
         assert _calls_helper_first(block)
+
+    def test_release_notes_must_call_its_own_copy(self) -> None:
+        # The shared helper's name does not satisfy the guard for that file,
+        # and a missing call still fails.
+        block = next(n for n in ast.parse(
+            'if __name__ == "__main__":\n    sys.exit(main())\n').body if _is_main_guard(n))
+        local = LOCAL_HELPERS["scripts/release_notes.py"]
+        assert not _calls_helper_first(block, local)
+        calls_local = next(n for n in ast.parse(
+            f'if __name__ == "__main__":\n    {local}()\n    main()\n').body if _is_main_guard(n))
+        assert _calls_helper_first(calls_local, local)
+        assert not _calls_helper_first(calls_local)
 
     def test_a_call_after_the_work_has_started_is_caught(self) -> None:
         source = 'if __name__ == "__main__":\n    main()\n    use_utf8_console()\n'
