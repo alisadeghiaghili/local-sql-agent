@@ -27,6 +27,7 @@ from llm.wizard_llm import generate_sql
 from logs.logger import save_log
 from logs.query_log import QueryLog
 from security.sql_guard import validate_sql
+from core.console import use_utf8_console
 from core.provenance import log_startup_notice
 
 # ---------------------------------------------------------------------------
@@ -214,4 +215,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     main()

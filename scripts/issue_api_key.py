@@ -68,6 +68,8 @@ import secrets
 import sys
 import textwrap
 
+from core.console import use_utf8_console
+
 #: Minimum raw key length -- mirrors security.auth.MIN_KEY_LENGTH. Not
 #: imported from there to keep this a standalone script with no
 #: application import (and therefore no config.py / dotenv / database
@@ -296,4 +298,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

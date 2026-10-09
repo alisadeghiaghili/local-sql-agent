@@ -29,6 +29,8 @@ import os
 import sys
 from pathlib import Path
 
+from core.console import use_utf8_console
+
 # Directory names this tool will never write to, regardless of --output-dir:
 # the live, git-ignored config an app instance actually runs on, and the
 # committed template CI runs against. A draft may contain real sample values
@@ -213,4 +215,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

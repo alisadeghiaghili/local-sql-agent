@@ -95,6 +95,7 @@ try:
 except ImportError:
     sys.exit("PyYAML is required: pip install pyyaml")
 
+from core.console import use_utf8_console
 from core.yaml_loading import safe_load_strict
 
 # Credential redaction lives in core/redaction.py (shared with the schema
@@ -1782,4 +1783,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

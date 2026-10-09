@@ -71,6 +71,7 @@ from typing import Any
 
 import yaml
 
+from core.console import use_utf8_console
 from eval.benchmarks import vocabulary as vocab
 
 __all__ = [
@@ -1109,4 +1110,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

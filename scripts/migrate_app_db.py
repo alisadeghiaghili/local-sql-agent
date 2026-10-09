@@ -41,6 +41,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from core.console import use_utf8_console
 from appdb.migrate import MigrationExport, MigrationResult, export_to_json, run_migration
 
 _SENSITIVITY_WARNING = (
@@ -154,4 +155,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

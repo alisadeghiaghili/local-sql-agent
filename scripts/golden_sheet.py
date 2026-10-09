@@ -79,6 +79,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 from core.persian import normalize_for_matching
 from eval.models import GoldenCase
 from eval.store import load_cases_or_empty, write_golden_cases, write_text_atomic
@@ -494,4 +495,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

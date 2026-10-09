@@ -135,6 +135,7 @@ from typing import Any, Iterable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 import config as cfg
 from logs.logger import append_jsonl
 from observability.timing import STAGE_NAMES
@@ -1422,4 +1423,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

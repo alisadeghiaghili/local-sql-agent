@@ -37,6 +37,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 from schema_data.retriever import retrieve_tables
 from knowledge.aliases import SYNONYMS
 from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
@@ -463,4 +464,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     main()

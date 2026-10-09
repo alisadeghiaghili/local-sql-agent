@@ -5,6 +5,14 @@ you deploy, and again the day the pilot week ends. Every command assumes
 you are in the repo root, on the machine that will actually run the server
 (the same one whose `.env` / real environment variables the server reads).
 
+Output is UTF-8. Every command-line program in the repository (`scripts/`,
+`python -m eval.cli`, `setup_project.py`, `app.py` and the rest) writes UTF-8
+to standard output and standard error, whatever code page the Windows console
+uses (cp1252, cp1256, cp437). A report that names a Persian table or question
+is not cut short by a `UnicodeEncodeError`, and nothing needs setting first
+(`PYTHONUTF8`, `chcp 65001`). A file saved from that output is UTF-8; open it
+as UTF-8. The web server is not affected.
+
 Why this exists: this deployment's first week of real use produces
 `logs/audit_log.jsonl` — the only source this project has ever had for real
 accuracy and latency numbers. If the deployment stumbles, or the log is

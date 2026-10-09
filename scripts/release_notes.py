@@ -46,6 +46,14 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+# The release workflow runs this file from a sparse checkout that holds only it
+# and core/console.py (see .github/workflows/release.yml), so the repository
+# root is put on the path the way the other scripts do, and nothing else from
+# the repository may be imported here.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.console import use_utf8_console  # noqa: E402
+
 #: Separator between the version and the summary in the release commit's
 #: subject, the tag message and the Release title: an em dash, not a hyphen.
 _DASH = "—"
@@ -350,12 +358,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     >>> main(["version", "--file", "no/such/version.py"])
     1
     """
-    for stream in (sys.stdout, sys.stderr):
-        # The summary contains an em dash; a Windows console defaults to a
-        # code page that cannot print it.
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8")
     args = _build_parser().parse_args(argv)
     try:
         return int(args.func(args))
@@ -367,4 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # The summary contains an em dash, which a Windows console's code page
+    # may not hold.
+    use_utf8_console()
     sys.exit(main())

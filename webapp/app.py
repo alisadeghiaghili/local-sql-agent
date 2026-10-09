@@ -42,6 +42,7 @@ import i18n
 from agent import OUTPUT_DIR, answer_question, principal_for_username
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core.console import use_utf8_console  # noqa: E402
 from core.provenance import log_startup_notice  # noqa: E402
 
 WEBAPP_DIR = Path(__file__).resolve().parent
@@ -478,4 +479,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

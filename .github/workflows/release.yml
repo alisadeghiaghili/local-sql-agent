@@ -74,19 +74,25 @@ jobs:
       # The helper script comes from the commit the workflow itself runs
       # at, not from the tagged commit. A release that was missed may be
       # older than this workflow, and would not have scripts/release_notes.py
-      # at all. Only that one file is fetched, and without credentials: the
-      # checkout above keeps the ones the tag push needs.
+      # at all. Only that file and the console helper it imports (core/ is
+      # otherwise left out, and core/__init__.py is a docstring) are fetched,
+      # and without credentials: the checkout above keeps the ones the tag
+      # push needs.
       - name: Checkout the release script
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           path: .release-tools
-          sparse-checkout: scripts/release_notes.py
+          sparse-checkout: |
+            scripts/release_notes.py
+            core/__init__.py
+            core/console.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # The runner's own python3 is enough: the script uses only the
-      # standard library, so nothing is installed and nothing is cached.
+      # The runner's own python3 is enough: the script and core/console.py use
+      # only the standard library, so nothing is installed and nothing is
+      # cached.
       #
       # The dispatch inputs are passed through env, never interpolated into
       # the script text, so a crafted input cannot become shell syntax.
