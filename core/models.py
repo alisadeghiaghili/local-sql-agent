@@ -14,6 +14,8 @@ entities       : dimension table names matched to the question
                  (e.g. ["Ring", "Customer", "Symbol"])
 facts          : fact table names matched to the question
                  (e.g. ["Order"])
+join_tables    : tables added because they join the retrieved ones together
+                 (a bridge table, a classification's parent)
 dimensions     : alias for *entities* — kept for PromptBuilder compatibility
 relationships  : JOIN SQL clauses relevant to the selected tables
 business_rules : domain rules injected into the prompt as plain text
@@ -49,6 +51,14 @@ class RetrievalContext:
     This field is a historical leftover kept so existing callers that read
     ``context.dimensions`` directly are unaffected; new code should prefer
     ``entities`` or ``selected_tables``."""
+
+    join_tables: list[str] = field(default_factory=list)
+    """Tables added because they connect the retrieved ones -- a bridge table,
+    the dimension a classification hangs from -- found on the foreign-key graph
+    (:func:`retrieval.join_paths.expand_join_paths`). Part of
+    :attr:`selected_tables`, so the prompt shows them; not part of
+    :attr:`entities` or :attr:`facts`, so value matching and the "vocabulary
+    unavailable" warning, which key on what the question named, are unchanged."""
 
     # ── join layer ────────────────────────────────────────────────────────────
     relationships: list[str] = field(default_factory=list)
@@ -150,10 +160,10 @@ class RetrievalContext:
     # ── convenience ──────────────────────────────────────────────────────────
     @property
     def selected_tables(self) -> list[str]:
-        """Deduplicated union of entities + facts — the full table set."""
+        """Deduplicated union of entities + facts + join tables — the full table set."""
         seen: set[str] = set()
         result: list[str] = []
-        for t in self.entities + self.facts:
+        for t in self.entities + self.facts + self.join_tables:
             if t not in seen:
                 seen.add(t)
                 result.append(t)
