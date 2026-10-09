@@ -621,7 +621,7 @@ class TestRunsAsAScript:
         root = Path(__file__).resolve().parent.parent
         result = subprocess.run(
             [sys.executable, "scripts/assign_datasources.py", "--help"],
-            cwd=root, capture_output=True, text=True, timeout=120,
+            cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=120,
         )
         assert result.returncode == 0
         assert "--check" in result.stdout and "--output" in result.stdout

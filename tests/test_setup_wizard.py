@@ -383,7 +383,7 @@ class TestStep7WithMissingFiles:
             [sys.executable, "setup_project.py", "--db-url", f"sqlite:///{db}",
              "--llm-provider", "mock", "--language", "en", "--non-interactive",
              "--output", str(out)],
-            cwd=_REPO_ROOT, env=env, capture_output=True, text=True, timeout=120,
+            cwd=_REPO_ROOT, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120,
         )
         assert done.returncode == 0, done.stdout + done.stderr
         assert "Traceback" not in done.stdout + done.stderr

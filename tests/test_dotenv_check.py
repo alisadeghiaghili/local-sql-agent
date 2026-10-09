@@ -484,7 +484,7 @@ def _import_config_against(tmp_path: Path, dotenv_text: str | None, **env: str) 
     run_env.update(env)
     done = subprocess.run(
         [sys.executable, "-c", _PROBE, target],
-        cwd=_REPO_ROOT, env=run_env, capture_output=True, text=True, check=True,
+        cwd=_REPO_ROOT, env=run_env, capture_output=True, text=True, encoding="utf-8", check=True,
     )
     return done.stdout.splitlines()
 

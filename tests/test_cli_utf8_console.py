@@ -37,9 +37,11 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,7 @@ class Ctx:
     fa_dir: Path  #: a directory whose name cp1252 cannot encode
     config: Path  #: a copy of ``project_config.example`` with a Persian table
     sqlite_url: str  #: an empty SQLite database inside ``fa_dir``
+    inspect_url: str  #: a SQLite database holding a Persian table with a Persian column
     audit_log: Path  #: an audit log holding Persian questions
     candidates: Path  #: harvested candidates awaiting review, with a Persian question
     release_repo: Path  #: a git repository whose release commit has a Persian summary
@@ -96,6 +99,18 @@ def _write_config(dest: Path) -> None:
         "columns": {"شناسه": "int", "نام": "nvarchar"},
     }
     schema_path.write_text(yaml.safe_dump(schema, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _write_persian_database(path: Path) -> None:
+    """A SQLite database with one Persian-named table and column.
+
+    The programs that read a database print its table names, so this puts
+    Persian in their output whatever way the connection URL is rendered
+    (SQLAlchemy 2.1 percent-encodes a non-ASCII path; 2.0 does not).
+    """
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(f'CREATE TABLE "{FA_TABLE}" ("شناسه" INTEGER PRIMARY KEY, "نام" TEXT)')
+        conn.commit()
 
 
 def _write_audit_log(path: Path) -> None:
@@ -150,6 +165,7 @@ def ctx(tmp_path: Path) -> Ctx:
     _write_config(config)
     audit_log = fa_dir / "audit.jsonl"
     _write_audit_log(audit_log)
+    _write_persian_database(fa_dir / "tables.db")
     candidates = fa_dir / "pending.jsonl"
     _write_candidates(candidates)
     work = tmp_path / "work"
@@ -163,6 +179,7 @@ def ctx(tmp_path: Path) -> Ctx:
         fa_dir=fa_dir,
         config=config,
         sqlite_url=f"sqlite:///{(fa_dir / 'app.db').as_posix()}",
+        inspect_url=f"sqlite:///{(fa_dir / 'tables.db').as_posix()}",
         audit_log=audit_log,
         candidates=candidates,
         release_repo=release_repo,
@@ -227,9 +244,9 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         "setup_project.py",
-        lambda c: ["setup_project.py", "--db-url", c.sqlite_url, "--llm-provider", "mock",
+        lambda c: ["setup_project.py", "--db-url", c.inspect_url, "--llm-provider", "mock",
                    "--non-interactive", "--dry-run", "--language", "fa"],
-        PERSIAN,  # the connection string, wrapped at 80 columns, carries the Persian directory
+        FA_TABLE,  # in the discovered-tables listing and the drafts
     ),
     Case(
         "webapp/app.py",
@@ -240,9 +257,9 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         "database/schema_inspector_cli.py",
-        lambda c: ["-m", "database.schema_inspector_cli", "--db-url", c.sqlite_url,
+        lambda c: ["-m", "database.schema_inspector_cli", "--db-url", c.inspect_url,
                    "--dry-run", "--sample-rows", "0"],
-        FA_DIR_NAME,
+        FA_TABLE,
     ),
     Case(
         "eval/cli.py",
@@ -338,7 +355,8 @@ def _child_env(ctx: Ctx, case: Case) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in {"PYTHONUTF8", "PYTHONENCODING"}}
     env.update(
         PYTHONIOENCODING="cp1252",  # a console that cannot encode Persian
-        PYTHONPATH=str(REPO_ROOT),  # the child runs outside the repository
+        # The child runs outside the repository; anything already on the path stays.
+        PYTHONPATH=os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH", "")])),
         PROJECT_CONFIG_DIR=str(ctx.config),
         LLM_ALLOW_REMOTE="false",
     )
@@ -609,3 +627,82 @@ class TestEntryPointGuard:
         block = next(n for n in ast.parse(source).body if _is_main_guard(n))
         assert not _calls_helper_first(block)
 
+
+
+# ---------------------------------------------------------------------------
+# The other side of the fix: readers of our programs' output
+# ---------------------------------------------------------------------------
+
+_SUBPROCESS_CALLS = {
+    "subprocess.run", "subprocess.Popen", "subprocess.check_output",
+    "subprocess.check_call", "subprocess.call",
+}
+
+
+def _is_true(node: ast.expr | None) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _launches_a_program_of_ours(call: ast.Call) -> bool:
+    """False only for a command that is plainly another tool (a literal head such as ``"node"``).
+
+    Anything else -- ``[sys.executable, ...]``, a variable holding the
+    command -- is treated as one of ours, since the cost of being wrong
+    that way is a one-keyword fix.
+    """
+    if not call.args:
+        return True
+    command = call.args[0]
+    if isinstance(command, (ast.List, ast.Tuple)) and command.elts:
+        head = command.elts[0]
+        return not (isinstance(head, ast.Constant) and isinstance(head.value, str))
+    return True
+
+
+def _text_mode_without_encoding(path: Path) -> list[int]:
+    """Line numbers of subprocess calls that decode with the locale's code page."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _dotted(node.func) not in _SUBPROCESS_CALLS:
+            continue
+        keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        text_mode = _is_true(keywords.get("text")) or _is_true(keywords.get("universal_newlines"))
+        if text_mode and "encoding" not in keywords and _launches_a_program_of_ours(node):
+            lines.append(node.lineno)
+    return lines
+
+
+class TestReadersDecodeAsUtf8:
+    """A parent that reads our programs' output in text mode must say UTF-8.
+
+    The programs now write UTF-8 whatever the console. ``text=True`` alone
+    decodes with the parent's locale code page (cp1252 on Windows), which
+    fails on the first byte cp1252 does not define -- in a reader thread, so
+    the symptom is ``stdout`` being ``None``, far from the cause.
+    """
+
+    def test_no_repository_program_is_read_with_the_locale_code_page(self) -> None:
+        offenders = [
+            f"{_relative(path)}:{line}"
+            for path in _python_files()
+            for line in _text_mode_without_encoding(path)
+        ]
+        assert not offenders, (
+            "These subprocess calls read a program's output in text mode without "
+            "encoding=; add encoding=\"utf-8\" (the programs write UTF-8):\n  "
+            + "\n  ".join(offenders)
+        )
+
+    def test_the_scan_sees_a_call_that_omits_encoding(self, tmp_path: Path) -> None:
+        source = (
+            "import subprocess, sys\n"
+            "subprocess.run([sys.executable, 'x.py'], capture_output=True, text=True)\n"
+            "subprocess.run(cmd, universal_newlines=True)\n"
+            "subprocess.run([sys.executable, 'x.py'], capture_output=True, text=True, encoding='utf-8')\n"
+            "subprocess.run([sys.executable, 'x.py'], capture_output=True)\n"
+            "subprocess.run(['node', 'x.js'], capture_output=True, text=True)\n"
+        )
+        path = tmp_path / "sample.py"
+        path.write_text(source, encoding="utf-8")
+        assert _text_mode_without_encoding(path) == [2, 3]

@@ -47,6 +47,7 @@ def _run(code: str, config_dir: Path) -> subprocess.CompletedProcess[str]:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
 
