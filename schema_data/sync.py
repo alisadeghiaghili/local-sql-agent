@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from database.catalogue import ColumnInfo, TableInfo, table_location
@@ -94,6 +94,7 @@ __all__ = [
     "TypeChange",
     "build_report",
     "compute_plan",
+    "count_drafts",
     "draft_description",
     "expected_tables",
     "render_synced_text",
@@ -1078,6 +1079,68 @@ def build_report(result: SyncResult) -> str:
         f"{len(stats.unmarked_columns)} column(s) and {len(stats.unmarked_tables)} table(s) unmarked"
     )
     return "\n".join(out)
+
+
+def count_drafts(
+    plan: SyncPlan, synced: SchemaConfig, tables: Collection[str] | None = None,
+) -> tuple[int, int]:
+    """How many columns and tables *plan* adds that still carry their draft description.
+
+    A column is a draft while its description in *synced* is still the
+    placeholder :func:`draft_description` wrote (``"<type> column"``), a
+    table while its description is still the ``schema.table`` name the sync
+    gave it. Columns of an added table count as columns too.
+
+    Parameters
+    ----------
+    plan:
+        :func:`compute_plan`'s result.
+    synced:
+        The synced ``schema.yaml``, validated (``validate_schema_yaml_text``
+        of :attr:`SyncResult.text`).
+    tables:
+        Count only the tables with these ``schema.yaml`` keys (for instance
+        the ones one data source's prompt shows); ``None`` counts all.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(draft columns, draft tables)``.
+
+    Examples
+    --------
+    >>> from database.catalogue import ColumnInfo
+    >>> text = "tables:\\n  T:\\n    columns:\\n      ID: pk\\n    column_types:\\n      ID: \\"int\\"\\n"
+    >>> info = TableInfo("", "T", False, (ColumnInfo("ID", "int", False), ColumnInfo("Note", "text", True)))
+    >>> result = sync_schema_text(text, ["a"], "a", {"a": {("dbo", "t"): info}})
+    >>> synced = validate_schema_yaml_text(result.text)
+    >>> count_drafts(result.plan, synced)
+    (1, 0)
+    >>> count_drafts(result.plan, synced, tables=["Other"])
+    (0, 0)
+    """
+    wanted = None if tables is None else set(tables)
+    columns = draft_tables = 0
+    for table_plan in plan.tables:
+        written = synced.tables.get(table_plan.key)
+        if written is None or (wanted is not None and table_plan.key not in wanted):
+            continue
+        described = written.columns or {}
+        columns += sum(
+            1 for add in table_plan.adds
+            if described.get(add.name) == draft_description(add.data_type)
+        )
+    for new in plan.new_tables:
+        written = synced.tables.get(new.key)
+        if written is None or (wanted is not None and new.key not in wanted):
+            continue
+        described = written.columns or {}
+        columns += sum(
+            1 for column in new.columns
+            if described.get(column.name) == draft_description(column.data_type)
+        )
+        draft_tables += written.description == _new_table_description(new)
+    return columns, draft_tables
 
 
 def _stale_outcome(table_plan: TablePlan, column: str) -> str:

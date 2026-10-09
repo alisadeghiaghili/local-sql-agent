@@ -1267,6 +1267,21 @@ column the read-only login cannot see through `INFORMATION_SCHEMA` is reported
 as not in the database too, so check the `DENY` grants of `docs/db-hardening.md`
 before running `--prune`.
 
+When anything would change, the report also ends with a `== prompt size ==`
+section: for each data source, the estimated static-prefix tokens of the current
+`schema.yaml` and of the proposal, the difference, the path each takes (static
+prefix or retrieval, by `PROMPT_RETRIEVAL_TOKEN_BUDGET`, §16.6), and how many
+added columns and tables still carry the `TO BE FILLED` draft description. Every
+added column and table is text the model reads on every request, so this is the
+cost of the proposal before you replace `schema.yaml`. Both prefixes are built by
+the code the server and `prompt_budget.py` use, so the numbers are the same
+estimate (`len(text) // 4`), not real model tokens. A source the proposal would
+move from the static prefix to retrieval gets a `WARNING:` line with both sizes
+and the budget: review the draft columns, or raise the budget after running
+`python scripts/prompt_budget.py`. It is advice only; no exit code changes and
+`--check` is not affected. Without a `system_prompt.md` the section is one line
+saying it was not computed.
+
 Then:
 
 1. Review `schema.synced.yaml` (`diff project_config/schema.yaml project_config/schema.synced.yaml`):

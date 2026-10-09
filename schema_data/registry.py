@@ -78,6 +78,8 @@ allowlists from ever drifting out of sync with ``schema.yaml``'s own
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -98,6 +100,7 @@ __all__ = [
     "SchemaConfig",
     "TableRef",
     "load_schema",
+    "schema_in_effect",
     "schema_yaml_path",
     "validate_schema_yaml_text",
     "get_table_descriptions",
@@ -710,41 +713,85 @@ def validate_schema_yaml_text(text: str) -> SchemaConfig:
 _cache: dict[str, Any] = {}
 
 
+def _cache_entries(config: SchemaConfig) -> dict[str, Any]:
+    """The process-lifetime cache's content for *config* (``_loaded`` included)."""
+    return {
+        "table_descriptions": {
+            name: table.description for name, table in config.tables.items()
+        },
+        "table_columns": {
+            name: table.columns
+            for name, table in config.tables.items()
+            if table.columns
+        },
+        "relationships": {
+            f"{rel.from_table} -> {rel.to_table}": rel.join_sql
+            for rel in config.relationships
+        },
+        "table_schemas": {
+            name: ".".join(qualifier)
+            for name, table in config.tables.items()
+            if (qualifier := effective_qualifier(name, table.db_schema))
+        },
+        "table_datasources": {
+            name: table.datasource for name, table in config.tables.items()
+        },
+        "resolvable_columns": {
+            name: table.resolvable_columns
+            for name, table in config.tables.items()
+            if table.resolvable_columns
+        },
+        "prefetchable_columns": {
+            name: table.prefetchable_columns
+            for name, table in config.tables.items()
+            if table.prefetchable_columns
+        },
+        "_loaded": True,
+    }
+
+
 def _schema_cache() -> dict[str, Any]:
     if "_loaded" not in _cache:
-        cfg = load_schema()
-        _cache["table_descriptions"] = {
-            name: table.description for name, table in cfg.tables.items()
-        }
-        _cache["table_columns"] = {
-            name: table.columns
-            for name, table in cfg.tables.items()
-            if table.columns
-        }
-        _cache["relationships"] = {
-            f"{rel.from_table} -> {rel.to_table}": rel.join_sql
-            for rel in cfg.relationships
-        }
-        _cache["table_schemas"] = {
-            name: ".".join(qualifier)
-            for name, table in cfg.tables.items()
-            if (qualifier := effective_qualifier(name, table.db_schema))
-        }
-        _cache["table_datasources"] = {
-            name: table.datasource for name, table in cfg.tables.items()
-        }
-        _cache["resolvable_columns"] = {
-            name: table.resolvable_columns
-            for name, table in cfg.tables.items()
-            if table.resolvable_columns
-        }
-        _cache["prefetchable_columns"] = {
-            name: table.prefetchable_columns
-            for name, table in cfg.tables.items()
-            if table.prefetchable_columns
-        }
-        _cache["_loaded"] = True
+        _cache.update(_cache_entries(load_schema()))
     return _cache
+
+
+@contextmanager
+def schema_in_effect(config: SchemaConfig) -> Iterator[None]:
+    """Make the ``get_*`` accessors and :class:`SchemaRegistry` answer for *config*.
+
+    For previewing a ``schema.yaml`` that is not (yet) the one on disk: the
+    process-lifetime cache is replaced for the length of the ``with`` block,
+    and its previous content (loaded or not) is put back afterwards. Like
+    :func:`config.override_settings` it changes process-wide state, so it is
+    for single-threaded tools and tests, never for code serving requests.
+    Modules that took their own copy of a value (:mod:`schema_data.columns`,
+    :mod:`schema_data.relationships`) keep what they hold.
+
+    Parameters
+    ----------
+    config:
+        A validated schema, e.g. from :func:`validate_schema_yaml_text`.
+
+    Yields
+    ------
+    None
+
+    Examples
+    --------
+    >>> config = validate_schema_yaml_text("tables: {T: {description: d, columns: {A: a}}}")
+    >>> with schema_in_effect(config):
+    ...     get_table_columns()
+    {'T': {'A': 'a'}}
+    """
+    saved = dict(_cache)
+    _cache.clear()
+    _cache.update(_cache_entries(config))
+    try:
+        yield
+    finally:
+        _cache.clear()
+        _cache.update(saved)
 
 
 def get_table_descriptions() -> dict[str, str]:
