@@ -578,21 +578,17 @@ def _relationships_yaml(relationships: list[dict], generated_at: str = "") -> st
 # ===========================================================================
 
 _REPO_ROOT = Path(__file__).resolve().parent
-_EXAMPLE_CONFIG_DIR = _REPO_ROOT / "project_config.example"
 
 
 def _config_loader():
     """Return the ``knowledge.config_loader`` module, importable on a fresh checkout.
 
-    Importing anything under ``knowledge`` runs ``knowledge/__init__.py``,
-    which reads five files of the *default* ``project_config/`` (aliases,
-    business rules, entities, examples, metrics) on the spot. On a fresh
-    checkout, or a ``project_config/`` the wizard has only half filled, that
-    raises ``ConfigNotFoundError`` before the wizard can validate or even name
-    what is missing. The import is therefore made once with the loaders
-    pointed at the committed ``project_config.example/``, which always
-    complete; the wizard never reads those values, only the loader functions
-    and models, and re-points them at the output directory before use.
+    ``knowledge/__init__.py`` re-exports its names lazily, so importing the
+    loaders reads no file of ``project_config/``: on a fresh checkout, or a
+    ``project_config/`` the wizard has only half filled, the import succeeds
+    and the wizard can validate and name what is missing. (It used to read
+    five files at import time, and the import was made once with the loaders
+    pointed at ``project_config.example/`` to survive that.)
 
     Returns:
         The imported ``knowledge.config_loader`` module.
@@ -601,17 +597,9 @@ def _config_loader():
         ImportError: When the module cannot be imported at all, e.g. the
             wizard is run outside a full checkout.
     """
-    import sys
-
-    module = sys.modules.get("knowledge.config_loader")
-    if module is not None:
-        return module
-    from config import override_settings
-
     try:
-        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
-            import knowledge.config_loader as module
-    except Exception as exc:  # noqa: BLE001 - ConfigNotFoundError, ValueError, ...
+        import knowledge.config_loader as module
+    except Exception as exc:  # noqa: BLE001 - ImportError, a broken install, ...
         raise ImportError(
             f"could not import knowledge.config_loader ({type(exc).__name__}: {exc}); "
             "run the wizard from a complete checkout"
