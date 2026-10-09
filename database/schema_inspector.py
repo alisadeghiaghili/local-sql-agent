@@ -45,6 +45,8 @@ from sqlalchemy import create_engine, inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
+from core.redaction import redact_db_url
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -711,5 +713,25 @@ class SchemaInspector:
 
     @staticmethod
     def _redact_url(url: str) -> str:
-        """Remove password from a connection URL for safe logging."""
-        return re.sub(r":[^:@/]+@", ":***@", url)
+        """Mask every credential in a connection URL, for logs and snapshots.
+
+        Delegates to :func:`core.redaction.redact_db_url`, which parses the
+        URL instead of pattern-matching it, so a password containing ``@``,
+        ``:`` or ``/`` and a ``PWD=`` in an ``odbc_connect`` value are masked
+        too.
+
+        Args:
+            url: A SQLAlchemy connection string.
+
+        Returns:
+            The URL with credentials replaced by ``***`` (or a placeholder
+            when it cannot be parsed).
+
+        Raises:
+            Nothing.
+
+        Examples:
+            >>> SchemaInspector._redact_url("mssql+pyodbc://nlq:p@ss@db1/Sales")
+            'mssql+pyodbc://nlq:***@db1/Sales'
+        """
+        return redact_db_url(url)

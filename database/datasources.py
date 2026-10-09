@@ -99,6 +99,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
 from core.persian import normalize_for_matching
+from core.redaction import redact_db_url
 from core.yaml_loading import safe_load_strict
 
 if TYPE_CHECKING:
@@ -963,9 +964,11 @@ class DataSource:
         if not self.url:
             return "<not set>"
         try:
-            return make_url(self.url).render_as_string(hide_password=True)
+            make_url(self.url)
         except ArgumentError:
             return "<unparsable connection URL>"
+        # Parsed, so redact_db_url also masks a PWD= inside odbc_connect.
+        return redact_db_url(self.url)
 
 
 def default_datasource_name(settings: "Settings | None" = None) -> str:
