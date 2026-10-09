@@ -338,7 +338,6 @@ class TestOverrideSettings:
 
     def test_consumer_module_sees_patch(self):
         """database/executor reads cfg.settings at call-time, so it must see the patch."""
-        import database.executor as executor_mod
         with override_settings(max_rows_returned=77):
             assert cfg.settings.max_rows_returned == 77
 
@@ -362,7 +361,6 @@ class TestLoggerThreadSafety:
         import json
         import threading
         from datetime import datetime
-        from unittest.mock import patch as mpatch
 
         from logs.query_log import QueryLog
         import logs.logger as log_mod
@@ -379,8 +377,10 @@ class TestLoggerThreadSafety:
                 threading.Thread(target=log_mod.save_log, args=(make_log(i),))
                 for i in range(20)
             ]
-            for t in threads: t.start()
-            for t in threads: t.join()
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
         log_path = tmp_path / "query_log.jsonl"
         lines = log_path.read_text(encoding="utf-8").strip().splitlines()

@@ -11,7 +11,12 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # Annotation-only: llm.router imports this module, so a runtime import
+    # here would be circular (see generate_structured's docstring).
+    from llm.router import PromptSegments
 
 
 @dataclass(frozen=True)

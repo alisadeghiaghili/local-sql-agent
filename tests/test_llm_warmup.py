@@ -40,7 +40,7 @@ from core.models import RetrievalContext
 from llm import warmup
 from llm.base import LLMBackend
 from llm.providers import MockBackend, OpenAIBackend
-from llm.router import LLMRouter, PromptSegments, build_prompt_segments
+from llm.router import LLMRouter, build_prompt_segments
 from llm.sql_agent import SQLAgent
 
 SYSTEM_PROMPT = "You are a T-SQL expert."

@@ -36,14 +36,14 @@ class TestNonSqliteAppDbUsesIdleAwarePing:
 
     def test_honours_db_pool_pre_ping_false(self):
         with cfg.override_settings(db_pool_pre_ping=False), \
-             patch("appdb.engine.create_engine") as mock_create, \
+             patch("appdb.engine.create_engine"), \
              patch("appdb.engine.install_idle_aware_ping") as mock_install:
             build_engine(_NON_SQLITE_URL)
         mock_install.assert_not_called()
 
     def test_honours_db_pool_ping_idle_seconds_override(self):
         with cfg.override_settings(db_pool_ping_idle_seconds=0), \
-             patch("appdb.engine.create_engine") as mock_create, \
+             patch("appdb.engine.create_engine"), \
              patch("appdb.engine.install_idle_aware_ping") as mock_install:
             build_engine(_NON_SQLITE_URL)
         assert mock_install.call_args.args[1] == 0

@@ -365,8 +365,9 @@ def _seed(directory: Path, names: tuple[str, ...]) -> None:
 
 class TestStep7WithMissingFiles:
     """On a fresh checkout step 7 died with a ``ConfigNotFoundError``
-    traceback: ``import knowledge`` reads five files of the default
-    ``project_config/`` at import time, before the wizard could look."""
+    traceback: ``import knowledge`` used to read five files of the default
+    ``project_config/`` at import time, before the wizard could look. The
+    package now loads lazily; this pins the wizard's behaviour end to end."""
 
     def test_a_fresh_checkout_gets_a_report_not_a_traceback(self, tmp_path):
         db = tmp_path / "wizard.db"

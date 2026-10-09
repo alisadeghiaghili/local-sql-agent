@@ -102,7 +102,6 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
 from typing import Any, Generator
 
 # ---------------------------------------------------------------------------
@@ -181,6 +180,53 @@ def _parse_port(env_var: str, default: str) -> int:
         raise ValueError(f"{env_var} must be between 1 and 65535 (got {port})")
     return port
 
+
+def _parse_optional_percent(env_var: str) -> float | None:
+    """Parse *env_var* as an optional percentage in ``[0, 100]``.
+
+    An unset or blank variable means "not configured" and yields ``None``
+    (the feature stays off). A set variable that is not a number, or lies
+    outside ``0``-``100``, raises a message naming the variable and the bad
+    value rather than a bare ``float()`` error, for the same reason as
+    :func:`_parse_port`.
+
+    Args:
+        env_var: Name of the environment variable to read.
+
+    Returns:
+        The percentage as a float, or ``None`` when unset or blank.
+
+    Raises:
+        ValueError: If the value is not a finite number between 0 and 100.
+
+    Examples:
+        >>> import os
+        >>> os.environ.pop("_DEMO_PCT", None) is None
+        True
+        >>> _parse_optional_percent("_DEMO_PCT") is None
+        True
+        >>> os.environ["_DEMO_PCT"] = " 92.5 "
+        >>> _parse_optional_percent("_DEMO_PCT")
+        92.5
+        >>> os.environ["_DEMO_PCT"] = "120"
+        >>> _parse_optional_percent("_DEMO_PCT")
+        Traceback (most recent call last):
+            ...
+        ValueError: _DEMO_PCT must be a percentage between 0 and 100 (got '120')
+        >>> del os.environ["_DEMO_PCT"]
+    """
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not (0.0 <= value <= 100.0):  # also rejects nan
+        raise ValueError(
+            f"{env_var} must be a percentage between 0 and 100 (got {raw!r})"
+        )
+    return value
 
 
 def _has_placeholder_login_host(url: str) -> bool:
@@ -1405,6 +1451,35 @@ class Settings:
     since it means SQL that used to pass the security guard no longer does
     (or the generator started producing worse SQL). Overridable per
     invocation via ``python -m eval.cli run --max-guard-rejection-increase``."""
+
+    eval_min_accuracy: float | None = field(
+        default_factory=lambda: _parse_optional_percent("EVAL_MIN_ACCURACY")
+    )
+    """Optional absolute floor (percent, 0-100) on the run's overall
+    ``accuracy_pct``. ``eval_max_accuracy_drop_pct`` only blocks a *relative*
+    drop against a stored baseline, so a baseline that was already poor (or
+    a slow slide in steps each smaller than the allowed drop, re-recorded
+    every time) never trips it. This is the figure a release is not allowed
+    to go below whatever the baseline says. ``None`` (default, variable
+    unset or blank) disables the check, so nothing changes until an
+    operator sets it. Unlike the drop threshold it needs no
+    ``--baseline``. Only meaningful for ``--live`` runs: an offline run
+    replays the golden set's own ``expected_sql`` and is 100% by
+    construction. Overridable per invocation via
+    ``python -m eval.cli run --min-accuracy``."""
+
+    eval_min_source_accuracy: float | None = field(
+        default_factory=lambda: _parse_optional_percent("EVAL_MIN_SOURCE_ACCURACY")
+    )
+    """Optional absolute floor (percent, 0-100) applied to *each* data
+    source's execution accuracy separately (the per-source figures in the
+    report, built from the golden cases' ``expected_datasource``). An
+    overall figure can stay high while one small source collapses; this
+    makes that a failure. When set but the run has no per-source figures
+    (no golden case names an ``expected_datasource``) the gate fails
+    rather than pass unchecked. ``None`` (default) disables the check.
+    Overridable per invocation via ``python -m eval.cli run
+    --min-source-accuracy``."""
 
     eval_golden_path: str = field(
         default_factory=lambda: os.getenv("EVAL_GOLDEN_PATH", "eval_data/golden.jsonl")

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from eval.models import CaseResult
 from eval.report import (

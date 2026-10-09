@@ -422,7 +422,6 @@ class TurnEngine:
         req_id = request_id or uuid.uuid4().hex[:12]
         turn_id = f"t_{uuid.uuid4().hex[:8]}"
         index = len(record.turns) + 1
-        static_prefix_tokens = static_prefix_token_estimate(system_prompt)
         # SECURITY (Finding 8, 2026 audit): when this seam is wired to a
         # real T0 cache, its key MUST be built via
         # security.auth.scope_key(principal, memory_used=<this turn's

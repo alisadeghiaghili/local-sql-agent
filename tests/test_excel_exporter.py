@@ -8,7 +8,6 @@ import os
 from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 from exporters.excel_exporter import export_excel
 

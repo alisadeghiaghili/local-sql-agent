@@ -174,7 +174,6 @@ def canonical_repr(
     # pd.NA) to float64 -- turning 1 into 1.0. Column-wise extraction
     # preserves each column's native Python values faithfully.
     original_columns = list(df.columns)
-    columns_as_str = [str(c) for c in original_columns]
     value_lists = {
         str(col): df[col].tolist() for col in original_columns
     }

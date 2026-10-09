@@ -70,7 +70,7 @@ class TestPoolPrePingIsConfigurable:
 class TestPoolPingIdleSecondsIsConfigurable:
     def test_defaults_to_60(self):
         get_engine.cache_clear()
-        with patch("database.connection.create_engine") as mock_create, \
+        with patch("database.connection.create_engine"), \
              patch("database.connection.install_idle_aware_ping") as mock_install:
             get_engine()
         assert mock_install.call_args.args[1] == 60
@@ -79,7 +79,7 @@ class TestPoolPingIdleSecondsIsConfigurable:
     def test_honours_db_pool_ping_idle_seconds_override(self):
         get_engine.cache_clear()
         with cfg.override_settings(db_pool_ping_idle_seconds=0), \
-             patch("database.connection.create_engine") as mock_create, \
+             patch("database.connection.create_engine"), \
              patch("database.connection.install_idle_aware_ping") as mock_install:
             get_engine()
         assert mock_install.call_args.args[1] == 0

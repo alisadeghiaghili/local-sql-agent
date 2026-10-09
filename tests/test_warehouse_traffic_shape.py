@@ -36,7 +36,6 @@ way to "exercise the engine factory itself."
 
 from __future__ import annotations
 
-import sqlite3
 from unittest.mock import patch
 
 from sqlalchemy import create_engine as real_create_engine

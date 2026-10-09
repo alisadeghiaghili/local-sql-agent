@@ -254,7 +254,6 @@ def _text_validators() -> dict[str, Any]:
         SessionPolicyConfig,
         validate_yaml_text,
     )
-    from schema_data.registry import validate_schema_yaml_text
 
     return {
         "aliases.yaml": lambda text: validate_yaml_text("aliases.yaml", text, AliasesConfig),
