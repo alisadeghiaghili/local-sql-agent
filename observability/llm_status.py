@@ -68,6 +68,24 @@ What changed, and what didn't, moving off Ollama
   endpoint. Deliberately a boolean, not a text excerpt: see this field's
   parameter docstring below for why.
 
+* **``ttft_ms`` / ``generation_ms`` split the ``llm`` stage** -- when the
+  provider streams (``LLM_STREAM_TIMINGS=true``, see
+  :meth:`llm.providers.OpenAIBackend.generate_with_meta`): time to the
+  first generated token (queue plus prefill; the number a cold prefix
+  cache or a busy server inflates) and first token to end of stream (what
+  the model's decoding cost, reasoning included). ``None`` for a
+  non-streaming call, which sees only the total; ``prefill_ms`` and
+  ``decode_ms`` stay ``None`` because a first token is not a clean prefill
+  boundary on a server that queues, and this block does not invent
+  numbers.
+* **``reasoning_tokens`` / ``reasoning_tokens_estimated``** -- how many of
+  ``completion_tokens`` the model spent reasoning. The server's own count
+  (``usage.completion_tokens_details.reasoning_tokens``) when it reports
+  one; otherwise an estimate from the reasoning text's length, and
+  ``reasoning_tokens_estimated`` says which. ``None`` when the response
+  shows no reasoning at all. Counts only: the reasoning text itself never
+  enters this block.
+
 ``prefix_cache_hit``
 ---------------------
 Unchanged in spirit, sourced from the new token fields: ``prefix_cache_hit
@@ -142,6 +160,10 @@ class LlmStatus(TypedDict):
     provider: str
     fallback_used: bool
     reasoning_detected: bool
+    ttft_ms: int | None
+    generation_ms: int | None
+    reasoning_tokens: int | None
+    reasoning_tokens_estimated: bool
 
 
 def _int(value: Any) -> int:
@@ -171,6 +193,10 @@ def build_llm_status(
     fallback_used: bool = False,
     total_ms: int | None = None,
     reasoning_detected: bool = False,
+    ttft_ms: int | None = None,
+    generation_ms: int | None = None,
+    reasoning_tokens: int | None = None,
+    reasoning_tokens_estimated: bool = False,
 ) -> LlmStatus:
     """Build the §6 ``llm`` block from a raw OpenAI-compatible response and call metadata.
 
@@ -270,6 +296,23 @@ def build_llm_status(
         data), and this block is embedded in the audit trail, which must
         never carry row values -- see ``observability/audit.py``. ``False``
         by default, same as an endpoint that never said anything about it.
+    ttft_ms:
+        Milliseconds from sending the request to the first generated token
+        (queue plus prefill), measured by a streaming backend (see
+        ``llm.providers.OpenAIBackend.generate_with_meta``'s ``"ttft_ms"``
+        meta field). ``None`` (the default) when the call was not streamed.
+    generation_ms:
+        Milliseconds from the first token to the end of the response, so
+        ``ttft_ms + generation_ms == total_ms`` for a streamed call.
+        ``None`` when ``ttft_ms`` is.
+    reasoning_tokens:
+        How many of the completion's tokens were reasoning (see
+        ``llm.providers._reasoning_token_stats``); ``None`` when the
+        response showed no reasoning, which is not the same as ``0``.
+    reasoning_tokens_estimated:
+        ``True`` when *reasoning_tokens* was estimated from the reasoning
+        text's length rather than reported by the server. ``False`` when it
+        is the server's number, and when there is no number.
 
     Returns
     -------
@@ -391,7 +434,41 @@ def build_llm_status(
         provider=provider if provider is not None else backend,
         fallback_used=fallback_used,
         reasoning_detected=reasoning_detected,
+        ttft_ms=ttft_ms,
+        generation_ms=generation_ms,
+        reasoning_tokens=reasoning_tokens,
+        reasoning_tokens_estimated=reasoning_tokens_estimated,
     )
+
+
+def latency_fields_from_meta(meta: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The latency-split keyword arguments of :func:`build_llm_status`, from a backend's *meta*.
+
+    Shared by every call site that builds the block from
+    :meth:`~llm.base.LLMBackend.generate_with_meta`'s metadata
+    (``api/runner.py``, ``session/engine.py``), for the same reason
+    :func:`finish_reason_from_meta` is: one function, not N copies of the
+    same four ``meta.get`` calls drifting apart. A backend that supplies
+    none of these (:class:`~llm.providers.MockBackend`, a non-streaming
+    call) yields the all-unknown values, so the block is built exactly as
+    before.
+
+    Examples
+    --------
+    >>> latency_fields_from_meta(
+    ...     {"ttft_ms": 900, "generation_ms": 2100, "reasoning_tokens": 80,
+    ...      "reasoning_tokens_estimated": True})
+    {'ttft_ms': 900, 'generation_ms': 2100, 'reasoning_tokens': 80, 'reasoning_tokens_estimated': True}
+    >>> latency_fields_from_meta(None)
+    {'ttft_ms': None, 'generation_ms': None, 'reasoning_tokens': None, 'reasoning_tokens_estimated': False}
+    """
+    meta = meta or {}
+    return {
+        "ttft_ms": meta.get("ttft_ms"),
+        "generation_ms": meta.get("generation_ms"),
+        "reasoning_tokens": meta.get("reasoning_tokens"),
+        "reasoning_tokens_estimated": bool(meta.get("reasoning_tokens_estimated", False)),
+    }
 
 
 #: Error code for "the model was cut off before it finished", as distinct

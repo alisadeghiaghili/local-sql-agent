@@ -103,7 +103,7 @@ from api.query_cache import query_cache
 from database.errors import classify_database_error
 from database.routing import target_datasource_or_none
 from llm.base import LLMBackend
-from llm.router import TaskType, build_prompt_segments
+from llm.router import LLMRouter, TaskType, build_prompt_segments
 from llm.source_routing import SourceRouting, generate_with_source_fallback
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record
@@ -112,6 +112,7 @@ from observability.llm_status import (
     build_llm_status,
     finish_reason_from_meta,
     is_truncated_empty_completion,
+    latency_fields_from_meta,
     truncated_output_message,
 )
 from observability.timing import StageTimer
@@ -152,6 +153,21 @@ def _get_agent() -> SQLAgent:
                 logger.debug("Constructing SQLAgent singleton")
                 agent = SQLAgent()
     return agent
+
+
+def get_llm_router() -> LLMRouter:
+    """The :class:`~llm.router.LLMRouter` real requests are sent through.
+
+    The shared agent's router, so a prefix-cache warm-up
+    (:mod:`llm.warmup`) goes to the very backend, and through the very
+    governance gate, the first real question will. Constructs the agent on
+    first use, like :func:`_get_agent`.
+
+    Returns
+    -------
+    llm.router.LLMRouter
+    """
+    return _get_agent()._router
 
 
 def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
@@ -620,6 +636,7 @@ def _llm_status_block(
         fallback_used=bool(meta.get("fallback_used", False)),
         total_ms=meta.get("total_ms"),
         reasoning_detected=bool(meta.get("reasoning_detected", False)),
+        **latency_fields_from_meta(meta),
     )
 
 

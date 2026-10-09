@@ -59,7 +59,7 @@ them is drawn by one rule:
 | Domain knowledge (aliases, rules, examples, metrics) | ✅ | |
 | Audit log — aggregate and individual records | ✅ | ✅ |
 | Feedback triage | ✅ | ✅ |
-| Maintenance mode, cache controls, `verify_deployment` | ✅ | |
+| Maintenance mode, cache controls, LLM prefix-cache warm-up (`POST /admin/llm/warmup`), `verify_deployment` | ✅ | |
 
 ### 2.1 The escalation paths this closes
 

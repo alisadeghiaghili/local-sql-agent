@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """``/admin/maintenance``, ``/admin/schema-drift``, ``/admin/vocabulary``,
-``/admin/usage``, ``/admin/cache/*``, ``/admin/security/*`` — the
-operational tier, admin panel phase 6.
+``/admin/usage``, ``/admin/cache/*``, ``/admin/llm/warmup``,
+``/admin/security/*`` — the operational tier, admin panel phase 6.
 
 ``docs/admin-panel-architecture.md`` §3 tier 3 is the design contract; the
 frozen phase 6 spec is what this module implements: the operator-facing
@@ -296,6 +296,57 @@ def admin_cache_invalidate(
             detail=f"No cache entry for question={req.question!r} mode={req.mode!r}",
         )
     return {"removed": True, "stats": query_cache.stats()}
+
+
+# ---------------------------------------------------------------------------
+# 5b. LLM prefix-cache warm-up (latency)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/llm/warmup",
+    summary="Warm the model server's prompt-prefix cache now (operations, recorded)",
+)
+def admin_llm_warmup(principal: Principal = Depends(require_operations)) -> dict[str, Any]:
+    """Run the startup prefix-cache warm-up (:mod:`llm.warmup`) on demand.
+
+    The use for it is the moment after the model server restarted, or after
+    a configuration change rewrote the prompt prefix: the next question
+    would otherwise pay the full prefill (about a minute on a large local
+    model). It sends one one-token request per data source that uses the
+    static prefix, so it costs one prefill and no generation, and it touches
+    no data and no analyst's quota -- hence ``operations``, the capability
+    of the other "re-read what the engine already reads" actions here
+    (vocabulary refresh, cache clear). It runs whatever
+    ``LLM_PREFIX_WARMUP_ON_STARTUP`` says; that flag only governs startup.
+
+    Synchronous: it returns when the warm-up has finished, with one entry
+    per data source (``status``, ``duration_ms``, ``prompt_tokens``, never
+    prompt text), bounded by ``LLM_PREFIX_WARMUP_TIMEOUT_SECONDS``. A
+    source that failed or was skipped is reported in the body, not as an
+    HTTP error: the request itself did what it was asked.
+
+    Raises
+    ------
+    HTTPException
+        ``503`` if the system prompt has not been loaded (the server did
+        not start through its lifespan); ``409`` if a warm-up is already
+        running, in which case nothing was sent.
+    """
+    import api.runner as runner
+    from llm.warmup import warm_prefix_cache
+
+    if not _system_prompt:
+        raise HTTPException(status_code=503, detail="System prompt not loaded.")
+    results = warm_prefix_cache(_system_prompt, runner.get_llm_router)
+    if results is None:
+        raise HTTPException(
+            status_code=409, detail="A prefix-cache warm-up is already running.",
+        )
+    record_admin_action(
+        principal.id, OPERATIONS_CAPABILITY, "llm.warmup", "prefix_cache",
+        detail={r.source or "(whole schema)": r.status for r in results},
+    )
+    return {"results": [r.as_dict() for r in results]}
 
 
 # ---------------------------------------------------------------------------

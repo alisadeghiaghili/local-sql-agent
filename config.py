@@ -894,6 +894,74 @@ class Settings:
     ``None`` (default, unset) disables the budget check entirely — see
     ``llm.router.LLMRouter._call_chain``."""
 
+    # ── Latency: prefix-cache warm-up and the split llm stage ───────────────
+    llm_prefix_warmup_on_startup: bool = field(
+        default_factory=lambda: os.getenv(
+            "LLM_PREFIX_WARMUP_ON_STARTUP", "true",
+        ).lower() in ("1", "true", "yes")
+    )
+    """When ``True``, ``api/server.py``'s ``lifespan`` starts a background
+    thread at startup that sends the model server one minimal request per
+    data source whose prompt uses the static prefix
+    (:func:`~prompt_engine.static_prefix.should_use_static_prefix`): the
+    messages are exactly the cacheable prefix real requests start with and
+    ``max_tokens`` is ``1``. The server computes and keeps that prefix's
+    KV cache, so the first real question after a restart does not pay the
+    full prefill (about a minute on a large local model) -- see
+    :mod:`llm.warmup`.
+
+    Defaults to ``True``. It is safe as a default because it does nothing
+    unless there is something to warm: a deployment whose schema is over
+    ``PROMPT_RETRIEVAL_TOKEN_BUDGET`` (the retrieval path, no stable
+    prefix), ``LLM_PROVIDER=mock``, and an endpoint that is not trusted
+    (``LLM_ALLOW_REMOTE`` is the same gate real requests pass) all skip it.
+    It never blocks startup (the server accepts requests at once; a
+    question that arrives mid-warm-up simply runs as it would have),
+    and every failure is logged and swallowed. It only helps if the
+    model server caches prefixes (``vllm serve --enable-prefix-caching``,
+    on by default in recent vLLM, or llama.cpp's prompt cache); on a
+    server that does not, it costs one extra prefill at startup and
+    nothing more. Set to ``false`` for a deployment whose model server is
+    shared and billed per token, or whose startup must send no LLM
+    traffic. ``POST /admin/llm/warmup`` runs the same warm-up on demand,
+    whatever this is set to."""
+
+    llm_prefix_warmup_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LLM_PREFIX_WARMUP_TIMEOUT_SECONDS", "180"))
+    )
+    """Total time budget (seconds) for one warm-up pass, across all data
+    sources. Each source's request gets whatever is left of the budget as
+    its HTTP timeout, and a source reached after the budget is spent is
+    skipped (logged, not retried). The request is never retried: a warm-up
+    that fails is a warm-up the next real question replaces. Must be
+    greater than zero. The default is three times the ~1 minute first-
+    question prefill that motivated the feature."""
+
+    llm_stream_timings: bool = field(
+        default_factory=lambda: os.getenv("LLM_STREAM_TIMINGS", "false").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, ``llm.providers.OpenAIBackend`` sends each
+    chat-completions request with ``stream=true`` (and
+    ``stream_options={"include_usage": true}``) and reassembles the
+    streamed chunks into the same response it would have received without
+    streaming -- same ``content``, reasoning text, ``finish_reason`` and
+    ``usage`` -- while timing the first token. The audit ``llm`` block then
+    carries ``ttft_ms`` (queue plus prefill) and ``generation_ms`` (first
+    token to last) alongside ``total_ms``, which is the only way to tell a
+    cold prefix cache or a busy server from a long generation, and
+    reasoning from answer.
+
+    Defaults to ``False``: the non-streaming request is what this project
+    has always sent, and the streamed one differs in one way a deployment
+    may notice -- the request timeout then bounds the gap between chunks
+    as well as the whole call (see
+    :meth:`llm.providers.OpenAIBackend.generate_with_meta`), and some
+    proxies buffer or drop server-sent events. Turn it on to measure,
+    compare ``total_ms`` with it off, and leave it on if nothing changes
+    (it should not). Applies to free-text generation; the constrained
+    (``LLM_STRUCTURED_OUTPUT``) request is not streamed."""
+
     # ── Phase 3: conversational sessions (docs/api-contract-v2.md §9) ──────
     session_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("SESSION_TTL_SECONDS", "1800"))
@@ -1656,6 +1724,13 @@ class Settings:
         from llm.providers import load_extra_body
 
         load_extra_body()
+
+        if self.llm_prefix_warmup_timeout_seconds <= 0:
+            raise ValueError(
+                "LLM_PREFIX_WARMUP_TIMEOUT_SECONDS must be greater than zero "
+                f"(got {self.llm_prefix_warmup_timeout_seconds}); set "
+                "LLM_PREFIX_WARMUP_ON_STARTUP=false to turn the warm-up off instead."
+            )
 
 
 @lru_cache(maxsize=1)

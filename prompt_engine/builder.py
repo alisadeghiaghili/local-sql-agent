@@ -338,15 +338,58 @@ class PromptBuilder:
         True
         """
         prefix = build_static_prefix(system_prompt, source)
+        return prefix + PromptBuilder.build_static_suffix(
+            question, context,
+            session_context=session_context, resolved_values=resolved_values,
+            access_notes=access_notes,
+        )
+
+    @staticmethod
+    def build_static_suffix(
+        question: str,
+        context: RetrievalContext,
+        *,
+        session_context: str = "",
+        resolved_values: dict[str, list[str]] | None = None,
+        access_notes: str = "",
+    ) -> str:
+        """The per-request tail :meth:`build_static` appends to the cached prefix.
+
+        Split out so :func:`llm.router.build_prompt_segments` can take the
+        prefix and the tail separately instead of concatenating them only to
+        cut the result apart again at the prefix's length (a copy of the
+        whole prefix per request, which grows with the schema). Exactly the
+        text :meth:`build_static` has always appended, by construction:
+        ``build_static`` is now ``prefix + build_static_suffix(...)``.
+
+        Parameters
+        ----------
+        question, context, session_context, resolved_values, access_notes:
+            As in :meth:`build`; the prefix and *source* are not inputs here
+            because nothing in the suffix depends on them.
+
+        Returns
+        -------
+        str
+
+        Examples
+        --------
+        >>> from core.models import RetrievalContext
+        >>> ctx = RetrievalContext(filters={"Ring": "تالار پتروشیمی"})
+        >>> tail = PromptBuilder.build_static_suffix("q1", ctx)
+        >>> PromptBuilder.build_static("q1", "You are a T-SQL expert.", ctx).endswith(tail)
+        True
+        >>> "تالار پتروشیمی" in tail and "q1" in tail
+        True
+        """
         filters = "\n".join(f"{key}: {value}" for key, value in context.filters.items())
-        suffix = SUFFIX_TEMPLATE.format(
+        return SUFFIX_TEMPLATE.format(
             filters=filters,
             resolved_values=_render_resolved_values(resolved_values),
             session_context=session_context,
             access_notes=_render_access_notes(access_notes),
             question=question,
         )
-        return prefix + suffix
 
     @staticmethod
     def _build_retrieval(

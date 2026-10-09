@@ -278,6 +278,9 @@ python -m api
 | `CACHE_MAX_SIZE` | `256` | Maximum number of cached query results |
 | `LLM_NUM_PREDICT` | `512` | Max tokens the model may generate (`max_tokens`). Too low for a **reasoning** model, which spends this budget thinking before it answers — see `.env.example` |
 | `LLM_EXTRA_BODY` | *(empty)* | JSON object merged into every chat-completions request. How you turn a model's reasoning off, since that is not in the OpenAI schema and every server spells it differently |
+| `LLM_PREFIX_WARMUP_ON_STARTUP` | `true` | Send the model server each data source's static prompt prefix once at start-up (background thread, `max_tokens=1`) so the first question does not pay the full prefill. Inert unless the static-prefix path is used; needs prefix caching on the model server (`vllm serve --enable-prefix-caching`). `POST /admin/llm/warmup` does it on demand. Runbook §20 |
+| `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` | `180` | Total time budget of one warm-up pass |
+| `LLM_STREAM_TIMINGS` | `false` | Stream the model call and reassemble the same response, to record `ttft_ms` (queue + prefill) and `generation_ms` in the audit `llm` block; `reasoning_tokens` is recorded either way. Runbook §20.4 |
 | `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Estimate (`len(text) // 4`, which undercounts Persian by about 15%) up to which the whole schema goes into the prompt as one cacheable, byte-identical prefix; above it the prompt is built per question from retrieved tables. With several data sources it applies to each source's own prefix, not their sum. `python scripts/prompt_budget.py` measures real tokens and prints the value to set |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |

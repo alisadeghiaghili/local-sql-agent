@@ -79,6 +79,14 @@ import os
 os.environ.setdefault("RATE_LIMIT_REQUESTS", "1000000")
 os.environ.setdefault("RATE_LIMIT_BURST", "1000")
 
+# The startup prefix-cache warm-up (llm/warmup.py) is on by default and
+# starts a background thread from the lifespan. A test that enters the
+# lifespan (a TestClient used as a context manager) must not have a thread
+# of its own reaching for a model server that is not there, so the suite
+# runs with it off; tests/test_llm_warmup.py turns it on explicitly, with a
+# fake backend, through override_settings.
+os.environ.setdefault("LLM_PREFIX_WARMUP_ON_STARTUP", "false")
+
 # ---------------------------------------------------------------------------
 # Session persistence, disabled by default for the suite
 # ---------------------------------------------------------------------------
