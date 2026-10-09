@@ -46,10 +46,12 @@ is the sign you can move on: do not continue past a step that did not show it.
 4. **Create `project_config/`**: `cp -r project_config.example project_config`,
    then replace the example's content with your own domain. Two optional
    helpers draft it from the live database: `python -m database.schema_inspector_cli`
-   drafts `schema.yaml`, and the setup wizard `python setup_project.py` drafts
+   drafts a first `schema.yaml`, and the setup wizard `python setup_project.py` drafts
    `entities.yaml`, `aliases.yaml`, `business_rules.yaml` and `examples.yaml`
    (§2.1 and §2.2; the wizard does not write `schema.yaml` and does not set
-   `datasource:`). *Done when:* `project_config/` holds the nine YAML files
+   `datasource:`). Whatever the origin of `schema.yaml`, step 6 brings its
+   structure in step with the databases, so a hand-typed table and column list
+   is enough to start from. *Done when:* `project_config/` holds the nine YAML files
    and `system_prompt.md`, `schema.yaml` lists your tables, and, if you ran
    the wizard, its last line reads `Setup complete.` followed by the counts.
 5. **Describe the databases** (*several databases only*): write
@@ -58,27 +60,38 @@ is the sign you can move on: do not continue past a step that did not show it.
    variable its `password_env` names.
    *Done when:* `python -c "from database.datasources import datasource_names; print(datasource_names())"`
    prints every source name, and the check of step 3 still prints `settings ok`.
-6. **Work out each table's `datasource:`** (*several databases only*):
-   `python scripts/assign_datasources.py`. Skipping it makes the preflight in
-   step 11 fail with `Tables are in their data source` as soon as a table
-   lives outside the default source (§3.1).
+6. **Sync `schema.yaml`'s structure with the databases**:
+   `python scripts/sync_schema.py` (any number of databases). It reads every
+   source's catalogue (three `INFORMATION_SCHEMA` views per source, names and
+   types only), and writes `schema.synced.yaml` next to `schema.yaml`: your file
+   with every comment and description kept, plus the `datasource:` line of every
+   table (several databases), the columns the databases have and the file lacks
+   (as drafts), a `column_types:` map, and a marker on every column or table
+   the databases do not have (§16.3). It also writes `relationships.proposed.yaml`
+   for review. Skipping it makes the preflight of step 11 fail with
+   `Tables are in their data source` (several databases) or
+   `Schema structure matches the databases`.
    *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
    (§16.3).
-7. **Review the proposal, replace `schema.yaml`, check** (*several databases
-   only*): read `project_config/schema.with_datasources.yaml`, copy
-   `schema.yaml` to `schema.yaml.bak`, move the proposal over `schema.yaml`,
-   then run `python scripts/assign_datasources.py --check`.
-   *Done when:* it prints `CHECK OK: every table's datasource: matches the databases`
+7. **Review the proposal, replace `schema.yaml`, check**: read
+   `project_config/schema.synced.yaml` (a diff against `schema.yaml` shows
+   exactly what changed), copy `schema.yaml` to `schema.yaml.bak`, move the
+   proposal over `schema.yaml`, then run `python scripts/sync_schema.py --check`.
+   *Done when:* it prints `CHECK OK: schema.yaml's structure matches the databases`
    (exit code 0).
-8. **Fix the columns the report lists as missing.** The report's last section
-   is `== columns listed in schema.yaml that the database does not have: N ==`,
-   one `Table [source]: Column, ...` row each. Remove a column the database
-   does not have from `schema.yaml`, correct a misspelt one, or have the DBA
-   lift a `DENY` that hides it (§16.3). `--check` does not fail on these, so
-   read the section. A one-database deployment can run
-   `python scripts/assign_datasources.py` for the same report; it writes
-   nothing there.
-   *Done when:* that section reads `: 0 ==`.
+8. **Resolve what the sync marked.** The report's section
+   `== columns in schema.yaml that the database does not have: N ==` lists each
+   column that carries the comment `# not in database (sync_schema.py)`, and
+   `== tables in schema.yaml found in no data source: N ==` each table marked
+   `# not found in any data source`. Remove them with `python scripts/sync_schema.py --prune`
+   (review the result and replace `schema.yaml` again), correct a misspelt
+   column by hand, or have the DBA lift a `DENY` that hides a column from the
+   login (§16.3). Fill in the descriptions of the added columns and tables
+   (`# TO BE FILLED`). Then add any table you want that the report lists under
+   `== tables in the database that were not in schema.yaml ==` with
+   `--add-tables 'schema.Table'`, and review `relationships.proposed.yaml` (§16.3).
+   `--check` does not fail on marked columns, so read the sections.
+   *Done when:* the marked sections read `: 0 ==`.
 9. **Set what each source needs** (*several databases only*): `description:`
    and `keywords:` so questions reach the right source (§16.4), and
    `nolock: true` on exactly the sources whose DBA requires `WITH (NOLOCK)`;
@@ -459,7 +472,7 @@ What it does not do:
   `datasources.yaml`, `.env` or any API key.
 - **It does not assign `datasource:` to any table.** It describes one database
   per run and knows nothing of `datasources.yaml`; for several databases that
-  is `python scripts/assign_datasources.py` (§16.3).
+  is `python scripts/sync_schema.py` (§16.3).
 - **It does not read `DB_PASSWORD`, `DB_PASSWORD_*` or `datasources.yaml`.** The
   URL it is given must carry the password itself, percent-encoded (`@` is
   `%40`). Passing it as `--db-url` leaves it in the shell history; the
@@ -530,6 +543,11 @@ sensitive until you have rewritten those notes, write real descriptions, add
 `project_config/`. Run `tests/test_schema_registry_snapshot.py` after editing it,
 as the README says, and `python scripts/verify_deployment.py` (§3) to load it.
 
+Once `schema.yaml` is in `project_config/`, keep it current with
+`python scripts/sync_schema.py` (§16.3) rather than redrafting it: the
+inspector writes a new draft from scratch each time, while the sync keeps
+your descriptions and only brings in what changed in the databases.
+
 ## 3. Run the preflight
 
 ```bash
@@ -549,7 +567,8 @@ The checks run in this order: `Settings.validate()` (required settings,
 leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then
-`Tables are in their data source`, `OpenAI-compatible model exists`,
+`Tables are in their data source`, `Schema structure matches the databases`,
+`OpenAI-compatible model exists`,
 `API key authentication`, `Audit log directory writable`,
 `Session store directory writable`, `project_config/ loads` (the six domain
 files) and `Rate limit sane for deployment`. With several data sources the four database
@@ -608,7 +627,8 @@ data sources, the four marked * print once per source, as
 | `Login is read-only`* | Tries `CREATE TABLE` on a scratch table (`_nlq_agent_deploy_verify_probe`) inside a transaction that is always rolled back, then checks nothing persisted; it also drops that scratch table if a previous run left one. | `... PERSISTED -- the login can write ...`: the login is not read-only. Stop and have the DBA apply `docs/db-hardening.md`. Or `could not verify: ...`. A `[PASS]` that says the `CREATE TABLE` did not raise but the rollback held means the login *could* create tables and only the rollback saved it: have the DBA tighten it anyway. | There is no database connection. |
 | `Row cap`* | Runs `SELECT TOP (10 x cap + 10) name FROM sys.all_objects` through the executor and counts the rows. | `returned 1500 rows, expected <= 1000`: the executor returned more rows than `MAX_ROWS_RETURNED` allows. Do not deploy until it holds; there is no setting that fixes it, so report it. | The database is unreachable, or the probe query cannot run (it is T-SQL). |
 | `Query timeout`* | Runs `WAITFOR DELAY` with the timeout cut to at most 5 seconds and times how long the executor takes to abort it. | `took Ns -- longer than the Ms timeout should allow`, or `WAITFOR DELAY completed ... without the timeout firing`: the driver timeout is not applied, or the server does not support `WAITFOR` (some serverless Azure SQL tiers). Check `QUERY_TIMEOUT_SECONDS` and the driver. | The database is unreachable, or the probe cannot run. |
-| `Tables are in their data source` | Compares `schema.yaml` with each source's catalogue and fails for a table whose columns are all missing from the source it is assigned to while another source has it. | `N table(s): <table>: not in <assigned>, found in <other> — set datasource: <other>; ...` (ten hints, then `and N more`). The table has no `datasource:` (so it runs on the default source) or the wrong one. Run `python scripts/assign_datasources.py` and replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". Or `could not compare schema.yaml with the data sources: ...` when a catalogue cannot be read. | One data source (`one data source -- nothing to place`). |
+| `Tables are in their data source` | Compares `schema.yaml` with each source's catalogue and fails for a table whose columns are all missing from the source it is assigned to while another source has it. | `N table(s): <table>: not in <assigned>, found in <other> — set datasource: <other>; ...` (ten hints, then `and N more`). The table has no `datasource:` (so it runs on the default source) or the wrong one. Run `python scripts/sync_schema.py` (or the narrower `python scripts/assign_datasources.py`) and replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". Or `could not compare schema.yaml with the data sources: ...` when a catalogue cannot be read. | One data source (`one data source -- nothing to place`). |
+| `Schema structure matches the databases` | Runs `python scripts/sync_schema.py --check` in memory: reads three catalogue views per source and fails when a sync would change `schema.yaml`. | `N column(s) missing from schema.yaml; N column(s) and N table(s) no longer in the database; N column type(s) differ; N datasource: line(s) to set -- run python scripts/sync_schema.py ...`. Run it, review `schema.synced.yaml`, replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". A column already marked `# not in database` does not fail it; the detail of a `[PASS]` counts them. | A database cannot be read (its own connectivity check fails), `schema.yaml` does not load (`project_config/ loads` says why), or its layout cannot be edited line by line (a flow-style table or `columns: {...}`). |
 | `OpenAI-compatible model exists` | Asks `OPENAI_BASE_URL` for `/models` (5 second timeout, `OPENAI_API_KEY` as the bearer token) and looks for `OPENAI_MODEL` among the ids it lists. | `could not reach <base>: ...`: wrong URL or port, endpoint down, a proxy, or an endpoint with no `/models` route. Or `'<model>' not found among models <base> lists: [...]`: set `OPENAI_MODEL` to one of the listed ids. | Never. |
 | `API key authentication` | Checks that at least one key is configured (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) so that the server would start, and, with `VERIFY_API_KEY` set, that this raw key authenticates. | `API key configuration is invalid: ...` (the server would refuse to start; §5); `AUTH_REQUIRED is true but there are no configured keys ...` (issue one, §1); every key revoked or disabled in the application database; or `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (a truncated paste, or the `key_sha256` pasted instead of the raw key). With `AUTH_REQUIRED=false` it passes and says so; do not use that in production. | Never. |
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
@@ -618,11 +638,11 @@ data sources, the four marked * print once per source, as
 
 The most common first-install `[FAIL]` with several data sources is
 `Tables are in their data source -- 44 table(s): ... not in sales, found in inventory — set datasource: inventory`.
-It means `scripts/assign_datasources.py` was never run, or its proposal was not
+It means `scripts/sync_schema.py` (or `scripts/assign_datasources.py`) was never run, or its proposal was not
 moved over `schema.yaml`. The same findings are on the admin panel's schema-drift
 card (§16.8). `GET /admin/health/checks` runs these checks from the panel; it
-leaves out `Login is read-only`, `Query timeout` and `Tables are in their data
-source` unless "deep checks" is pressed (§12).
+leaves out `Login is read-only`, `Query timeout`, `Tables are in their data
+source` and `Schema structure matches the databases` unless "deep checks" is pressed (§12).
 
 ## 4. Start the server
 
@@ -980,12 +1000,13 @@ sources.
 | Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`, one pool per data source; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
 | `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection (of each data source, when there are several) — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
-| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection and `check_schema_structure_matches_databases`'s three catalogue queries per source | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema, on each source a table lives in; plus, only with more than one source and only when some table is missing from its assigned source, one `INFORMATION_SCHEMA.TABLES` query per other source (the "found in ..." hint) | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, access requests, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
 | Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column, as one single-table statement on the source that column's table routes to (a table listed under several sources is read from one copy: the default source if the table is there, else the first in `datasources.yaml` order) | At start-up when `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (the default; set `false` for a start-up that must not touch the warehouse); afterwards lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
 | Relationship-map schema inspection (`database/relationship_map.py`) | Nothing, in a running deployment. The module reflects foreign keys only if no `project_config/relationships.yaml` exists and `AUTO_DISCOVER_SCHEMA=true`, but the server, the API and the CLI do not import it (the relationships in the prompt come from `schema.yaml`), so the setting causes no warehouse traffic today | Not applicable. Were it wired in, it would run at most once per process lifetime (cached in memory; never on a timer) and read `DB_CONNECTION_URL` itself, not `DB_PASSWORD` or `datasources.yaml` | `AUTO_DISCOVER_SCHEMA` (default `false`) |
 | Operator scripts, run by hand: `scripts/assign_datasources.py` | Two metadata queries per data source, `INFORMATION_SCHEMA.TABLES` and `INFORMATION_SCHEMA.COLUMNS`, names only, no rows | Once per run | Not time-based. `--check` runs the same two queries |
+| Operator scripts, run by hand: `scripts/sync_schema.py` (and the preflight check `Schema structure matches the databases`) | Three metadata queries per data source over one connection: `INFORMATION_SCHEMA.TABLES` joined to `COLUMNS` (names, data types, nullability), and the primary-key and foreign-key constraints from `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE` and `REFERENTIAL_CONSTRAINTS`. No table is read | Once per run | Not time-based. `--check` and `--dry-run` run the same three queries |
 | Every `/query` request that reaches SQL execution (`database/executor.py`) | The generated, guard-validated `SELECT` itself, inside a transaction | Once per end-user query — this is the real workload the application exists to serve, not overhead | `MAX_CONCURRENT_REQUESTS`, `RATE_LIMIT_*` bound how many of these can be in flight/arriving at once |
 
 ## 13. `pool_pre_ping`: what it costs, and when turning it off is reasonable
@@ -1116,7 +1137,7 @@ each step links to the part you need.
 |---|---|---|
 | 1 | Choose: two sources, or one source with a multi-part `db_schema` | §16.1 |
 | 2 | Describe each connection, put each raw password in `.env` | §16.2 |
-| 3 | Write each table's `datasource:` with `assign_datasources.py`, replace `schema.yaml`, fix the columns it reports missing | §16.3 |
+| 3 | Sync `schema.yaml` with `sync_schema.py` (it writes each table's `datasource:`), replace `schema.yaml`, resolve what it marked | §16.3 |
 | 4 | Give each source a `description:` and `keywords:` | §16.4 |
 | 5 | Preflight and restart | §16.5 |
 | 6 | Size `PROMPT_RETRIEVAL_TOKEN_BUDGET` with `prompt_budget.py` | §16.6 |
@@ -1187,74 +1208,114 @@ may sit beside structured sources; §16.11 says how to move it. Changing
 `datasources.yaml` needs a restart: it is deployment topology, not one of the
 nine files the admin panel's versioned config bundle covers.
 
-### 16.3 Write each table's `datasource:`
+### 16.3 Sync `schema.yaml` with the databases, and write each table's `datasource:`
 
 A table with no `datasource:` belongs to the default source, and fails there
 (`Invalid object name ...`) when it is really in another database. A table
 that exists with the same shape in several sources (a date dimension replicated
 into each database) takes a list, `datasource: [sales, inventory]`: distinct
 names, each a configured source, in the same letter case as in
-`datasources.yaml`.
-
-Do not write these by hand. From the repository root, with the server's
-environment active (the sources' passwords in `.env`):
+`datasources.yaml`. `schema.yaml` also drifts in other ways: columns are added
+to the databases, a few it lists were dropped, a type changes. Do not chase
+these by hand. From the repository root, with the server's environment active
+(the sources' passwords in `.env`):
 
 ```bash
-python scripts/assign_datasources.py
+python scripts/sync_schema.py
 ```
 
-It reads the tables, views and columns of every source (two
-`INFORMATION_SCHEMA` queries per source, through the application's own
-read-only engines; names only, nothing is written to a database), matches
-every `schema.yaml` table to the sources that have it and writes
-`schema.with_datasources.yaml` next to `schema.yaml`: your file with every line
-and comment kept and one `datasource:` line per table (`[sales, inventory]` for
-a table found in both, `# not found in any data source` under a table found in
-neither). `schema.yaml` itself is never changed, and `--output PATH` writes the
-proposal elsewhere. The report lists, per source, the tables found only there,
-the shared tables, the tables found nowhere, the tables whose current
-`datasource:` disagrees with what was found, and the columns `schema.yaml`
-names that the database does not have (a column the read-only login cannot see
-through `INFORMATION_SCHEMA` is reported missing too, so check the `DENY` grants
-of `docs/db-hardening.md` before deleting one).
+It reads the structure of every source through the application's own
+read-only engines (three `INFORMATION_SCHEMA` queries per source: tables,
+views, columns, data types, nullability, primary and foreign keys; names and
+types only, no row is read, nothing is written to a database) and writes
+`schema.synced.yaml` next to `schema.yaml`. `schema.yaml` itself is never
+changed, and `--output PATH` writes the proposal elsewhere. The proposal is your
+file with every comment, description, flag and ordering kept, and only these
+structural changes (the script parses its own output and refuses to write it
+if anything else differs):
+
+| Situation | What the proposal does |
+|---|---|
+| Table has no `datasource:`, or a wrong one (several sources only) | Sets it: `datasource: sales`, or `[sales, inventory]` for a table found in both, in `datasources.yaml` order |
+| Column in a database, not in `schema.yaml` | Appends it to the table's `columns:` as `Name: "<type> column"  # TO BE FILLED (added by sync_schema.py)` and records its type |
+| Column in `schema.yaml`, in no source's table | Keeps it and adds the line `# not in database (sync_schema.py)` above it; `--prune` removes it instead (never one still named in `resolvable_columns` or `prefetchable_columns`) |
+| Recorded type differs from the database | Corrects the entry in the table's `column_types:` map and reports `Table.Column: old -> new`. Types are kept in that map, never in a description |
+| Table in a database, not in `schema.yaml` | Reports it only; `--add-tables 'sales.*'` (a glob on `schema.table`, repeatable) appends the matching ones with draft descriptions |
+| Table in `schema.yaml`, in no source | Keeps it with `# not found in any data source`; `--prune` removes it (unless `relationships:` still names it) |
+| Table with no `columns:` key | Left alone (described only, deliberately not queryable) |
+
+`column_types:` is a new optional map per table, `{column: SQL type}`, written
+only by this script; nothing reads it at run time, so the prompt and the guard's
+allowlist are unchanged.
+
+It also writes `relationships.proposed.yaml` next to `schema.yaml`: every
+declared foreign key between two tables of `schema.yaml`, plus relationships
+guessed from column names (`Order.CustomerID` to `Customer.ID`, `Order.OrderDate_ID`
+to `Date.ID`; the same schema is preferred, both tables must share a data source,
+and a guess is dropped when the target has a composite key, no key at all, a
+different column type, or several candidates). Each entry says `basis:` (the
+constraint, or the naming rule) and `confidence:`. Nothing reads this file and
+`relationships.yaml` is never touched: review each entry and copy the right ones
+by hand. `--no-relationships` skips it.
+
+`--dry-run` prints the report without writing anything. The report lists, in
+sections, the `datasource:` lines to set, the columns added, the columns
+`schema.yaml` names that the database does not have, the types recorded and
+corrected, the tables the databases have that the file lacks, the tables found
+nowhere, and the columns that differ between sources of a shared table. A
+column the read-only login cannot see through `INFORMATION_SCHEMA` is reported
+as not in the database too, so check the `DENY` grants of `docs/db-hardening.md`
+before running `--prune`.
 
 Then:
 
-1. Review `schema.with_datasources.yaml`: look at the tables found nowhere and
-   at every `[A, B]`, because a list asserts that the table has the same shape
-   in each source.
+1. Review `schema.synced.yaml` (`diff project_config/schema.yaml project_config/schema.synced.yaml`):
+   look at the tables found nowhere and at every `[A, B]`, because a list asserts
+   that the table has the same shape in each source.
 2. Keep a copy of the current file, then replace it with the proposal:
 
    ```bash
    cp project_config/schema.yaml project_config/schema.yaml.bak
-   mv project_config/schema.with_datasources.yaml project_config/schema.yaml
+   mv project_config/schema.synced.yaml project_config/schema.yaml
    ```
 
    (PowerShell: `Copy-Item project_config\schema.yaml project_config\schema.yaml.bak`,
-   then `Move-Item -Force project_config\schema.with_datasources.yaml project_config\schema.yaml`.)
+   then `Move-Item -Force project_config\schema.synced.yaml project_config\schema.yaml`.)
    `schema.yaml` is the guard's allowlist, so a change to it takes effect at
    the next restart whichever way it is made (by hand, or through the admin
    panel's draft and approval).
-3. Fix the columns the report lists as missing. Its last section reads
-   `== columns listed in schema.yaml that the database does not have: N ==`, one
-   `Table [source]: Column, ...` row per table and source. A column that stays in
-   `schema.yaml` without existing in the database is still allowed by the guard,
-   so a question that uses it fails when the query runs (the admin panel shows it
-   as *فقط در schema.yaml*, §16.8). For each row: delete the column from
-   `schema.yaml`, correct its spelling, or, if it exists but the read-only login
-   cannot see it through `INFORMATION_SCHEMA`, ask the DBA about the `DENY`
-   grants (`docs/db-hardening.md`) before deleting it. Run the script again
-   until the section reads `: 0 ==`. The exit code does not tell you: only the
-   `datasource:` mismatches in step 4 change it.
-4. Run `python scripts/assign_datasources.py --check`. It writes nothing,
-   prints `CHECK OK: every table's datasource: matches the databases` and exits 0
-   when every `datasource:` matches what was found (a table with none counts as
-   being on the default source); otherwise it prints
-   `CHECK FAILED: N table(s) disagree with the databases` and exits 1. Put it in
-   the deploy pipeline to keep the assignments honest. Exit code 2 means a
-   source's catalogue could not be read (the run stops rather than guess,
-   because an unreadable source would make a shared table look single),
-   `schema.yaml` could not be edited, or the output would not validate.
+3. Resolve what the sync marked. A column that stays in `schema.yaml` without
+   existing in the database is still allowed by the guard, so a question that
+   uses it fails when the query runs (the admin panel shows it as
+   *فقط در schema.yaml*, §16.8). For each `# not in database` column: delete it
+   (or run `--prune` and replace the file again), correct its spelling, or, if it
+   exists but the read-only login cannot see it, ask the DBA about the `DENY`
+   grants before deleting it. Write real descriptions for the columns and tables
+   marked `# TO BE FILLED`; the placeholder `<type> column` is what the model sees
+   until you do.
+4. Run `python scripts/sync_schema.py --check`. It writes nothing, prints
+   `CHECK OK: schema.yaml's structure matches the databases` and exits 0 when a
+   sync would change nothing; otherwise it prints `CHECK FAILED: ...` and exits 1.
+   Put it in the deploy pipeline to keep the structure honest (the preflight runs
+   the same test as `Schema structure matches the databases`). A column already
+   marked `# not in database` does not fail `--check`; it is listed in every
+   report until it is removed. `--check --prune` fails while anything is left to
+   prune, and `--check --add-tables PATTERN` fails until the matching tables are
+   listed. Exit code 2 means a source's catalogue could not be read (the run
+   stops rather than guess, because an unreadable source would make a shared
+   table look single), `schema.yaml` is invalid or laid out in a way that cannot
+   be edited line by line (a flow-style table or `columns: {...}`), or the output
+   would not validate. Running the script again on the replaced file changes
+   nothing.
+
+**`assign_datasources.py` is still there, and is the narrower tool.** It writes
+only the `datasource:` lines (`schema.with_datasources.yaml`) and reports missing
+columns; it never adds a column, records a type or marks anything, and it
+shares its matching and its `datasource:` editing with `sync_schema.py` (the
+same rules, the same code). Use it when you want exactly that and no other
+change to `schema.yaml`, for example on a file whose layout `sync_schema.py`
+reports it cannot edit. Everything it does, `sync_schema.py` does too, so it is
+not the recommended first step; it stays so that existing pipelines keep working.
 
 If the same table name exists in several schemas (`sales.Customer` and
 `ref.Customer`), give each its own qualified `schema.yaml` key instead of
@@ -1599,9 +1660,9 @@ origin, several databases). Step 11 is recommended, and comes last on purpose.
    which is the combined form of these notes: describe the sources
    (`datasources.yaml`, one `DB_PASSWORD_*` per source) and create the
    read-only login on every server (6.1.0); run
-   `python scripts/assign_datasources.py` and replace `schema.yaml` with
-   `schema.with_datasources.yaml` after copying the old one aside, then fix
-   the columns its report lists as missing (6.5.0); add `description:` and `keywords:` to
+   `python scripts/sync_schema.py` (after 6.8.0; before that, `scripts/assign_datasources.py`) and replace `schema.yaml` with
+   `schema.synced.yaml` after copying the old one aside, then resolve
+   the columns its report marks as not in the database (6.5.0); add `description:` and `keywords:` to
    each source (6.5.0, optional); run `python scripts/prompt_budget.py` and set
    the `PROMPT_RETRIEVAL_TOKEN_BUDGET` it prints (6.6.0). If the DBA requires
    `WITH (NOLOCK)`, set `nolock: true` on that source, and on each other
@@ -1835,8 +1896,8 @@ file.
 - The output of `python scripts/verify_deployment.py`. It never prints a
   password: connection targets are shown with the password masked, and
   `VERIFY_API_KEY` is not echoed. It does name hosts, databases and tables.
-- `python scripts/assign_datasources.py` and `python scripts/prompt_budget.py`
-  output: table names and numbers; no credential or API key is printed.
+- `python scripts/sync_schema.py`, `python scripts/assign_datasources.py` and `python scripts/prompt_budget.py`
+  output: table names, column names, types and numbers; no credential or API key is printed.
 - The aggregate report of `python scripts/analyze_audit_log.py` (§8), but not
   the `--include-examples` one.
 - `project_config/schema.yaml`: table and column names and their descriptions.

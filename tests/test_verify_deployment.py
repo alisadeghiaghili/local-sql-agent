@@ -697,3 +697,95 @@ class TestCheckTablesInAssignedSources:
             names = [c.__name__ for c in build_checks()]
         assert "check_tables_in_assigned_sources" in names
         assert "check_tables_in_assigned_sources" in _DEEP_CHECK_NAMES
+
+
+# ---------------------------------------------------------------------------
+# check_schema_structure_matches_databases -- the same test as
+# `scripts/sync_schema.py --check`
+# ---------------------------------------------------------------------------
+
+class TestCheckSchemaStructureMatchesDatabases:
+    SCHEMA = "tables:\n  T:\n    db_schema: s\n    columns:\n      ID: pk\n"
+
+    @staticmethod
+    def _catalogue(*columns):
+        from tests._sync_fixtures import catalogue, tbl
+
+        return catalogue(tbl("s", "T", list(columns)))
+
+    @pytest.fixture()
+    def project(self, tmp_path):
+        (tmp_path / "schema.yaml").write_text(self.SCHEMA, encoding="utf-8")
+        reset_datasources_cache()
+        with override_settings(project_config_dir=str(tmp_path)):
+            yield tmp_path
+        reset_datasources_cache()
+
+    @staticmethod
+    def _run(catalogue=None, error=None):
+        from scripts.verify_deployment import check_schema_structure_matches_databases
+
+        def read(engine):
+            if error is not None:
+                raise error
+            return catalogue
+
+        with patch("database.connection.get_engine", return_value=object()), \
+                patch("database.catalogue.read_catalogue", side_effect=read):
+            return check_schema_structure_matches_databases()
+
+    def test_fails_naming_the_command_when_the_database_has_more_columns(self, project):
+        result = self._run(self._catalogue(("ID", "int"), ("Extra", "int")))
+        assert result.status == "FAIL"
+        assert "1 column(s) missing from schema.yaml" in result.detail
+        assert "python scripts/sync_schema.py" in result.detail
+
+    def test_fails_when_a_recorded_type_differs(self, project):
+        (project / "schema.yaml").write_text(
+            self.SCHEMA + "    column_types:\n      ID: bigint\n", encoding="utf-8",
+        )
+        result = self._run(self._catalogue(("ID", "int")))
+        assert result.status == "FAIL" and "1 column type(s) differ" in result.detail
+
+    def test_passes_once_the_file_is_in_sync(self, project):
+        (project / "schema.yaml").write_text(
+            self.SCHEMA + "    column_types:\n      ID: int\n", encoding="utf-8",
+        )
+        result = self._run(self._catalogue(("ID", "int")))
+        assert result.status == "PASS"
+
+    def test_a_marked_column_is_reported_but_passes(self, project):
+        (project / "schema.yaml").write_text(
+            "tables:\n  T:\n    db_schema: s\n    columns:\n      ID: pk\n"
+            "      # not in database (sync_schema.py)\n      Old: x\n"
+            "    column_types:\n      ID: int\n",
+            encoding="utf-8",
+        )
+        result = self._run(self._catalogue(("ID", "int")))
+        assert result.status == "PASS" and "1 column(s)" in result.detail
+
+    def test_is_skipped_when_a_database_cannot_be_reached(self, project):
+        result = self._run(error=ConnectionError("down"))
+        assert result.status == "SKIP" and "ConnectionError" in result.detail
+
+    def test_is_skipped_when_schema_yaml_does_not_load(self, project):
+        (project / "schema.yaml").write_text("tables:\n  A:\n    datasource: []\n", encoding="utf-8")
+        assert self._run(self._catalogue(("ID", "int"))).status == "SKIP"
+
+    def test_is_skipped_for_a_layout_the_sync_cannot_edit(self, project):
+        (project / "schema.yaml").write_text("tables:\n  T:\n    db_schema: s\n    columns: {ID: pk}\n", encoding="utf-8")
+        result = self._run(self._catalogue(("ID", "int"), ("Extra", "int")))
+        assert result.status == "SKIP" and "cannot be compared" in result.detail
+
+    def test_it_prints_no_credentials(self, project):
+        result = self._run(error=ConnectionError("mssql://u:hunter2@h/db"))
+        assert "hunter2" not in result.render()
+
+    def test_it_is_part_of_the_checks_and_a_deep_check_for_the_panel(self):
+        from api.admin_routes import _DEEP_CHECK_NAMES
+
+        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
+            reset_datasources_cache()
+            names = [c.__name__ for c in build_checks()]
+        assert "check_schema_structure_matches_databases" in names
+        assert "check_schema_structure_matches_databases" in _DEEP_CHECK_NAMES

@@ -235,6 +235,12 @@ _ALLOWED_MODULE_CONSTANTS = {
     "schema_data/retriever.py::_BIGRAM_MULTIPLIER": (
         "out of scope: TF-IDF bigram scoring weight -- follow-up"
     ),
+    "schema_data/sync.py::REPORT_LIST_LIMIT": (
+        "implementation detail: how many names one section of the "
+        "operator script's printed report lists before '... and N more'. "
+        "It shapes terminal output only and never reaches a query, the "
+        "prompt or the guard, so it is not a deployment tuning knob"
+    ),
 }
 
 
