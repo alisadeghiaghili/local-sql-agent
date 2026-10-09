@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`python -m eval.cli recall --golden <file>` measures table selection offline (no LLM, no database).** For each golden case it resolves the tables `expected_sql` reads with the SQL guard's own resolution, runs `ContextRetriever`, and reports mean recall, the share of cases with every table retrieved, tables retrieved (mean, median, maximum), mean precision, an in-budget recall (a retrieval too large for `PROMPT_RETRIEVAL_TOKEN_BUDGET` counts as 0), per-tag figures and source-selection accuracy. Text or `--json`, deterministic; `--min-recall` makes it a gate. Runbook §18.4.
+- **A synthetic retrieval benchmark: `python -m eval.benchmarks.retrieval_synth run --out DIR`.** From a seed it generates a 400-table, two-source schema (star schemas, classifications, bridge tables, shared dimensions, same-name tables), its `project_config` and 480 English and Persian questions with reference SQL, and measures them. Generic words only. `docs/design/RETRIEVAL.md`.
+- **Table retrieval recall work, measured on that benchmark (400 tables, 480 questions; recall / full-recall % / mean tables / precision / source accuracy %, main -> now, seeds 7 / 11 / 23):** 0.735 -> 0.966, 0.712 -> 0.951, 0.748 -> 0.971 mean recall; 42.1 -> 92.1, 37.3 -> 89.2, 41.7 -> 92.7 full recall; 9.2 -> 4.0, 8.2 -> 4.0, 11.0 -> 4.2 tables; 0.608 -> 0.678, 0.609 -> 0.680, 0.572 -> 0.656 precision; 90.8 -> 95.2, 90.0 -> 95.6, 86.0 -> 94.8 source accuracy. Bridge-table questions 0.558 -> 0.967 (English, seed 7). The parts:
+  - **Column-name evidence.** A question word that is a word of a table's column name (`net weight` for `NetWeight`) now counts towards that table, weighted by rarity; key columns are skipped. Measure-only questions (fact table not named) 0.525 -> 0.925 (English, seed 7).
+  - **Join-path expansion** (`retrieval/join_paths.py`). The tables that join the retrieved ones but were not named (a bridge table, the parent of a classification) are added from the foreign-key graph: `schema.yaml` relationships, `relationships.yaml`, and columns named `<Table>_ID` when neither declares the key (never written to configuration, no new join hint in the prompt). Shortest path of at most 2 keys, never through a hub, never across data sources, within the token budget. They are `RetrievalContext.join_tables`, part of `selected_tables`.
+  - **Pruning** (`retrieval/pruning.py`). After the recall-favouring candidate generation, a table only its description matched, or a column match far below the best, is dropped unless it is joined to a better-evidenced table.
+  - New settings: `RETRIEVAL_EXTRA_TABLES`, `RETRIEVAL_EXTRA_SCORE_RATIO`, `RETRIEVAL_JOIN_EXPANSION`, `RETRIEVAL_JOIN_MAX_HOPS`, `RETRIEVAL_JOIN_MAX_ADDED_TABLES`, `RETRIEVAL_JOIN_MAX_HUB_DEGREE`, `RETRIEVAL_INFER_RELATIONSHIPS`, `RETRIEVAL_PRUNE`, `RETRIEVAL_PRUNE_SCORE_RATIO`, `RETRIEVAL_PRUNE_CONNECT_HOPS`, `RETRIEVAL_PRUNE_CORROBORATE` (defaults in `docs/design/RETRIEVAL.md` §6).
+
+### Changed
+
+- **An alias or fact-pattern hit no longer ends the search for tables.** `EntityRetriever` and `FactRetriever` returned only the aliased tables when any alias matched, so a question naming one aliased and one unaliased dimension lost the second, and an `always_include` table (the date dimension) vanished whenever another dimension matched. Up to `RETRIEVAL_EXTRA_TABLES` ranked tables are now added. Alias matching folds Persian/Arabic spellings and ZWNJ, and results keep configuration order instead of set order (they varied between runs).
+- **The TF-IDF retriever splits on word characters.** `customers?`, `سال؟` and `sales.Order` were single tokens and never matched a description word. `schema_data.retriever` gains `rank_tables`, `forced_tables` and `column_evidence`; `retrieve_tables` keeps its meaning and breaks score ties by table name.
+- **Static-prefix prompts are unchanged**; only the tables the retrieval path lists differ. `RETRIEVAL_PRUNE=false`, `RETRIEVAL_JOIN_EXPANSION=false` and `RETRIEVAL_EXTRA_TABLES=0` restore the previous selection.
+
 ## [6.8.0] — 2026-10-09
 
 A column listed in `denied_columns` can now be restricted to one table or one data source and used only as a join key; the setup documentation is rewritten around one ordered first install; the setup wizard no longer stores the database password in `.setup_log.json` and now obeys `LLM_ALLOW_REMOTE`, with its resume, regenerate and validation steps fixed.
