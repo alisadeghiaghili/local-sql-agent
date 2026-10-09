@@ -83,6 +83,13 @@ class TestRetrieveTables:
         result = retrieve_tables("تالار ring")
         assert "Ring" in result
 
+    def test_trailing_punctuation_does_not_hide_a_word(self):
+        """A question mark glued to the last word used to make it a
+        different token ("customer?" != "customer")."""
+        assert retrieve_tables("customer buyer?") == retrieve_tables("customer buyer")
+        assert "Customer" in retrieve_tables("Which customer?")
+        assert "Date" in retrieve_tables("تاریخ سال؟")
+
     def test_no_duplicates_in_result(self):
         result = retrieve_tables("مشتری کارگزار قرارداد")
         assert len(result) == len(set(result))

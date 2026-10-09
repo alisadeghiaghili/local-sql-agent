@@ -9,12 +9,19 @@ and FactRetriever when alias/pattern matching returns no results.
 from __future__ import annotations
 
 import math
+import re
 from functools import lru_cache
 
 from core.persian import normalize_for_matching
 from knowledge.aliases import SYNONYMS
 from knowledge.retrieval_hints import ALWAYS_INCLUDE
 from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
+
+#: A word is a run of letters, digits or underscores of any script. Used to
+#: split text instead of ``str.split`` so that sentence punctuation
+#: (``"customers?"``, ``"سال؟"``, ``"sales.Order"``) never glues itself to a
+#: word and hides it from the index.
+_WORD_RE = re.compile(r"\w+")
 
 _TOP_N: int = 6
 _MIN_SCORE: float = 0.01
@@ -34,20 +41,33 @@ def _normalise(text: str) -> str:
     return normalize_for_matching(text)
 
 
+def _tokenize(text: str) -> list[str]:
+    """Words of *text*, normalised and lower-cased, punctuation removed.
+
+    Examples
+    --------
+    >>> _tokenize("Total sales, by customer?")
+    ['total', 'sales', 'by', 'customer']
+    >>> _tokenize("sales.Order \u2014 purchase orders")
+    ['sales', 'order', 'purchase', 'orders']
+    >>> _tokenize("\u0645\u062c\u0645\u0648\u0639 \u0641\u0631\u0648\u0634\u061f")
+    ['\u0645\u062c\u0645\u0648\u0639', '\u0641\u0631\u0648\u0634']
+    """
+    return _WORD_RE.findall(_normalise(text).lower())
+
+
 #: Table -> forced-match trigger-phrase map, loaded from
 #: ``project_config/retrieval_hints.yaml`` (see
 #: :mod:`knowledge.retrieval_hints`). A retrieval heuristic, not schema
 #: metadata -- it can name a table independently of whichever
 #: ``schema.yaml`` happens to be loaded (see :func:`_forced_tables` and
 #: ``tests/test_retriever.py::TestRetrieveTables::test_all_returned_names_are_valid_tables``).
+#: Each phrase is stored as its words joined by single spaces, tokenised
+#: exactly as a question is.
 _ALWAYS_INCLUDE_NORMALISED: dict[str, list[str]] = {
-    table: [_normalise(s).lower() for s in signals]
+    table: [" ".join(_tokenize(s)) for s in signals]
     for table, signals in ALWAYS_INCLUDE.items()
 }
-
-
-def _tokenize(text: str) -> list[str]:
-    return _normalise(text).lower().split()
 
 
 def _ngrams(tokens: list[str], n: int) -> list[str]:
@@ -125,6 +145,8 @@ def _forced_tables(q_tokens: list[str]) -> set[str]:
     forced: set[str] = set()
     for table_name, signals in _ALWAYS_INCLUDE_NORMALISED.items():
         for sig in signals:
+            if not sig:
+                continue
             if all(t in q_token_set for t in sig.split()) or sig in q_joined:
                 forced.add(table_name)
                 break
