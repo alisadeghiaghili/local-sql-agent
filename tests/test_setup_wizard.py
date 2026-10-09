@@ -38,6 +38,19 @@ SECRET = "hunter2-distinctive"
 _URL = f"mssql+pyodbc://nlq_reader:{SECRET}@db1.example.test/SalesDW?driver=ODBC+Driver+17+for+SQL+Server"
 
 
+@pytest.fixture(autouse=True)
+def _unwrapped_console(monkeypatch):
+    """Keep the wizard's console from wrapping its lines.
+
+    ``rich`` wraps at the terminal width, which differs between runners (the
+    Windows CI legs wrap where the Linux ones do not). A wrapped line splits
+    a phrase an assertion looks for, and could split a secret an assertion
+    says is absent, making that check pass for the wrong reason.
+    """
+    if hasattr(sp.console, "_width"):
+        monkeypatch.setattr(sp.console, "_width", 10_000)
+
+
 def _empty_snapshot() -> SimpleNamespace:
     """A schema snapshot with no tables, enough for steps 3 to 7."""
     return SimpleNamespace(tables=[], relationships=[], fact_tables=[], dim_tables=[])
