@@ -21,6 +21,15 @@ behaviour, so they live on :class:`config.Settings`
 not two" docstring section) rather than as bare module constants here;
 ``python -m eval.cli run``'s own flags still take precedence when passed
 explicitly, per-invocation.
+
+The relative thresholds above only say "no worse than the baseline". They
+cannot stop a release whose baseline was already poor, or one that slid
+down in steps each smaller than the allowed drop. Two optional *absolute
+floors* (:attr:`BaselineThresholds.min_accuracy_pct` and
+:attr:`BaselineThresholds.min_source_accuracy_pct`, from
+``EVAL_MIN_ACCURACY`` / ``EVAL_MIN_SOURCE_ACCURACY``) close that gap; both
+are off unless set. :func:`check_absolute_floors` evaluates them on a
+single report, so they work with or without a baseline.
 """
 
 from __future__ import annotations
@@ -55,6 +64,15 @@ class BaselineThresholds:
         Maximum tolerated increase in ``guard_rejections`` (current minus
         baseline, absolute count). Defaults to
         :attr:`config.Settings.eval_max_guard_rejection_increase`.
+    min_accuracy_pct:
+        Optional absolute floor (0-100) on the run's overall
+        ``accuracy_pct``, independent of any baseline. ``None`` (the
+        default) disables it. Defaults to
+        :attr:`config.Settings.eval_min_accuracy`.
+    min_source_accuracy_pct:
+        Optional absolute floor (0-100) on every data source's execution
+        accuracy. ``None`` (the default) disables it. Defaults to
+        :attr:`config.Settings.eval_min_source_accuracy`.
 
     Examples
     --------
@@ -64,6 +82,8 @@ class BaselineThresholds:
     >>> t2 = BaselineThresholds(max_accuracy_drop_pct=10.0)
     >>> t2.max_accuracy_drop_pct
     10.0
+    >>> t.min_accuracy_pct is None and t.min_source_accuracy_pct is None
+    True
     """
 
     max_accuracy_drop_pct: float = field(
@@ -75,6 +95,12 @@ class BaselineThresholds:
     max_guard_rejection_increase: int = field(
         default_factory=lambda: cfg.settings.eval_max_guard_rejection_increase
     )
+    min_accuracy_pct: float | None = field(
+        default_factory=lambda: cfg.settings.eval_min_accuracy
+    )
+    min_source_accuracy_pct: float | None = field(
+        default_factory=lambda: cfg.settings.eval_min_source_accuracy
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +111,8 @@ class ComparisonResult:
     ----------
     regressed:
         ``True`` if any threshold in the :class:`BaselineThresholds` used
-        for the comparison was violated.
+        for the comparison was violated, including an absolute floor
+        (``floor_messages``).
     accuracy_delta_pct:
         ``current.accuracy_pct - baseline.accuracy_pct`` (percentage
         points; negative means accuracy dropped).
@@ -106,6 +133,11 @@ class ComparisonResult:
         that really broke already lowers the overall accuracy the gate
         checks. Empty when either report has no per-source figures (a
         baseline written before they existed).
+    floor_messages:
+        One message per violated absolute floor (see
+        :func:`check_absolute_floors`). Kept apart from ``messages`` so a
+        caller can say "below the floor" rather than "regressed versus
+        baseline". Empty when no floor is set or all were met.
     source_selection_delta_pct:
         Change in source-selection accuracy in percentage points, or
         ``None`` when either report has none. Informational, like
@@ -119,6 +151,81 @@ class ComparisonResult:
     messages: list[str] = field(default_factory=list)
     source_deltas_pct: dict[str, float] = field(default_factory=dict)
     source_selection_delta_pct: float | None = None
+    floor_messages: list[str] = field(default_factory=list)
+
+
+def check_absolute_floors(
+    report: EvalReport,
+    thresholds: BaselineThresholds | None = None,
+) -> list[str]:
+    """Check *report* against the optional absolute accuracy floors.
+
+    Unlike :func:`compare_to_baseline` this looks at one report only, so it
+    also gates a first run with no baseline to compare with. A floor that is
+    ``None`` is skipped entirely, which is why setting neither changes
+    nothing. Comparisons are strict ``<``: a run exactly at the floor
+    passes.
+
+    Args:
+        report: The report to check.
+        thresholds: Source of the floors. Defaults to
+            :class:`BaselineThresholds`'s defaults (the settings) when
+            omitted.
+
+    Returns:
+        One human-readable message per violated floor, each naming the
+        measured figure and the floor. Empty when every configured floor
+        was met (or none is configured). A per-source floor that cannot be
+        evaluated (the run has no per-source figures) is reported as a
+        violation: an unverifiable floor must not pass.
+
+    Raises:
+        None.
+
+    Examples:
+        >>> from eval.models import CaseResult
+        >>> from eval.report import build_report
+        >>> rs = [
+        ...     CaseResult("a", "q", [], "pass", "SELECT 1", "f", None, 0.1),
+        ...     CaseResult("b", "q", [], "fingerprint_mismatch", "SELECT 2", "f", "x", 0.1),
+        ... ]
+        >>> report = build_report(rs, mode="live")
+        >>> check_absolute_floors(report, BaselineThresholds(min_accuracy_pct=40.0))
+        []
+        >>> check_absolute_floors(report, BaselineThresholds(min_accuracy_pct=90.0))
+        ['accuracy 50.00% (1/2) is below the absolute floor of 90.00%']
+        >>> check_absolute_floors(report, BaselineThresholds())
+        []
+    """
+    if thresholds is None:
+        thresholds = BaselineThresholds()
+
+    messages: list[str] = []
+
+    floor = thresholds.min_accuracy_pct
+    if floor is not None and report.accuracy_pct < floor:
+        messages.append(
+            f"accuracy {report.accuracy_pct:.2f}% ({report.passed}/{report.total}) "
+            f"is below the absolute floor of {floor:.2f}%"
+        )
+
+    source_floor = thresholds.min_source_accuracy_pct
+    if source_floor is not None:
+        if not report.source_accuracy:
+            messages.append(
+                f"a per-source floor of {source_floor:.2f}% is set but this run has "
+                f"no per-source figures (no golden case names an expected_datasource), "
+                f"so it cannot be checked"
+            )
+        for source, (src_passed, src_total) in report.source_accuracy.items():
+            src_pct = (100.0 * src_passed / src_total) if src_total else 0.0
+            if src_pct < source_floor:
+                messages.append(
+                    f"source {source!r} accuracy {src_pct:.2f}% ({src_passed}/{src_total}) "
+                    f"is below the per-source floor of {source_floor:.2f}%"
+                )
+
+    return messages
 
 
 def save_baseline(report: EvalReport, path: str | Path) -> None:
@@ -402,14 +509,17 @@ def compare_to_baseline(
             - 100.0 * baseline.source_selection[0] / baseline.source_selection[1]
         )
 
+    floor_messages = check_absolute_floors(current, thresholds)
+
     return ComparisonResult(
-        regressed=bool(messages),
+        regressed=bool(messages or floor_messages),
         accuracy_delta_pct=accuracy_delta_pct,
         latency_p95_delta_pct=latency_p95_delta_pct,
         guard_rejection_delta=guard_rejection_delta,
         messages=messages,
         source_deltas_pct=source_deltas_pct,
         source_selection_delta_pct=source_selection_delta_pct,
+        floor_messages=floor_messages,
     )
 
 

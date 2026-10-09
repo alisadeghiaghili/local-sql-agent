@@ -23,7 +23,6 @@ import pytest
 from eval.runner import load_golden_cases
 from scripts import harvest_golden as hg
 from scripts.harvest_golden import (
-    Candidate,
     allocate,
     candidate_to_case,
     classify_record,

@@ -507,7 +507,7 @@ async def _turn_event_stream(
     except HTTPException as exc:
         yield _sse_event("error", {"code": "SESSION_NOT_FOUND", "message": str(exc.detail)})
         return
-    except Exception as exc:  # noqa: BLE001 - surfaced as an SSE error event
+    except Exception:  # noqa: BLE001 - surfaced as an SSE error event
         logger.exception("Unexpected error while streaming turn for session=%s", session_id)
         yield _sse_event(
             "error",

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 _WEB = Path(__file__).resolve().parent.parent.parent / "web"
 _ADMIN_HTML = _WEB / "admin" / "index.html"

@@ -20,17 +20,14 @@ app.py is a REPL — its surface area splits cleanly into three layers:
 
 from __future__ import annotations
 
-import time
 from datetime import datetime
 from io import StringIO
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 import app
-import config as cfg
 from config import override_settings
 from logs.query_log import QueryLog
 
@@ -284,8 +281,8 @@ class TestMainRepl:
         # Each question needs 2 perf_counter calls (start + end).
         # Count non-exit lines that will actually run a query.
         n_questions = sum(
-            1 for l in input_lines
-            if l and l.lower() not in ("exit", "quit")
+            1 for line in input_lines
+            if line and line.lower() not in ("exit", "quit")
         )
         perf_values = []
         for _ in range(n_questions):

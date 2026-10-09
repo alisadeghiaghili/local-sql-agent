@@ -15,3 +15,10 @@ pytest-cov>=5.0.0
 # .github/workflows/ci.yml, which runs this on every push, and
 # docs/deployment-runbook.md).
 pip-audit>=2.7.0
+
+# Linter. Pinned to an exact version (unlike the tools above) because a
+# ruff release can add or re-tune checks, and a lint gate whose verdict
+# changes without a commit in this repo is not a gate. The `lint` job in
+# .github/workflows/ci.yml installs exactly this line. Rules are pinned in
+# pyproject.toml. Run locally with `ruff check .`; bump deliberately.
+ruff==0.15.8

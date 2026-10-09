@@ -34,6 +34,7 @@ from sqlalchemy.pool import StaticPool
 
 import config as cfg
 from core.fileperms import restrict_sqlite_family
+from core.redaction import redact_db_url
 from database.pool_ping import install_idle_aware_ping
 
 #: How long a writer waits for SQLite's single write lock to clear before
@@ -146,9 +147,10 @@ def _canonical_endpoint(url_str: str) -> tuple:
 def redact_url(url_str: str) -> str:
     """*url_str* with its password replaced by ``***``, for a message.
 
-    Parsed by SQLAlchemy rather than matched with a regular expression. A
-    string SQLAlchemy cannot parse is replaced by a placeholder, never
-    echoed.
+    Delegates to :func:`core.redaction.redact_db_url`: parsed by SQLAlchemy
+    rather than matched with a regular expression, with secrets in the query
+    string (``PWD=`` inside ``odbc_connect``) masked as well. A string
+    SQLAlchemy cannot parse is replaced by a placeholder, never echoed.
 
     Examples
     --------
@@ -157,10 +159,7 @@ def redact_url(url_str: str) -> str:
     >>> redact_url("not a url")
     '<unparseable connection URL>'
     """
-    try:
-        return make_url(url_str).render_as_string(hide_password=True)
-    except Exception:  # noqa: BLE001 - never fall back to the raw string
-        return "<unparseable connection URL>"
+    return redact_db_url(url_str)
 
 
 def raise_if_same_database(app_db_url: str, warehouse_url: str) -> None:

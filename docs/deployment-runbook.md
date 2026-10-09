@@ -1780,6 +1780,29 @@ with a message saying how to re-record it. Without `--reference live`, `--live`
 still compares with each case's recorded `expected_fingerprint`, which goes
 stale as the data moves; keep that for a warehouse that does not change.
 
+**Absolute floors (optional).** The thresholds above only say "no worse than
+the baseline": they cannot stop a release whose baseline was already poor, or
+one that slid down in steps each smaller than the allowed drop. Two optional
+floors close that gap. Both are **off unless set**, so nothing changes until
+you opt in:
+
+| Setting / flag | Fails the run when |
+| --- | --- |
+| `EVAL_MIN_ACCURACY` / `--min-accuracy PCT` | overall execution accuracy is below `PCT` (0-100) |
+| `EVAL_MIN_SOURCE_ACCURACY` / `--min-source-accuracy PCT` | any one data source's accuracy is below `PCT`, or the run has no per-source figures to check (no case names a `datasource`) |
+
+```bash
+python -m eval.cli run --live --reference live --golden eval_data/golden.jsonl \
+    --baseline eval_data/baseline.json --min-accuracy 90 --min-source-accuracy 80
+```
+
+A floor needs no `--baseline` and is checked even when the comparison shows no
+regression. A run exactly at the floor passes. On failure the exit code is `1`
+and the output says which figure is under which floor, for example
+`accuracy 82.50% (33/40) is below the absolute floor of 90.00%`. A flag takes
+precedence over the environment setting. Set floors only for `--live` runs:
+an offline run is 100% by construction and passes any floor.
+
 ### 18.3 What the numbers mean
 
 - **Execution accuracy** is the share of active cases whose generated SQL
@@ -1806,7 +1829,7 @@ stale as the data moves; keep that for a warehouse that does not change.
   wrong source is usually also a wrong answer, so the overall figure already
   moves; the per-source lines and the deltas printed under a baseline
   comparison say where. They are informational and do not by themselves
-  fail the gate.
+  fail the gate, unless you set `EVAL_MIN_SOURCE_ACCURACY` (§18.2).
 - **Error taxonomy.** `fingerprint_mismatch` (in `--reference live`: the
   result differs from the reference; the message gives counts, never
   values); `guard_rejected`, `execution_error`, `generation_error`;
