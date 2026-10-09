@@ -75,7 +75,6 @@ from __future__ import annotations
 
 import functools
 import logging
-import re
 import threading
 import uuid
 from datetime import datetime
@@ -83,7 +82,6 @@ from typing import Any, Literal
 
 import pandas as pd
 import requests as _requests
-from sqlalchemy.exc import OperationalError, TimeoutError as SATimeout
 
 import config as cfg
 from api.errors import (
@@ -105,7 +103,7 @@ from api.query_cache import query_cache
 from database.errors import classify_database_error
 from database.routing import target_datasource_or_none
 from llm.base import LLMBackend
-from llm.router import RemoteProviderNotAllowedError, TaskType, build_prompt_segments
+from llm.router import TaskType, build_prompt_segments
 from llm.source_routing import SourceRouting, generate_with_source_fallback
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record

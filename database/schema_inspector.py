@@ -43,7 +43,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import OperationalError
 
 logger = logging.getLogger(__name__)
 
