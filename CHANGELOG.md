@@ -22,6 +22,10 @@ The first question after a restart no longer pays the full prefill of the static
 
 - **`build_prompt_segments` builds the static prefix and the per-request tail separately** (`PromptBuilder.build_static_suffix`) instead of concatenating them and cutting the result apart again at the prefix's length. Byte-identical output (`tests/test_prompt_segments.py`); the call now costs about 7 µs whatever the prefix size, where it cost 8.6 µs at a 5 KB prefix, 12.3 µs at 44 KB and 23.5 µs at 166 KB. The prefix itself was already built once per source and kept, and is invalidated when an applied configuration changes it; that is unchanged.
 
+### Fixed
+
+- **A response with `content: null` is an empty answer, not the text `None`.** A reasoning model cut off while still thinking returns `finish_reason: "length"` and `"content": null` (its thinking is in a separate field), and `OpenAIBackend` rendered that with `str(None)`. The four characters looked like an answer, so `is_truncated_empty_completion` never fired and the `LLM_OUTPUT_TRUNCATED` message, which names `LLM_NUM_PREDICT` and `LLM_EXTRA_BODY`, was replaced by a parse failure about SQL that was never written. A `null` or missing `content` is now `""` on the non-streaming and the streaming path alike, in the free-text and the constrained-decoding request (which used to raise a `TypeError` on `null`), and the reasoning-token estimate no longer works around the string. `mode="sql"` and the v2 session engine now report `LLM_OUTPUT_TRUNCATED` for such a response, as they always did for an empty string. `mode="full"` on `/query` goes through the correction loop, which has no truncation shortcut: a cut-off response there is still retried and reported as `INVALID_SQL_RESPONSE`, for `""` and `null` alike.
+
 ### Upgrading
 
 - **Start-up now sends one small request per data source to the model server** (the warm-up above). If the model server is shared and metered per token, or start-up must send it nothing, set `LLM_PREFIX_WARMUP_ON_STARTUP=false`. Nothing else needs doing; `LLM_STREAM_TIMINGS` stays off until you turn it on.

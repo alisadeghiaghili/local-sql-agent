@@ -257,12 +257,12 @@ class TestStreamReassemblesTheIdenticalResponse:
         text, _meta = _streaming(REASONING_STREAM)
         assert text == "SELECT TOP 5 N'تالار' AS r, SUM(v) FROM t"
 
-    def test_all_reasoning_response_gets_the_same_none_content_as_non_streaming(self):
-        # Both paths feed the same `str(message.get("content", ""))`, so a
-        # response that is all reasoning reads identically either way.
+    def test_all_reasoning_response_reads_as_empty_text_on_both_paths(self):
+        # `content: null` (or no content at all) is "no answer text" -- the
+        # empty string -- identically whether the response was streamed.
         text_plain, _ = _non_streaming(TRUNCATED_BODY)
         text_stream, meta = _streaming(TRUNCATED_STREAM)
-        assert text_stream == text_plain
+        assert text_stream == text_plain == ""
         assert meta["finish_reason"] == "length"
         assert meta["reasoning_detected"] is True
 

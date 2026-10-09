@@ -253,6 +253,30 @@ def _content_carries_reasoning_markers(content: str) -> bool:
 _CHARS_PER_TOKEN = 4
 
 
+def _answer_text(message: Any) -> str:
+    """The text of a response message's ``content``; ``""`` when there is none.
+
+    A reasoning model that is cut off while still thinking, or that puts
+    everything on its reasoning channel, comes back with ``"content": null``
+    (or no ``content`` key at all). ``str(None)`` is the four characters
+    ``"None"``, which looked like an answer: it defeated
+    :func:`~observability.llm_status.is_truncated_empty_completion` (so the
+    ``LLM_OUTPUT_TRUNCATED`` message never appeared) and would have counted
+    as answer tokens. Anything that is not a string is "no answer text".
+
+    Examples
+    --------
+    >>> _answer_text({"content": "SELECT 1"})
+    'SELECT 1'
+    >>> _answer_text({"content": None}), _answer_text({}), _answer_text(None)
+    ('', '', '')
+    >>> _answer_text({"content": 7})
+    ''
+    """
+    content = message.get("content") if isinstance(message, dict) else None
+    return content if isinstance(content, str) else ""
+
+
 def _int_or_none(value: Any) -> int | None:
     """*value* as an ``int`` when it is a real, non-boolean number, else ``None``.
 
@@ -975,7 +999,7 @@ class OpenAIBackend(LLMBackend):
                     status_code = resp.status_code
                 choice: dict[str, Any] = (body.get("choices") or [{}])[0]
                 message: dict[str, Any] = choice.get("message") or {}
-                raw: str = str(message.get("content", "")).strip()
+                raw: str = _answer_text(message).strip()
                 logger.debug("OpenAI raw (attempt %d): %.300s", attempt, raw)
 
                 # Reasoning-channel detection (see module docstring's note
@@ -992,12 +1016,8 @@ class OpenAIBackend(LLMBackend):
                         "text rather than a final answer; excerpt: %.200s",
                         attempt, reasoning_text or raw,
                     )
-                # The answer's own text, not `raw`: a response that is all
-                # reasoning has `content: null`, which `raw` renders as the
-                # four characters "None" -- and those are not answer tokens.
-                answer_text = message.get("content")
                 reasoning_tokens, reasoning_estimated = _reasoning_token_stats(
-                    body, reasoning_text, answer_text if isinstance(answer_text, str) else "",
+                    body, reasoning_text, raw,
                 )
 
                 total_ms = round((time.perf_counter() - start) * 1000)
@@ -1077,7 +1097,7 @@ class OpenAIBackend(LLMBackend):
         resp.raise_for_status()
         body = resp.json()
         choice: dict[str, Any] = (body.get("choices") or [{}])[0]
-        text = choice["message"]["content"]
+        text = _answer_text(choice.get("message"))
         # A schema-constrained decode can still be cut off by max_tokens
         # (a half-emitted JSON object) -- derive finish_reason the same way
         # generate_with_meta does rather than assuming "stop" here too, for
