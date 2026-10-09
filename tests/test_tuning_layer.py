@@ -235,6 +235,20 @@ _ALLOWED_MODULE_CONSTANTS = {
     "schema_data/retriever.py::_BIGRAM_MULTIPLIER": (
         "out of scope: TF-IDF bigram scoring weight -- follow-up"
     ),
+    "schema_data/retriever.py::_COLUMN_MIN_WEIGHT": (
+        "scoring-model constant of the column-name evidence, the same kind as "
+        "_BIGRAM_MULTIPLIER above: the rarity a column word needs before it counts. "
+        "Tuned once against the synthetic retrieval benchmark "
+        "(docs/design/RETRIEVAL.md), not per deployment"
+    ),
+    "schema_data/retriever.py::_COLUMN_SCALE": (
+        "scoring-model constant of the column-name evidence: how much one rare "
+        "column word adds next to a description match (see _COLUMN_MIN_WEIGHT)"
+    ),
+    "schema_data/retriever.py::_COLUMN_DESCRIPTION_SHARE": (
+        "scoring-model constant of the column-name evidence: a word found only "
+        "in a column's description counts this share of one in its name"
+    ),
     "schema_data/sync.py::REPORT_LIST_LIMIT": (
         "implementation detail: how many names one section of the "
         "operator script's printed report lists before '... and N more'. "

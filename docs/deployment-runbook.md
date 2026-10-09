@@ -1862,6 +1862,37 @@ an offline run is 100% by construction and passes any floor.
   and re-verified (`eval.cli verify --refresh` also re-records the stored
   rows of active cases for the offline replay).
 
+### 18.4 Table selection on its own: `eval.cli recall`
+
+Before the model sees a question, retrieval decides which tables go into the
+prompt (once the schema is too large for the cacheable static prefix, see
+`PROMPT_RETRIEVAL_TOKEN_BUDGET`). A table that is not there cannot appear in
+the SQL, so this stage can be measured without a model and without the
+database, from the same `golden.jsonl`:
+
+```bash
+python -m eval.cli recall --golden eval_data/golden.jsonl
+python -m eval.cli recall --golden eval_data/golden.jsonl --json --out recall.json
+python -m eval.cli recall --golden eval_data/golden.jsonl --min-recall 0.9   # exit 1 below
+```
+
+For each case the tables its `expected_sql` reads (resolved with the SQL
+guard's own table resolution, so a schema qualifier or a same-name table in
+two schemas matches) are compared with the tables `ContextRetriever` selects.
+The report gives mean **recall**, the share of cases with **every** table
+retrieved, the mean/median/max number of tables retrieved and mean
+**precision** (the cost side: recall is easy to buy by retrieving more), an
+**in-budget recall** in which a retrieval too large for the token budget counts
+as 0, per-tag figures and, for cases with a `datasource`, source-selection
+accuracy. A case whose `expected_sql` names a table the loaded `schema.yaml`
+does not know is listed as skipped, not counted as a miss. The text output
+prints case ids and table names only (no question text); `--json` and `--out`
+add each case's question, so keep that file on the server like the others in
+this section. Use it to see whether a drop in accuracy is retrieval or
+generation, and after any change to `schema.yaml`, `entities.yaml`,
+`retrieval_hints.yaml` or the `RETRIEVAL_*` settings. How the stage works, the
+settings and the measured numbers are in `docs/design/RETRIEVAL.md`.
+
 ## 19. Sharing diagnostics safely
 
 When something goes wrong you will be asked for logs, configuration or command

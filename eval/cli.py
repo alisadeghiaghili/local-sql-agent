@@ -29,6 +29,13 @@ Usage::
     python -m eval.cli verify --golden eval_data/golden.jsonl
     python -m eval.cli verify --golden eval_data/golden.jsonl --accept
 
+    # Table-selection recall, offline (no LLM, no database): which of the
+    # tables each case's expected_sql reads does retrieval put in the prompt?
+    # See eval.recall.
+    python -m eval.cli recall --golden eval_data/golden.jsonl
+    python -m eval.cli recall --golden eval_data/golden.jsonl --json
+    python -m eval.cli recall --golden eval_data/golden.jsonl --min-recall 0.9
+
     # Phase 2 task 3: compare free-text-plus-clean_sql against constrained
     # JSON output on the same golden set (requires a real, reachable endpoint):
     python -m eval.cli run --golden eval_data.example/golden.jsonl --live
@@ -71,6 +78,7 @@ from eval.baseline import (
 from eval.compare import ComparisonOptions
 from eval.determinism import DEFAULT_REPEATS as DEFAULT_DETERMINISM_REPEATS
 from eval.models import GoldenCase
+from eval.recall import evaluate_recall, render_recall_text, report_to_json
 from eval.report import build_report, render_text, save_json_report
 from eval.runner import (
     ExecuteFn,
@@ -464,6 +472,38 @@ def _verify(
     return 1 if result.problems else 0
 
 
+def _recall(args: argparse.Namespace) -> int:
+    """Execute the ``recall`` subcommand. Returns the process exit code.
+
+    ``0`` normally; ``1`` when ``--min-recall`` is given and the mean recall
+    is below it, or when no case could be scored at all (a recall of ``0.0``
+    over zero cases must not read as a pass).
+    """
+    cases = load_golden_cases(args.golden)
+    report = evaluate_recall(cases, token_budget=args.token_budget)
+
+    if args.json:
+        print(report_to_json(report))
+    else:
+        print(render_recall_text(report, all_cases=args.all_cases))
+
+    if args.out:
+        Path(args.out).write_text(report_to_json(report) + "\n", encoding="utf-8")
+        if not args.json:
+            print(f"\nJSON report written to {args.out}")
+
+    if report.scored == 0:
+        print("No case could be scored.", file=sys.stderr)
+        return 1
+    if args.min_recall is not None and report.mean_recall < args.min_recall:
+        print(
+            f"Mean recall {report.mean_recall:.4f} is below --min-recall {args.min_recall:g}.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the ``eval.cli`` argument parser.
 
@@ -675,6 +715,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(func=_verify)
 
+    recall_parser = subparsers.add_parser(
+        "recall",
+        help=(
+            "Measure table-selection recall offline (no LLM, no database): the "
+            "share of each case's expected_sql tables that retrieval puts in the prompt."
+        ),
+    )
+    recall_parser.add_argument(
+        "--golden", required=True, help="Path to a golden.jsonl file."
+    )
+    recall_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the full report as JSON instead of the text summary.",
+    )
+    recall_parser.add_argument(
+        "--out",
+        default=None,
+        help="Also write the full JSON report to this path.",
+    )
+    recall_parser.add_argument(
+        "--all-cases",
+        action="store_true",
+        default=False,
+        dest="all_cases",
+        help="List every scored case in the text summary, not only those that missed a table.",
+    )
+    recall_parser.add_argument(
+        "--min-recall",
+        type=float,
+        default=None,
+        dest="min_recall",
+        help="Exit non-zero when the mean recall is below this value (0 to 1).",
+    )
+    recall_parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=None,
+        dest="token_budget",
+        help=(
+            "Estimated schema tokens a retrieved set may take before the in-budget recall "
+            "counts the case as 0. Defaults to PROMPT_RETRIEVAL_TOKEN_BUDGET."
+        ),
+    )
+    recall_parser.set_defaults(func=_recall)
+
     return parser
 
 
@@ -714,5 +801,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     return args.func(args)
 
 
+def _use_utf8_console() -> None:
+    """Make stdout and stderr write UTF-8 whatever the console's code page.
+
+    Reports carry Persian questions and table names; a Windows console
+    defaults to a code page (cp1252, cp1256, ...) that cannot encode them,
+    and ``print`` then fails with ``UnicodeEncodeError`` half-way through
+    the output. The same approach as ``scripts/release_notes.py``. Called
+    only when the module runs as a program, so tests that call
+    :func:`main` in-process keep their own captured streams.
+
+    Returns:
+        None.
+
+    Raises:
+        Nothing: a stream that cannot be reconfigured is left as it is.
+
+    Examples:
+        >>> _use_utf8_console() is None
+        True
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):  # a stream already read from, or detached
+            continue
+
+
 if __name__ == "__main__":
+    _use_utf8_console()
     sys.exit(main())

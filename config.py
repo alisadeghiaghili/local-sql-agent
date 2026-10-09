@@ -746,6 +746,104 @@ class Settings:
     transparently falls back to the six-retriever pipeline (still exercised,
     never dead code) instead of blowing up the prompt or losing accuracy."""
 
+    # ── Table retrieval: recall knobs (docs/design/RETRIEVAL.md) ────────────
+    retrieval_extra_tables: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_EXTRA_TABLES", "3"))
+    )
+    """How many tables ranked by description and column evidence may be added
+    to the ones a configured alias or fact pattern already named
+    (``retrieval.entity_retriever`` / ``retrieval.fact_retriever``). An alias
+    hit used to end the search for that kind of table, so a question naming
+    one aliased dimension and one that has no alias lost the second. ``0``
+    restores that behaviour."""
+
+    retrieval_extra_score_ratio: float = field(
+        default_factory=lambda: float(os.getenv("RETRIEVAL_EXTRA_SCORE_RATIO", "0.5"))
+    )
+    """An extra table (see :attr:`retrieval_extra_tables`) must score at least
+    this fraction of the best table of its kind. Higher is stricter: fewer
+    extras, higher precision."""
+
+    retrieval_join_expansion: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_JOIN_EXPANSION", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, the tables a question needs to be joined to each other
+    but did not name (a bridge table, the dimension a classification hangs
+    from) are added to the retrieved set, found on the foreign-key graph
+    (``schema.yaml`` relationships, ``relationships.yaml`` and, see
+    :attr:`retrieval_infer_relationships`, the ``<Table>_ID`` naming
+    convention). See ``retrieval.join_paths``."""
+
+    retrieval_join_max_hops: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_HOPS", "2"))
+    )
+    """Longest join (in foreign keys) :attr:`retrieval_join_expansion` will
+    bridge between two retrieved tables; ``2`` allows one intermediate table
+    (fact - bridge - dimension). A pair further apart is left unconnected
+    rather than pulling in a chain. On the synthetic benchmark ``3`` and ``4``
+    found nothing more and cost 0.26 and 0.53 more tables per question
+    (docs/design/RETRIEVAL.md); raise it if your schema chains bridges."""
+
+    retrieval_join_max_added_tables: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_ADDED_TABLES", "4"))
+    )
+    """Most tables :attr:`retrieval_join_expansion` adds to one question's
+    retrieved set. A path that would exceed it, or push the schema block past
+    :attr:`prompt_retrieval_token_budget`, is skipped."""
+
+    retrieval_join_max_hub_degree: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_HUB_DEGREE", "10"))
+    )
+    """A table that more than this many tables reference (a calendar or
+    currency dimension shared by every fact) is never used as a stepping
+    stone between two other tables; it still joins when the question names it."""
+
+    retrieval_infer_relationships: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_INFER_RELATIONSHIPS", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, a column named ``<Table>_ID`` / ``<Table>ID`` is taken as a
+    foreign key to that table's ``ID`` for join-path expansion when neither
+    ``schema.yaml`` nor ``relationships.yaml`` declares the edge. Used for
+    retrieval only; nothing is written to configuration and no join hint is
+    added to the prompt."""
+
+    retrieval_prune: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_PRUNE", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, the candidates of the entity and fact retrievers go
+    through ``retrieval.pruning`` before join-path expansion: a table that only
+    its description matched, or a column match well below the best one, is
+    dropped unless it is joined to a better-evidenced table. Recall of the
+    candidate generation is bought with extra tables; this takes the ones the
+    evidence does not support back out."""
+
+    retrieval_prune_score_ratio: float = field(
+        default_factory=lambda: float(os.getenv("RETRIEVAL_PRUNE_SCORE_RATIO", "0.85"))
+    )
+    """A table with column-name evidence must score at least this fraction of
+    the best unforced score to count as an anchor on its own; below it, it
+    survives only by being joined to an anchor. ``0`` keeps every such table."""
+
+    retrieval_prune_connect_hops: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_PRUNE_CONNECT_HOPS", "2"))
+    )
+    """How many foreign keys may separate a weakly evidenced table from an
+    anchor for it to count as joined (``2`` reaches a table through a bridge).
+    ``0`` disables the rescue."""
+
+    retrieval_prune_corroborate: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_PRUNE_CORROBORATE", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, two candidates that no anchor supports but that are joined
+    to each other (within :attr:`retrieval_prune_connect_hops`) keep each other:
+    each was matched on its own and the join graph agrees. It saves the tables of
+    a question whose strongest alias hit is a false one (an alias that is a
+    substring of the word the question actually uses)."""
+
     # ── Phase 2: deterministic decoding (docs/api-contract-v2.md §6) ───────
     llm_temperature: float = field(
         default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.0"))
