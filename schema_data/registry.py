@@ -430,7 +430,15 @@ class TableDefinition(BaseModel):
     says the same table exists, with the same shape, in each of those
     sources (a replicated date dimension, say); the value is stored as a
     tuple either way, ``()`` for "not set". See
-    :mod:`database.datasources` and :mod:`database.routing`. See the
+    :mod:`database.datasources` and :mod:`database.routing`.
+
+    ``column_types`` is the structural half of ``columns``: ``{column:
+    SQL type}`` as the database reports it (``int``, ``nvarchar(100)``),
+    written and corrected by ``scripts/sync_schema.py`` and never by hand.
+    Nothing at run time reads it -- it is not in the prompt and not in the
+    guard's allowlist -- so a deployment without it behaves exactly as
+    before. It may name only columns of ``columns`` (see
+    :class:`SchemaConfig`). See the
     module docstring's "Per-table schema qualifier and
     resolver/prefetch flags" section, and :class:`SchemaConfig`'s validator
     for the consistency rule tying them to ``columns``.
@@ -438,6 +446,7 @@ class TableDefinition(BaseModel):
 
     description: str = ""
     columns: dict[str, str] | None = None
+    column_types: dict[str, str] = Field(default_factory=dict)
     db_schema: str = ""
     datasource: tuple[str, ...] = ()
     resolvable_columns: tuple[str, ...] = Field(default_factory=tuple)
@@ -497,8 +506,18 @@ class SchemaConfig(BaseModel):
         one part (``"OtherDb.dbo"``, a table in another database on the
         same server) must have no empty part and at most three parts --
         see :func:`security.dialects.quote_tsql_qualifier`, which renders it.
+
+        A fourth rule, also for every table: every key of ``column_types``
+        must be a key of ``columns`` (the types describe columns the
+        table declares; they never add one).
         """
         for name, table in self.tables.items():
+            unknown_types = sorted(set(table.column_types) - set(table.columns or {}))
+            if unknown_types:
+                raise ValueError(
+                    f"table '{name}': column_types names column(s) {unknown_types} "
+                    f"that are not in this table's `columns` map"
+                )
             if table.db_schema:
                 parts = table.db_schema.split(".")
                 if any(not part.strip() for part in parts) or len(parts) > 3:
