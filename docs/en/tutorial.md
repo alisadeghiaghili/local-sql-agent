@@ -554,7 +554,7 @@ entities:
 
 ### Step 4 — Say which data source it is in (several sources only)
 
-With `datasources.yaml`, a table that is not on the default source needs `datasource: <name>` under its key. `python scripts/assign_datasources.py` works the value out from the databases and writes it, with every other table's, to `schema.with_datasources.yaml` for review (`docs/deployment-runbook.md` §16.3).
+With `datasources.yaml`, a table that is not on the default source needs `datasource: <name>` under its key. `python scripts/sync_schema.py` works the value out from the databases and writes it, with every other table's and the rest of the structural sync (new columns, types, tables the databases lack), to `schema.synced.yaml` for review; `scripts/assign_datasources.py` is the narrower tool that writes only the `datasource:` lines (`docs/deployment-runbook.md` §16.3).
 
 ### Verify
 

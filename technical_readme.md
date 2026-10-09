@@ -1133,7 +1133,7 @@ The README's "Project structure" section is the maintained file-by-file tree. By
 | `observability/` | Audit records, the LLM status block, stage timings |
 | `exporters/`, `logs/` | Excel / CSV / JSON exports; rotating JSONL logger |
 | `core/` | Shared models, the Persian normaliser, strict YAML loading, the start-up notice |
-| `scripts/` | Operator tools: `verify_deployment.py`, `issue_api_key.py`, `assign_datasources.py`, `prompt_budget.py`, `analyze_audit_log.py`, `analyze_misses.py`, `migrate_app_db.py` |
+| `scripts/` | Operator tools: `verify_deployment.py`, `issue_api_key.py`, `sync_schema.py`, `assign_datasources.py`, `prompt_budget.py`, `analyze_audit_log.py`, `analyze_misses.py`, `migrate_app_db.py` |
 | `web/` | Static Persian/RTL client and the admin panel (no build step) |
 | `project_config/` | Deployment-specific domain data, git-ignored (template: `project_config.example/`) |
 

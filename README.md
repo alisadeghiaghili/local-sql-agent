@@ -206,8 +206,8 @@ cp .env.example .env
 # Querying more than one database? Describe each source in
 # project_config/datasources.yaml (host, database, login; one DB_PASSWORD_*
 # variable each) instead of setting DB_CONNECTION_URL, then follow
-# docs/deployment-runbook.md §16: it covers `python scripts/assign_datasources.py`
-# (writes each table's `datasource:`), `keywords:` for routing,
+# docs/deployment-runbook.md §16: it covers `python scripts/sync_schema.py`
+# (syncs `schema.yaml` with the databases and writes each table's `datasource:`), `keywords:` for routing,
 # `python scripts/prompt_budget.py` (sizes PROMPT_RETRIEVAL_TOKEN_BUDGET) and
 # `nolock` (per source). docs/design/DATASOURCES.md explains why it is shaped this way.
 
@@ -490,9 +490,10 @@ local-sql-agent/
 ├── webapp/                   # Flask web application (bilingual FA/EN)
 ├── exporters/                # Excel / CSV / JSON exporters
 ├── scripts/
-│   ├── verify_deployment.py  #   the preflight: 13 checks (database, read-only login, keys, model, config), once per data source
+│   ├── verify_deployment.py  #   the preflight: 14 checks (database, read-only login, keys, model, config), once per data source
 │   ├── issue_api_key.py      #   mint a new API key
-│   ├── assign_datasources.py #   write each schema.yaml table's datasource: from the databases
+│   ├── sync_schema.py        #   bring schema.yaml's structure (datasource:, columns, types, tables) in step with the databases; propose relationships
+│   ├── assign_datasources.py #   the narrower tool: only write each schema.yaml table's datasource: from the databases
 │   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
 │   ├── migrate_app_db.py     #   move the application database between backends
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis
