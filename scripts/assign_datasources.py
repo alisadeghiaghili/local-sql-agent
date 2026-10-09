@@ -72,13 +72,9 @@ validate, or ``--output`` names ``schema.yaml``.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
 from pathlib import Path
-
-import yaml
 
 # Run as `python scripts/assign_datasources.py` from the repo root: Python
 # puts only this script's own directory on sys.path, so the repo root is
@@ -87,13 +83,21 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
-from database.catalogue import list_columns, list_tables, table_location  # noqa: E402
+from database.catalogue import list_columns, list_tables  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
+from schema_data.placement import (  # noqa: E402
+    NOT_FOUND_COMMENT,
+    Placement,
+    SourceCatalogue,
+    datasource_edits,
+    locate_tables,
+)
 from schema_data.registry import (  # noqa: E402
     SchemaConfig,
     schema_yaml_path,
     validate_schema_yaml_text,
 )
+from schema_data.yaml_text import Edit, LayoutError, apply_edits, parse_tables  # noqa: E402
 
 __all__ = [
     "EXIT_CHECK_FAILED",
@@ -117,56 +121,8 @@ EXIT_ERROR = 2
 #: Name of the proposed file written next to ``schema.yaml``.
 OUTPUT_FILENAME = "schema.with_datasources.yaml"
 
-#: The comment put under the key of a table found in no data source.
-NOT_FOUND_COMMENT = "# not found in any data source"
-
-#: ``{(schema, table): {column, ...}}``, all lower-cased: one source's
-#: tables and views with their columns.
-SourceCatalogue = Mapping[tuple[str, str], frozenset[str]]
-
 #: ``source name -> its catalogue``; raises when the source cannot be read.
 CatalogueLoader = Callable[[str], SourceCatalogue]
-
-#: Schema used for a table with no qualifier at all (SQL Server).
-_DEFAULT_SCHEMA = "dbo"
-
-
-class LayoutError(ValueError):
-    """``schema.yaml`` is valid but not laid out the way this script can edit."""
-
-
-@dataclass(frozen=True)
-class Placement:
-    """Where one ``schema.yaml`` table was found.
-
-    Attributes
-    ----------
-    key:
-        The table key as written under ``tables:``.
-    found_in:
-        Every source whose catalogue has the table, in ``datasources.yaml``
-        order; empty when it is nowhere.
-    current:
-        The table's ``datasource:`` as written (``()`` when it has none).
-    effective:
-        *current*, or ``(default,)`` when the table has none.
-    missing_columns:
-        ``{source: columns listed in schema.yaml that the source's table
-        does not have}``, only for sources where the table was found and
-        only where something is missing.
-    """
-
-    key: str
-    found_in: tuple[str, ...]
-    current: tuple[str, ...]
-    effective: tuple[str, ...]
-    missing_columns: Mapping[str, tuple[str, ...]]
-
-    @property
-    def disagrees(self) -> bool:
-        """Found somewhere, and not in exactly the sources it is assigned to."""
-        return bool(self.found_in) and set(self.found_in) != set(self.effective)
-
 
 # ---------------------------------------------------------------------------
 # Reading the catalogues and matching tables
@@ -196,122 +152,9 @@ def default_catalogue_loader(source: str) -> SourceCatalogue:
     return {location: columns.get(location, frozenset()) for location in tables}
 
 
-def locate_tables(
-    schema: SchemaConfig,
-    sources: Sequence[str],
-    default: str,
-    catalogues: Mapping[str, SourceCatalogue],
-) -> list[Placement]:
-    """Match every ``schema.yaml`` table against every source's catalogue.
-
-    Parameters
-    ----------
-    schema:
-        The validated ``schema.yaml``.
-    sources:
-        Source names in ``datasources.yaml`` order (default first).
-    default:
-        The default source, where a table with no ``datasource:`` lives.
-    catalogues:
-        ``{source: catalogue}`` for every name in *sources*.
-
-    Returns
-    -------
-    list[Placement]
-        One per table, in ``schema.yaml`` order.
-
-    Examples
-    --------
-    >>> from schema_data.registry import validate_schema_yaml_text
-    >>> schema = validate_schema_yaml_text(
-    ...     "tables:\\n  Date:\\n    db_schema: dim\\n    columns: {ID: x, Gone: y}\\n"
-    ... )
-    >>> found = {("dim", "date"): frozenset({"id"})}
-    >>> [(p.key, p.found_in, dict(p.missing_columns)) for p in locate_tables(
-    ...     schema, ["a", "b"], "a", {"a": found, "b": {}})]
-    [('Date', ('a',), {'a': ('Gone',)})]
-    """
-    placements: list[Placement] = []
-    for key, table in schema.tables.items():
-        location = table_location(key, table.db_schema, _DEFAULT_SCHEMA)
-        found = tuple(name for name in sources if location in catalogues[name])
-        missing: dict[str, tuple[str, ...]] = {}
-        if table.columns:
-            for name in found:
-                have = catalogues[name][location]
-                gone = tuple(col for col in table.columns if col.lower() not in have)
-                if gone:
-                    missing[name] = gone
-        placements.append(Placement(
-            key=key,
-            found_in=found,
-            current=table.datasource,
-            effective=table.datasource or (default,),
-            missing_columns=missing,
-        ))
-    return placements
-
-
 # ---------------------------------------------------------------------------
 # Editing schema.yaml line by line
 # ---------------------------------------------------------------------------
-
-#: A ``tables:`` entry key line: a plain or quoted key, then ``:`` and
-#: nothing but a comment (the entry's body is the lines below it).
-_KEY_LINE = re.compile(
-    r"""^(?P<indent>[ ]*)
-        (?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-][^#]*?)
-        [ \t]*:[ \t]*(?:\#.*)?\r?$""",
-    re.VERBOSE,
-)
-_TABLES_LINE = re.compile(r"^tables:[ \t]*(?:#.*)?\r?$")
-_TRAILING_COMMENT = re.compile(r"(?:^|\s)(#.*)$")
-
-
-def _indent_of(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
-
-
-def _is_blank_or_comment(line: str) -> bool:
-    stripped = line.strip()
-    return not stripped or stripped.startswith("#")
-
-
-def _format_value(sources: Sequence[str]) -> str:
-    return sources[0] if len(sources) == 1 else "[" + ", ".join(sources) + "]"
-
-
-def _datasource_span(lines: list[str], start: int, end: int, indent: int) -> tuple[int, int] | None:
-    """The ``datasource:`` entry among ``lines[start:end]``: ``(first, stop)``.
-
-    ``first`` is the entry's own line; ``stop`` is one past its last line,
-    which extends over a multi-line list (a block list, or a flow list
-    whose ``]`` is on a later line).
-    """
-    entry = re.compile(rf"^ {{{indent}}}datasource[ \t]*:(?P<rest>.*)$")
-    for first in range(start, end):
-        match = entry.match(lines[first].rstrip("\r"))
-        if match is None:
-            continue
-        rest = _TRAILING_COMMENT.sub("", match.group("rest")).strip()
-        stop = first + 1
-        if rest.startswith("[") and "]" not in rest:
-            while stop < end and "]" not in lines[stop - 1]:
-                stop += 1
-        elif not rest:
-            while stop < end:
-                nxt = lines[stop]
-                if _is_blank_or_comment(nxt):
-                    break
-                if _indent_of(nxt) > indent or (
-                    _indent_of(nxt) == indent and nxt.lstrip().startswith("- ")
-                ):
-                    stop += 1
-                else:
-                    break
-        return first, stop
-    return None
-
 
 def render_schema_yaml(
     original: str, schema: SchemaConfig, placements: Sequence[Placement],
@@ -321,7 +164,9 @@ def render_schema_yaml(
     Every original line and comment is kept; lines are only inserted, or a
     table's ``datasource:`` entry replaced in place (keeping a trailing
     comment on it). Line endings, a missing final newline and the file's
-    own indentation are preserved.
+    own indentation are preserved. The line edits themselves are
+    :func:`schema_data.placement.datasource_edits`, shared with
+    ``scripts/sync_schema.py``.
 
     Parameters
     ----------
@@ -356,74 +201,13 @@ def render_schema_yaml(
     """
     lines = original.split("\n")
     cr = "\r" if "\r\n" in original else ""
-
-    start = next((i for i, line in enumerate(lines) if _TABLES_LINE.match(line)), None)
-    if start is None:
-        if schema.tables:
-            raise LayoutError("no block-style `tables:` mapping found in schema.yaml")
+    layout = parse_tables(lines, list(schema.tables))
+    if layout is None:
         return original
-    stop = len(lines)
-    for i in range(start + 1, len(lines)):
-        if not _is_blank_or_comment(lines[i]) and _indent_of(lines[i]) == 0:
-            stop = i
-            break
-    body = [i for i in range(start + 1, stop) if not _is_blank_or_comment(lines[i])]
-    key_indent = _indent_of(lines[body[0]]) if body else 0
-
-    entries: dict[str, int] = {}
-    for i in body:
-        if _indent_of(lines[i]) != key_indent:
-            continue
-        match = _KEY_LINE.match(lines[i])
-        if match is None:
-            continue
-        try:
-            key = str(yaml.safe_load(match.group("key")))
-        except yaml.YAMLError:
-            continue
-        entries[key] = i
-    unplaced = [p.key for p in placements if p.key not in entries]
-    if unplaced:
-        raise LayoutError(
-            "cannot find these tables as `Name:` lines with an indented body "
-            f"in schema.yaml (flow-style entries are not edited): {', '.join(unplaced)}"
-        )
-
-    ordered = sorted(entries.values())
-    ends = dict(zip(ordered, [*ordered[1:], stop]))
-    edits: list[tuple[int, int, list[str]]] = []  # (first, stop, replacement)
+    edits: list[Edit] = []
     for placement in placements:
-        at = entries[placement.key]
-        first, end = at + 1, ends[at]
-        inner = [i for i in range(first, end) if not _is_blank_or_comment(lines[i])]
-        child_indent = _indent_of(lines[inner[0]]) if inner else key_indent + 2
-        pad = " " * child_indent
-        marker = first < end and lines[first].strip() == NOT_FOUND_COMMENT
-        if not placement.found_in:
-            if not marker:
-                edits.append((first, first, [f"{pad}{NOT_FOUND_COMMENT}{cr}"]))
-            continue
-        if set(placement.found_in) == set(placement.current):
-            if marker:
-                edits.append((first, first + 1, []))
-            continue
-        new_value = _format_value(placement.found_in)
-        span = _datasource_span(lines, first, end, child_indent)
-        if span is None:
-            replaced = 1 if marker else 0
-            edits.append((first, first + replaced, [f"{pad}datasource: {new_value}{cr}"]))
-            continue
-        old_first, old_stop = span
-        head = lines[old_first].rstrip("\r")
-        comment = _TRAILING_COMMENT.search(head.split(":", 1)[1])
-        tail = f"  {comment.group(1)}" if comment else ""
-        edits.append((old_first, old_stop, [f"{pad}datasource: {new_value}{tail}{cr}"]))
-        if marker:
-            edits.append((first, first + 1, []))
-
-    for first, end, replacement in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
-        lines[first:end] = replacement
-    return "\n".join(lines)
+        edits.extend(datasource_edits(lines, layout.tables[placement.key], placement, cr))
+    return "\n".join(apply_edits(lines, edits))
 
 
 def _check_output(
@@ -439,12 +223,7 @@ def _check_output(
         than ``datasource`` changed.
     """
     parsed = validate_schema_yaml_text(rendered)
-    wanted = {
-        p.key: (
-            p.current if not p.found_in or set(p.found_in) == set(p.current) else p.found_in
-        )
-        for p in placements
-    }
+    wanted = {p.key: p.wanted for p in placements}
     if list(parsed.tables) != list(original.tables):
         raise ValueError("the proposed file lists different tables than schema.yaml")
     for key, table in parsed.tables.items():
