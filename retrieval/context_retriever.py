@@ -7,6 +7,7 @@ Pipeline
     question
         ├── EntityRetriever      → dimension tables (Ring, Customer, Symbol …)
         ├── FactRetriever        → fact tables (Order …)
+        ├── expand_join_paths    → tables that join the two above (bridge tables …)
         ├── RelationshipRetriever → JOIN clauses for selected tables
         ├── RuleRetriever        → business rules injected into the prompt
         ├── ExampleRetriever     → few-shot SQL examples ranked by tag overlap
@@ -29,6 +30,7 @@ from knowledge.entities import ENTITIES
 from retrieval.dimension_vocabulary import match_question_against_vocabulary
 from retrieval.entity_retriever import EntityRetriever
 from retrieval.fact_retriever import FactRetriever
+from retrieval.join_paths import expand_join_paths
 from retrieval.relationship_retriever import RelationshipRetriever
 from retrieval.rule_retriever import RuleRetriever
 from retrieval.example_retriever import ExampleRetriever
@@ -117,7 +119,11 @@ class ContextRetriever:
 
         selected_tables = list(dict.fromkeys(entities + facts))  # order-preserving dedup
 
-        relationships = RelationshipRetriever.retrieve(selected_tables)
+        # Tables the question needs joined but did not name (a bridge table,
+        # the dimension a classification hangs from) -- see retrieval.join_paths.
+        join_tables = expand_join_paths(selected_tables)
+
+        relationships = RelationshipRetriever.retrieve(selected_tables + join_tables)
         rules = RuleRetriever.retrieve(question)
         examples = ExampleRetriever.retrieve(question)
         filters = ValueRetriever.retrieve(question)
@@ -178,6 +184,7 @@ class ContextRetriever:
         return RetrievalContext(
             entities=entities,
             facts=facts,
+            join_tables=join_tables,
             dimensions=entities,          # kept for backward compat; PromptBuilder does NOT read this
             relationships=relationships,
             business_rules=rules,

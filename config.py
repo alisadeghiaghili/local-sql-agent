@@ -718,6 +718,39 @@ class Settings:
     this fraction of the best table of its kind. Higher is stricter: fewer
     extras, higher precision."""
 
+    retrieval_join_expansion: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_JOIN_EXPANSION", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, the tables a question needs to be joined to each other
+    but did not name (a bridge table, the dimension a classification hangs
+    from) are added to the retrieved set, found on the foreign-key graph
+    (``schema.yaml`` relationships and ``relationships.yaml``). See ``retrieval.join_paths``."""
+
+    retrieval_join_max_hops: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_HOPS", "2"))
+    )
+    """Longest join (in foreign keys) :attr:`retrieval_join_expansion` will
+    bridge between two retrieved tables; ``2`` allows one intermediate table
+    (fact - bridge - dimension). A pair further apart is left unconnected
+    rather than pulling in a chain. On the synthetic benchmark ``3`` and ``4``
+    found nothing more and cost 0.26 and 0.53 more tables per question
+    (docs/design/RETRIEVAL.md); raise it if your schema chains bridges."""
+
+    retrieval_join_max_added_tables: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_ADDED_TABLES", "4"))
+    )
+    """Most tables :attr:`retrieval_join_expansion` adds to one question's
+    retrieved set. A path that would exceed it, or push the schema block past
+    :attr:`prompt_retrieval_token_budget`, is skipped."""
+
+    retrieval_join_max_hub_degree: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_JOIN_MAX_HUB_DEGREE", "10"))
+    )
+    """A table that more than this many tables reference (a calendar or
+    currency dimension shared by every fact) is never used as a stepping
+    stone between two other tables; it still joins when the question names it."""
+
     # ── Phase 2: deterministic decoding (docs/api-contract-v2.md §6) ───────
     llm_temperature: float = field(
         default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.0"))
