@@ -32,13 +32,18 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
 import config as cfg
 from llm.base import LLMBackend
 from llm.trust import default_trust_for_url
+
+if TYPE_CHECKING:
+    # Annotation-only: llm.router imports llm.base, and llm.router resolves
+    # llm.providers lazily, so keep this out of the runtime import graph.
+    from llm.router import PromptSegments
 
 logger = logging.getLogger(__name__)
 
