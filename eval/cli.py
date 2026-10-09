@@ -801,5 +801,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     return args.func(args)
 
 
+def _use_utf8_console() -> None:
+    """Make stdout and stderr write UTF-8 whatever the console's code page.
+
+    Reports carry Persian questions and table names; a Windows console
+    defaults to a code page (cp1252, cp1256, ...) that cannot encode them,
+    and ``print`` then fails with ``UnicodeEncodeError`` half-way through
+    the output. The same approach as ``scripts/release_notes.py``. Called
+    only when the module runs as a program, so tests that call
+    :func:`main` in-process keep their own captured streams.
+
+    Returns:
+        None.
+
+    Raises:
+        Nothing: a stream that cannot be reconfigured is left as it is.
+
+    Examples:
+        >>> _use_utf8_console() is None
+        True
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):  # a stream already read from, or detached
+            continue
+
+
 if __name__ == "__main__":
+    _use_utf8_console()
     sys.exit(main())

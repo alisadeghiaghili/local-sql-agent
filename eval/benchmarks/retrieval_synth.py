@@ -968,7 +968,7 @@ def run_benchmark(out_dir: str | Path, *, bench: Benchmark | None = None) -> dic
     env["PYTHONHASHSEED"] = "0"
     result = subprocess.run(
         [sys.executable, "-m", "eval.cli", "recall", "--golden", str(root / "golden.jsonl"), "--json"],
-        cwd=_REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+        cwd=_REPO_ROOT, env=env, capture_output=True, text=True, encoding="utf-8", check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(f"eval.cli recall failed ({result.returncode}):\n{result.stderr or result.stdout}")

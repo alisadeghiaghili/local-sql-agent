@@ -17,7 +17,11 @@ Run::
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 import yaml
@@ -37,6 +41,8 @@ from knowledge.config_loader import (
     validate_yaml_text,
 )
 from schema_data.registry import validate_schema_yaml_text
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SMALL = BenchmarkConfig(tables=80, questions_per_language=24)
 
@@ -213,3 +219,29 @@ class TestMeasuredEndToEnd:
         assert text.splitlines()[0].startswith("slice")
         assert "English multi-hop" in text
         assert summarise(report, markdown=True).splitlines()[1].startswith("|---")
+
+
+class TestNarrowConsoleEncoding:
+    """The recall CLI must not crash on a console that cannot encode Persian.
+
+    A Windows console defaults to a code page such as cp1252; before the
+    CLI switched its streams to UTF-8, ``print`` of a report holding a
+    Persian question raised ``UnicodeEncodeError``. ``PYTHONIOENCODING``
+    reproduces that console on any platform.
+    """
+
+    def test_recall_json_survives_a_cp1252_console(self, tmp_path):
+        bench = generate(BenchmarkConfig(tables=70, questions_per_language=12))
+        write_benchmark(bench, tmp_path)
+        env = dict(os.environ)
+        env["PROJECT_CONFIG_DIR"] = str(tmp_path / "project_config")
+        env["PYTHONIOENCODING"] = "cp1252"
+        result = subprocess.run(
+            [sys.executable, "-m", "eval.cli", "recall",
+             "--golden", str(tmp_path / "golden.jsonl"), "--json"],
+            cwd=REPO_ROOT, env=env, capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        report = json.loads(result.stdout.decode("utf-8"))
+        assert report["scored"] == len(bench.golden)
+        assert any("؀" <= ch <= "ۿ" for ch in result.stdout.decode("utf-8"))
