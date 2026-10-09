@@ -54,10 +54,12 @@ _SECRET_QUERY_KEYS = frozenset(
 #: string, password included).
 _ODBC_SECRET_RE = re.compile(r"(?i)(\b(?:pwd|password|passwd)\s*=\s*)[^;&]*")
 
-#: ``://user:password@`` in a string SQLAlchemy could not parse. Greedy up to
-#: the last ``@`` before the first ``/``, because a password may itself
-#: contain ``@`` or ``:``.
-_RAW_USERINFO_RE = re.compile(r"(?<=://)([^:/@\s]*):([^/\s]*)@")
+#: ``://user:password@`` in a string that could not be parsed unambiguously.
+#: Greedy up to the last ``@`` before the query string, because a password
+#: may itself contain ``@``, ``:`` or ``/``; a host, port or database name
+#: never contains ``@``. Over-masking (an ``@`` inside a query value) is
+#: the safe direction.
+_RAW_USERINFO_RE = re.compile(r"(?<=://)([^:/@\s]*):([^?]*)@(?=[^@?]*(?:\?|$))")
 
 
 def redact_db_url(url: str) -> str:
@@ -96,11 +98,13 @@ def redact_db_url(url: str) -> str:
     if not isinstance(url, str):
         return UNPARSEABLE_URL
     try:
-        parsed = make_url(url)
-        if "@" in (parsed.host or ""):
-            # An unescaped "@" inside the password: SQLAlchemy ended the
-            # password early and put the rest in the host. Mask by pattern.
+        if url.split("?", 1)[0].count("@") > 1:
+            # An unescaped "@" inside the password: SQLAlchemy ends the
+            # password at the first "@" and puts the rest of it in the host
+            # or the database name, where render_as_string does not mask
+            # it. Mask by pattern, up to the last "@", instead.
             raise ValueError("ambiguous user information")
+        parsed = make_url(url)
         query: dict[str, Any] = {}
         for key, value in parsed.query.items():
             lowered = key.lower()

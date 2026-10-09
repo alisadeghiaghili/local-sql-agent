@@ -31,10 +31,10 @@ class TestRedactDbUrl:
         ["p@ss", "p:ss", "p/ss", "p%40ss", "a@b@c", "pa:ss@wo/rd", "a b"],
     )
     def test_masks_passwords_containing_url_delimiters(self, password):
+        # Exact output: no fragment of the password may survive, whichever
+        # way a SQLAlchemy release splits an unescaped "@" or "/".
         redacted = redact_db_url(f"postgresql+psycopg2://u:{password}@h:5432/d")
-        assert password not in redacted
-        assert MASK in redacted
-        assert redacted.endswith("@h:5432/d")
+        assert redacted == f"postgresql+psycopg2://u:{MASK}@h:5432/d"
 
     def test_masks_pwd_inside_odbc_connect(self):
         url = (
