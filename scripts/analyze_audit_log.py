@@ -100,6 +100,12 @@ Report sections
 9. :func:`_llm_meta_summary`      — reasoning-channel detections,
    provider / fallback usage, and how often a requested seed was
    confirmed honoured.
+10. :func:`llm_latency_split`     — the ``llm`` stage opened up: p50/p95 of
+    time-to-first-token (``ttft_ms``: queue plus prefill), generation time
+    (``generation_ms``) and reasoning tokens, from the ``llm`` block's
+    fields of the same names. Only calls that carry them count (streamed
+    ones, for the timings -- ``LLM_STREAM_TIMINGS=true``); a record written
+    before the fields existed contributes to nothing and breaks nothing.
 
 Handling a partly-stub log
 ----------------------------
@@ -843,6 +849,119 @@ def llm_meta_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# The llm stage, opened up
+# ---------------------------------------------------------------------------
+
+def _llm_numbers(records: list[dict[str, Any]], key: str) -> list[float]:
+    """Every real number the ``llm`` blocks of *records* hold under *key*.
+
+    ``None`` (a call that could not measure it), a missing key (a record
+    written before the field existed) and a boolean are all skipped, so an
+    old log reads as "no data" rather than raising or reading as zeros.
+
+    Examples
+    --------
+    >>> _llm_numbers([{"llm": {"ttft_ms": 900}}, {"llm": {}}, {"llm": None}, {}], "ttft_ms")
+    [900]
+    """
+    numbers: list[float] = []
+    for rec in records:
+        value = (rec.get("llm") or {}).get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numbers.append(value)
+    return numbers
+
+
+def llm_latency_split(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Time-to-first-token, generation time and reasoning tokens, among LLM calls.
+
+    ``latency_report`` says how long the ``llm`` stage took; this says what
+    it was made of. ``ttft_ms`` is the wait before the first generated token
+    -- the server's queue plus prefill, so the number a cold prefix cache
+    or a saturated model server inflates -- and ``generation_ms`` is the
+    rest, decoding including any reasoning. Both exist only for calls made
+    with ``LLM_STREAM_TIMINGS=true``; ``streamed_call_count`` says how many
+    of ``llm_call_count`` those are, and every figure here is over that
+    subset, never over a mix with calls that could not measure it.
+
+    ``reasoning_tokens`` is over every call that showed reasoning, streamed
+    or not. ``reasoning_tokens_estimated_count`` of
+    ``reasoning_tokens_count`` are the analyser's estimate from the
+    reasoning text's length rather than the server's own count, so a reader
+    knows how far to trust the percentiles. ``reasoning_share_of_completion``
+    is the reasoning tokens as a fraction of the completion tokens of the
+    same calls: close to 1.0 means most of what the model generates is
+    thinking, which is what to look at before raising ``LLM_NUM_PREDICT``.
+
+    The ``llm`` block describes the call that produced the record's result;
+    when a request spent self-correction rounds the earlier calls are in
+    ``timings.llm_ms`` (which accumulates them) but not in these figures.
+
+    Returns
+    -------
+    dict
+        ``llm_call_count``, ``streamed_call_count``, ``ttft_ms`` and
+        ``generation_ms`` (each ``{count, mean, p50, p95, p99}``),
+        ``ttft_share_of_total`` (the median of ``ttft_ms / total_ms`` over
+        streamed calls, ``None`` without any), ``reasoning_tokens`` (the
+        same stats), ``reasoning_tokens_count``,
+        ``reasoning_tokens_estimated_count`` and
+        ``reasoning_share_of_completion``.
+
+    Examples
+    --------
+    >>> rec = {"llm": {"ttft_ms": 900, "generation_ms": 2100, "total_ms": 3000,
+    ...                "reasoning_tokens": 80, "reasoning_tokens_estimated": True,
+    ...                "completion_tokens": 100}}
+    >>> out = llm_latency_split([rec])
+    >>> out["ttft_ms"]["p50"], out["generation_ms"]["p50"], out["ttft_share_of_total"]
+    (900, 2100, 0.3)
+    >>> out["reasoning_tokens_estimated_count"], out["reasoning_share_of_completion"]
+    (1, 0.8)
+    >>> llm_latency_split([{"llm": {"model": "old record"}}])["ttft_ms"]["count"]
+    0
+    """
+    llm_blocks = [rec["llm"] for rec in records if rec.get("llm")]
+
+    streamed = [
+        b for b in llm_blocks
+        if isinstance(b.get("ttft_ms"), (int, float)) and not isinstance(b.get("ttft_ms"), bool)
+    ]
+    shares = [
+        b["ttft_ms"] / b["total_ms"] for b in streamed
+        if isinstance(b.get("total_ms"), (int, float)) and b["total_ms"] > 0
+    ]
+
+    with_reasoning = [
+        b for b in llm_blocks
+        if isinstance(b.get("reasoning_tokens"), (int, float))
+        and not isinstance(b.get("reasoning_tokens"), bool)
+    ]
+    comparable = [
+        b for b in with_reasoning
+        if isinstance(b.get("completion_tokens"), (int, float)) and b["completion_tokens"] > 0
+    ]
+    completion_total = sum(b["completion_tokens"] for b in comparable)
+
+    return {
+        "llm_call_count": len(llm_blocks),
+        "streamed_call_count": len(streamed),
+        "ttft_ms": _stats(_llm_numbers(records, "ttft_ms")),
+        "generation_ms": _stats(_llm_numbers(records, "generation_ms")),
+        "ttft_share_of_total": round(_percentile(shares, 50), 4) if shares else None,
+        "reasoning_tokens": _stats(_llm_numbers(records, "reasoning_tokens")),
+        "reasoning_tokens_count": len(with_reasoning),
+        "reasoning_tokens_estimated_count": sum(
+            1 for b in with_reasoning if b.get("reasoning_tokens_estimated") is True
+        ),
+        "reasoning_share_of_completion": (
+            round(sum(b["reasoning_tokens"] for b in comparable) / completion_total, 4)
+            if completion_total else None
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Record counts by model, and time range
 # ---------------------------------------------------------------------------
 
@@ -1078,6 +1197,7 @@ def build_report(
         "guard_rejections": guard_rejection_report(records, include_examples=include_examples),
         "correction_rounds": correction_rounds(records),
         "llm_meta_summary": llm_meta_summary(records),
+        "llm_latency_split": llm_latency_split(records),
     }
 
 
@@ -1092,6 +1212,16 @@ def _fmt_ms(stats: dict[str, Any]) -> str:
         f"n={stats['count']:<6} p50={stats['p50']:.0f}ms  "
         f"p95={stats['p95']:.0f}ms  p99={stats['p99']:.0f}ms  "
         f"mean={stats['mean']:.0f}ms"
+    )
+
+
+def _fmt_p(stats: dict[str, Any], unit: str) -> str:
+    """One line of p50/p95 for *stats*, or ``(no data)``; *unit* is ``"ms"`` or ``"tokens"``."""
+    if not stats or stats.get("count") == 0:
+        return "(no data)"
+    return (
+        f"n={stats['count']:<6} p50={stats['p50']:.0f} {unit}  "
+        f"p95={stats['p95']:.0f} {unit}"
     )
 
 
@@ -1216,6 +1346,22 @@ def render_text(report: dict[str, Any]) -> str:
     w(f"  seed_requested                 : {lm['seed_requested_count']}")
     w(f"  seed_honored (of requested)    : {lm['seed_honored_count']} "
       f"({lm['seed_honored_rate_among_seed_requested']})")
+    w("")
+
+    # .get(): a report built by an older version of this script (a saved
+    # --json file fed back through render_text) has no such section.
+    ls = report.get("llm_latency_split")
+    if ls:
+        w("LLM stage split (needs LLM_STREAM_TIMINGS=true for the timings)")
+        w("-" * 60)
+        w(f"  streamed calls                 : {ls['streamed_call_count']} of {ls['llm_call_count']}")
+        w(f"  ttft (queue + prefill)         : {_fmt_p(ls['ttft_ms'], 'ms')}")
+        w(f"  generation (first token -> end): {_fmt_p(ls['generation_ms'], 'ms')}")
+        w(f"  ttft share of the call (median): {ls['ttft_share_of_total']}")
+        w(f"  reasoning tokens               : {_fmt_p(ls['reasoning_tokens'], 'tokens')}")
+        w(f"  reasoning tokens estimated     : {ls['reasoning_tokens_estimated_count']} "
+          f"of {ls['reasoning_tokens_count']}")
+        w(f"  reasoning share of completion  : {ls['reasoning_share_of_completion']}")
     w("=" * 60)
 
     return "\n".join(lines)

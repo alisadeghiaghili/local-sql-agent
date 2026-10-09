@@ -726,6 +726,13 @@ Prompt path for data source 'sales': static prefix (cacheable) -- 26 table(s), s
 `retrieval restricted to its tables` in place of `static prefix (cacheable)`
 means that source's prefix is over the budget; §16.6 says what to do about it.
 
+Then, unless `LLM_PREFIX_WARMUP_ON_STARTUP=false`, one line per source from the
+prefix-cache warm-up, which runs in the background after start-up (§20.2):
+
+```
+LLM prefix warm-up: source=(whole schema) warmed in 41873 ms, prompt_tokens=4612
+```
+
 If neither line appears at all, nothing is wrong with this deployment's
 `.env` — it means logging itself never reached a handler. Both
 documented start commands leave the ROOT logger exactly as Python starts
@@ -831,6 +838,10 @@ Before sending it, sanity-check the top of the report:
 - `cache_behaviour`'s `prefix_cache_hit_rate` — the first real measurement
   of whether Phase 2's static-prefix latency premise actually held under
   real traffic.
+- "LLM stage split" (present when `LLM_STREAM_TIMINGS=true` was on for part of
+  the week; §20.4 says how to read it) — how much of the `llm` stage was
+  waiting for the first token and how much was generating, and how many of
+  the generated tokens were reasoning.
 
 If, and only if, you have separately decided sharing example questions is
 acceptable (e.g. you are debugging a specific miss with whoever wrote this
@@ -1901,3 +1912,165 @@ file.
 
 Whatever you send, say what you removed, so the reader does not mistake a
 blanked value for a missing one.
+
+## 20. Latency: the prefix-cache warm-up and the split `llm` stage
+
+The `llm` stage is almost all of a question's wall-clock time, and it used to
+be one number. This section is about the two things that are now
+separated out of it: the **prefill** of the static prompt prefix (which a
+restart makes slow once, and which a warm-up now pays for before a question
+does), and **waiting versus generating** (which `LLM_STREAM_TIMINGS` lets you
+tell apart).
+
+### 20.1 Why the first question after a restart is slow
+
+Every SQL-generation request starts with the same text: the system prompt,
+the business rules, the schema, the relationships and the examples of one
+data source (the *static prefix*, `prompt_engine/static_prefix.py`), then a
+short tail (filters, session context, the question). A model server that
+caches prompt prefixes only computes the tail; one that has not seen the
+prefix yet computes all of it. On a large local model that is about a minute.
+The cache starts empty whenever the model server starts, so the question that
+used to meet that minute was whichever one arrived first.
+
+**Turn prefix caching on in the model server.** For vLLM that is
+`--enable-prefix-caching` (recent versions enable it by default; passing it
+explicitly costs nothing and puts the dependency in the launch command where
+the next person will see it). Add `--enable-prompt-tokens-details` if you
+want the server to say how many prompt tokens came from the cache
+(`usage.prompt_tokens_details.cached_tokens`); the warm-up log line shows the
+number when the server reports it. llama.cpp's server reuses the KV cache of a shared prompt prefix
+(`cache_prompt`, on by default in current versions). Without any prefix caching on the model server, nothing in this
+section makes a question faster, and the warm-up costs one extra prefill at
+start-up.
+
+### 20.2 The start-up warm-up
+
+`LLM_PREFIX_WARMUP_ON_STARTUP` (default `true`) makes the server, as it
+starts, send the model server one request per data source whose prompt uses
+the static prefix:
+
+- `messages` is exactly the prefix real requests start with, taken from the
+  same function that builds real prompts (`llm/router.build_prompt_segments`),
+  so it cannot drift from them;
+- `max_tokens` is `1` and `temperature` is `0`; the sampling fields and
+  `LLM_EXTRA_BODY` are the ones real requests send;
+- it runs on a background thread. The server accepts requests at once, and a
+  question that arrives while the warm-up is still running is served as it
+  would have been without one;
+- it is bounded by `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` (default `180`) for
+  the whole pass, is never retried, and every failure is one log line and
+  nothing else. The lines carry no prompt text, no response text and no key.
+
+It is **on by default** because it is inert unless there is something to
+warm. It sends nothing when the schema is over `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+(no stable prefix to cache; §16.6), when `LLM_PROVIDER=mock`, or when the
+endpoint is not trusted and `LLM_ALLOW_REMOTE` is off (the same gate real
+requests pass). Turn it off (`LLM_PREFIX_WARMUP_ON_STARTUP=false`) if the
+model server is shared and metered per token, or if start-up must send no
+model traffic.
+
+What to look for in the start-up log, one line per data source:
+
+```
+LLM prefix warm-up: source=(whole schema) warmed in 41873 ms, prompt_tokens=4612
+LLM prefix warm-up: source=sales warmed in 9 ms, prompt_tokens=4612, cached_tokens=4608
+```
+
+The second form is a cache that was already warm (the model server did not
+restart, this server did): the request came back in milliseconds. The other
+outcomes are `skipped, its prompt uses retrieval, not a static prefix`,
+`skipped, the endpoint is not trusted and LLM_ALLOW_REMOTE is off`, and
+`failed after N ms (ReadTimeout)` / `(HTTPError (HTTP 400))`. A `failed`
+line does not affect questions; it means the first one will be slow, as it
+used to be. HTTP 400 usually means the model server rejected `max_tokens=1`
+or a field in `LLM_EXTRA_BODY`; the same field would be rejected on a real
+question, so the log of the model server says which.
+
+**Verify it worked:** ask a question straight after start-up and look at the
+audit record: `llm.prompt_tokens` should be a few hundred (the tail), not the
+size of the prefix, and `llm.prefix_cache_hit` should be `true` (and
+`ttft_ms`, §20.4, should be small).
+
+**What it cannot do.** The warm-up primes the cache once. A model server
+that restarts on its own, or that evicts the prefix under memory pressure
+from other traffic, is cold again, and so is a different replica behind a
+load balancer (the warm-up reaches whichever replica answers). After a model
+server restart, run the warm-up by hand (§20.3). After editing the system
+prompt, business rules, schema or examples in the admin panel the prefix
+changes and the old cache entry is useless; the same manual call prepares the
+new one.
+
+### 20.3 Warming on demand: `POST /admin/llm/warmup`
+
+```bash
+curl -X POST -H "Authorization: Bearer $OPS_KEY" http://localhost:8000/admin/llm/warmup
+```
+
+Needs the `operations` capability. Runs the same pass synchronously, whatever
+`LLM_PREFIX_WARMUP_ON_STARTUP` says, and returns one entry per data source:
+
+```json
+{"results": [{"source": null, "status": "warmed", "detail": null,
+              "duration_ms": 41873, "prompt_tokens": 4612, "cached_tokens": null}]}
+```
+
+`status` is `warmed`, `skipped` or `failed`; `detail` says why, without prompt
+text. A source that failed is reported in the body, not as an HTTP error. If a
+warm-up is already running (the start-up one, say) the answer is `409` and
+nothing is sent. The call is recorded in the admin-action log as `llm.warmup`.
+
+### 20.4 Opening up the `llm` stage: `LLM_STREAM_TIMINGS`
+
+A non-streaming request cannot see inside its own wait: `timings.llm_ms` and
+`llm.total_ms` say how long it took, not whether the time was spent queueing
+and prefilling or generating. With `LLM_STREAM_TIMINGS=true` the request is
+sent with `stream=true` (and `stream_options={"include_usage": true}`) and the
+chunks are reassembled into the same response: same content, same reasoning
+text, same `finish_reason`, same `usage`. It defaults to `false`; turn it on,
+compare `total_ms` before and after for a day, and leave it on if nothing
+moved. Two differences to know about: the request timeout (120 s) now also
+bounds the whole call, checked as chunks arrive, and a proxy between this
+server and the model server that buffers or rewrites server-sent events will
+make `ttft_ms` look like `total_ms`. The constrained-decoding request
+(`LLM_STRUCTURED_OUTPUT=true`) is not streamed.
+
+The audit record's `llm` block gains four fields (they are `null`/`false` in
+a record written without them, and records written by earlier versions simply lack them):
+
+| Field | Meaning |
+|---|---|
+| `ttft_ms` | Request sent to first generated token (reasoning or answer): the model server's queue plus prefill. Only with `LLM_STREAM_TIMINGS`. |
+| `generation_ms` | First token to the end of the response; `ttft_ms + generation_ms == total_ms`. Includes the time spent reasoning. |
+| `reasoning_tokens` | How many of `completion_tokens` were reasoning. `null` when the response showed none (not the same as `0`). Recorded with or without streaming. |
+| `reasoning_tokens_estimated` | `true` when `reasoning_tokens` is an estimate: the server reports `usage.completion_tokens_details.reasoning_tokens` only on some stacks, and where it does not, `completion_tokens` is split by the share of characters that are reasoning. |
+
+The reasoning text itself is never stored. They describe the call that
+produced the record's answer; a request that needed correction rounds also
+spent earlier calls, which only `timings.llm_ms` includes.
+
+`python scripts/analyze_audit_log.py` (§8) prints them as "LLM stage split":
+p50/p95 of `ttft`, `generation` and reasoning tokens, the median share of a
+call that was `ttft`, how many reasoning counts were estimates, and the share
+of completion tokens that were reasoning. Every figure is over the calls that
+have it, so a log that mixes streamed and older records is not skewed. How to
+read it:
+
+| You see | It means | Do |
+|---|---|---|
+| High `ttft_ms`, `prompt_tokens` near the prefix size, `prefix_cache_hit: false` | The prefix was prefilled: a cold cache | Check §20.1 (prefix caching on?), run §20.3 after restarts |
+| High `ttft_ms`, `prompt_tokens` small, `prefix_cache_hit: true` | The model server queued the request behind others | Look at the model server's load and at `MAX_CONCURRENT_REQUESTS` (how many questions this server lets through at once), not at the prompt |
+| Low `ttft_ms`, high `generation_ms` | Decoding is the cost | Next row |
+| `reasoning_tokens` is most of `completion_tokens` | The model spends its time thinking | `LLM_EXTRA_BODY` to lower or switch off reasoning (§8, `.env.example`) or accept it; raising `LLM_NUM_PREDICT` only makes the call longer |
+| `finish_reason: length` with high `reasoning_tokens` | Cut off while reasoning | The §8 `length` advice |
+
+### 20.5 What this costs
+
+Nothing per request apart from `LLM_STREAM_TIMINGS`, which replaces one
+blocking read with a read of the same bytes in pieces: about 65 ms of CPU for
+a response of a thousand tokens with a thousand tokens of reasoning (against
+about 2 ms without streaming), measured against a local stand-in server. The static prefix itself was already built once per data
+source and kept; it is rebuilt only when the configuration that feeds it
+changes. `build_prompt_segments` takes about 7 µs per call (it was 8 to 23 µs,
+growing with the prefix), so the prompt stage is not where a question's time
+goes.

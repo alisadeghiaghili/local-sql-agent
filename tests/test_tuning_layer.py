@@ -128,6 +128,13 @@ _ALLOWED_MODULE_CONSTANTS = {
         "rough chars-per-token heuristic compared only against itself and "
         "against the already-tunable prompt_retrieval_token_budget"
     ),
+    "llm/providers.py::_CHARS_PER_TOKEN": (
+        "the same rough chars-per-token heuristic, used only to label an "
+        "*estimated* reasoning-token count when a response carries "
+        "reasoning text but no usage figures at all; llm.providers cannot "
+        "import prompt_engine (the whole knowledge base) for one constant, "
+        "and the estimate is flagged as an estimate"
+    ),
     "database/schema_inspector.py::_MAX_SAMPLE_LEN": (
         "display-truncation length inside the interactive, untested, "
         "coverage-excluded setup wizard; never read by the running engine"
