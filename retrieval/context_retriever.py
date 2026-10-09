@@ -31,6 +31,7 @@ from retrieval.dimension_vocabulary import match_question_against_vocabulary
 from retrieval.entity_retriever import EntityRetriever
 from retrieval.fact_retriever import FactRetriever
 from retrieval.join_paths import expand_join_paths
+from retrieval.pruning import prune_selection
 from retrieval.relationship_retriever import RelationshipRetriever
 from retrieval.rule_retriever import RuleRetriever
 from retrieval.example_retriever import ExampleRetriever
@@ -116,6 +117,10 @@ class ContextRetriever:
         """
         entities = EntityRetriever.retrieve(question)
         facts = FactRetriever.retrieve(question)
+
+        # Candidate generation favours recall; take back the tables the
+        # evidence does not support (retrieval.pruning).
+        entities, facts = prune_selection(question, entities, facts)
 
         selected_tables = list(dict.fromkeys(entities + facts))  # order-preserving dedup
 

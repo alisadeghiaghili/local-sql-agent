@@ -54,11 +54,11 @@ from __future__ import annotations
 
 import heapq
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__all__ = ["JoinEdge", "JoinGraph", "build_join_graph", "expand_join_paths"]
+__all__ = ["JoinEdge", "JoinGraph", "build_join_graph", "connected_within", "expand_join_paths"]
 
 #: ``CustomerID`` / ``Customer_ID`` / ``customer_id`` -> stem ``Customer``.
 #: A bare ``ID`` has no stem and does not match.
@@ -317,6 +317,30 @@ def _best_path(
                     continue
                 heapq.heappush(heap, (hops + 1, inferred + int(is_inferred), path + (neighbour,)))
     return best[2] if best is not None else None
+
+
+def connected_within(
+    graph: JoinGraph, table: str, anchors: Iterable[str], hops: int, *, max_hub_degree: int,
+) -> bool:
+    """Whether *table* reaches any of *anchors* in at most *hops* foreign keys.
+
+    The same path rules as :func:`expand_join_paths`: no stepping through a hub,
+    nothing across data sources. A table the graph does not know is never
+    connected.
+
+    Examples
+    --------
+    >>> graph = JoinGraph(adjacency={"A": (("B", False),), "B": (("A", False), ("C", False)),
+    ...                              "C": (("B", False),)})
+    >>> connected_within(graph, "A", {"C"}, 2, max_hub_degree=10)
+    True
+    >>> connected_within(graph, "A", {"C"}, 1, max_hub_degree=10)
+    False
+    """
+    targets = set(anchors) - {table}
+    if hops < 1 or not targets or table not in graph.adjacency:
+        return False
+    return _best_path(graph, table, targets, max_hops=hops, max_hub_degree=max_hub_degree) is not None
 
 
 def _default_fits(tables: Sequence[str]) -> bool:

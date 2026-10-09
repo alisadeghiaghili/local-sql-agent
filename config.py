@@ -702,7 +702,7 @@ class Settings:
 
     # ── Table retrieval: recall knobs (docs/design/RETRIEVAL.md) ────────────
     retrieval_extra_tables: int = field(
-        default_factory=lambda: int(os.getenv("RETRIEVAL_EXTRA_TABLES", "2"))
+        default_factory=lambda: int(os.getenv("RETRIEVAL_EXTRA_TABLES", "3"))
     )
     """How many tables ranked by description and column evidence may be added
     to the ones a configured alias or fact pattern already named
@@ -762,6 +762,41 @@ class Settings:
     ``schema.yaml`` nor ``relationships.yaml`` declares the edge. Used for
     retrieval only; nothing is written to configuration and no join hint is
     added to the prompt."""
+
+    retrieval_prune: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_PRUNE", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, the candidates of the entity and fact retrievers go
+    through ``retrieval.pruning`` before join-path expansion: a table that only
+    its description matched, or a column match well below the best one, is
+    dropped unless it is joined to a better-evidenced table. Recall of the
+    candidate generation is bought with extra tables; this takes the ones the
+    evidence does not support back out."""
+
+    retrieval_prune_score_ratio: float = field(
+        default_factory=lambda: float(os.getenv("RETRIEVAL_PRUNE_SCORE_RATIO", "0.85"))
+    )
+    """A table with column-name evidence must score at least this fraction of
+    the best unforced score to count as an anchor on its own; below it, it
+    survives only by being joined to an anchor. ``0`` keeps every such table."""
+
+    retrieval_prune_connect_hops: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_PRUNE_CONNECT_HOPS", "2"))
+    )
+    """How many foreign keys may separate a weakly evidenced table from an
+    anchor for it to count as joined (``2`` reaches a table through a bridge).
+    ``0`` disables the rescue."""
+
+    retrieval_prune_corroborate: bool = field(
+        default_factory=lambda: os.getenv("RETRIEVAL_PRUNE_CORROBORATE", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, two candidates that no anchor supports but that are joined
+    to each other (within :attr:`retrieval_prune_connect_hops`) keep each other:
+    each was matched on its own and the join graph agrees. It saves the tables of
+    a question whose strongest alias hit is a false one (an alias that is a
+    substring of the word the question actually uses)."""
 
     # ── Phase 2: deterministic decoding (docs/api-contract-v2.md §6) ───────
     llm_temperature: float = field(

@@ -274,6 +274,17 @@ def _column_scores(q_tokens: list[str]) -> dict[str, float]:
     return scores
 
 
+def column_evidence(question: str) -> dict[str, float]:
+    """Column-name evidence for *question*: ``{table: score}`` (see :func:`_column_scores`).
+
+    Examples
+    --------
+    >>> column_evidence("xyzzy foobar nonexistent_word_12345")
+    {}
+    """
+    return _column_scores(_tokenize(_expand(question)))
+
+
 def forced_tables(question: str) -> list[str]:
     """Tables ``retrieval_hints.yaml``'s ``always_include`` forces for *question*.
 
