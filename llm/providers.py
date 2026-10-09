@@ -244,6 +244,21 @@ def _content_carries_reasoning_markers(content: str) -> bool:
     return bool(content) and bool(_REASONING_MARKER_RE.search(content))
 
 
+def _int_or_none(value: Any) -> int | None:
+    """*value* as an ``int`` when it is a real, non-boolean number, else ``None``.
+
+    Examples
+    --------
+    >>> _int_or_none(12), _int_or_none(12.0), _int_or_none("12"), _int_or_none(None)
+    (12, 12, None, None)
+    >>> _int_or_none(True) is None
+    True
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 def _strip_fences(text: str) -> str:
     """Remove the outermost markdown code fence from *text*, if present."""
     m = _FENCE_RE.search(text)
@@ -449,6 +464,73 @@ class OpenAIBackend(LLMBackend):
         # server-specific fields -- never quietly redirect the request.
         payload.update(load_extra_body())
         return payload
+
+    def warm_prefix(self, prefix: str, *, timeout: float | None = None) -> dict[str, Any]:
+        """Send *prefix* alone as a one-token request, to prime the server's prefix cache.
+
+        The body is the one :meth:`_build_payload` builds for a real request
+        (model, sampling fields, ``LLM_EXTRA_BODY``), with ``max_tokens``
+        forced to ``1`` and ``temperature`` to ``0``, so the server
+        computes -- and a server with prefix caching keeps -- the KV cache
+        for exactly the tokens a real request starts with. One attempt, no
+        retries, and always non-streaming: a warm-up that fails is simply
+        replaced by the first real question.
+
+        Parameters
+        ----------
+        prefix:
+            The static prompt prefix, byte for byte what the real requests
+            start with (:func:`llm.router.build_prompt_segments`).
+        timeout:
+            HTTP timeout in seconds; the backend's own when ``None``.
+
+        Returns
+        -------
+        dict[str, Any]
+            ``{"prompt_tokens", "cached_tokens", "endpoint_status"}``. The
+            first two are ``None`` when the server does not report them
+            (``cached_tokens`` needs vLLM's ``--enable-prompt-tokens-details``).
+            Never the prompt or the response text.
+
+        Raises
+        ------
+        requests.RequestException
+            Any transport failure, a timeout, or a non-2xx status.
+        ExtraBodyConfigError
+            If ``LLM_EXTRA_BODY`` is invalid.
+
+        Examples
+        --------
+        >>> from unittest.mock import MagicMock, patch
+        >>> reply = MagicMock(status_code=200)
+        >>> reply.json.return_value = {"usage": {"prompt_tokens": 4600}}
+        >>> with patch("llm.providers.requests.post", return_value=reply) as post:
+        ...     info = OpenAIBackend(model="m", api_key="k").warm_prefix("PREFIX")
+        >>> post.call_args.kwargs["json"]["max_tokens"], post.call_args.kwargs["json"]["messages"]
+        (1, [{'role': 'user', 'content': 'PREFIX'}])
+        >>> info
+        {'prompt_tokens': 4600, 'cached_tokens': None, 'endpoint_status': 200}
+        """
+        payload = self._build_payload(prefix)
+        payload["max_tokens"] = 1
+        payload["temperature"] = 0
+        resp = requests.post(
+            f"{self._base_url}/chat/completions",
+            headers=self._headers,
+            json=payload,
+            timeout=timeout if timeout is not None else self._timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        usage = body.get("usage") if isinstance(body, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        details = usage.get("prompt_tokens_details")
+        details = details if isinstance(details, dict) else {}
+        return {
+            "prompt_tokens": _int_or_none(usage.get("prompt_tokens")),
+            "cached_tokens": _int_or_none(details.get("cached_tokens")),
+            "endpoint_status": resp.status_code,
+        }
 
     def generate(self, prompt: str) -> str:
         """POST *prompt* and return the raw response string.

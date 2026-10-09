@@ -670,6 +670,68 @@ class LLMRouter:
             text=result, structured=None, meta=meta, provider=backend.name, fallback_used=fallback_used,
         )
 
+    def warm_prefix(
+        self,
+        segments: PromptSegments,
+        *,
+        timeout: float | None = None,
+        task: TaskType = TaskType.SQL_GENERATION,
+    ) -> dict[str, Any]:
+        """Prime *task*'s first-choice backend's prefix cache with *segments*.
+
+        Sends ``segments.flatten()`` -- for a prompt that is only a
+        ``static_prefix``, exactly that prefix -- through the backend's
+        :meth:`~llm.base.LLMBackend.warm_prefix`. Only the first backend of
+        the task's chain is warmed: it is the one real requests go to; a
+        fallback endpoint, if one is configured, is cold until it is needed,
+        which is when it would be needed anyway.
+
+        The same data-governance gate real requests pass applies
+        (:meth:`_governance_check`): a backend that is not trusted is never
+        sent the schema just because it is a warm-up.
+
+        Parameters
+        ----------
+        segments:
+            The prompt to warm, built by :func:`build_prompt_segments`.
+        timeout:
+            Request timeout in seconds, or the backend's own when ``None``.
+        task:
+            Which task's chain to take the backend from.
+
+        Returns
+        -------
+        dict[str, Any]
+            The backend's report (``prompt_tokens``, ...) plus ``provider``,
+            the backend's name.
+
+        Raises
+        ------
+        RemoteProviderNotAllowedError
+            If the backend is not trusted and ``LLM_ALLOW_REMOTE`` is off.
+        NotImplementedError
+            If the backend has no prefix cache to warm.
+        Exception
+            Whatever the backend raises for a failed request.
+
+        Examples
+        --------
+        >>> from llm.providers import MockBackend
+        >>> router = LLMRouter(default_chain=[MockBackend()])
+        >>> router.warm_prefix(PromptSegments(static_prefix="p"))
+        Traceback (most recent call last):
+            ...
+        NotImplementedError: MockBackend has no prefix cache to warm
+        """
+        backend = self._chain_for(task)[0]
+        self._governance_check(backend, task, segments)
+        warm = getattr(backend, "warm_prefix", None)
+        if warm is None:
+            raise NotImplementedError(f"{type(backend).__name__} has no prefix cache to warm")
+        report = dict(warm(segments.flatten(), timeout=timeout))
+        report["provider"] = backend.name
+        return report
+
     def generate_text_for_task(self, task: TaskType, prompt: str) -> RouteResult:
         """Route *task* through its fallback chain, calling ``generate()`` directly.
 

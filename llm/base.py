@@ -211,6 +211,51 @@ class LLMBackend(ABC):
         """
         return self.generate_with_meta(segments.flatten())
 
+    def warm_prefix(self, prefix: str, *, timeout: float | None = None) -> dict[str, Any]:
+        """Prime the model server's prefix cache with *prefix*; return what it reported.
+
+        Sends *prefix* as the whole prompt of a request that generates one
+        token, so a server that caches prompt prefixes (vLLM with
+        ``--enable-prefix-caching``, llama.cpp's prompt cache) has already
+        done the prefill when the first real question, which starts with
+        the same bytes, arrives. See :mod:`llm.warmup`.
+
+        The default raises :class:`NotImplementedError`: a backend with no
+        real server behind it (a stub, a test double) has no cache to warm,
+        and quietly generating a full answer instead would cost what the
+        warm-up exists to save. :class:`~llm.providers.OpenAIBackend`
+        overrides it.
+
+        Parameters
+        ----------
+        prefix:
+            The static prompt prefix, exactly as the real requests start.
+        timeout:
+            Request timeout in seconds; the backend's own when ``None``.
+
+        Returns
+        -------
+        dict[str, Any]
+            Whatever the backend learned, at least ``prompt_tokens`` (an
+            ``int`` or ``None``). Never the prompt or response text.
+
+        Raises
+        ------
+        NotImplementedError
+            For a backend with nothing to warm.
+
+        Examples
+        --------
+        >>> class Stub(LLMBackend):
+        ...     def generate(self, prompt: str) -> str:
+        ...         return ""
+        >>> Stub().warm_prefix("p")
+        Traceback (most recent call last):
+            ...
+        NotImplementedError: Stub has no prefix cache to warm
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no prefix cache to warm")
+
     def generate_structured(
         self, segments: "PromptSegments", schema: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
