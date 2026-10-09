@@ -398,9 +398,16 @@ Phase 2 latency work measurable.
   "provider": "openai:gpt-oss-20b", // which backend in the router's fallback chain answered
   "fallback_used": false,           // true if the first-choice backend
                                      // failed and a later one answered
-  "reasoning_detected": false       // true if the response appears to carry
+  "reasoning_detected": false,      // true if the response appears to carry
                                      // reasoning/chain-of-thought text rather
                                      // than, or alongside, a final answer
+
+  "ttft_ms": null,                  // ms to the first generated token (queue + prefill);
+                                     // null unless LLM_STREAM_TIMINGS=true
+  "generation_ms": null,            // ms from the first token to the end; ttft_ms + generation_ms == total_ms
+  "reasoning_tokens": null,         // how many completion_tokens were reasoning; null = no reasoning seen
+  "reasoning_tokens_estimated": false // true = estimated from the reasoning text's length,
+                                     // false = the server's own count (or no count)
 }
 ```
 
@@ -454,6 +461,23 @@ accuracy problem. Deliberately a boolean, not a text excerpt of the
 reasoning itself — that text can quote prompt content (including real row
 data, at the interpretation task), and this block is embedded in the audit
 trail, which must never carry row values.
+
+`ttft_ms`, `generation_ms`, `reasoning_tokens` and
+`reasoning_tokens_estimated` split the otherwise opaque model call. A
+non-streaming request can only report `total_ms`; with
+`LLM_STREAM_TIMINGS=true` the request is streamed and reassembled into the
+same response, and the first token's arrival separates *waiting* (`ttft_ms`:
+the server's queue plus prefill — what a cold prefix cache and a busy server
+inflate) from *generating* (`generation_ms`: decoding, reasoning included).
+`prefill_ms` and `decode_ms` stay `null`: a first token is not a clean
+prefill boundary on a server that queues. `reasoning_tokens` is the server's
+`usage.completion_tokens_details.reasoning_tokens` when it reports one
+(`reasoning_tokens_estimated: false`); otherwise an estimate that splits
+`completion_tokens` by the share of characters that are reasoning
+(`reasoning_tokens_estimated: true`); `null` when the response shows no
+reasoning, which is not the same as `0`. It is a count only: the reasoning
+text itself never enters this block, for the reason `reasoning_detected` is a
+boolean. A record written before these fields existed simply lacks them.
 
 On error, `llm` is still populated as far as it got — a 503 with
 `attempts: 3` and `endpoint_status: 0` tells a very different story from a 200
