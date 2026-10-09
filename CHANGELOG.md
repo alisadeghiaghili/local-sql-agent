@@ -7,6 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Optional absolute accuracy floors in the evaluation release gate.** The baseline comparison only blocks a relative drop (`EVAL_MAX_ACCURACY_DROP_PCT`), so a baseline that was already poor, or a slide in steps each under the allowed drop, never failed it. `EVAL_MIN_ACCURACY` / `--min-accuracy PCT` fails a run whose overall execution accuracy is below `PCT`; `EVAL_MIN_SOURCE_ACCURACY` / `--min-source-accuracy PCT` fails it when any data source is below `PCT`, or when the run has no per-source figures to check. Both are percentages in 0-100 (anything else is refused), are **off unless set**, need no `--baseline`, and a flag overrides the setting. A run exactly at the floor passes; a failure exits `1` and names the figure and the floor. `eval.baseline.check_absolute_floors()` evaluates one report and `ComparisonResult.floor_messages` carries the same result from `compare_to_baseline`. Documented in `docs/deployment-runbook.md` §18.2, `docs/fa/getting-started.md` §5.2 and `.env.example`. Set floors for `--live` runs only: an offline run is 100% by construction.
+- **`core/redaction.py`**: `redact_db_url`, `url_secrets` and `scrub_secrets`, the connection-string redaction the setup wizard already had, now shared.
+- **A `lint` job in CI** running `ruff check .` with ruff pinned to an exact version in `requirements-dev.txt` and the rule set (`E4`, `E7`, `E9`, `F`, what ruff applied implicitly) written out in `pyproject.toml`. Nothing is ignored; `tests/test_lint_config.py` fails if the pin, the rules or the job are loosened.
+
+### Changed
+
+- **`import knowledge` no longer reads `project_config/`.** `knowledge/__init__.py` imported its five names at the top, which read five YAML files the moment anything under `knowledge` was imported (`knowledge.config_loader` included), against every submodule's "import never fails" docstring. The names are now resolved on first access (PEP 562); the public API is unchanged (`__all__`, and `knowledge.X is knowledge.<module>.X`). Server start-up still stops on a missing or invalid file before the first request, because the modules `api.server` imports bind those names at import time; a test pins that. The setup wizard no longer needs to point the loaders at `project_config.example/` before importing them.
+
+### Fixed
+
+- **Ruff is clean (89 findings fixed, none ignored).** Unused imports and variables removed, `l` renamed, two one-line loops split. Four `F821` undefined names were all one: `"PromptSegments"` in the annotations of `LLMBackend.generate_with_meta_segments` / `generate_structured` and the two provider overrides. Not a runtime bug (the annotations are strings under `from __future__ import annotations` and nothing evaluated them), but `typing.get_type_hints`, Sphinx or pydantic would have raised `NameError`; the name is now imported under `TYPE_CHECKING` (a runtime import would be circular), and a test resolves the hints.
+
+### Security
+
+- **One robust connection-string redactor.** `database/schema_inspector.py` masked passwords with a regular expression that left part of a password containing `@` or `:` visible and never touched `PWD=` inside an `odbc_connect` value, so the redacted URL in a schema snapshot could still carry a credential. `appdb/engine.py`'s `redact_url` and `DataSource.redacted_url` (used in refusal messages and `scripts/verify_deployment.py` output) had the same `odbc_connect` gap. All now use `core.redaction.redact_db_url`; the wizard keeps its `_redact_db_url` / `_scrub_secrets` names.
+
+### Upgrading
+
+- **Regenerate any schema snapshot written by `database/schema_inspector.py`** if its `source_url` may have been shared: earlier versions could leave part of the password in it. Rotate that password if it was.
+
 ## [6.8.0] — 2026-10-09
 
 A column listed in `denied_columns` can now be restricted to one table or one data source and used only as a join key; the setup documentation is rewritten around one ordered first install; the setup wizard no longer stores the database password in `.setup_log.json` and now obeys `LLM_ALLOW_REMOTE`, with its resume, regenerate and validation steps fixed.

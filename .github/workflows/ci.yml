@@ -7,6 +7,31 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    # A job of its own rather than a step inside the test matrix: it needs
+    # no project dependencies, finishes in seconds, and a style failure
+    # should not wait for (or hide behind) eighteen test legs. Its name is
+    # new, so no existing branch-protection check string changes.
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The version comes from requirements-dev.txt (an exact pin), so the
+      # file developers install from and the file CI installs from cannot
+      # drift apart. The rule set is pinned in pyproject.toml.
+      - name: Install ruff
+        run: pip install "$(grep -E '^ruff==' requirements-dev.txt)"
+
+      - name: ruff check
+        run: ruff check .
+
   test:
     # The floors legs keep the name they have always had
     # ("ubuntu-latest / Python 3.12"), because branch protection and

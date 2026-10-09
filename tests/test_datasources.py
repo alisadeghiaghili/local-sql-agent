@@ -15,20 +15,17 @@ often enough that a stale cache entry would otherwise leak between tests.
 from __future__ import annotations
 
 import os
-import time
 
 import pytest
 import yaml
 from sqlalchemy.engine import make_url
 
-import config as cfg
 from config import Settings, _check_warehouse_url, override_settings
 from database.datasources import (
     DEFAULT_DATASOURCE,
     DataSource,
     DataSourceConfigError,
     DataSourceDefinition,
-    DataSourcesConfig,
     UnknownDataSourceError,
     apply_db_password,
     build_url,
@@ -347,7 +344,6 @@ class TestGetDatasource:
 
 class TestCheckTableDatasources:
     def test_passes_when_every_assignment_is_known(self, tmp_path):
-        settings = Settings(project_config_dir=str(tmp_path))
         with override_settings(project_config_dir=str(tmp_path)):
             check_table_datasources({"Order": "", "Customer": DEFAULT_DATASOURCE})
 

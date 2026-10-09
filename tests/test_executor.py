@@ -124,7 +124,6 @@ class TestExecuteSql:
         from cfg.settings.query_timeout_seconds -- this bounds a heavy,
         lock-free query that SET LOCK_TIMEOUT alone would never catch."""
         engine = _make_engine_mock([], ["x"])
-        import config as cfg
         from config import override_settings
         with patch("database.executor.get_engine", return_value=engine):
             with override_settings(query_timeout_seconds=45, max_rows_returned=100):
@@ -164,7 +163,6 @@ class TestExecuteSql:
 
     def test_respects_max_rows_setting(self):
         engine = _make_engine_mock([], ["x"])
-        import config as cfg
         from config import override_settings
         with patch("database.executor.get_engine", return_value=engine):
             with override_settings(query_timeout_seconds=60, max_rows_returned=42):

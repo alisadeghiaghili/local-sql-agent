@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 _WEB = Path(__file__).resolve().parent.parent.parent / "web"
 _I18N = _WEB / "js" / "i18n.js"

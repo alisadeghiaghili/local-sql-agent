@@ -13,7 +13,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 from config import override_settings
 from core.models import RetrievalContext
@@ -22,7 +21,7 @@ from llm.router import LLMRouter, PromptSegments
 from prompt_engine.untrusted import UNTRUSTED_INSTRUCTION
 from session import engine as engine_module
 from session.engine import TurnEngine
-from session.models import GuardVerdict, ResultColumn, Turn, TurnResult
+from session.models import ResultColumn, Turn, TurnResult
 from session.store import SessionStore, TurnMemory
 
 SYSTEM_PROMPT = "You are a T-SQL expert."

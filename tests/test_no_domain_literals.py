@@ -590,7 +590,6 @@ class TestSelfTestDetectsAViolation:
         )
         synthetic = self._synthetic_forbidden()
         signatures = self._synthetic_signatures()
-        relpath = str(target)
         lines = _read_lines(target)
         assert lines is not None
         # A single planted compound run legitimately produces two matching

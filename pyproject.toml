@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: BUSL-1.1
+# Copyright (c) 2024-2026 Ali Sadeghi Aghili
+#
+# Tool configuration only -- this project is not built or installed from
+# here (dependencies live in requirements*.txt; pytest and coverage are
+# configured in setup.cfg).
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# The rule set `ruff check` applies when nothing is configured, written
+# out so a ruff upgrade that changes its defaults cannot widen (or
+# narrow) what CI enforces without a reviewed change here:
+#   E4  import-related pycodestyle errors
+#   E7  statement-related pycodestyle errors (E701 multiple statements,
+#       E741 ambiguous variable name, ...)
+#   E9  syntax / IO errors
+#   F   pyflakes (unused imports and variables, undefined names, ...)
+select = ["E4", "E7", "E9", "F"]

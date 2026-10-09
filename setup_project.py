@@ -59,7 +59,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import textwrap
@@ -98,6 +97,12 @@ except ImportError:
 
 from core.yaml_loading import safe_load_strict
 
+# Credential redaction lives in core/redaction.py (shared with the schema
+# inspector and the application-database messages). The wizard keeps its
+# historical underscore names for the two helpers it and its tests use.
+from core.redaction import redact_db_url as _redact_db_url
+from core.redaction import scrub_secrets as _scrub_secrets
+
 console = Console()
 logger  = logging.getLogger(__name__)
 
@@ -111,158 +116,6 @@ _DB_EXAMPLES = """
   MySQL  : mysql+pymysql://user:pass@host:3306/db
   SQLite : sqlite:///path/to/file.db
 """
-
-
-# ===========================================================================
-# Credential redaction
-# ===========================================================================
-
-#: Placeholder shown when a connection string cannot be parsed at all.
-_UNPARSEABLE_URL = "<unparseable connection URL>"
-
-#: Mask substituted for every credential.
-_MASK = "***"
-
-#: Query-string keys whose value is a credential, compared lower-cased.
-_SECRET_QUERY_KEYS = frozenset(
-    {"pwd", "password", "passwd", "secret", "token", "access_token", "api_key", "apikey"}
-)
-
-#: ``PWD=...`` / ``Password=...`` inside an ODBC connection string (the
-#: ``odbc_connect`` query value of an ``mssql+pyodbc`` URL carries the whole
-#: string, password included).
-_ODBC_SECRET_RE = re.compile(r"(?i)(\b(?:pwd|password|passwd)\s*=\s*)[^;&]*")
-
-#: ``://user:password@`` in a string SQLAlchemy could not parse. Greedy up to
-#: the last ``@`` before the first ``/``, because a password may itself
-#: contain ``@`` or ``:``.
-_RAW_USERINFO_RE = re.compile(r"(?<=://)([^:/@\s]*):([^/\s]*)@")
-
-
-def _redact_db_url(url: str) -> str:
-    """Return *url* with every credential masked, safe to print or write.
-
-    The URL is parsed by SQLAlchemy (``make_url(...).render_as_string(
-    hide_password=True)``) rather than matched with a pattern, so a password
-    containing ``@``, ``:`` or ``/`` is still masked. Credentials carried in
-    the query string (``?PWD=...``, or inside ``odbc_connect``) are masked as
-    well. A string SQLAlchemy cannot parse is never returned as it came: a
-    string that does not look like a URL becomes a placeholder, and one that
-    does has its ``user:password@`` and ``PWD=`` parts masked by pattern.
-
-    Args:
-        url: A SQLAlchemy connection string, possibly with credentials.
-
-    Returns:
-        The same URL with the password (and any secret query value) replaced
-        by ``***``, or a placeholder when nothing safe can be shown.
-
-    Raises:
-        Nothing. This function never raises.
-
-    Examples:
-        >>> _redact_db_url("mssql+pyodbc://nlq:s3cret@db1/Sales")
-        'mssql+pyodbc://nlq:***@db1/Sales'
-        >>> "s3cret" in _redact_db_url("mssql+pyodbc://nlq:p@s3cret@db1/Sales")
-        False
-        >>> "s3cret" in _redact_db_url("mssql+pyodbc:///?odbc_connect=UID=a;PWD=s3cret")
-        False
-        >>> _redact_db_url("not a url")
-        '<unparseable connection URL>'
-    """
-    from sqlalchemy.engine import make_url
-
-    try:
-        parsed = make_url(url)
-        if "@" in (parsed.host or ""):
-            # An unescaped "@" inside the password: SQLAlchemy ended the
-            # password early and put the rest in the host. Mask by pattern.
-            raise ValueError("ambiguous user information")
-        query: dict[str, Any] = {}
-        for key, value in parsed.query.items():
-            lowered = key.lower()
-            values = value if isinstance(value, tuple) else (value,)
-            if lowered in _SECRET_QUERY_KEYS:
-                masked = tuple(_MASK for _ in values)
-            else:
-                masked = tuple(_ODBC_SECRET_RE.sub(rf"\1{_MASK}", v) for v in values)
-            query[key] = masked if isinstance(value, tuple) else masked[0]
-        return parsed.set(query=query).render_as_string(hide_password=True)
-    except Exception:  # noqa: BLE001 - never fall back to the raw string
-        if "://" not in url:
-            return _UNPARSEABLE_URL
-        masked_raw = _RAW_USERINFO_RE.sub(rf"\1:{_MASK}@", url)
-        return _ODBC_SECRET_RE.sub(rf"\1{_MASK}", masked_raw)
-
-
-def _url_secrets(url: str) -> list[str]:
-    """Return every credential value found in *url*, longest first.
-
-    Used to scrub third-party error text (a driver may echo part of the
-    connection string). Includes the URL-encoded spelling of the password,
-    because SQLAlchemy renders it that way.
-
-    Args:
-        url: A SQLAlchemy connection string.
-
-    Returns:
-        Distinct non-empty secret strings, longest first. Empty when *url*
-        cannot be parsed or carries no credential.
-
-    Raises:
-        Nothing. This function never raises.
-
-    Examples:
-        >>> _url_secrets("mssql+pyodbc://nlq:s3cret@db1/Sales")
-        ['s3cret']
-        >>> _url_secrets("sqlite:///x.db")
-        []
-    """
-    from urllib.parse import quote, quote_plus
-
-    from sqlalchemy.engine import make_url
-
-    found: set[str] = {m.group(2) for m in _RAW_USERINFO_RE.finditer(url)}
-    try:
-        parsed = make_url(url)
-        if parsed.password and "@" not in (parsed.host or ""):
-            found.update({parsed.password, quote(parsed.password, safe=""),
-                          quote_plus(parsed.password)})
-        for key, value in parsed.query.items():
-            for item in (value if isinstance(value, tuple) else (value,)):
-                if key.lower() in _SECRET_QUERY_KEYS:
-                    found.add(item)
-                else:
-                    found.update(m.group(0).split("=", 1)[1].strip()
-                                 for m in _ODBC_SECRET_RE.finditer(item))
-    except Exception:  # noqa: BLE001
-        pass
-    return sorted((s for s in found if s), key=len, reverse=True)
-
-
-def _scrub_secrets(text: str, db_url: str) -> str:
-    """Return *text* with *db_url* and any credential from it masked.
-
-    Args:
-        text: Text about to be printed, e.g. a driver's exception message.
-        db_url: The connection string the text may have come from.
-
-    Returns:
-        *text* with the raw URL replaced by its redacted form and every
-        credential value replaced by ``***``.
-
-    Raises:
-        Nothing. This function never raises.
-
-    Examples:
-        >>> _scrub_secrets("login failed for nlq:s3cret", "mssql+pyodbc://nlq:s3cret@db1/Sales")
-        'login failed for nlq:***'
-    """
-    if db_url:
-        text = text.replace(db_url, _redact_db_url(db_url))
-    for secret in _url_secrets(db_url):
-        text = text.replace(secret, _MASK)
-    return text
 
 
 # ===========================================================================
@@ -578,21 +431,17 @@ def _relationships_yaml(relationships: list[dict], generated_at: str = "") -> st
 # ===========================================================================
 
 _REPO_ROOT = Path(__file__).resolve().parent
-_EXAMPLE_CONFIG_DIR = _REPO_ROOT / "project_config.example"
 
 
 def _config_loader():
     """Return the ``knowledge.config_loader`` module, importable on a fresh checkout.
 
-    Importing anything under ``knowledge`` runs ``knowledge/__init__.py``,
-    which reads five files of the *default* ``project_config/`` (aliases,
-    business rules, entities, examples, metrics) on the spot. On a fresh
-    checkout, or a ``project_config/`` the wizard has only half filled, that
-    raises ``ConfigNotFoundError`` before the wizard can validate or even name
-    what is missing. The import is therefore made once with the loaders
-    pointed at the committed ``project_config.example/``, which always
-    complete; the wizard never reads those values, only the loader functions
-    and models, and re-points them at the output directory before use.
+    ``knowledge/__init__.py`` re-exports its names lazily, so importing the
+    loaders reads no file of ``project_config/``: on a fresh checkout, or a
+    ``project_config/`` the wizard has only half filled, the import succeeds
+    and the wizard can validate and name what is missing. (It used to read
+    five files at import time, and the import was made once with the loaders
+    pointed at ``project_config.example/`` to survive that.)
 
     Returns:
         The imported ``knowledge.config_loader`` module.
@@ -601,17 +450,9 @@ def _config_loader():
         ImportError: When the module cannot be imported at all, e.g. the
             wizard is run outside a full checkout.
     """
-    import sys
-
-    module = sys.modules.get("knowledge.config_loader")
-    if module is not None:
-        return module
-    from config import override_settings
-
     try:
-        with override_settings(project_config_dir=str(_EXAMPLE_CONFIG_DIR)):
-            import knowledge.config_loader as module
-    except Exception as exc:  # noqa: BLE001 - ConfigNotFoundError, ValueError, ...
+        import knowledge.config_loader as module
+    except Exception as exc:  # noqa: BLE001 - ImportError, a broken install, ...
         raise ImportError(
             f"could not import knowledge.config_loader ({type(exc).__name__}: {exc}); "
             "run the wizard from a complete checkout"

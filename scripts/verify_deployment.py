@@ -615,9 +615,9 @@ def _project_config_loaders() -> list[tuple[str, Callable[[], object]]]:
     uses to read that file, so a pass here means the application can load it.
 
     Raises:
-        knowledge.config_loader.ConfigNotFoundError: Importing the loaders
-            reads five files of the configured directory; the caller checks
-            that the files exist before importing.
+        ImportError: If the loaders cannot be imported (a broken install).
+            Importing them reads no ``project_config/`` file; each loader
+            reads its own file when called.
     """
     from knowledge.config_loader import (
         load_aliases,
