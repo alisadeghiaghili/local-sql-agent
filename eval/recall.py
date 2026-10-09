@@ -308,6 +308,11 @@ class RecallReport:
     mean_recall, full_recall_pct, mean_tables, mean_precision:
         Means over the scored cases; ``full_recall_pct`` is the percentage
         of them with every gold table retrieved.
+    median_tables, max_tables:
+        Median and largest number of tables retrieved for one question. A
+        retriever that falls back to "every table" on a question it
+        understands nothing of scores recall 1.0 there; the maximum (and a
+        median far below the mean) is what shows it.
     by_tag:
         The same figures per tag, tags sorted.
     source_selection:
@@ -324,6 +329,8 @@ class RecallReport:
     full_recall_pct: float
     mean_tables: float
     mean_precision: float
+    median_tables: float = 0.0
+    max_tables: int = 0
     by_tag: dict[str, TagRecall] = field(default_factory=dict)
     source_selection: SourceAccuracy | None = None
     cases: tuple[RecallCaseResult, ...] = ()
@@ -337,6 +344,8 @@ class RecallReport:
             "mean_recall": round(self.mean_recall, 4),
             "full_recall_pct": round(self.full_recall_pct, 2),
             "mean_tables": round(self.mean_tables, 2),
+            "median_tables": round(self.median_tables, 2),
+            "max_tables": self.max_tables,
             "mean_precision": round(self.mean_precision, 4),
             "by_tag": {tag: rec.to_dict() for tag, rec in self.by_tag.items()},
             "source_selection": (
@@ -389,6 +398,14 @@ def _configured_sources() -> tuple[str, ...]:
 
 def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    middle = len(ordered) // 2
+    return float(ordered[middle]) if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def _tag_recall(results: Sequence[RecallCaseResult]) -> TagRecall:
@@ -533,6 +550,8 @@ def evaluate_recall(
         ),
         mean_tables=_mean([float(len(r.retrieved)) for r in scored]),
         mean_precision=_mean([r.precision for r in scored]),
+        median_tables=_median([float(len(r.retrieved)) for r in scored]),
+        max_tables=max((len(r.retrieved) for r in scored), default=0),
         by_tag={tag: _tag_recall(by_tag_cases[tag]) for tag in sorted(by_tag_cases)},
         source_selection=source_accuracy,
         cases=tuple(scored),
@@ -573,7 +592,10 @@ def render_recall_text(report: RecallReport, *, all_cases: bool = False) -> str:
     )
     lines.append(f"  mean recall:          {report.mean_recall:.4f}")
     lines.append(f"  full-recall cases:    {report.full_recall_pct:.2f}%")
-    lines.append(f"  mean tables retrieved: {report.mean_tables:.2f}")
+    lines.append(
+        f"  tables retrieved:     mean {report.mean_tables:.2f}, "
+        f"median {report.median_tables:g}, max {report.max_tables}"
+    )
     lines.append(f"  mean precision:       {report.mean_precision:.4f}")
     if report.source_selection is None:
         lines.append("  source selection:     n/a (needs two or more data sources and cases with a datasource)")

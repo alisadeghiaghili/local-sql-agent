@@ -114,6 +114,8 @@ class TestEvaluateRecall:
         assert report.mean_recall == pytest.approx(0.5)
         assert report.full_recall_pct == pytest.approx(100 / 3)
         assert report.mean_tables == pytest.approx(4 / 3)
+        assert report.median_tables == 1.0
+        assert report.max_tables == 3
         assert report.mean_precision == pytest.approx((2 / 3 + 1.0 + 0.0) / 3)
 
     def test_retrieved_tables_are_sorted_and_deduplicated(self):
@@ -250,9 +252,13 @@ class TestRendering:
         assert "hit: recall=1.00" in text
         assert "miss: recall=0.50" in text
 
+    def test_text_states_the_spread_of_tables_retrieved(self):
+        assert "mean 1.00, median 1, max 1" in render_recall_text(self._report())
+
     def test_json_is_valid_and_complete(self):
         data = json.loads(report_to_json(self._report()))
         assert data["scored"] == 2
+        assert (data["median_tables"], data["max_tables"]) == (1.0, 1)
         assert data["mean_recall"] == 0.75
         assert data["by_tag"]["t"]["cases"] == 2
         assert [c["case_id"] for c in data["cases"]] == ["hit", "miss"]
