@@ -47,7 +47,9 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 #: ``WAITFOR DELAY`` probe that deliberately blocks for several seconds.
 #: ``check_tables_in_assigned_sources`` reflects the whole catalogue of
 #: every data source (the same read as the schema-drift card, which already
-#: shows its finding and is cached on its own).
+#: shows its finding and is cached on its own);
+#: ``check_schema_structure_matches_databases`` reads three catalogue views
+#: of every data source.
 #: All are safe to run deliberately (that is exactly what
 #: ``python -m scripts.verify_deployment`` -- the CLI, unaffected by this
 #: set -- is for) but none belongs in a check this panel would ever
@@ -55,6 +57,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 #: own ``deep`` parameter below.
 _DEEP_CHECK_NAMES = frozenset({
     "check_login_is_read_only", "check_query_timeout", "check_tables_in_assigned_sources",
+    "check_schema_structure_matches_databases",
 })
 
 
@@ -133,7 +136,8 @@ def admin_health_checks(
         description=(
             "Also run check_login_is_read_only (a rolled-back CREATE TABLE "
             "DDL attempt), check_query_timeout (a WAITFOR DELAY probe) and "
-            "check_tables_in_assigned_sources (a full catalogue reflection). "
+            "check_tables_in_assigned_sources and "
+            "check_schema_structure_matches_databases (full catalogue reads). "
             "All are skipped by default from this panel route -- see the "
             "route's own docstring -- and always run from the CLI "
             "(python -m scripts.verify_deployment) regardless of this flag."
