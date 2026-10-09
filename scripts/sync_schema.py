@@ -82,6 +82,24 @@ A column the read-only login may not see through ``INFORMATION_SCHEMA`` is
 "not in the database" to this script too: check the ``DENY`` grants in
 ``docs/db-hardening.md`` before running ``--prune``.
 
+Prompt size
+-----------
+Every column and table the sync adds is text the model reads on every request
+(the static prompt prefix). When anything would change, the report ends with
+a ``== prompt size ==`` section: per data source, the estimated prefix tokens
+of the current ``schema.yaml`` and of the synced text, the difference, the
+path each takes (the static prefix, or retrieval, by
+``PROMPT_RETRIEVAL_TOKEN_BUDGET``), and how many added columns and tables
+still carry the ``TO BE FILLED`` draft description. Both prefixes are built by
+the same code the server and ``scripts/prompt_budget.py`` use
+(:func:`prompt_engine.static_prefix.build_static_prefix`, sized by
+:func:`scripts.prompt_budget.measure_prefixes`) from the two schema texts, so
+the numbers are the estimator's, not real model tokens. A source the sync
+would move from the static prefix to retrieval gets a ``WARNING`` line. This
+is advice: it changes no exit code, and ``--check`` is not affected. When the
+size cannot be computed (no ``system_prompt.md``, say) the section is one line
+saying why.
+
 Exit codes
 ----------
 0 -- done (``--check``: in sync); 1 -- ``--check`` found the structure out of
@@ -98,6 +116,7 @@ import argparse
 import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 # Run as `python scripts/sync_schema.py` from the repo root: Python puts
@@ -110,7 +129,16 @@ import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
 from core.yaml_loading import safe_load_strict  # noqa: E402
 from database.catalogue import read_catalogue  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
-from schema_data.registry import schema_yaml_path, validate_schema_yaml_text  # noqa: E402
+from knowledge.config_loader import (  # noqa: E402
+    ConfigNotFoundError,
+    load_system_prompt,
+    resolve_system_prompt_path,
+)
+from schema_data.registry import (  # noqa: E402
+    SchemaRegistry,
+    schema_yaml_path,
+    validate_schema_yaml_text,
+)
 from schema_data.relationship_proposals import (  # noqa: E402
     PROPOSALS_FILENAME,
     ProposalSet,
@@ -122,6 +150,7 @@ from schema_data.sync import (  # noqa: E402
     SyncOptions,
     SyncResult,
     build_report,
+    count_drafts,
     sync_schema_text,
 )
 
@@ -130,8 +159,12 @@ __all__ = [
     "EXIT_ERROR",
     "EXIT_OK",
     "OUTPUT_FILENAME",
+    "PromptSizeReport",
+    "SourcePromptSize",
     "default_catalogue_loader",
     "main",
+    "measure_prompt_size",
+    "render_prompt_size",
 ]
 
 EXIT_OK = 0
@@ -246,6 +279,186 @@ def _proposal_report(proposals: ProposalSet) -> str:
     return "\n".join(out)
 
 
+@dataclass(frozen=True)
+class SourcePromptSize:
+    """One data source's static prefix before and after a sync.
+
+    Attributes
+    ----------
+    source:
+        The data source (``default`` when there is no ``datasources.yaml``).
+    before, after:
+        :func:`~prompt_engine.static_prefix.estimate_tokens` of the source's
+        static prefix built from the current and from the synced
+        ``schema.yaml``.
+    path_before, path_after:
+        ``"static prefix"`` or ``"retrieval"`` (``scripts.prompt_budget``'s
+        ``PATH_STATIC`` and ``PATH_RETRIEVAL``): the path the server's gate
+        (:func:`~prompt_engine.static_prefix.should_use_static_prefix`)
+        gives the source under the current budget.
+    flips_to_retrieval:
+        The source uses the static prefix now and would use retrieval after.
+    draft_columns, draft_tables:
+        Columns and tables the sync adds to this source's prefix whose
+        description is still the ``TO BE FILLED`` draft.
+
+    Examples
+    --------
+    >>> size = SourcePromptSize("sales", 900, 1100, "static prefix", "retrieval", True, 4, 1)
+    >>> size.delta, size.flips_to_retrieval
+    (200, True)
+    """
+
+    source: str
+    before: int
+    after: int
+    path_before: str
+    path_after: str
+    flips_to_retrieval: bool
+    draft_columns: int
+    draft_tables: int
+
+    @property
+    def delta(self) -> int:
+        """``after - before``."""
+        return self.after - self.before
+
+
+@dataclass(frozen=True)
+class PromptSizeReport:
+    """What a sync does to the prompt size, or why that is not known.
+
+    Attributes
+    ----------
+    sizes:
+        One entry per data source; empty when *note* is set.
+    budget:
+        ``PROMPT_RETRIEVAL_TOKEN_BUDGET`` as configured now.
+    note:
+        Why the sizes could not be computed (empty when they were).
+    """
+
+    sizes: tuple[SourcePromptSize, ...]
+    budget: int
+    note: str = ""
+
+
+def measure_prompt_size(
+    original: str, result: SyncResult, sources: Sequence[str],
+) -> PromptSizeReport:
+    """Size each source's static prefix for the current and the synced ``schema.yaml``.
+
+    Both prefixes come from the server's own builder
+    (:func:`~prompt_engine.static_prefix.build_static_prefix`, through
+    :func:`scripts.prompt_budget.measure_prefixes`, the sizing
+    ``prompt_budget.py`` reports), one built with *original* in effect and
+    one with ``result.text``
+    (:func:`~prompt_engine.schema_preview.schema_text_in_effect`). Nothing
+    is written and the process is left as it was. It never raises: whatever
+    stops the computation becomes :attr:`PromptSizeReport.note`.
+
+    Parameters
+    ----------
+    original:
+        The current ``schema.yaml`` text, byte-order mark removed.
+    result:
+        :func:`~schema_data.sync.sync_schema_text`'s result for it.
+    sources:
+        The configured data source names.
+
+    Returns
+    -------
+    PromptSizeReport
+        With a note and no sizes when the system prompt is missing or the
+        prefix cannot be built.
+
+    Examples
+    --------
+    >>> from config import override_settings
+    >>> with override_settings(project_config_dir="/nonexistent"):
+    ...     measure_prompt_size("", None, ["a"]).note.startswith("system prompt not found")
+    True
+    """
+    budget = cfg.settings.prompt_retrieval_token_budget
+    try:
+        system_prompt = load_system_prompt()
+    except ConfigNotFoundError:
+        return PromptSizeReport((), budget, f"system prompt not found at {resolve_system_prompt_path()}")
+    except Exception as exc:  # noqa: BLE001 - advice must never stop the sync
+        return PromptSizeReport((), budget, f"cannot read the system prompt ({_describe(exc)})")
+    try:
+        # Imported here: these load the knowledge base (business rules, metrics,
+        # examples), which must not be able to stop the sync itself.
+        from prompt_engine.schema_preview import schema_text_in_effect
+        from scripts.prompt_budget import PATH_RETRIEVAL, PATH_STATIC, measure_prefixes
+
+        with schema_text_in_effect(original):
+            before = measure_prefixes(system_prompt, sources)
+        synced = validate_schema_yaml_text(result.text)
+        with schema_text_in_effect(result.text):
+            after = measure_prefixes(system_prompt, sources)
+            drafts = [
+                count_drafts(result.plan, synced, SchemaRegistry.tables_for_source(size.name))
+                for size in after
+            ]
+    except Exception as exc:  # noqa: BLE001 - advice must never stop the sync
+        return PromptSizeReport((), budget, f"cannot build the static prefix ({_describe(exc)})")
+    return PromptSizeReport(
+        tuple(
+            SourcePromptSize(
+                source=old.name, before=old.estimate, after=new.estimate,
+                path_before=old.path_now, path_after=new.path_now,
+                flips_to_retrieval=old.path_now == PATH_STATIC and new.path_now == PATH_RETRIEVAL,
+                draft_columns=columns, draft_tables=tables,
+            )
+            for old, new, (columns, tables) in zip(before, after, drafts, strict=True)
+        ),
+        budget,
+    )
+
+
+def render_prompt_size(report: PromptSizeReport) -> str:
+    """The ``== prompt size ==`` section, with a ``WARNING`` line per flipped source.
+
+    Parameters
+    ----------
+    report:
+        :func:`measure_prompt_size`'s result.
+
+    Returns
+    -------
+    str
+        Multi-line text without a trailing newline; one ``prompt size: not
+        computed (...)`` line when *report* has a note.
+
+    Examples
+    --------
+    >>> print(render_prompt_size(PromptSizeReport((), 6000, "system prompt not found at x")))
+    prompt size: not computed (system prompt not found at x)
+    >>> size = SourcePromptSize("sales", 5900, 6100, "static prefix", "retrieval", True, 3, 0)
+    >>> print(render_prompt_size(PromptSizeReport((size,), 6000)).splitlines()[1])
+      sales: 5900 -> 6100 (+200); static prefix -> retrieval; draft descriptions still to fill: 3 column(s), 0 table(s)
+    """
+    if report.note:
+        return f"prompt size: not computed ({report.note})"
+    out = ["== prompt size (estimated static-prefix tokens per data source, current -> synced) =="]
+    for size in report.sizes:
+        out.append(
+            f"  {size.source}: {size.before} -> {size.after} ({size.delta:+d}); "
+            f"{size.path_before} -> {size.path_after}; "
+            f"draft descriptions still to fill: {size.draft_columns} column(s), {size.draft_tables} table(s)"
+        )
+    out.append(f"  PROMPT_RETRIEVAL_TOKEN_BUDGET is {report.budget}; the estimate is len(text) // 4, not real tokens")
+    out.extend(
+        f"WARNING: {size.source}: the static prefix would grow from {size.before} to {size.after} "
+        f"estimated tokens, past PROMPT_RETRIEVAL_TOKEN_BUDGET={report.budget}: its questions would "
+        "move from the static prefix to retrieval. Review the draft columns (# TO BE FILLED) "
+        "or raise the budget after running scripts/prompt_budget.py."
+        for size in report.sizes if size.flips_to_retrieval
+    )
+    return "\n".join(out)
+
+
 def _existing_relationships(path: Path) -> list[Mapping[str, object]]:
     """The entries of ``relationships.yaml`` (``[]`` when missing or unreadable)."""
     try:
@@ -354,6 +567,9 @@ def main(
         return EXIT_ERROR
     print()
     print(build_report(result))
+    if result.changed:
+        print()
+        print(render_prompt_size(measure_prompt_size(original, result, sources)))
 
     proposals: ProposalSet | None = None
     if not args.no_relationships:

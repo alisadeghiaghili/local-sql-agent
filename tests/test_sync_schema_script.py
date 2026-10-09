@@ -18,10 +18,13 @@ import yaml
 from config import override_settings
 from database.catalogue import COLUMN_DETAILS_SQL, FOREIGN_KEYS_SQL, PRIMARY_KEYS_SQL
 from database.datasources import reset_datasources_cache
-from schema_data.registry import validate_schema_yaml_text
+from prompt_engine.schema_preview import schema_text_in_effect
+from prompt_engine.static_prefix import build_static_prefix, static_prefix_token_estimate
+from schema_data.registry import get_table_columns, validate_schema_yaml_text
+from schema_data.sync import count_drafts
 from scripts import sync_schema as script
 from scripts.sync_schema import EXIT_CHECK_FAILED, EXIT_ERROR, EXIT_OK, main
-from tests.test_schema_sync import CATALOGUES, SCHEMA
+from tests.test_schema_sync import CATALOGUES, SCHEMA, SOURCES, run
 
 SYNCED = "schema.synced.yaml"
 PROPOSED = "relationships.proposed.yaml"
@@ -374,3 +377,208 @@ class TestRunsAsAScript:
         assert result.returncode == 0
         for option in ("--check", "--dry-run", "--prune", "--add-tables", "--output"):
             assert option in result.stdout
+
+
+SYSTEM_PROMPT = "You are a T-SQL expert."
+
+
+@pytest.fixture()
+def prompted(project):
+    """The same project with the system prompt the prefix is built from.
+
+    The registry's cache is emptied for the test (it then loads this
+    project's ``schema.yaml``, which is what "as it was" means below) and
+    the suite's own content is put back afterwards.
+    """
+    import schema_data.registry as registry
+
+    (project / "system_prompt.md").write_text(SYSTEM_PROMPT, encoding="utf-8")
+    saved = dict(registry._cache)
+    registry._cache.clear()
+    build_static_prefix.cache_clear()
+    yield project
+    registry._cache.clear()
+    registry._cache.update(saved)
+    build_static_prefix.cache_clear()
+
+
+def prefix_sizes(schema: str) -> dict[str, int]:
+    """Each source's estimated prefix tokens for *schema*, from the server's own builder."""
+    with schema_text_in_effect(schema):
+        return {source: static_prefix_token_estimate(SYSTEM_PROMPT, source) for source in SOURCES}
+
+
+def section(out: str) -> list[str]:
+    """The lines of the ``== prompt size`` section of a report."""
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("== prompt size"))
+    end = next((i for i in range(start + 1, len(lines)) if not lines[i].startswith("  ")), len(lines))
+    return lines[start:end]
+
+
+class TestPromptSize:
+    def test_the_section_states_before_after_and_delta_per_source(self, prompted, capsys):
+        before, after = prefix_sizes(SCHEMA), prefix_sizes(run().text)
+        assert main(["--dry-run", "--no-relationships"], load_catalogue=loader()) == EXIT_OK
+        lines = section(capsys.readouterr().out)
+        for index, source in enumerate(SOURCES, start=1):
+            assert after[source] > before[source]
+            assert lines[index].startswith(
+                f"  {source}: {before[source]} -> {after[source]} "
+                f"({after[source] - before[source]:+d}); static prefix -> static prefix;"
+            )
+
+    def test_the_size_is_that_of_the_text_the_server_would_send(self, prompted):
+        with schema_text_in_effect(run().text):
+            assert "Region: nvarchar(20) column" in build_static_prefix(SYSTEM_PROMPT, "sales")
+            assert "Region" not in build_static_prefix(SYSTEM_PROMPT, "inventory")
+
+    def test_the_process_is_left_as_it_was(self, prompted):
+        before = dict(get_table_columns()), build_static_prefix(SYSTEM_PROMPT, "sales")
+        main(["--dry-run", "--no-relationships"], load_catalogue=loader())
+        assert (dict(get_table_columns()), build_static_prefix(SYSTEM_PROMPT, "sales")) == before
+
+    def test_the_draft_counts_are_those_of_the_prefix_of_each_source(self, prompted, capsys):
+        main(["--dry-run", "--no-relationships"], load_catalogue=loader())
+        lines = section(capsys.readouterr().out)
+        # sales: Broker.Region, Trade.Amount and the shared Date's SeqID; inventory: SeqID only.
+        assert lines[1].endswith("draft descriptions still to fill: 3 column(s), 0 table(s)")
+        assert lines[2].endswith("draft descriptions still to fill: 1 column(s), 0 table(s)")
+
+    def test_an_added_table_counts_as_a_draft_table_and_its_columns_as_draft_columns(self, prompted, capsys):
+        main(["--dry-run", "--no-relationships", "--add-tables", "sales_fact.*"], load_catalogue=loader())
+        lines = section(capsys.readouterr().out)
+        assert lines[1].endswith("draft descriptions still to fill: 4 column(s), 1 table(s)")
+        assert lines[2].endswith("draft descriptions still to fill: 1 column(s), 0 table(s)")
+
+    def test_a_column_described_by_hand_is_not_counted_as_a_draft(self):
+        result = run()
+        curated = result.text.replace('Region: "nvarchar(20) column"', 'Region: "Sales region"')
+        assert count_drafts(result.plan, validate_schema_yaml_text(result.text)) == (3, 0)
+        assert count_drafts(result.plan, validate_schema_yaml_text(curated)) == (2, 0)
+
+    def test_nothing_is_printed_when_nothing_changes(self, prompted, capsys):
+        main([], load_catalogue=loader())
+        (prompted / "schema.yaml").write_text((prompted / SYNCED).read_text(encoding="utf-8"), encoding="utf-8")
+        capsys.readouterr()
+        main(["--dry-run"], load_catalogue=loader())
+        assert "prompt size" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("argv", [[], ["--dry-run"], ["--check"]])
+    def test_the_section_is_in_every_mode_that_prints_the_report(self, prompted, capsys, argv):
+        main(argv, load_catalogue=loader())
+        assert "== prompt size" in capsys.readouterr().out
+
+
+def warnings_in(out: str) -> list[str]:
+    return [line for line in out.splitlines() if line.startswith("WARNING")]
+
+
+class TestPromptSizeWarning:
+    @pytest.fixture()
+    def tight_budget(self):
+        """A budget that sales' current prefix fits and its synced prefix does not."""
+        before, after = prefix_sizes(SCHEMA), prefix_sizes(run().text)
+        budget = before["sales"]
+        assert after["sales"] > budget
+        return budget, before, after
+
+    def test_a_source_that_would_flip_to_retrieval_is_named_with_both_sizes_and_the_budget(
+        self, prompted, tight_budget, capsys,
+    ):
+        budget, before, after = tight_budget
+        with override_settings(prompt_retrieval_token_budget=budget):
+            assert main(["--dry-run", "--no-relationships"], load_catalogue=loader()) == EXIT_OK
+        out = capsys.readouterr().out
+        flipping = [s for s in SOURCES if before[s] <= budget < after[s]]
+        assert "sales" in flipping
+        found = warnings_in(out)
+        assert len(found) == len(flipping)
+        sales = next(line for line in found if line.startswith("WARNING: sales:"))
+        for text in (str(before["sales"]), str(after["sales"]), f"PROMPT_RETRIEVAL_TOKEN_BUDGET={budget}",
+                     "scripts/prompt_budget.py", "TO BE FILLED", "retrieval"):
+            assert text in sales
+        assert "static prefix -> retrieval" in out
+
+    def test_no_warning_when_every_source_stays_on_its_path(self, prompted, capsys):
+        main(["--dry-run", "--no-relationships"], load_catalogue=loader())
+        assert warnings_in(capsys.readouterr().out) == []
+
+    @pytest.mark.parametrize("budget", [1, 0])
+    def test_no_warning_for_a_source_that_is_on_retrieval_already(self, prompted, capsys, budget):
+        with override_settings(prompt_retrieval_token_budget=budget):
+            main(["--dry-run", "--no-relationships"], load_catalogue=loader())
+        out = capsys.readouterr().out
+        assert warnings_in(out) == []
+        assert "retrieval -> retrieval" in out
+
+    def test_a_budget_the_synced_prefix_still_fits_gives_no_warning(self, prompted, capsys):
+        with override_settings(prompt_retrieval_token_budget=max(prefix_sizes(run().text).values())):
+            main(["--dry-run", "--no-relationships"], load_catalogue=loader())
+        assert warnings_in(capsys.readouterr().out) == []
+
+    def test_it_is_advice_and_changes_no_exit_code(self, prompted, tight_budget, capsys):
+        with override_settings(prompt_retrieval_token_budget=tight_budget[0]):
+            assert main(["--dry-run"], load_catalogue=loader()) == EXIT_OK
+            assert main([], load_catalogue=loader()) == EXIT_OK
+            assert main(["--check"], load_catalogue=loader()) == EXIT_CHECK_FAILED
+        assert "WARNING: sales:" in capsys.readouterr().out
+
+    def test_check_passes_on_an_in_sync_schema_whatever_the_budget(self, prompted, tight_budget, capsys):
+        main([], load_catalogue=loader())
+        (prompted / "schema.yaml").write_text((prompted / SYNCED).read_text(encoding="utf-8"), encoding="utf-8")
+        capsys.readouterr()
+        with override_settings(prompt_retrieval_token_budget=tight_budget[0]):
+            assert main(["--check"], load_catalogue=loader()) == EXIT_OK
+        assert warnings_in(capsys.readouterr().out) == []
+
+
+class TestPromptSizeDegrades:
+    def test_a_missing_system_prompt_is_one_line_and_the_sync_goes_on(self, project, capsys):
+        assert not (project / "system_prompt.md").exists()
+        assert main([], load_catalogue=loader()) == EXIT_OK
+        out = capsys.readouterr().out
+        assert [line for line in out.splitlines() if line.startswith("prompt size:")] == [
+            f"prompt size: not computed (system prompt not found at {project / 'system_prompt.md'})"
+        ]
+        assert "== prompt size" not in out and "WARNING" not in out
+        assert (project / SYNCED).exists()
+
+    def test_a_check_still_decides_without_a_system_prompt(self, project, capsys):
+        assert main(["--check"], load_catalogue=loader()) == EXIT_CHECK_FAILED
+        assert "prompt size: not computed" in capsys.readouterr().out
+
+    def test_a_failure_while_building_the_prefix_is_a_note_not_a_crash(self, prompted, monkeypatch, capsys):
+        import scripts.prompt_budget as budget_script
+
+        def broken(system_prompt, names):
+            raise RuntimeError("boom\nsecond line")
+
+        monkeypatch.setattr(budget_script, "measure_prefixes", broken)
+        assert main([], load_catalogue=loader()) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "prompt size: not computed (cannot build the static prefix (RuntimeError: boom))" in out
+        assert "second line" not in out
+        assert (prompted / SYNCED).exists()
+
+    def test_an_unreadable_system_prompt_is_a_note_too(self, project, capsys):
+        (project / "system_prompt.md").write_bytes(b"\xff\xfe not utf-8")
+        assert main(["--dry-run"], load_catalogue=loader()) == EXIT_OK
+        assert "prompt size: not computed (cannot read the system prompt (UnicodeDecodeError" in capsys.readouterr().out
+
+
+class TestSchemaTextInEffect:
+    def test_a_schema_that_is_not_valid_changes_nothing(self, prompted):
+        before = dict(get_table_columns())
+        with pytest.raises(ValueError):
+            with schema_text_in_effect("tables:\n  A:\n    datasource: []\n"):
+                pass  # pragma: no cover - the text is refused before the block runs
+        assert dict(get_table_columns()) == before
+
+    def test_the_previous_schema_is_back_after_an_error_inside_the_block(self, prompted):
+        before = dict(get_table_columns()), build_static_prefix(SYSTEM_PROMPT, "sales")
+        with pytest.raises(RuntimeError):
+            with schema_text_in_effect(run().text):
+                assert "Region" in get_table_columns()["sales_dim.Broker"]
+                raise RuntimeError("inside")
+        assert (dict(get_table_columns()), build_static_prefix(SYSTEM_PROMPT, "sales")) == before
