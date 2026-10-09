@@ -700,6 +700,24 @@ class Settings:
     transparently falls back to the six-retriever pipeline (still exercised,
     never dead code) instead of blowing up the prompt or losing accuracy."""
 
+    # ── Table retrieval: recall knobs (docs/design/RETRIEVAL.md) ────────────
+    retrieval_extra_tables: int = field(
+        default_factory=lambda: int(os.getenv("RETRIEVAL_EXTRA_TABLES", "2"))
+    )
+    """How many tables ranked by description and column evidence may be added
+    to the ones a configured alias or fact pattern already named
+    (``retrieval.entity_retriever`` / ``retrieval.fact_retriever``). An alias
+    hit used to end the search for that kind of table, so a question naming
+    one aliased dimension and one that has no alias lost the second. ``0``
+    restores that behaviour."""
+
+    retrieval_extra_score_ratio: float = field(
+        default_factory=lambda: float(os.getenv("RETRIEVAL_EXTRA_SCORE_RATIO", "0.5"))
+    )
+    """An extra table (see :attr:`retrieval_extra_tables`) must score at least
+    this fraction of the best table of its kind. Higher is stricter: fewer
+    extras, higher precision."""
+
     # ── Phase 2: deterministic decoding (docs/api-contract-v2.md §6) ───────
     llm_temperature: float = field(
         default_factory=lambda: float(os.getenv("LLM_TEMPERATURE", "0.0"))
