@@ -27,6 +27,11 @@ What is reported (see :class:`RecallReport`):
 * **mean tables retrieved** and **mean precision** (``|gold & retrieved| /
   |retrieved|``), the cost side of the trade: recall can always be bought by
   retrieving more;
+* **in-budget recall**: recall again, but a case whose retrieved tables would
+  not fit ``PROMPT_RETRIEVAL_TOKEN_BUDGET`` (estimated from the schema block
+  they render to) counts as 0. Retrieval falls back to "every table" for a
+  question it understands nothing of, which scores full recall and yields an
+  unusable prompt; this is the figure that does not reward it;
 * **source-selection accuracy** over the cases that carry a ``datasource``;
 * the same figures per golden-case tag.
 
@@ -81,6 +86,10 @@ RetrieveFn = Callable[[str], Any]
 #: ``select(question, context)`` -> a ``SourceSelection`` (or ``None`` when
 #: fewer than two data sources are configured).
 SelectSourceFn = Callable[[str, Any], Any]
+
+#: ``tokens(tables)`` -> estimated tokens of the schema block those tables
+#: render to in the prompt.
+SchemaTokensFn = Callable[[Sequence[str]], int]
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +205,9 @@ class RecallCaseResult:
     precision:
         ``|gold & retrieved| / |retrieved|`` (``0.0`` when nothing was
         retrieved).
+    schema_tokens, within_budget:
+        Estimated tokens of the schema block the retrieved tables render to,
+        and whether that is within the token budget.
     expected_datasource, selected_datasource:
         The case's stated source and the one source selection picked;
         ``None`` when the case states none, or fewer than two sources are
@@ -215,6 +227,8 @@ class RecallCaseResult:
     expected_datasource: str | None = None
     selected_datasource: str | None = None
     source_correct: bool | None = None
+    schema_tokens: int = 0
+    within_budget: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Plain-JSON form of the record."""
@@ -227,6 +241,8 @@ class RecallCaseResult:
             "missed": list(self.missed),
             "recall": round(self.recall, 4),
             "precision": round(self.precision, 4),
+            "schema_tokens": self.schema_tokens,
+            "within_budget": self.within_budget,
             "expected_datasource": self.expected_datasource,
             "selected_datasource": self.selected_datasource,
             "source_correct": self.source_correct,
@@ -308,6 +324,10 @@ class RecallReport:
     mean_recall, full_recall_pct, mean_tables, mean_precision:
         Means over the scored cases; ``full_recall_pct`` is the percentage
         of them with every gold table retrieved.
+    budget_tokens, over_budget, mean_recall_in_budget:
+        The token budget applied, the number of scored cases whose retrieved
+        tables exceeded it, and the mean recall with those cases counted as
+        0.
     median_tables, max_tables:
         Median and largest number of tables retrieved for one question. A
         retriever that falls back to "every table" on a question it
@@ -331,6 +351,9 @@ class RecallReport:
     mean_precision: float
     median_tables: float = 0.0
     max_tables: int = 0
+    budget_tokens: int = 0
+    over_budget: int = 0
+    mean_recall_in_budget: float = 0.0
     by_tag: dict[str, TagRecall] = field(default_factory=dict)
     source_selection: SourceAccuracy | None = None
     cases: tuple[RecallCaseResult, ...] = ()
@@ -346,6 +369,9 @@ class RecallReport:
             "mean_tables": round(self.mean_tables, 2),
             "median_tables": round(self.median_tables, 2),
             "max_tables": self.max_tables,
+            "budget_tokens": self.budget_tokens,
+            "over_budget": self.over_budget,
+            "mean_recall_in_budget": round(self.mean_recall_in_budget, 4),
             "mean_precision": round(self.mean_precision, 4),
             "by_tag": {tag: rec.to_dict() for tag, rec in self.by_tag.items()},
             "source_selection": (
@@ -390,6 +416,19 @@ def _default_select_source(question: str, context: Any) -> Any:
     return select_source_for_question(question, context)
 
 
+def _default_schema_tokens(tables: Sequence[str]) -> int:
+    from prompt_engine.static_prefix import estimate_tokens
+    from schema_data.registry import SchemaRegistry
+
+    return estimate_tokens(SchemaRegistry.build_schema_context(list(tables)))
+
+
+def _default_budget() -> int:
+    import config as cfg
+
+    return int(cfg.settings.prompt_retrieval_token_budget)
+
+
 def _configured_sources() -> tuple[str, ...]:
     from database.datasources import datasource_names
 
@@ -423,6 +462,8 @@ def evaluate_recall(
     retrieve: RetrieveFn | None = None,
     select_source: SelectSourceFn | None = None,
     sources: Sequence[str] | None = None,
+    token_budget: int | None = None,
+    schema_tokens: SchemaTokensFn | None = None,
 ) -> RecallReport:
     """Measure table-retrieval recall over *cases*.
 
@@ -464,6 +505,8 @@ def evaluate_recall(
     """
     retrieve_fn = retrieve or _default_retrieve
     select_fn = select_source or _default_select_source
+    tokens_fn = schema_tokens or _default_schema_tokens
+    budget = _default_budget() if token_budget is None else token_budget
 
     scored: list[RecallCaseResult] = []
     skipped: list[SkippedCase] = []
@@ -498,6 +541,7 @@ def evaluate_recall(
 
             context = retrieve_fn(case.question)
             retrieved = tuple(sorted(set(context.selected_tables)))
+            used_tokens = tokens_fn(retrieved)
             hits = set(gold.resolved) & set(retrieved)
             missed = tuple(t for t in gold.resolved if t not in hits)
 
@@ -528,6 +572,8 @@ def evaluate_recall(
                 expected_datasource=expected_source,
                 selected_datasource=selected_source,
                 source_correct=correct,
+                schema_tokens=used_tokens,
+                within_budget=used_tokens <= budget,
             ))
 
     by_tag_cases: dict[str, list[RecallCaseResult]] = defaultdict(list)
@@ -552,6 +598,9 @@ def evaluate_recall(
         mean_precision=_mean([r.precision for r in scored]),
         median_tables=_median([float(len(r.retrieved)) for r in scored]),
         max_tables=max((len(r.retrieved) for r in scored), default=0),
+        budget_tokens=budget,
+        over_budget=sum(1 for r in scored if not r.within_budget),
+        mean_recall_in_budget=_mean([r.recall if r.within_budget else 0.0 for r in scored]),
         by_tag={tag: _tag_recall(by_tag_cases[tag]) for tag in sorted(by_tag_cases)},
         source_selection=source_accuracy,
         cases=tuple(scored),
@@ -591,6 +640,10 @@ def render_recall_text(report: RecallReport, *, all_cases: bool = False) -> str:
         f"{len(report.skipped)} skipped"
     )
     lines.append(f"  mean recall:          {report.mean_recall:.4f}")
+    lines.append(
+        f"  in-budget recall:     {report.mean_recall_in_budget:.4f} "
+        f"({report.over_budget} case(s) over {report.budget_tokens} estimated schema tokens count as 0)"
+    )
     lines.append(f"  full-recall cases:    {report.full_recall_pct:.2f}%")
     lines.append(
         f"  tables retrieved:     mean {report.mean_tables:.2f}, "

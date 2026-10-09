@@ -118,6 +118,31 @@ class TestEvaluateRecall:
         assert report.max_tables == 3
         assert report.mean_precision == pytest.approx((2 / 3 + 1.0 + 0.0) / 3)
 
+    def test_in_budget_recall_counts_an_oversized_retrieval_as_a_miss(self):
+        cases = [_case("small", [_A]), _case("huge", [_A])]
+        retrieve = _fake({"question small": [_A], "question huge": _TABLES})
+        report = evaluate_recall(
+            cases, retrieve=retrieve, select_source=lambda q, c: None, sources=("default",),
+            token_budget=250, schema_tokens=lambda tables: 100 * len(tables),
+        )
+        by_id = {c.case_id: c for c in report.cases}
+        assert by_id["small"].within_budget is True
+        assert by_id["huge"].within_budget is False
+        assert by_id["huge"].recall == 1.0          # everything was retrieved ...
+        assert report.mean_recall == 1.0
+        assert report.over_budget == 1               # ... and that is not a success
+        assert report.mean_recall_in_budget == 0.5
+        assert report.budget_tokens == 250
+
+    def test_budget_defaults_to_the_prompt_retrieval_budget(self):
+        import config as cfg
+
+        report = evaluate_recall([_case("c", [_A])], retrieve=_fake({"question c": [_A]}),
+                                 select_source=lambda q, c: None, sources=("default",))
+        assert report.budget_tokens == cfg.settings.prompt_retrieval_token_budget
+        assert report.over_budget == 0
+        assert report.cases[0].schema_tokens > 0
+
     def test_retrieved_tables_are_sorted_and_deduplicated(self):
         report = evaluate_recall(
             [_case("c", [_A])],
@@ -332,6 +357,14 @@ class TestRecallCli:
         golden = _write_golden(tmp_path, _golden_lines())
         assert main(["recall", "--golden", str(golden), "--min-recall", "1.01"]) == 1
         assert "below --min-recall" in capsys.readouterr().err
+
+    def test_token_budget_flag_reaches_the_report(self, tmp_path, capsys):
+        golden = _write_golden(tmp_path, _golden_lines())
+        main(["recall", "--golden", str(golden), "--json", "--token-budget", "1"])
+        data = json.loads(capsys.readouterr().out)
+        assert data["budget_tokens"] == 1
+        assert data["over_budget"] == data["scored"]
+        assert data["mean_recall_in_budget"] == 0.0
 
     def test_min_recall_gate_passes_at_zero(self, tmp_path):
         golden = _write_golden(tmp_path, _golden_lines())

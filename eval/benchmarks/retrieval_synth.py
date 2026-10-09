@@ -978,8 +978,8 @@ def run_benchmark(out_dir: str | Path, *, bench: Benchmark | None = None) -> dic
 def _slice(cases: list[dict[str, Any]], *tags: str) -> dict[str, float]:
     chosen = [c for c in cases if all(t in c["tags"] for t in tags)]
     if not chosen:
-        return {"cases": 0, "recall": 0.0, "full_pct": 0.0, "tables": 0.0, "median": 0.0,
-                "precision": 0.0, "source_pct": 0.0, "source_n": 0}
+        return {"cases": 0, "recall": 0.0, "budget_recall": 0.0, "full_pct": 0.0, "tables": 0.0,
+                "median": 0.0, "precision": 0.0, "source_pct": 0.0, "source_n": 0}
     scored_src = [c for c in chosen if c["source_correct"] is not None]
     counts = sorted(len(c["retrieved"]) for c in chosen)
     middle = len(counts) // 2
@@ -987,6 +987,7 @@ def _slice(cases: list[dict[str, Any]], *tags: str) -> dict[str, float]:
     return {
         "cases": len(chosen),
         "recall": sum(c["recall"] for c in chosen) / len(chosen),
+        "budget_recall": sum(c["recall"] if c["within_budget"] else 0.0 for c in chosen) / len(chosen),
         "full_pct": 100.0 * sum(1 for c in chosen if not c["missed"]) / len(chosen),
         "tables": sum(len(c["retrieved"]) for c in chosen) / len(chosen),
         "median": median,
@@ -1028,12 +1029,14 @@ def summarise(report: dict[str, Any], *, markdown: bool = False) -> str:
         ("English bridge", ("en", "bridge")), ("Persian bridge", ("fa", "bridge")),
         ("English measure-only", ("en", "measure")), ("Persian measure-only", ("fa", "measure")),
     ]
-    header = ("slice", "n", "mean recall", "full recall %", "tables mean/median", "precision", "source acc %")
+    header = ("slice", "n", "mean recall", "in-budget recall", "full recall %",
+              "tables mean/median", "precision", "source acc %")
     body = []
     for label, tags in rows:
         s = _slice(cases, *tags)
         body.append((
-            label, str(s["cases"]), f"{s['recall']:.3f}", f"{s['full_pct']:.1f}",
+            label, str(s["cases"]), f"{s['recall']:.3f}", f"{s['budget_recall']:.3f}",
+            f"{s['full_pct']:.1f}",
             f"{s['tables']:.1f} / {s['median']:g}", f"{s['precision']:.3f}",
             f"{s['source_pct']:.1f}" if s["source_n"] else "n/a",
         ))

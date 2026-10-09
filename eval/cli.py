@@ -423,7 +423,7 @@ def _recall(args: argparse.Namespace) -> int:
     over zero cases must not read as a pass).
     """
     cases = load_golden_cases(args.golden)
-    report = evaluate_recall(cases)
+    report = evaluate_recall(cases, token_budget=args.token_budget)
 
     if args.json:
         print(report_to_json(report))
@@ -665,6 +665,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="min_recall",
         help="Exit non-zero when the mean recall is below this value (0 to 1).",
+    )
+    recall_parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=None,
+        dest="token_budget",
+        help=(
+            "Estimated schema tokens a retrieved set may take before the in-budget recall "
+            "counts the case as 0. Defaults to PROMPT_RETRIEVAL_TOKEN_BUDGET."
+        ),
     )
     recall_parser.set_defaults(func=_recall)
 
