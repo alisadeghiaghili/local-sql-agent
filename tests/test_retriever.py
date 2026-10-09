@@ -21,7 +21,15 @@ from __future__ import annotations
 
 import pytest
 
-from schema_data.retriever import retrieve_tables, _expand, _build_idf
+from schema_data.retriever import (
+    _build_idf,
+    _column_scores,
+    _expand,
+    _name_words,
+    _stem,
+    rank_tables,
+    retrieve_tables,
+)
 from schema_data.tables import TABLE_DESCRIPTIONS as TABLES
 from tests._domain_fixtures import load_json_fixture
 
@@ -192,3 +200,47 @@ class TestBuildIdf:
         idf1 = _build_idf()
         idf2 = _build_idf()
         assert idf1 is idf2
+
+
+class TestColumnEvidence:
+    """A question word that names a column finds the table the column is in."""
+
+    def test_a_column_word_finds_its_table(self):
+        # "amount" is only in Order's TotalAmount column, never in a description.
+        assert all("amount" not in str(d).lower() for d in TABLES.values())
+        names = [name for name, _ in rank_tables("what is the total amount")]
+        assert "Order" in names[:3]
+
+    def test_plural_question_word_still_matches_the_column(self):
+        assert "Order" in _column_scores(["amounts"])
+
+    def test_words_found_in_most_tables_add_nothing(self):
+        assert _column_scores(["name"]) == {}
+        assert _column_scores(["id"]) == {}
+
+    def test_key_columns_are_not_evidence(self):
+        # CustomerID / RingID say what a table points at, not what it is about
+        assert "Order" not in _column_scores(["customerid", "ring"])
+
+    def test_unknown_words_add_nothing(self):
+        assert _column_scores(["xyzzy", "foobar"]) == {}
+
+    def test_scores_are_deterministic_and_sorted(self):
+        ranked = rank_tables("amount order customer")
+        assert ranked == rank_tables("amount order customer")
+        keys = [(-score, name) for name, score in ranked]
+        assert keys == sorted(keys)
+
+
+class TestWordHelpers:
+    def test_stem_strips_plurals_only(self):
+        assert [_stem(w) for w in ("customers", "categories", "boxes", "branches")] == [
+            "customer", "category", "box", "branch",
+        ]
+        assert [_stem(w) for w in ("status", "address", "bus", "ids")] == ["status", "address", "bus", "ids"]
+        assert _stem("مشتریها") == "مشتری"
+        assert _stem("ها") == "ها"
+
+    def test_name_words(self):
+        assert _name_words("OrderDate_ID") == ["order", "date", "id"]
+        assert _name_words("HTTPCode") == ["http", "code"]
