@@ -272,18 +272,20 @@ def build_prompt_segments(
         )
         return PromptSegments(question=full)
 
+    # The prefix and the per-request tail are built separately and kept
+    # separate. They used to be concatenated by build_static() and cut apart
+    # again at len(prefix) -- a copy of the whole prefix per request, plus a
+    # startswith() proving the cut landed where it started -- for a result
+    # that is, by construction, this pair. PromptBuilder.build_static() is
+    # still prefix + suffix, so static_prefix + question below is
+    # byte-identical to what it returns (tests/test_prompt_segments.py).
     prefix = build_static_prefix(system_prompt, source)
-    full = PromptBuilder.build_static(
-        question, system_prompt, context,
+    suffix = PromptBuilder.build_static_suffix(
+        question, context,
         session_context=session_context, resolved_values=resolved_values,
-        source=source, access_notes=access_notes,
+        access_notes=access_notes,
     )
-    if not full.startswith(prefix):
-        # Defensive fallback only — should_use_static_prefix() already
-        # gates this path, so build_static() is expected to always start
-        # with build_static_prefix()'s own output.
-        return PromptSegments(question=full)
-    return PromptSegments(static_prefix=prefix, question=full[len(prefix):])
+    return PromptSegments(static_prefix=prefix, question=suffix)
 
 
 @dataclass
