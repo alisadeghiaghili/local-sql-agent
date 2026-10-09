@@ -111,6 +111,8 @@ def test_admin_panel_attaches_bearer_token_on_every_call() -> None:
             [_NODE, str(_HARNESS), str(admin_mjs)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=NODE_TIMEOUT_SECONDS,
         )
 

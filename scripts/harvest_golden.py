@@ -83,6 +83,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 from core.persian import normalize_for_matching
 from eval.models import GoldenCase
 from eval.store import dump_cases, load_cases_or_empty, write_text_atomic
@@ -665,4 +666,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

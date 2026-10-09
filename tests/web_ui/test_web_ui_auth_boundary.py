@@ -96,6 +96,8 @@ def test_web_ui_attaches_bearer_token_on_every_authenticated_call_and_omits_it_f
             [_NODE, str(_HARNESS), str(api_mjs)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=NODE_TIMEOUT_SECONDS,
         )
 

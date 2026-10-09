@@ -91,6 +91,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # same fix as scripts/analyze_misses.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 import config as cfg
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -965,4 +966,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 import random
+import sys
 import time
+from pathlib import Path
 import requests
 import concurrent.futures
 from collections import Counter
@@ -183,4 +185,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Run as `python tests/test_stress.py`: put the repo root on the path, and
+    # make the console UTF-8 so the Persian questions in the failure list print.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from core.console import use_utf8_console
+
+    use_utf8_console()
     main()

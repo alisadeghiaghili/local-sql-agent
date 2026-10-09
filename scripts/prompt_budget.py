@@ -122,6 +122,7 @@ import requests
 # scripts/assign_datasources.py and scripts/verify_deployment.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 import config as cfg  # noqa: E402 - loads .env, like every entry point
 import database.datasources as datasources  # noqa: E402
 from knowledge.config_loader import load_system_prompt, resolve_system_prompt_path  # noqa: E402
@@ -1419,4 +1420,5 @@ def main(
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

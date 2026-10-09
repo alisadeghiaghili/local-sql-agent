@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every command-line program now prints Persian on a Windows console.** Reports, prompts and error messages carry Persian questions, table names and aliases; when output is piped or redirected, a console on a code page such as cp1252, cp1256 or cp437 cannot encode them, and `print` raised `UnicodeEncodeError` part-way through the output. Only `eval.cli` and `scripts/release_notes.py` guarded against it, each with its own copy. `core/console.py` now has the one helper, `use_utf8_console()`, which switches `sys.stdout` and `sys.stderr` to UTF-8 and keeps each stream's `errors` handler (`reconfigure` would otherwise reset `stderr` from `backslashreplace` to `strict`). Every entry point calls it first in its `if __name__ == "__main__":` block: `app.py`, `setup_project.py`, `webapp/app.py`, `database/schema_inspector_cli.py`, `eval/cli.py`, `eval/benchmarks/retrieval_synth.py`, `tests/test_stress.py` and every program in `scripts/` except the demo server. The web server (`python -m api`) is unchanged. `scripts/release_notes.py` keeps its own stdlib-only copy of the helper, because the release workflow fetches that file alone; a test keeps it standalone and in step with the shared one. `tests/test_cli_utf8_console.py` runs each program on a cp1252 console and fails when a new `__main__` block does not call the helper.
+
 ## [6.9.0] — 2026-10-09
 
 Table selection is now measured and improved (an offline recall harness, a 400-table synthetic benchmark, join-path expansion, inferred foreign keys and pruning: mean recall 0.71-0.75 to 0.95-0.97 on the benchmark); `schema.yaml`'s structure can be synced from the databases with the curated text kept, and the sync reports the prompt-size cost of what it adds; the prefix cache is warmed at start-up and the `llm` stage can be split into waiting and generating, with a `content: null` truncation fix; and ruff runs in CI, with optional absolute accuracy floors, a lazy `knowledge` import, one shared connection-string redactor and a password-masking fix.

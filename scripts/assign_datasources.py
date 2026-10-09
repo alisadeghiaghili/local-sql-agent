@@ -82,6 +82,7 @@ from pathlib import Path
 # scripts/verify_deployment.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.console import use_utf8_console
 import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
 from database.catalogue import list_columns, list_tables  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
@@ -450,4 +451,5 @@ def main(
 
 
 if __name__ == "__main__":
+    use_utf8_console()
     sys.exit(main())

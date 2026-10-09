@@ -291,6 +291,7 @@ class TestDotenvLoading:
             env=child_env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
         assert result.returncode == 0, result.stderr

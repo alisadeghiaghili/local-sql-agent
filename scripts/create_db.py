@@ -14,6 +14,14 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
+from pathlib import Path
+
+# `python scripts/create_db.py` puts only scripts/ on sys.path, so the repo root
+# is added to reach `core`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.console import use_utf8_console  # noqa: E402
 
 DB_PATH = os.getenv("SQLITE_DB_PATH", "sample.db")
 
@@ -61,4 +69,6 @@ def create_sample_db(path: str = DB_PATH) -> None:
 
 
 if __name__ == "__main__":
+    # The confirmation line starts with a check mark, which cp1252 cannot encode.
+    use_utf8_console()
     create_sample_db()
