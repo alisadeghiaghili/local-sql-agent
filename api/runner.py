@@ -114,6 +114,7 @@ from observability.llm_status import (
     build_llm_status,
     finish_reason_from_meta,
     is_truncated_empty_completion,
+    latency_fields_from_meta,
     truncated_output_message,
 )
 from observability.timing import StageTimer
@@ -637,6 +638,7 @@ def _llm_status_block(
         fallback_used=bool(meta.get("fallback_used", False)),
         total_ms=meta.get("total_ms"),
         reasoning_detected=bool(meta.get("reasoning_detected", False)),
+        **latency_fields_from_meta(meta),
     )
 
 

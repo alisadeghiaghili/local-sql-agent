@@ -36,6 +36,7 @@ from scripts.analyze_audit_log import (
     guard_rejection_report,
     iter_records,
     latency_report,
+    llm_latency_split,
     llm_meta_summary,
     main,
     per_principal_usage,
@@ -679,6 +680,108 @@ class TestLlmMetaSummary:
         assert result["seed_requested_count"] == 1
         assert result["seed_honored_count"] == 1
         assert result["seed_honored_rate_among_seed_requested"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# llm_latency_split -- ttft / generation / reasoning tokens
+# ---------------------------------------------------------------------------
+
+def _streamed(ttft: int, generation: int, **extra) -> dict:
+    """A record whose ``llm`` block carries the latency-split fields."""
+    llm = {
+        **_rec()["llm"], "ttft_ms": ttft, "generation_ms": generation,
+        "total_ms": ttft + generation, "reasoning_tokens": None,
+        "reasoning_tokens_estimated": False, **extra,
+    }
+    return _rec(llm=llm)
+
+
+class TestLlmLatencySplit:
+    def test_empty_records(self):
+        result = llm_latency_split([])
+        assert result["llm_call_count"] == 0 and result["streamed_call_count"] == 0
+        assert result["ttft_ms"]["count"] == 0 and result["ttft_ms"]["p50"] is None
+        assert result["ttft_share_of_total"] is None
+        assert result["reasoning_share_of_completion"] is None
+
+    def test_old_records_without_the_fields_are_readable_and_count_for_nothing(self):
+        result = llm_latency_split([_rec(), _rec(), _rec(llm=None)])
+        assert result["llm_call_count"] == 2
+        assert result["streamed_call_count"] == 0
+        assert result["ttft_ms"]["count"] == 0
+        assert result["generation_ms"]["count"] == 0
+        assert result["reasoning_tokens"]["count"] == 0
+        assert result["reasoning_tokens_count"] == 0
+
+    def test_p50_and_p95_of_ttft_and_generation(self):
+        records = [_streamed(100 * i, 1000 * i) for i in range(1, 11)]
+        result = llm_latency_split(records)
+        assert result["streamed_call_count"] == 10
+        assert result["ttft_ms"]["p50"] == 550
+        assert result["ttft_ms"]["p95"] == pytest.approx(955)
+        assert result["generation_ms"]["p50"] == 5500
+        assert result["generation_ms"]["p95"] == pytest.approx(9550)
+
+    def test_a_mix_of_streamed_and_old_records_measures_only_the_streamed(self):
+        result = llm_latency_split([_streamed(400, 600), _rec(), _rec()])
+        assert result["llm_call_count"] == 3
+        assert result["streamed_call_count"] == 1
+        assert result["ttft_ms"]["p50"] == 400
+
+    def test_ttft_share_is_the_median_fraction_of_the_call(self):
+        result = llm_latency_split([_streamed(100, 900), _streamed(500, 500), _streamed(900, 100)])
+        assert result["ttft_share_of_total"] == 0.5
+
+    def test_reasoning_tokens_percentiles_reported_vs_estimated_and_share(self):
+        records = [
+            _streamed(10, 90, reasoning_tokens=80, reasoning_tokens_estimated=True, completion_tokens=100),
+            _streamed(10, 90, reasoning_tokens=40, reasoning_tokens_estimated=False, completion_tokens=100),
+            _streamed(10, 90),  # no reasoning seen: not counted, not a zero
+        ]
+        result = llm_latency_split(records)
+        assert result["reasoning_tokens"]["count"] == 2
+        assert result["reasoning_tokens"]["p50"] == 60
+        assert result["reasoning_tokens_count"] == 2
+        assert result["reasoning_tokens_estimated_count"] == 1
+        assert result["reasoning_share_of_completion"] == 0.6
+
+    def test_reasoning_tokens_count_without_streaming(self):
+        rec = _rec(llm={**_rec()["llm"], "reasoning_tokens": 30, "reasoning_tokens_estimated": True,
+                         "ttft_ms": None, "generation_ms": None})
+        result = llm_latency_split([rec])
+        assert result["streamed_call_count"] == 0
+        assert result["reasoning_tokens"]["count"] == 1
+
+    def test_malformed_values_are_skipped_not_fatal(self):
+        rec = _rec(llm={**_rec()["llm"], "ttft_ms": "slow", "generation_ms": True,
+                         "reasoning_tokens": "many"})
+        result = llm_latency_split([rec])
+        assert result["ttft_ms"]["count"] == 0
+        assert result["generation_ms"]["count"] == 0
+        assert result["reasoning_tokens"]["count"] == 0
+
+    def test_in_the_report_and_the_text_rendering(self):
+        report = build_report([_streamed(1500, 4500, reasoning_tokens=20,
+                                         reasoning_tokens_estimated=True)])
+        assert report["llm_latency_split"]["ttft_ms"]["p50"] == 1500
+        text = render_text(report)
+        assert "LLM stage split" in text
+        assert "ttft (queue + prefill)" in text
+        assert "p50=1500 ms" in text and "p95=1500 ms" in text
+
+    def test_text_rendering_of_an_old_log_says_no_data(self):
+        text = render_text(build_report([_rec()]))
+        assert "ttft (queue + prefill)         : (no data)" in text
+
+    def test_render_text_tolerates_a_report_saved_before_the_section_existed(self):
+        report = build_report([_rec()])
+        del report["llm_latency_split"]
+        assert "LLM stage split" not in render_text(report)
+
+    def test_safe_mode_report_has_no_text_in_the_new_section(self):
+        secret = "این یک سوال محرمانه است"
+        report = build_report([_rec(question=secret, llm=_streamed(1, 2, reasoning_tokens=3)["llm"])])
+        assert secret not in json.dumps(report["llm_latency_split"], ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

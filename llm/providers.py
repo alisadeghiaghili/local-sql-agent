@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 import requests
@@ -244,6 +245,14 @@ def _content_carries_reasoning_markers(content: str) -> bool:
     return bool(content) and bool(_REASONING_MARKER_RE.search(content))
 
 
+#: Characters per token for the fallback in :func:`_reasoning_token_stats`
+#: when a response carries reasoning text but no token counts at all. The
+#: same rough ratio :func:`prompt_engine.static_prefix.estimate_tokens`
+#: uses; repeated here because this module must not import
+#: ``prompt_engine`` (it pulls in the whole knowledge base).
+_CHARS_PER_TOKEN = 4
+
+
 def _int_or_none(value: Any) -> int | None:
     """*value* as an ``int`` when it is a real, non-boolean number, else ``None``.
 
@@ -257,6 +266,257 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value)
+
+
+def _reasoning_token_stats(
+    body: dict[str, Any], reasoning_text: str, content: str,
+) -> tuple[int | None, bool]:
+    """How many of the completion's tokens were reasoning, and whether that is a guess.
+
+    Three cases, most to least trustworthy:
+
+    1. The server says: ``usage.completion_tokens_details.reasoning_tokens``
+       (OpenAI's own field, which some OpenAI-compatible servers fill in).
+       Returned as is, ``estimated=False`` -- even when it is ``0``.
+    2. The response carries reasoning text but no count. If
+       ``usage.completion_tokens`` is known, it is split by the share of
+       characters that are reasoning (reasoning text and answer both
+       appear in those tokens, and the total is exact, so only the split
+       is approximate). Otherwise one token per four characters.
+       ``estimated=True``.
+    3. No reasoning text and no count: ``(None, False)`` -- "not
+       measurable", not "zero". A non-reasoning model and a server that
+       hides its reasoning look the same here.
+
+    Only lengths are used. The reasoning text itself is never stored or
+    returned: it can quote the prompt, and the audit record that carries
+    this number must not hold row values.
+
+    Parameters
+    ----------
+    body:
+        The ``/chat/completions`` response (or its reassembled stream).
+    reasoning_text:
+        The reasoning text from :func:`_extract_reasoning_text`, or ``""``.
+    content:
+        The answer text (``message.content``), or ``""``.
+
+    Returns
+    -------
+    tuple[int | None, bool]
+        ``(reasoning_tokens, estimated)``.
+
+    Examples
+    --------
+    >>> _reasoning_token_stats(
+    ...     {"usage": {"completion_tokens": 90, "completion_tokens_details": {"reasoning_tokens": 80}}},
+    ...     "", "SELECT 1")
+    (80, False)
+    >>> _reasoning_token_stats({"usage": {"completion_tokens": 100}}, "a" * 300, "b" * 100)
+    (75, True)
+    >>> _reasoning_token_stats({}, "a" * 40, "")
+    (10, True)
+    >>> _reasoning_token_stats({"usage": {"completion_tokens": 20}}, "", "SELECT 1")
+    (None, False)
+    """
+    usage = body.get("usage") if isinstance(body, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict):
+        reported = _int_or_none(details.get("reasoning_tokens"))
+        if reported is not None:
+            return max(reported, 0), False
+    if not reasoning_text:
+        return None, False
+    completion_tokens = _int_or_none(usage.get("completion_tokens"))
+    if completion_tokens and completion_tokens > 0:
+        total_chars = len(reasoning_text) + len(content)
+        return round(completion_tokens * len(reasoning_text) / total_chars), True
+    return max(1, len(reasoning_text) // _CHARS_PER_TOKEN), True
+
+
+class StreamError(requests.RequestException):
+    """A streamed ``/chat/completions`` response ended, or failed, mid-stream.
+
+    A :class:`requests.RequestException` so that
+    :meth:`OpenAIBackend.generate_with_meta` retries it like any other
+    transport failure.
+    """
+
+
+class _StreamAssembler:
+    """Reassemble ``stream=true`` chunks into the body a non-streaming call returns.
+
+    The streamed protocol splits one response into ``chat.completion.chunk``
+    objects: ``choices[0].delta`` carries a piece of ``content`` (and, on
+    reasoning models, of a reasoning field), the last choice-bearing chunk
+    carries ``finish_reason``, and -- when the request set
+    ``stream_options={"include_usage": true}`` -- one more chunk with an
+    empty ``choices`` list carries ``usage``. :meth:`body` puts those back
+    together as the ``chat.completion`` object the non-streaming request
+    would have returned (``choices[0].message.content``, the reasoning
+    field under the same name the server streamed it as, ``finish_reason``,
+    ``usage``, ``system_fingerprint``), so everything downstream of the
+    transport -- reasoning detection, finish-reason mapping, the
+    ``llm`` audit block -- reads the same bytes either way.
+
+    Timestamps are passed in by the caller (``perf_counter`` values), so the
+    class is a pure function of its input and testable on recorded chunks.
+
+    Examples
+    --------
+    >>> a = _StreamAssembler()
+    >>> a.feed({"id": "c1", "model": "m", "choices": [{"index": 0, "delta": {"role": "assistant"}}]}, 1.0)
+    >>> a.feed({"choices": [{"index": 0, "delta": {"content": "SEL"}}]}, 1.5)
+    >>> a.feed({"choices": [{"index": 0, "delta": {"content": "ECT 1"}, "finish_reason": "stop"}]}, 1.6)
+    >>> a.feed({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}, 1.7)
+    >>> body = a.body()
+    >>> body["choices"][0]["message"]["content"], body["choices"][0]["finish_reason"]
+    ('SELECT 1', 'stop')
+    >>> body["usage"]
+    {'prompt_tokens': 5, 'completion_tokens': 2}
+    >>> a.first_token_at
+    1.5
+    """
+
+    def __init__(self) -> None:
+        self._id: Any = None
+        self._model: Any = None
+        self._created: Any = None
+        self._fingerprint: Any = None
+        self._role: str = "assistant"
+        self._content: list[str] = []
+        self._content_seen = False
+        self._reasoning: dict[str, list[str]] = {}
+        self._finish_reason: Any = None
+        self._finished = False
+        self._usage: dict[str, Any] | None = None
+        self.first_chunk_at: float | None = None
+        self.first_token_at: float | None = None
+
+    @property
+    def finished(self) -> bool:
+        """True once a chunk carried a ``finish_reason``."""
+        return self._finished
+
+    def feed(self, chunk: dict[str, Any], t: float) -> None:
+        """Fold one decoded chunk into the response.
+
+        Parameters
+        ----------
+        chunk:
+            One decoded ``data:`` payload.
+        t:
+            When it was received (a ``perf_counter`` value).
+
+        Raises
+        ------
+        StreamError
+            If the chunk is a server-sent error object.
+        """
+        if not isinstance(chunk, dict):
+            raise StreamError("malformed stream chunk (not an object)")
+        error = chunk.get("error")
+        if error:
+            detail = error.get("type") or error.get("code") if isinstance(error, dict) else None
+            raise StreamError(f"endpoint reported an error mid-stream ({detail or 'unspecified'})")
+        if self.first_chunk_at is None:
+            self.first_chunk_at = t
+        for key, attr in (
+            ("id", "_id"), ("model", "_model"), ("created", "_created"),
+            ("system_fingerprint", "_fingerprint"),
+        ):
+            if chunk.get(key) is not None and getattr(self, attr) is None:
+                setattr(self, attr, chunk[key])
+        usage = chunk.get("usage")
+        if isinstance(usage, dict) and usage:
+            self._usage = usage
+        choices = chunk.get("choices") or []
+        choice = next((c for c in choices if isinstance(c, dict) and c.get("index", 0) == 0), None)
+        if choice is None:
+            return
+        delta = choice.get("delta") or {}
+        if isinstance(delta.get("role"), str):
+            self._role = delta["role"]
+        produced = False
+        content = delta.get("content")
+        if content is not None:
+            self._content_seen = True
+            if content:
+                self._content.append(str(content))
+                produced = True
+        for key in _REASONING_FIELD_NAMES:
+            piece = delta.get(key)
+            if isinstance(piece, str):
+                self._reasoning.setdefault(key, []).append(piece)
+                produced = produced or bool(piece)
+        if produced and self.first_token_at is None:
+            self.first_token_at = t
+        if choice.get("finish_reason") is not None:
+            self._finish_reason = choice["finish_reason"]
+            self._finished = True
+
+    def body(self) -> dict[str, Any]:
+        """The reassembled ``chat.completion`` body.
+
+        ``message.content`` is ``None`` when no chunk ever carried a
+        ``content`` field, which is what a non-streaming server returns for
+        a response that is all reasoning -- so the two paths treat that
+        response identically.
+        """
+        message: dict[str, Any] = {
+            "role": self._role,
+            "content": "".join(self._content) if self._content_seen else None,
+        }
+        for key, parts in self._reasoning.items():
+            message[key] = "".join(parts)
+        body: dict[str, Any] = {
+            "id": self._id,
+            "object": "chat.completion",
+            "created": self._created,
+            "model": self._model,
+            "choices": [{"index": 0, "message": message, "finish_reason": self._finish_reason}],
+        }
+        if self._fingerprint is not None:
+            body["system_fingerprint"] = self._fingerprint
+        if self._usage is not None:
+            body["usage"] = self._usage
+        return body
+
+
+def _iter_sse_events(lines: Iterable[bytes | str]) -> Iterator[dict[str, Any] | None]:
+    """Decode server-sent-event lines into chunk objects; ``None`` marks ``[DONE]``.
+
+    Only ``data:`` lines matter; comments (``: keep-alive``), ``event:``
+    lines and blanks are skipped. Lines arrive as bytes and are decoded as
+    UTF-8 explicitly: ``requests`` would otherwise guess ISO-8859-1 for a
+    ``text/event-stream`` response with no charset, which turns every
+    Persian character into mojibake.
+
+    Raises
+    ------
+    StreamError
+        On a ``data:`` line that is not valid JSON.
+
+    Examples
+    --------
+    >>> list(_iter_sse_events([b": ping", b"", b'data: {"a": 1}', b"data: [DONE]"]))
+    [{'a': 1}, None]
+    """
+    for raw in lines:
+        line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload:
+            continue
+        if payload == "[DONE]":
+            yield None
+            return
+        try:
+            yield json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise StreamError("malformed stream chunk (invalid JSON)") from exc
 
 
 def _strip_fences(text: str) -> str:
@@ -465,6 +725,82 @@ class OpenAIBackend(LLMBackend):
         payload.update(load_extra_body())
         return payload
 
+    def _post_streaming(
+        self, payload: dict[str, Any], start: float,
+    ) -> tuple[dict[str, Any], int, int | None]:
+        """POST *payload* (already ``stream=true``) and reassemble the response.
+
+        Parameters
+        ----------
+        payload:
+            The request body, with ``stream`` and ``stream_options`` set.
+        start:
+            ``time.perf_counter()`` taken just before the request, so the
+            time to first token is measured from the same origin as
+            ``total_ms``.
+
+        Returns
+        -------
+        tuple[dict[str, Any], int, int | None]
+            ``(body, http_status, ttft_ms)`` -- *body* is the
+            ``chat.completion`` object :class:`_StreamAssembler` rebuilt,
+            *ttft_ms* the time to the first content or reasoning token (or
+            to the first chunk of any kind when the response had no token
+            at all).
+
+        Raises
+        ------
+        requests.Timeout
+            If the whole call takes longer than the backend's timeout (the
+            per-read timeout alone would let a slow but steady stream run
+            for ever, which the non-streaming request cannot).
+        StreamError
+            If the stream carries an error object, a malformed chunk, or
+            ends before a ``finish_reason`` or ``[DONE]``.
+        requests.HTTPError
+            For a non-2xx status, exactly as the non-streaming call.
+        """
+        resp = requests.post(
+            f"{self._base_url}/chat/completions",
+            headers=self._headers,
+            json=payload,
+            timeout=self._timeout,
+            stream=True,
+        )
+        try:
+            resp.raise_for_status()
+            assembler = _StreamAssembler()
+            done = False
+            # chunk_size=64, not requests' default of 512: on a response that
+            # is not chunk-encoded (close-delimited), a read of N bytes
+            # blocks until N have arrived, which would hold back the first
+            # token's timestamp -- the one number this path exists to
+            # measure -- by however long the next tokens take. An SSE event
+            # is longer than 64 bytes, so the first one is never held back;
+            # byte-at-a-time (1) fixes the same thing but costs ~7x the CPU
+            # (measured: 343 vs 65 ms per 2000-event response, against 53 at
+            # 512). A chunk-encoded response, which is what vLLM and
+            # llama.cpp send, yields as each piece arrives at any size.
+            for event in _iter_sse_events(resp.iter_lines(chunk_size=64)):
+                now = time.perf_counter()
+                if now - start > self._timeout:
+                    raise requests.Timeout(
+                        f"streamed response exceeded the {self._timeout}s timeout"
+                    )
+                if event is None:
+                    done = True
+                    break
+                assembler.feed(event, now)
+            if not (done or assembler.finished):
+                raise StreamError("stream ended before the response was complete")
+            first = assembler.first_token_at
+            if first is None:
+                first = assembler.first_chunk_at
+            ttft_ms = round((first - start) * 1000) if first is not None else None
+            return assembler.body(), resp.status_code, ttft_ms
+        finally:
+            resp.close()
+
     def warm_prefix(self, prefix: str, *, timeout: float | None = None) -> dict[str, Any]:
         """Send *prefix* alone as a one-token request, to prime the server's prefix cache.
 
@@ -575,6 +911,25 @@ class OpenAIBackend(LLMBackend):
           :func:`_content_carries_reasoning_markers`) rather than, or in
           addition to, a final answer. Detection only; ``raw`` is always
           ``content`` itself, never the reasoning text.
+        * ``"reasoning_tokens"`` / ``"reasoning_tokens_estimated"`` — how
+          many completion tokens were reasoning, and whether that figure is
+          the server's own (``usage.completion_tokens_details.reasoning_tokens``)
+          or an estimate from the reasoning text's length -- see
+          :func:`_reasoning_token_stats`. ``None`` / ``False`` when the
+          response shows no reasoning at all.
+        * ``"ttft_ms"`` / ``"generation_ms"`` — only with
+          ``LLM_STREAM_TIMINGS=true``: time to the first generated token
+          (queue plus prefill) and the time from there to the end of the
+          stream; ``ttft_ms + generation_ms == total_ms``. ``None`` for a
+          non-streaming call, which cannot see inside its own wait.
+
+        With ``LLM_STREAM_TIMINGS=true`` the request is sent with
+        ``stream=true`` and ``stream_options={"include_usage": true}`` and
+        the chunks are reassembled by :class:`_StreamAssembler` into the
+        body a non-streaming call would have returned, so ``raw`` and every
+        field above are derived from the same shape either way. The timeout
+        then bounds the whole call (checked as chunks arrive) as well as the
+        wait for each chunk.
 
         On the ``OUT_OF_SCOPE`` sentinel, *meta* is attached to the raised
         ``ValueError`` as an ``llm_meta`` attribute (rather than lost),
@@ -592,6 +947,10 @@ class OpenAIBackend(LLMBackend):
             body was unparsable, after all retries.
         """
         payload = self._build_payload(prompt)
+        streaming = bool(cfg.settings.llm_stream_timings)
+        if streaming:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
 
         last_exc: Exception | None = None
 
@@ -601,14 +960,19 @@ class OpenAIBackend(LLMBackend):
             # quantise -- or zero out -- total_ms for any fast response.
             start = time.perf_counter()
             try:
-                resp = requests.post(
-                    f"{self._base_url}/chat/completions",
-                    headers=self._headers,
-                    json=payload,
-                    timeout=self._timeout,
-                )
-                resp.raise_for_status()
-                body: dict[str, Any] = resp.json()
+                ttft_ms: int | None = None
+                if streaming:
+                    body, status_code, ttft_ms = self._post_streaming(payload, start)
+                else:
+                    resp = requests.post(
+                        f"{self._base_url}/chat/completions",
+                        headers=self._headers,
+                        json=payload,
+                        timeout=self._timeout,
+                    )
+                    resp.raise_for_status()
+                    body = resp.json()
+                    status_code = resp.status_code
                 choice: dict[str, Any] = (body.get("choices") or [{}])[0]
                 message: dict[str, Any] = choice.get("message") or {}
                 raw: str = str(message.get("content", "")).strip()
@@ -628,14 +992,28 @@ class OpenAIBackend(LLMBackend):
                         "text rather than a final answer; excerpt: %.200s",
                         attempt, reasoning_text or raw,
                     )
+                # The answer's own text, not `raw`: a response that is all
+                # reasoning has `content: null`, which `raw` renders as the
+                # four characters "None" -- and those are not answer tokens.
+                answer_text = message.get("content")
+                reasoning_tokens, reasoning_estimated = _reasoning_token_stats(
+                    body, reasoning_text, answer_text if isinstance(answer_text, str) else "",
+                )
 
+                total_ms = round((time.perf_counter() - start) * 1000)
                 meta: dict[str, Any] = {
                     "raw": body,
-                    "endpoint_status": resp.status_code,
+                    "endpoint_status": status_code,
                     "attempts": attempt,
-                    "total_ms": round((time.perf_counter() - start) * 1000),
+                    "total_ms": total_ms,
                     "finish_reason": _normalize_finish_reason(choice.get("finish_reason")),
                     "reasoning_detected": reasoning_detected,
+                    "reasoning_tokens": reasoning_tokens,
+                    "reasoning_tokens_estimated": reasoning_estimated,
+                    "ttft_ms": ttft_ms,
+                    "generation_ms": (
+                        max(total_ms - ttft_ms, 0) if ttft_ms is not None else None
+                    ),
                 }
 
                 if raw.strip().upper() == _OUT_OF_SCOPE_SENTINEL:

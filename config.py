@@ -891,6 +891,31 @@ class Settings:
     greater than zero. The default is three times the ~1 minute first-
     question prefill that motivated the feature."""
 
+    llm_stream_timings: bool = field(
+        default_factory=lambda: os.getenv("LLM_STREAM_TIMINGS", "false").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, ``llm.providers.OpenAIBackend`` sends each
+    chat-completions request with ``stream=true`` (and
+    ``stream_options={"include_usage": true}``) and reassembles the
+    streamed chunks into the same response it would have received without
+    streaming -- same ``content``, reasoning text, ``finish_reason`` and
+    ``usage`` -- while timing the first token. The audit ``llm`` block then
+    carries ``ttft_ms`` (queue plus prefill) and ``generation_ms`` (first
+    token to last) alongside ``total_ms``, which is the only way to tell a
+    cold prefix cache or a busy server from a long generation, and
+    reasoning from answer.
+
+    Defaults to ``False``: the non-streaming request is what this project
+    has always sent, and the streamed one differs in one way a deployment
+    may notice -- the request timeout then bounds the gap between chunks
+    as well as the whole call (see
+    :meth:`llm.providers.OpenAIBackend.generate_with_meta`), and some
+    proxies buffer or drop server-sent events. Turn it on to measure,
+    compare ``total_ms`` with it off, and leave it on if nothing changes
+    (it should not). Applies to free-text generation; the constrained
+    (``LLM_STRUCTURED_OUTPUT``) request is not streamed."""
+
     # ── Phase 3: conversational sessions (docs/api-contract-v2.md §9) ──────
     session_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("SESSION_TTL_SECONDS", "1800"))
