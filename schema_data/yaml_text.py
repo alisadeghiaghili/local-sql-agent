@@ -464,7 +464,7 @@ def parse_entries(lines: Sequence[str], first: int, stop: int) -> list[Entry]:
     for i in body:
         if indent_of(lines[i]) != indent:
             continue
-        match = ENTRY_LINE.match(lines[i])
+        match = ENTRY_LINE.match(lines[i].rstrip("\r"))
         if match is None:
             continue
         heads.append((i, _key_text(match.group("key")), match.group("rest")))
