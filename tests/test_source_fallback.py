@@ -259,7 +259,7 @@ class TestSqlAgentRoutesAndRetriesOnce:
         df, result = agent.run(INVENTORY_QUESTION, SYSTEM_PROMPT)
         assert backend.calls == 1
         assert backend.seen[0].static_prefix == build_static_prefix(SYSTEM_PROMPT, "inventory")
-        shown = [l[7:] for l in backend.seen[0].static_prefix.splitlines() if l.startswith("Table: ")]
+        shown = [row[7:] for row in backend.seen[0].static_prefix.splitlines() if row.startswith("Table: ")]
         assert shown == tables_of("inventory", sources)
         assert result.datasource_selection == {
             "chosen": "inventory", "reason": "keyword",
@@ -683,7 +683,7 @@ class TestSessionContinuity:
     ):
         backend, engine = _engine([GOOD_SQL, "SELECT TOP 10 c_Name FROM _prev"])
         record = _record()
-        first = engine.ask(record, "show the stock level", SYSTEM_PROMPT)
+        engine.ask(record, "show the stock level", SYSTEM_PROMPT)
         with patch("session.engine.check_scan_truncated", return_value=False):
             second = engine.ask(record, CTE_FOLLOW_UP, SYSTEM_PROMPT)
         assert second.basis.composition == "cte"

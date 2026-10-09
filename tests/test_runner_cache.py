@@ -19,8 +19,7 @@ Integration:
 
 from __future__ import annotations
 
-import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -222,7 +221,6 @@ class TestReconfigure:
         """Entry set with TTL=300, then cache reconfigured to TTL=0 (disabled).
         get() must return None."""
         from api.query_cache import query_cache
-        from api.models import QueryResponse
 
         r = QueryResponse(question="سوال", sql=SIMPLE_SQL, result=[],
                           row_count=0, model="test")
@@ -237,7 +235,6 @@ class TestReconfigure:
     def test_reconfigure_clears_existing_entries(self, mock_agent):
         """reconfigure() must wipe stale entries so old TTL can't be used."""
         from api.query_cache import query_cache
-        from api.models import QueryResponse
 
         r = QueryResponse(question="سوال", sql=SIMPLE_SQL, result=[],
                           row_count=0, model="test")

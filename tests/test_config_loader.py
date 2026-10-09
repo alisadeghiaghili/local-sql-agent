@@ -11,7 +11,6 @@ for the deployment-facing side of this contract.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

@@ -264,7 +264,7 @@ class TestPrefixHoldsOnlyOneSource:
     def test_only_relationships_with_both_ends_in_the_source_remain(self, sources):
         for source in SOURCES:
             prefix = build_static_prefix(SYSTEM_PROMPT, source)
-            lines = [l for l in _section(prefix, "RELATIONSHIPS").splitlines() if l.strip()]
+            lines = [row for row in _section(prefix, "RELATIONSHIPS").splitlines() if row.strip()]
             assert lines == _expected_joins(tables_of(source, sources)), source
 
     def test_business_rules_and_metrics_are_not_table_scoped(self, sources):

@@ -36,7 +36,6 @@ unnoticed: the two apps have different answers to the same question.
 
 from __future__ import annotations
 
-import os
 import re
 import sys
 from pathlib import Path

@@ -19,7 +19,6 @@ ConcurrencyMiddleware
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from types import SimpleNamespace
@@ -104,7 +103,6 @@ class TestConcurrencyMiddleware:
         MAX = 2
         app = _make_app(max_concurrent=MAX)
         # Use requests.Session directly so we can fire truly concurrent calls
-        import requests
         from starlette.testclient import TestClient as TC
 
         results: list[int] = []
