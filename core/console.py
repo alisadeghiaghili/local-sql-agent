@@ -80,7 +80,7 @@ def use_utf8_console() -> None:
 
         >>> import io
         >>> buffer = io.BytesIO()
-        >>> stream = io.TextIOWrapper(buffer, encoding="cp1252", errors="backslashreplace")
+        >>> stream = io.TextIOWrapper(buffer, encoding="cp1252", errors="backslashreplace", newline="\n")
         >>> saved = sys.stdout, sys.stderr
         >>> sys.stdout, sys.stderr = stream, object()
         >>> try:
