@@ -11,7 +11,6 @@ line and SQL header.
 from __future__ import annotations
 from tests.web_ui import NODE_TIMEOUT_SECONDS
 
-import re
 import shutil
 import subprocess
 import sys

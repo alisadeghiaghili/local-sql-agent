@@ -100,6 +100,10 @@ import { getApiKey } from "./apikey.js";
  * @property {string} provider
  * @property {boolean} fallback_used
  * @property {boolean} reasoning_detected
+ * @property {number|null} ttft_ms
+ * @property {number|null} generation_ms
+ * @property {number|null} reasoning_tokens
+ * @property {boolean} reasoning_tokens_estimated
  *
  * @typedef {Object} SessionSummary
  * @property {string} session_id

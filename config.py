@@ -102,7 +102,6 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
 from typing import Any, Generator
 
 # ---------------------------------------------------------------------------
@@ -181,6 +180,53 @@ def _parse_port(env_var: str, default: str) -> int:
         raise ValueError(f"{env_var} must be between 1 and 65535 (got {port})")
     return port
 
+
+def _parse_optional_percent(env_var: str) -> float | None:
+    """Parse *env_var* as an optional percentage in ``[0, 100]``.
+
+    An unset or blank variable means "not configured" and yields ``None``
+    (the feature stays off). A set variable that is not a number, or lies
+    outside ``0``-``100``, raises a message naming the variable and the bad
+    value rather than a bare ``float()`` error, for the same reason as
+    :func:`_parse_port`.
+
+    Args:
+        env_var: Name of the environment variable to read.
+
+    Returns:
+        The percentage as a float, or ``None`` when unset or blank.
+
+    Raises:
+        ValueError: If the value is not a finite number between 0 and 100.
+
+    Examples:
+        >>> import os
+        >>> os.environ.pop("_DEMO_PCT", None) is None
+        True
+        >>> _parse_optional_percent("_DEMO_PCT") is None
+        True
+        >>> os.environ["_DEMO_PCT"] = " 92.5 "
+        >>> _parse_optional_percent("_DEMO_PCT")
+        92.5
+        >>> os.environ["_DEMO_PCT"] = "120"
+        >>> _parse_optional_percent("_DEMO_PCT")
+        Traceback (most recent call last):
+            ...
+        ValueError: _DEMO_PCT must be a percentage between 0 and 100 (got '120')
+        >>> del os.environ["_DEMO_PCT"]
+    """
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not (0.0 <= value <= 100.0):  # also rejects nan
+        raise ValueError(
+            f"{env_var} must be a percentage between 0 and 100 (got {raw!r})"
+        )
+    return value
 
 
 def _has_placeholder_login_host(url: str) -> bool:
@@ -946,6 +992,74 @@ class Settings:
     ``None`` (default, unset) disables the budget check entirely — see
     ``llm.router.LLMRouter._call_chain``."""
 
+    # ── Latency: prefix-cache warm-up and the split llm stage ───────────────
+    llm_prefix_warmup_on_startup: bool = field(
+        default_factory=lambda: os.getenv(
+            "LLM_PREFIX_WARMUP_ON_STARTUP", "true",
+        ).lower() in ("1", "true", "yes")
+    )
+    """When ``True``, ``api/server.py``'s ``lifespan`` starts a background
+    thread at startup that sends the model server one minimal request per
+    data source whose prompt uses the static prefix
+    (:func:`~prompt_engine.static_prefix.should_use_static_prefix`): the
+    messages are exactly the cacheable prefix real requests start with and
+    ``max_tokens`` is ``1``. The server computes and keeps that prefix's
+    KV cache, so the first real question after a restart does not pay the
+    full prefill (about a minute on a large local model) -- see
+    :mod:`llm.warmup`.
+
+    Defaults to ``True``. It is safe as a default because it does nothing
+    unless there is something to warm: a deployment whose schema is over
+    ``PROMPT_RETRIEVAL_TOKEN_BUDGET`` (the retrieval path, no stable
+    prefix), ``LLM_PROVIDER=mock``, and an endpoint that is not trusted
+    (``LLM_ALLOW_REMOTE`` is the same gate real requests pass) all skip it.
+    It never blocks startup (the server accepts requests at once; a
+    question that arrives mid-warm-up simply runs as it would have),
+    and every failure is logged and swallowed. It only helps if the
+    model server caches prefixes (``vllm serve --enable-prefix-caching``,
+    on by default in recent vLLM, or llama.cpp's prompt cache); on a
+    server that does not, it costs one extra prefill at startup and
+    nothing more. Set to ``false`` for a deployment whose model server is
+    shared and billed per token, or whose startup must send no LLM
+    traffic. ``POST /admin/llm/warmup`` runs the same warm-up on demand,
+    whatever this is set to."""
+
+    llm_prefix_warmup_timeout_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LLM_PREFIX_WARMUP_TIMEOUT_SECONDS", "180"))
+    )
+    """Total time budget (seconds) for one warm-up pass, across all data
+    sources. Each source's request gets whatever is left of the budget as
+    its HTTP timeout, and a source reached after the budget is spent is
+    skipped (logged, not retried). The request is never retried: a warm-up
+    that fails is a warm-up the next real question replaces. Must be
+    greater than zero. The default is three times the ~1 minute first-
+    question prefill that motivated the feature."""
+
+    llm_stream_timings: bool = field(
+        default_factory=lambda: os.getenv("LLM_STREAM_TIMINGS", "false").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, ``llm.providers.OpenAIBackend`` sends each
+    chat-completions request with ``stream=true`` (and
+    ``stream_options={"include_usage": true}``) and reassembles the
+    streamed chunks into the same response it would have received without
+    streaming -- same ``content``, reasoning text, ``finish_reason`` and
+    ``usage`` -- while timing the first token. The audit ``llm`` block then
+    carries ``ttft_ms`` (queue plus prefill) and ``generation_ms`` (first
+    token to last) alongside ``total_ms``, which is the only way to tell a
+    cold prefix cache or a busy server from a long generation, and
+    reasoning from answer.
+
+    Defaults to ``False``: the non-streaming request is what this project
+    has always sent, and the streamed one differs in one way a deployment
+    may notice -- the request timeout then bounds the gap between chunks
+    as well as the whole call (see
+    :meth:`llm.providers.OpenAIBackend.generate_with_meta`), and some
+    proxies buffer or drop server-sent events. Turn it on to measure,
+    compare ``total_ms`` with it off, and leave it on if nothing changes
+    (it should not). Applies to free-text generation; the constrained
+    (``LLM_STRUCTURED_OUTPUT``) request is not streamed."""
+
     # ── Phase 3: conversational sessions (docs/api-contract-v2.md §9) ──────
     session_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("SESSION_TTL_SECONDS", "1800"))
@@ -1436,6 +1550,35 @@ class Settings:
     (or the generator started producing worse SQL). Overridable per
     invocation via ``python -m eval.cli run --max-guard-rejection-increase``."""
 
+    eval_min_accuracy: float | None = field(
+        default_factory=lambda: _parse_optional_percent("EVAL_MIN_ACCURACY")
+    )
+    """Optional absolute floor (percent, 0-100) on the run's overall
+    ``accuracy_pct``. ``eval_max_accuracy_drop_pct`` only blocks a *relative*
+    drop against a stored baseline, so a baseline that was already poor (or
+    a slow slide in steps each smaller than the allowed drop, re-recorded
+    every time) never trips it. This is the figure a release is not allowed
+    to go below whatever the baseline says. ``None`` (default, variable
+    unset or blank) disables the check, so nothing changes until an
+    operator sets it. Unlike the drop threshold it needs no
+    ``--baseline``. Only meaningful for ``--live`` runs: an offline run
+    replays the golden set's own ``expected_sql`` and is 100% by
+    construction. Overridable per invocation via
+    ``python -m eval.cli run --min-accuracy``."""
+
+    eval_min_source_accuracy: float | None = field(
+        default_factory=lambda: _parse_optional_percent("EVAL_MIN_SOURCE_ACCURACY")
+    )
+    """Optional absolute floor (percent, 0-100) applied to *each* data
+    source's execution accuracy separately (the per-source figures in the
+    report, built from the golden cases' ``expected_datasource``). An
+    overall figure can stay high while one small source collapses; this
+    makes that a failure. When set but the run has no per-source figures
+    (no golden case names an ``expected_datasource``) the gate fails
+    rather than pass unchecked. ``None`` (default) disables the check.
+    Overridable per invocation via ``python -m eval.cli run
+    --min-source-accuracy``."""
+
     eval_golden_path: str = field(
         default_factory=lambda: os.getenv("EVAL_GOLDEN_PATH", "eval_data/golden.jsonl")
     )
@@ -1679,6 +1822,13 @@ class Settings:
         from llm.providers import load_extra_body
 
         load_extra_body()
+
+        if self.llm_prefix_warmup_timeout_seconds <= 0:
+            raise ValueError(
+                "LLM_PREFIX_WARMUP_TIMEOUT_SECONDS must be greater than zero "
+                f"(got {self.llm_prefix_warmup_timeout_seconds}); set "
+                "LLM_PREFIX_WARMUP_ON_STARTUP=false to turn the warm-up off instead."
+            )
 
 
 @lru_cache(maxsize=1)

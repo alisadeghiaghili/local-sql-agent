@@ -206,8 +206,8 @@ cp .env.example .env
 # Querying more than one database? Describe each source in
 # project_config/datasources.yaml (host, database, login; one DB_PASSWORD_*
 # variable each) instead of setting DB_CONNECTION_URL, then follow
-# docs/deployment-runbook.md §16: it covers `python scripts/assign_datasources.py`
-# (writes each table's `datasource:`), `keywords:` for routing,
+# docs/deployment-runbook.md §16: it covers `python scripts/sync_schema.py`
+# (syncs `schema.yaml` with the databases and writes each table's `datasource:`), `keywords:` for routing,
 # `python scripts/prompt_budget.py` (sizes PROMPT_RETRIEVAL_TOKEN_BUDGET) and
 # `nolock` (per source). docs/design/DATASOURCES.md explains why it is shaped this way.
 
@@ -278,6 +278,9 @@ python -m api
 | `CACHE_MAX_SIZE` | `256` | Maximum number of cached query results |
 | `LLM_NUM_PREDICT` | `512` | Max tokens the model may generate (`max_tokens`). Too low for a **reasoning** model, which spends this budget thinking before it answers — see `.env.example` |
 | `LLM_EXTRA_BODY` | *(empty)* | JSON object merged into every chat-completions request. How you turn a model's reasoning off, since that is not in the OpenAI schema and every server spells it differently |
+| `LLM_PREFIX_WARMUP_ON_STARTUP` | `true` | Send the model server each data source's static prompt prefix once at start-up (background thread, `max_tokens=1`) so the first question does not pay the full prefill. Inert unless the static-prefix path is used; needs prefix caching on the model server (`vllm serve --enable-prefix-caching`). `POST /admin/llm/warmup` does it on demand. Runbook §20 |
+| `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` | `180` | Total time budget of one warm-up pass |
+| `LLM_STREAM_TIMINGS` | `false` | Stream the model call and reassemble the same response, to record `ttft_ms` (queue + prefill) and `generation_ms` in the audit `llm` block; `reasoning_tokens` is recorded either way. Runbook §20.4 |
 | `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Estimate (`len(text) // 4`, which undercounts Persian by about 15%) up to which the whole schema goes into the prompt as one cacheable, byte-identical prefix; above it the prompt is built per question from retrieved tables. With several data sources it applies to each source's own prefix, not their sum. `python scripts/prompt_budget.py` measures real tokens and prints the value to set |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
@@ -490,9 +493,10 @@ local-sql-agent/
 ├── webapp/                   # Flask web application (bilingual FA/EN)
 ├── exporters/                # Excel / CSV / JSON exporters
 ├── scripts/
-│   ├── verify_deployment.py  #   the preflight: 13 checks (database, read-only login, keys, model, config), once per data source
+│   ├── verify_deployment.py  #   the preflight: 14 checks (database, read-only login, keys, model, config), once per data source
 │   ├── issue_api_key.py      #   mint a new API key
-│   ├── assign_datasources.py #   write each schema.yaml table's datasource: from the databases
+│   ├── sync_schema.py        #   bring schema.yaml's structure (datasource:, columns, types, tables) in step with the databases; propose relationships
+│   ├── assign_datasources.py #   the narrower tool: only write each schema.yaml table's datasource: from the databases
 │   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
 │   ├── migrate_app_db.py     #   move the application database between backends
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis

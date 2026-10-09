@@ -16,14 +16,12 @@ old entries automatically (see TestPrefixVersioning below).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pandas as pd
-import pytest
 
 from api.models import QueryResponse
 from api.query_cache import QueryCache, _normalize_question
-from llm.base import SQLGenerationResult
 from llm.sql_agent import SQLAgent
 from schema_data.columns import TABLE_COLUMNS
 

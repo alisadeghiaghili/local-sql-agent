@@ -44,7 +44,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _STYLE = _REPO_ROOT / "web" / "styles" / "style.css"

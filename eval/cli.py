@@ -11,6 +11,12 @@ Usage::
     python -m eval.cli run --golden eval_data/golden.jsonl --live \\
         --save-baseline eval_data/baseline.json
 
+    # Absolute floors (off unless set): fail the run when overall accuracy,
+    # or any one data source's accuracy, is below a fixed percentage --
+    # whatever the baseline says, and with or without --baseline.
+    python -m eval.cli run --golden eval_data/golden.jsonl --live \\
+        --min-accuracy 90 --min-source-accuracy 80
+
     # Release gate against a warehouse that changes daily: run every case's
     # expected_sql in the same run and compare the two results (execution
     # accuracy, see eval.compare) instead of a fingerprint recorded once.
@@ -63,6 +69,7 @@ from pathlib import Path
 import config as cfg
 from eval.baseline import (
     BaselineThresholds,
+    check_absolute_floors,
     compare_to_baseline,
     exit_code,
     load_baseline,
@@ -312,6 +319,44 @@ def _refuse_offline_reference() -> None:
     )
 
 
+def _percent(text: str) -> float:
+    """``argparse`` type for a percentage between 0 and 100.
+
+    Args:
+        text: The command-line value.
+
+    Returns:
+        The value as a float.
+
+    Raises:
+        argparse.ArgumentTypeError: If *text* is not a number in ``[0, 100]``.
+
+    Examples:
+        >>> _percent("92.5")
+        92.5
+        >>> _percent("101")
+        Traceback (most recent call last):
+            ...
+        argparse.ArgumentTypeError: must be a percentage between 0 and 100 (got '101')
+    """
+    try:
+        value = float(text)
+    except ValueError:
+        value = float("nan")
+    if not (0.0 <= value <= 100.0):  # also rejects nan
+        raise argparse.ArgumentTypeError(
+            f"must be a percentage between 0 and 100 (got {text!r})"
+        )
+    return value
+
+
+def _print_floor_failures(messages: Sequence[str]) -> None:
+    """Print the absolute-floor violations under a header of their own."""
+    print("\nBELOW ABSOLUTE ACCURACY FLOOR:")
+    for message in messages:
+        print(f"  - {message}")
+
+
 def _run(args: argparse.Namespace) -> int:
     """Execute the ``run`` subcommand. Returns the process exit code."""
     if args.determinism and not args.live:
@@ -365,20 +410,25 @@ def _run(args: argparse.Namespace) -> int:
         save_baseline(report, args.save_baseline)
         print(f"Baseline saved to {args.save_baseline}")
 
+    thresholds = BaselineThresholds(
+        max_accuracy_drop_pct=args.max_accuracy_drop_pct,
+        max_latency_p95_increase_pct=args.max_latency_p95_increase_pct,
+        max_guard_rejection_increase=args.max_guard_rejection_increase,
+        min_accuracy_pct=args.min_accuracy,
+        min_source_accuracy_pct=args.min_source_accuracy,
+    )
+
     if args.baseline:
         baseline_report = load_baseline(args.baseline)
-        thresholds = BaselineThresholds(
-            max_accuracy_drop_pct=args.max_accuracy_drop_pct,
-            max_latency_p95_increase_pct=args.max_latency_p95_increase_pct,
-            max_guard_rejection_increase=args.max_guard_rejection_increase,
-        )
         comparison = compare_to_baseline(report, baseline_report, thresholds)
-        if comparison.regressed:
+        if comparison.messages:
             print("\nREGRESSION DETECTED versus baseline:")
             for message in comparison.messages:
                 print(f"  - {message}")
         else:
             print("\nNo regression versus baseline.")
+        if comparison.floor_messages:
+            _print_floor_failures(comparison.floor_messages)
         for source, delta in comparison.source_deltas_pct.items():
             print(f"  source {source}: execution accuracy {delta:+.2f} points versus baseline")
         if comparison.source_selection_delta_pct is not None:
@@ -388,8 +438,15 @@ def _run(args: argparse.Namespace) -> int:
             )
         return exit_code(comparison)
 
-    # No baseline was supplied: printing the report is the whole job, and
-    # there is nothing to regress against.
+    # No baseline was supplied: there is nothing to regress against, so the
+    # report is the whole job unless an absolute floor is set, which needs
+    # no baseline.
+    floor_failures = check_absolute_floors(report, thresholds)
+    if floor_failures:
+        _print_floor_failures(floor_failures)
+        return 1
+    if args.min_accuracy is not None or args.min_source_accuracy is not None:
+        print("\nAbsolute accuracy floors met.")
     return 0
 
 
@@ -592,6 +649,33 @@ def build_parser() -> argparse.ArgumentParser:
             "(env EVAL_MAX_GUARD_REJECTION_INCREASE)."
         ),
     )
+    run_parser.add_argument(
+        "--min-accuracy",
+        type=_percent,
+        default=cfg.settings.eval_min_accuracy,
+        dest="min_accuracy",
+        metavar="PCT",
+        help=(
+            "Absolute floor (0-100) on overall execution accuracy: the run fails "
+            "(exit 1) when accuracy is below it, with or without --baseline. Off "
+            "unless set. Defaults to config.Settings.eval_min_accuracy (env "
+            "EVAL_MIN_ACCURACY). Only meaningful with --live."
+        ),
+    )
+    run_parser.add_argument(
+        "--min-source-accuracy",
+        type=_percent,
+        default=cfg.settings.eval_min_source_accuracy,
+        dest="min_source_accuracy",
+        metavar="PCT",
+        help=(
+            "Absolute floor (0-100) on each data source's execution accuracy: the "
+            "run fails when any source is below it, or when the run has no "
+            "per-source figures to check. Off unless set. Defaults to "
+            "config.Settings.eval_min_source_accuracy (env EVAL_MIN_SOURCE_ACCURACY). "
+            "Only meaningful with --live."
+        ),
+    )
     run_parser.set_defaults(func=_run)
 
     verify_parser = subparsers.add_parser(
@@ -694,7 +778,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     -------
     int
         Process exit code: ``0`` on success/no-regression, ``1`` on
-        regression versus a baseline.
+        regression versus a baseline or a run below an absolute
+        accuracy floor.
 
     Examples
     --------

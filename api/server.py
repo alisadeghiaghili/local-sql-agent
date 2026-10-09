@@ -306,6 +306,26 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 - startup must not fail on this
         logger.warning("admin-action log retention purge failed at startup: %s", exc)
 
+    # ── Latency: prime the model server's prefix cache ─────────────────────
+    # Same shape as the vocabulary warm-up below -- a settings flag, a
+    # failure that is a warning and never fatal -- with one difference that
+    # matters: this one does NOT run before `yield`. The vocabulary warm-up
+    # is a handful of cheap database reads; this is a prefill that takes
+    # about a minute on a large local model, and a server that held back
+    # every request for that long would have moved the slow first question
+    # from the analyst to the load balancer's health check. It runs on a
+    # daemon thread (llm/warmup.py), so the server accepts requests at once
+    # and a question that arrives mid-warm-up simply runs as it would have
+    # without it. Started before the vocabulary warm-up so the two overlap.
+    # See Settings.llm_prefix_warmup_on_startup.
+    if cfg.settings.llm_prefix_warmup_on_startup:
+        try:
+            from llm.warmup import start_background_warmup
+
+            start_background_warmup(_system_prompt, runner.get_llm_router)
+        except Exception as exc:  # noqa: BLE001 - an optimisation, startup must not fail on it
+            logger.warning("LLM prefix warm-up could not be started: %s", type(exc).__name__)
+
     # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
     # On by default (see
     # Settings.dimension_vocabulary_warm_on_startup's own docstring for

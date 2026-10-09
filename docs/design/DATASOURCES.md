@@ -180,7 +180,11 @@ the full set uses.
 **Generating the assignments.** A deployment that never set `datasource:`
 runs everything on the default source (`Invalid object name ...` for the
 tables that are elsewhere) and its drift panel lists every column of the
-other source as missing. `scripts/assign_datasources.py` is the one-time
+other source as missing. `scripts/sync_schema.py` does this and the rest of
+the structural sync (new columns, recorded types, tables the databases lack;
+runbook §16.3), sharing its matching and `datasource:` editing with
+`scripts/assign_datasources.py`, the narrower tool that writes only these lines.
+`assign_datasources.py` is the one-time
 generator, curated afterwards: it reads each source's tables, views and
 columns through the application's own engines (two `INFORMATION_SCHEMA`
 queries per source; never a row), matches each `schema.yaml` table by

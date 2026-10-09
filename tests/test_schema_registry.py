@@ -169,3 +169,58 @@ class TestSchemaContextMultiPartQualifier:
         ):
             ctx = SchemaRegistry.build_context(("Customer",))
         assert "Reference as:" not in ctx
+
+
+class TestColumnTypes:
+    """``column_types`` is the structural twin of ``columns``: written by
+    ``scripts/sync_schema.py``, validated against ``columns``, read by nothing
+    at run time."""
+
+    TEXT = (
+        "tables:\n"
+        "  T:\n"
+        "    columns:\n"
+        "      ID: pk\n"
+        "      Name: n\n"
+        "    column_types:\n"
+        "      ID: int\n"
+        "      Name: nvarchar(40)\n"
+    )
+
+    def test_it_is_optional_and_defaults_to_empty(self):
+        from schema_data.registry import validate_schema_yaml_text
+
+        assert validate_schema_yaml_text("tables:\n  T:\n    columns: {ID: x}\n").tables[
+            "T"
+        ].column_types == {}
+
+    def test_it_is_parsed_per_table(self):
+        from schema_data.registry import validate_schema_yaml_text
+
+        table = validate_schema_yaml_text(self.TEXT).tables["T"]
+        assert table.column_types == {"ID": "int", "Name": "nvarchar(40)"}
+
+    def test_it_changes_neither_the_prompt_nor_the_allowlist(self):
+        from schema_data.registry import validate_schema_yaml_text
+
+        with_types = validate_schema_yaml_text(self.TEXT)
+        without = validate_schema_yaml_text(self.TEXT.split("    column_types:")[0])
+        assert {k: v.columns for k, v in with_types.tables.items()} == {
+            k: v.columns for k, v in without.tables.items()
+        }
+
+    def test_a_type_for_a_column_the_table_does_not_declare_is_refused(self):
+        import pytest
+
+        from schema_data.registry import validate_schema_yaml_text
+
+        with pytest.raises(ValueError, match=r"column_types names column\(s\) \['Ghost'\]"):
+            validate_schema_yaml_text(self.TEXT + "      Ghost: int\n")
+
+    def test_types_without_a_columns_map_are_refused(self):
+        import pytest
+
+        from schema_data.registry import validate_schema_yaml_text
+
+        with pytest.raises(ValueError, match="column_types"):
+            validate_schema_yaml_text("tables:\n  T:\n    column_types: {ID: int}\n")

@@ -430,7 +430,7 @@ entities:
 
 ### مرحله ۴ — منبع داده (فقط با چند منبع)
 
-با `datasources.yaml`، جدولی که روی منبع پیش‌فرض نیست زیر کلیدش `datasource: <name>` می‌خواهد. `python scripts/assign_datasources.py` مقدار را از روی دیتابیس‌ها درمی‌آورد و همراه مقدار بقیهٔ جدول‌ها در `schema.with_datasources.yaml` می‌نویسد تا مرور کنید (`docs/deployment-runbook.md` بخش ۱۶.۳).
+با `datasources.yaml`، جدولی که روی منبع پیش‌فرض نیست زیر کلیدش `datasource: <name>` می‌خواهد. `python scripts/sync_schema.py` مقدار را از روی دیتابیس‌ها درمی‌آورد و همراه مقدار بقیهٔ جدول‌ها و بقیهٔ همگام‌سازی ساختار (ستون تازه، نوع‌ها، جدول‌هایی که دیتابیس ندارد) در `schema.synced.yaml` می‌نویسد تا مرور کنید؛ `scripts/assign_datasources.py` ابزار محدودتری است که فقط خط‌های `datasource:` را می‌نویسد (`docs/deployment-runbook.md` بخش ۱۶.۳).
 
 ### بررسی
 

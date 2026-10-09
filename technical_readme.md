@@ -1133,7 +1133,7 @@ The README's "Project structure" section is the maintained file-by-file tree. By
 | `observability/` | Audit records, the LLM status block, stage timings |
 | `exporters/`, `logs/` | Excel / CSV / JSON exports; rotating JSONL logger |
 | `core/` | Shared models, the Persian normaliser, strict YAML loading, the start-up notice |
-| `scripts/` | Operator tools: `verify_deployment.py`, `issue_api_key.py`, `assign_datasources.py`, `prompt_budget.py`, `analyze_audit_log.py`, `analyze_misses.py`, `migrate_app_db.py` |
+| `scripts/` | Operator tools: `verify_deployment.py`, `issue_api_key.py`, `sync_schema.py`, `assign_datasources.py`, `prompt_budget.py`, `analyze_audit_log.py`, `analyze_misses.py`, `migrate_app_db.py` |
 | `web/` | Static Persian/RTL client and the admin panel (no build step) |
 | `project_config/` | Deployment-specific domain data, git-ignored (template: `project_config.example/`) |
 
@@ -1322,6 +1322,8 @@ All configuration is read from **environment variables** (or a `.env` file); `.e
 | `QUERY_TIMEOUT_SECONDS` | `60` | Max query time (seconds) |
 | `MAX_ROWS_RETURNED` | `1000` | Hard row cap |
 | `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Static prefix up to this estimate, retrieval path above it; per data source |
+| `LLM_PREFIX_WARMUP_ON_STARTUP` / `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` | `true` / `180` | Background start-up request per data source that primes the model server's prefix cache (`llm/warmup.py`); `POST /admin/llm/warmup` on demand |
+| `LLM_STREAM_TIMINGS` | `false` | Stream the call to record `ttft_ms` / `generation_ms` in the audit `llm` block (`llm/providers.py`) |
 | `CACHE_TTL_SECONDS` / `CACHE_MAX_SIZE` | `300` / `256` | Query cache (`0` TTL = disabled) |
 | `API_KEYS_JSON` / `API_KEYS_FILE` | *(empty)* | The API key array, inline or in a file; set one |
 | `AUTH_REQUIRED` | `true` | Fail-closed authentication |

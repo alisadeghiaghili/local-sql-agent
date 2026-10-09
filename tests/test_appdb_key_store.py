@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 
 import pytest
 
 import config as cfg
-from appdb.engine import dispose_app_engine, get_app_engine
+from appdb.engine import dispose_app_engine
 from appdb.key_store import (
     AmbiguousKeyIdentityError,
     bootstrap_from_env,

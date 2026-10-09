@@ -207,7 +207,7 @@ class TestScanCapWarning:
         record = store.create()
 
         with override_settings(refinement_scan_cap=10_000, default_top_n=1000):
-            turn1 = _engine(Q1_SQL, execute_fn).ask(record, Q1_QUESTION, SYSTEM_PROMPT)
+            _engine(Q1_SQL, execute_fn).ask(record, Q1_QUESTION, SYSTEM_PROMPT)
 
         # cap=2 -- the ring-1 predicate matches 4 rows, so this MUST be flagged.
         with override_settings(refinement_scan_cap=2, default_top_n=1000):

@@ -74,9 +74,37 @@ With several sources, each `schema.yaml` table names where it lives with
 `datasource:` -- one name, or a list (`datasource: [sales, inventory]`, the
 names exactly as written in `datasources.yaml`) for a table that exists, with
 the same shape, in each of those sources. Run
-`python scripts/assign_datasources.py` from the repository root to have the
-values worked out from the databases and written to
-`schema.with_datasources.yaml` next to `schema.yaml` for review.
+`python scripts/sync_schema.py` from the repository root to have the
+values worked out from the databases and written, with the rest of the
+structural sync below, to `schema.synced.yaml` next to `schema.yaml` for
+review (`scripts/assign_datasources.py` is the narrower tool that writes
+only the `datasource:` lines).
+
+## Keeping `schema.yaml` in step with the databases
+
+`schema.yaml` is curated by hand, and its structure drifts from the
+databases. `python scripts/sync_schema.py` brings the structure back
+without touching anything you wrote (descriptions, flags, comments):
+
+- sets or repairs each table's `datasource:` (several sources only);
+- appends columns the database has and the file lacks, as
+  `Name: "<type> column"  # TO BE FILLED (added by sync_schema.py)`;
+- records every column's SQL type in an optional per-table `column_types:`
+  map (`{column: type}`, written only by this script, read by nothing at
+  run time) and corrects it when the database changes;
+- marks a column the database lacks with `# not in database (sync_schema.py)`
+  and a table found nowhere with `# not found in any data source`; `--prune`
+  removes them instead;
+- reports tables the databases have and the file lacks; `--add-tables
+  'sales.*'` (a glob on `schema.table`) adds them;
+- writes `relationships.proposed.yaml` (declared foreign keys, and `X_ID`
+  to `X.ID` guesses) for you to review; `relationships.yaml` is never
+  edited.
+
+It writes `schema.synced.yaml` (never over `schema.yaml`); `--dry-run`
+prints the report only; `--check` writes nothing and exits 1 when the
+structure is out of sync, for CI. See `docs/deployment-runbook.md` §16.3.
+This directory's own `schema.yaml` is a template and is not synced.
 
 With several sources, each question is also routed to **one** source before
 its prompt is built, and the model is shown that source's tables only.

@@ -19,7 +19,6 @@ import threading
 import time
 
 import pandas as pd
-import pytest
 
 from config import override_settings
 from llm.providers import MockBackend

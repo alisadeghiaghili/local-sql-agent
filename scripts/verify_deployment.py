@@ -46,6 +46,12 @@ as the admin panel's schema-drift card). With the default single source
 this script's output is unchanged: the database checks keep their plain
 names and the placement check is skipped.
 
+``check_schema_structure_matches_databases`` (always run, one or several
+sources) is ``python scripts/sync_schema.py --check`` as a preflight check:
+it FAILs when a column, a recorded column type or a ``datasource:`` line of
+``schema.yaml`` is out of step with the databases, and names the command that
+writes the proposed fix. It SKIPs when a database cannot be read.
+
 Safety
 ------
 Every database probe here is read-only, with ONE deliberate exception:
@@ -615,9 +621,9 @@ def _project_config_loaders() -> list[tuple[str, Callable[[], object]]]:
     uses to read that file, so a pass here means the application can load it.
 
     Raises:
-        knowledge.config_loader.ConfigNotFoundError: Importing the loaders
-            reads five files of the configured directory; the caller checks
-            that the files exist before importing.
+        ImportError: If the loaders cannot be imported (a broken install).
+            Importing them reads no ``project_config/`` file; each loader
+            reads its own file when called.
     """
     from knowledge.config_loader import (
         load_aliases,
@@ -801,7 +807,80 @@ def check_tables_in_assigned_sources() -> CheckResult:
     shown = [str(m["hint"]) for m in misplaced[:_MAX_PLACEMENT_HINTS]]
     more = len(misplaced) - len(shown)
     detail = "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
-    return CheckResult(name, "FAIL", f"{len(misplaced)} table(s): {detail}")
+    return CheckResult(
+        name, "FAIL",
+        f"{len(misplaced)} table(s): {detail} -- `python scripts/sync_schema.py` writes all of "
+        "these datasource: lines (and the rest of the structure) for review",
+    )
+
+
+def check_schema_structure_matches_databases() -> CheckResult:
+    """``schema.yaml``'s structure must match what the databases have.
+
+    Runs the same comparison as ``python scripts/sync_schema.py --check``
+    (:func:`schema_data.sync.sync_schema_text`, default options): FAIL when a
+    sync would change the file -- a ``datasource:`` missing or wrong, a column
+    the database has that ``schema.yaml`` lacks, a recorded column type that
+    differs, a column or table newly missing from the database -- naming the
+    counts and the command that writes the proposed file. Columns already
+    marked ``# not in database`` are reported in the detail, not failed.
+    Reads three ``INFORMATION_SCHEMA`` views per data source and nothing else.
+
+    SKIP when the comparison cannot be made: ``schema.yaml`` does not load
+    (``project_config/ loads`` says why), a database cannot be reached (its
+    own connectivity check fails), or the file is laid out in a way the sync
+    cannot edit.
+    """
+    name = "Schema structure matches the databases"
+    try:
+        from database.catalogue import read_catalogue
+        from database.connection import get_engine
+        from database.datasources import datasource_names, default_datasource_name
+        from schema_data.registry import schema_yaml_path, validate_schema_yaml_text
+        from schema_data.sync import sync_schema_text
+
+        original = schema_yaml_path().read_text(encoding="utf-8-sig")
+        validate_schema_yaml_text(original)
+        sources = datasource_names()
+        default = default_datasource_name()
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(name, "SKIP", f"schema.yaml or the data sources did not load: {type(exc).__name__}")
+    catalogues = {}
+    for source in sources:
+        try:
+            catalogues[source] = read_catalogue(get_engine(source))
+        except Exception as exc:  # noqa: BLE001
+            return CheckResult(
+                name, "SKIP",
+                f"could not read the catalogue of data source '{source}' ({type(exc).__name__})",
+            )
+    try:
+        result = sync_schema_text(original, sources, default, catalogues)
+    except ValueError as exc:
+        return CheckResult(name, "SKIP", f"schema.yaml cannot be compared: {str(exc).splitlines()[0][:160]}")
+    plan = result.plan
+    stale = sum(len(t.stale) for t in plan.tables)
+    if not result.changed:
+        detail = "schema.yaml matches the databases"
+        if stale or any(t.nowhere for t in plan.tables):
+            detail += (
+                f" ({stale} column(s) and {sum(t.nowhere for t in plan.tables)} table(s) marked as "
+                "not in the database -- `python scripts/sync_schema.py --prune` removes them)"
+            )
+        return CheckResult(name, "PASS", detail)
+    parts = [
+        f"{sum(len(t.adds) for t in plan.tables)} column(s) missing from schema.yaml",
+        f"{len(result.stats.marked_columns)} column(s) and {len(result.stats.marked_tables)} table(s) "
+        "no longer in the database",
+        f"{sum(len(t.changed) for t in plan.tables)} column type(s) differ",
+        f"{sum(bool(plan.multi_source and t.placement.found_in and t.placement.wanted != t.placement.current) for t in plan.tables)} "
+        "datasource: line(s) to set",
+    ]
+    return CheckResult(
+        name, "FAIL",
+        "; ".join(parts) + " -- run `python scripts/sync_schema.py`, review schema.synced.yaml "
+        "and replace schema.yaml (`--check` is the same test for CI)",
+    )
 
 
 #: Checks run once per data source, in this order, after the global ones
@@ -816,6 +895,7 @@ _PER_SOURCE_CHECKS: list[Callable[..., CheckResult]] = [
 #: Checks that run once for the whole deployment.
 _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_tables_in_assigned_sources,
+    check_schema_structure_matches_databases,
     check_openai_model_exists,
     check_api_key_authenticates,
     check_audit_log_writable,

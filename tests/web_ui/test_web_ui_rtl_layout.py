@@ -214,7 +214,6 @@ class TestControlsAreLargeEnoughToHit:
     """
 
     def test_the_interpret_toggle_has_an_explicit_hit_area(self):
-        css = _stylesheet()
         rule = _rule(r"\.ask-toggle") or _rule(r"\.check")
         assert rule is not None, (
             "the interpretation toggle's label has no style rule at all, so "

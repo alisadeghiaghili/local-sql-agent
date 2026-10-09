@@ -60,11 +60,11 @@
 
 ۵. **توصیف دیتابیس‌ها** (*فقط چند دیتابیس*، بخش ۰.۳.۳ گام ۱): `project_config/datasources.yaml` را از `project_config.example/datasources.example.yaml` بنویسید و رمز خام هر منبع را در `.env` زیر نام متغیری که `password_env` آن می‌گوید بگذارید. *تمام شد وقتی:* `python -c "from database.datasources import datasource_names; print(datasource_names())"` نام همهٔ منبع‌ها را چاپ کند و دستور گام ۳ هنوز `settings ok` بدهد.
 
-۶. **تعیین `datasource:` هر جدول** (*فقط چند دیتابیس*): `python scripts/assign_datasources.py`. اگر اجرا نشود، به‌محض اینکه جدولی بیرون از منبع پیش‌فرض باشد، پیش‌پرواز گام ۱۱ با چک `Tables are in their data source` خطا می‌دهد (بخش ۰.۴). *تمام شد وقتی:* اجرا با `written: ... -- review it before replacing schema.yaml` تمام شود.
+۶. **همگام‌سازی ساختار `schema.yaml` با دیتابیس‌ها**: `python scripts/sync_schema.py` (با هر تعداد دیتابیس). فهرست جدول‌ها، ستون‌ها، نوع‌ها و کلیدهای هر منبع را فقط می‌خواند (سه view از `INFORMATION_SCHEMA` برای هر منبع؛ هیچ ردیفی خوانده نمی‌شود) و `schema.synced.yaml` را کنار `schema.yaml` می‌نویسد: فایل خودتان با همهٔ توضیح‌ها و کامنت‌ها، به‌اضافهٔ `datasource:` هر جدول (چند دیتابیس)، ستون‌هایی که دیتابیس دارد و فایل ندارد (به‌صورت پیش‌نویس)، نقشهٔ `column_types:` و نشانهٔ روی هر ستون یا جدولی که دیتابیس ندارد (بخش ۰.۳.۳). `relationships.proposed.yaml` را هم برای مرور می‌نویسد. اگر اجرا نشود، پیش‌پرواز گام ۱۱ با چک `Tables are in their data source` (چند دیتابیس) یا `Schema structure matches the databases` خطا می‌دهد (بخش ۰.۴). *تمام شد وقتی:* اجرا با `written: ... -- review it before replacing schema.yaml` تمام شود.
 
-۷. **مرور، جایگزینی `schema.yaml`، و `--check`** (*فقط چند دیتابیس*): `project_config\schema.with_datasources.yaml` را بخوانید، `schema.yaml` را به `schema.yaml.bak` کپی کنید، پیشنهاد را جایش بگذارید و `python scripts/assign_datasources.py --check` را بزنید. *تمام شد وقتی:* `CHECK OK: every table's datasource: matches the databases` چاپ شود (کد خروج ۰).
+۷. **مرور، جایگزینی `schema.yaml`، و `--check`**: `project_config\schema.synced.yaml` را بخوانید (مقایسه با `schema.yaml` دقیقاً تغییرها را نشان می‌دهد)، `schema.yaml` را به `schema.yaml.bak` کپی کنید، پیشنهاد را جایش بگذارید و `python scripts/sync_schema.py --check` را بزنید. *تمام شد وقتی:* `CHECK OK: schema.yaml's structure matches the databases` چاپ شود (کد خروج ۰).
 
-۸. **ستون‌های «ناموجود» گزارش را درست کنید.** آخرین بخش گزارش `== columns listed in schema.yaml that the database does not have: N ==` است، با یک سطر `Table [source]: Column, ...` برای هر مورد. ستونی را که در دیتابیس نیست از `schema.yaml` حذف کنید، املایش را درست کنید، یا اگر هست ولی لاگین فقط‌خواندنی آن را نمی‌بیند، از DBA دربارهٔ `DENY` بپرسید. `--check` برای این‌ها شکست نمی‌خورد، پس بخش را بخوانید. با یک دیتابیس هم همان گزارش را `python scripts/assign_datasources.py` می‌دهد و چیزی نمی‌نویسد. *تمام شد وقتی:* آن بخش `: 0 ==` بگوید.
+۸. **آنچه همگام‌سازی نشان کرده را حل کنید.** بخش `== columns in schema.yaml that the database does not have: N ==` ستون‌هایی را می‌آورد که کامنت `# not in database (sync_schema.py)` گرفته‌اند و بخش `== tables in schema.yaml found in no data source: N ==` جدول‌هایی را که `# not found in any data source` دارند. با `python scripts/sync_schema.py --prune` حذفشان کنید (نتیجه را مرور و `schema.yaml` را دوباره جایگزین کنید)، املای ستون را دستی درست کنید، یا اگر ستون هست ولی لاگین آن را نمی‌بیند از DBA دربارهٔ `DENY` بپرسید. توضیح ستون‌ها و جدول‌های افزوده‌شده (`# TO BE FILLED`) را بنویسید. جدولی که می‌خواهید و گزارش زیر `== tables in the database that were not in schema.yaml ==` آورده با `--add-tables 'schema.Table'` اضافه می‌شود، و `relationships.proposed.yaml` را مرور کنید. `--check` برای ستون‌های نشان‌شده شکست نمی‌خورد، پس بخش‌ها را بخوانید. *تمام شد وقتی:* آن بخش‌ها `: 0 ==` بگویند.
 
 ۹. **تنظیمات هر منبع** (*فقط چند دیتابیس*): `description:` و `keywords:` تا پرسش به منبع درست برسد، و `nolock: true` فقط روی منبع‌هایی که DBA‌شان `WITH (NOLOCK)` را الزام کرده؛ این کلید **برای هر منبع جداگانه** است (بخش ۰.۳.۳ گام ۶). *تمام شد وقتی:* دستور گام ۵ هنوز نام‌ها را چاپ کند.
 
@@ -265,7 +265,7 @@ python setup_project.py `
 **آنچه نمی‌کند:**
 
 - **`schema.yaml` را نمی‌نویسد**، پس فهرست مجاز نگهبان SQL را نمی‌سازد؛ برایش بخش ۰.۳.۲ یا دست‌نویس. `metrics.yaml`، `retrieval_hints.yaml`، دو فایل policy، `system_prompt.md`، `datasources.yaml`، `.env` و هیچ کلید API را هم نمی‌نویسد.
-- **`datasource:` هیچ جدولی را تعیین نمی‌کند.** در هر اجرا یک دیتابیس را توصیف می‌کند و از `datasources.yaml` خبر ندارد؛ با چند دیتابیس کارش `python scripts/assign_datasources.py` است (بخش ۰.۳.۳).
+- **`datasource:` هیچ جدولی را تعیین نمی‌کند.** در هر اجرا یک دیتابیس را توصیف می‌کند و از `datasources.yaml` خبر ندارد؛ با چند دیتابیس کارش `python scripts/sync_schema.py` است (بخش ۰.۳.۳).
 - **`DB_PASSWORD`، `DB_PASSWORD_*` و `datasources.yaml` را نمی‌خواند.** URL که می‌دهید باید خودش رمز را داشته باشد، کدگذاری‌شده (`@` می‌شود `%40`). دادنش با `--db-url` در تاریخچهٔ شل می‌ماند؛ متغیر محیطی `DATABASE_URL` این را ندارد.
 - **`OPENAI_BASE_URL` و `OPENAI_MODEL` را نمی‌خواند.** تنظیم‌های خودش را دارد که بر آن‌ها مقدم است: گزینه‌های بالا یا متغیرهای `WIZARD_LLM_PROVIDER`، `WIZARD_LLM_MODEL`، `WIZARD_LLM_BASE_URL` و `WIZARD_LANGUAGE`. اگر هیچ‌کدام نباشند، از `https://api.openai.com/v1` مدل `gpt-4o-mini` را می‌خواهد. `.env.example` هر چهار را تنظیم کرده، پس `.env`ای که از آن کپی شده به ویزارد مدل `gpt-oss-20b`، زبان `fa` و نشانی endpointِ **خالی** (`WIZARD_LLM_BASE_URL=`) می‌دهد؛ نشانی خالی به جایی نمی‌رسد، پس آن متغیر را پر کنید یا `--llm-base-url` را با endpoint خودتان بدهید. `OPENAI_API_KEY` هم باید خالی نباشد. اگر کلید نباشد یا endpoint در دسترس نباشد، `Warning: LLM unavailable (...)` چاپ می‌کند و با ارائه‌دهندهٔ mock ادامه می‌دهد، یعنی نام‌های مستعار، قواعد و مثال‌ها خالی درمی‌آیند. `LLM_ALLOW_REMOTE` را اعمال نمی‌کند. چیزی که به مدل می‌فرستد نام جدول‌ها و ستون‌ها، تا ده مقدار نمونه برای هر جدول (از انبار داده) و خلاصهٔ شِماست؛ اگر این مقدارها نباید از شبکه بیرون بروند، به endpoint راه‌دور وصلش نکنید.
 
@@ -325,24 +325,44 @@ DB_PASSWORD_INVENTORY=another-password
 
 پورت پیش‌فرض ۱۴۳۳ و درایور پیش‌فرض `ODBC Driver 18 for SQL Server` است. برای Windows authentication به‌جای نام کاربری و رمز بنویسید `trusted_connection: true`. اگر `datasources.yaml` وجود داشته باشد، `DB_CONNECTION_URL` و `DB_PASSWORD` استفاده نمی‌شوند. دو دیتابیس روی یک سرور، به‌صورت دو منبع، یک پیکربندی کاملاً معتبر است: هر منبع استخر اتصال و لاگین خودش را دارد و هر کوئری فقط روی یکی از آن‌ها اجرا می‌شود. اگر سؤال‌ها باید جدول‌های **هر دو** دیتابیس را با `JOIN` به هم وصل کنند، یک منبع بسازید و برای جدول‌های دیتابیس دوم در `schema.yaml` یک `db_schema` چندبخشی بگذارید (مثلاً `db_schema: "InventoryDW.dbo"`). منبع‌هایی که با ۶.۱ و ۶.۲ نوشته شده‌اند (`url_env`) همچنان کار می‌کنند.
 
-۲. **نوشتن `datasource:` برای هر جدول.** جدولی که این کلید را ندارد روی منبع پیش‌فرض اجرا می‌شود؛ جدولی که با همین ساختار در چند منبع هست (مثلاً جدول تاریخ تکرارشده) فهرست می‌گیرد: `datasource: [sales, inventory]` (نام‌ها با همان حروف `datasources.yaml`). دستی ننویسید؛ یک بار از ریشهٔ پروژه اجرا کنید:
+۲. **همگام‌سازی `schema.yaml` با دیتابیس‌ها و نوشتن `datasource:` هر جدول.** جدولی که این کلید را ندارد روی منبع پیش‌فرض اجرا می‌شود؛ جدولی که با همین ساختار در چند منبع هست (مثلاً جدول تاریخ تکرارشده) فهرست می‌گیرد: `datasource: [sales, inventory]` (نام‌ها با همان حروف `datasources.yaml`). `schema.yaml` از جهت‌های دیگر هم از دیتابیس عقب می‌ماند: ستون تازه، ستون حذف‌شده، نوعی که عوض شده. دستی دنبالشان نگردید؛ یک بار از ریشهٔ پروژه اجرا کنید:
 
 ```powershell
-python scripts/assign_datasources.py
+python scripts/sync_schema.py
 ```
 
-از هر منبع فقط فهرست جدول‌ها و ستون‌ها را می‌خواند (چیزی در دیتابیس نمی‌نویسد) و `schema.with_datasources.yaml` را کنار `schema.yaml` می‌سازد؛ خودِ `schema.yaml` را هرگز تغییر نمی‌دهد. فایل را مرور کنید (جدول‌های «پیدا نشده» و هر `[A, B]`، چون فهرست یعنی جدول در هر دو منبع ساختار یکسان دارد) و جای `schema.yaml` بگذارید، اما اول از فایل فعلی نسخهٔ پشتیبان بگیرید:
+ساختار هر منبع را فقط می‌خواند (سه پرس‌وجو از `INFORMATION_SCHEMA` برای هر منبع: جدول، view، ستون، نوع داده، nullable و کلیدهای اصلی و خارجی؛ هیچ ردیفی خوانده و چیزی در دیتابیس نوشته نمی‌شود) و `schema.synced.yaml` را کنار `schema.yaml` می‌سازد؛ خودِ `schema.yaml` را هرگز تغییر نمی‌دهد و `--output PATH` مسیر دیگری می‌دهد. پیشنهاد همان فایل شماست با همهٔ کامنت‌ها، توضیح‌ها، پرچم‌ها و ترتیب، و فقط این تغییرهای ساختاری (اسکریپت خروجی خودش را تجزیه و مقایسه می‌کند و اگر چیز دیگری فرق داشته باشد نمی‌نویسد):
+
+| وضعیت | کار پیشنهاد |
+|---|---|
+| جدول `datasource:` ندارد یا غلط دارد (فقط چند منبع) | آن را می‌نویسد: `datasource: sales` یا `[sales, inventory]` برای جدولی که در هر دو هست، به ترتیب `datasources.yaml` |
+| ستون در دیتابیس هست و در `schema.yaml` نیست | آخر `columns:` جدول اضافه‌اش می‌کند: `Name: "<type> column"  # TO BE FILLED (added by sync_schema.py)` و نوعش را ثبت می‌کند |
+| ستون در `schema.yaml` هست و در هیچ منبعی نیست | نگهش می‌دارد و بالایش `# not in database (sync_schema.py)` می‌گذارد؛ `--prune` به‌جایش حذفش می‌کند (ستونی که هنوز در `resolvable_columns` یا `prefetchable_columns` است نه) |
+| نوع ثبت‌شده با دیتابیس فرق دارد | مدخل نقشهٔ `column_types:` جدول را درست می‌کند و `Table.Column: old -> new` گزارش می‌دهد. نوع‌ها در همین نقشه‌اند، هرگز در توضیح ستون |
+| جدول در دیتابیس هست و در `schema.yaml` نیست | فقط گزارش می‌دهد؛ `--add-tables 'sales.*'` (الگوی glob روی `schema.table`، تکرارشدنی) جدول‌های منطبق را با توضیح پیش‌نویس اضافه می‌کند |
+| جدول در `schema.yaml` هست و در هیچ منبعی نیست | با `# not found in any data source` نگهش می‌دارد؛ `--prune` حذفش می‌کند (مگر `relationships:` هنوز نامش را ببرد) |
+| جدول بدون کلید `columns:` | دست نمی‌خورد (فقط توصیف‌شده، عمداً غیرقابل‌پرس‌وجو) |
+
+`column_types:` نقشهٔ اختیاری تازه‌ای برای هر جدول است، `{ستون: نوع SQL}`، که فقط همین اسکریپت می‌نویسد؛ زمان اجرا چیزی از آن نمی‌خواند، پس پرامپت و فهرست مجاز نگهبان عوض نمی‌شوند.
+
+`relationships.proposed.yaml` را هم کنار `schema.yaml` می‌نویسد: هر کلید خارجی تعریف‌شده بین دو جدول `schema.yaml`، و رابطه‌هایی که از نام ستون حدس می‌زند (`Order.CustomerID` به `Customer.ID`، `Order.OrderDate_ID` به `Date.ID`؛ schema یکسان ترجیح دارد، دو جدول باید منبع مشترک داشته باشند، و حدس وقتی کنار گذاشته می‌شود که هدف کلید مرکب، بی‌کلید، نوع ستون متفاوت یا چند گزینه داشته باشد). هر مدخل `basis:` (قید یا قاعدهٔ نام‌گذاری) و `confidence:` دارد. هیچ چیز این فایل را نمی‌خواند و `relationships.yaml` هرگز لمس نمی‌شود: هر مدخل را مرور و درست‌ها را دستی کپی کنید. `--no-relationships` آن را نمی‌سازد.
+
+`--dry-run` فقط گزارش را چاپ می‌کند. ستونی که لاگین فقط‌خواندنی از طریق `INFORMATION_SCHEMA` نمی‌بیند هم «ناموجود» گزارش می‌شود، پس پیش از `--prune` دربارهٔ `DENY` (در `docs/db-hardening.md`) از DBA بپرسید.
+
+سپس `schema.synced.yaml` را مرور کنید (جدول‌های «پیدا نشده» و هر `[A, B]`، چون فهرست یعنی جدول در هر دو منبع ساختار یکسان دارد) و جای `schema.yaml` بگذارید، اما اول از فایل فعلی نسخهٔ پشتیبان بگیرید:
 
 ```powershell
 Copy-Item project_config\schema.yaml project_config\schema.yaml.bak
-Move-Item -Force project_config\schema.with_datasources.yaml project_config\schema.yaml
+Move-Item -Force project_config\schema.synced.yaml project_config\schema.yaml
 ```
 
-`schema.yaml` فهرست مجاز نگهبان است، پس هر تغییرش با راه‌اندازی دوبارهٔ سرور اثر می‌کند. بعد ستون‌های «ناموجود» را درست کنید: آخرین بخش گزارش `== columns listed in schema.yaml that the database does not have: N ==` است و برای هر مورد یک سطر `Table [source]: Column, ...` دارد. ستونی که در `schema.yaml` بماند و در دیتابیس نباشد را نگهبان همچنان مجاز می‌داند، پس پرسشی که از آن استفاده کند هنگام اجرا شکست می‌خورد. برای هر سطر: ستون را از `schema.yaml` حذف کنید، املایش را درست کنید، یا اگر هست ولی لاگین فقط‌خواندنی آن را از طریق `INFORMATION_SCHEMA` نمی‌بیند، پیش از حذف از DBA دربارهٔ `DENY` (در `docs/db-hardening.md`) بپرسید. اسکریپت را دوباره بزنید تا آن بخش `: 0 ==` بگوید؛ کد خروج این را نشان نمی‌دهد. در آخر `python scripts/assign_datasources.py --check` چیزی نمی‌نویسد و اگر `datasource:` جدولی با دیتابیس‌ها نخواند، `CHECK FAILED: N table(s) disagree with the databases` چاپ می‌کند و با کد خروج ۱ تمام می‌شود، که برای pipeline استقرار مناسب است؛ در حالت سالم `CHECK OK: every table's datasource: matches the databases` و کد ۰ است.
+`schema.yaml` فهرست مجاز نگهبان است، پس هر تغییرش با راه‌اندازی دوبارهٔ سرور اثر می‌کند. ستونی که در `schema.yaml` بماند و در دیتابیس نباشد را نگهبان همچنان مجاز می‌داند، پس پرسشی که از آن استفاده کند هنگام اجرا شکست می‌خورد؛ هر ستون `# not in database` را حذف کنید (یا `--prune` بزنید)، املایش را درست کنید یا از DBA بپرسید، و برای ستون‌ها و جدول‌های `# TO BE FILLED` توضیح واقعی بنویسید (تا آن موقع مدل همان `<type> column` را می‌بیند). در آخر `python scripts/sync_schema.py --check` چیزی نمی‌نویسد؛ اگر اجرای معمولی `schema.yaml` را تغییر می‌داد `CHECK FAILED: ...` چاپ می‌کند و با کد ۱ تمام می‌شود، که برای pipeline استقرار مناسب است، و در حالت سالم `CHECK OK: schema.yaml's structure matches the databases` و کد ۰ است. ستون نشان‌شده با `# not in database` شکست نمی‌دهد (در هر گزارش می‌آید تا حذف شود)؛ `--check --prune` تا چیزی برای حذف مانده شکست می‌خورد و `--check --add-tables PATTERN` تا جدول‌های منطبق در فایل نیامده‌اند. کد ۲ یعنی فهرست یک منبع خوانده نشد، `schema.yaml` نامعتبر است یا چیدمانی دارد که خط‌به‌خط ویرایش نمی‌شود (جدول یا `columns: {...}` به‌سبک flow)، یا خروجی معتبر نبود. اجرای دوباره روی فایل جایگزین‌شده چیزی را تغییر نمی‌دهد.
+
+**`assign_datasources.py` هنوز هست و ابزار محدودتر است.** فقط خط‌های `datasource:` را می‌نویسد (`schema.with_datasources.yaml`) و ستون‌های ناموجود را گزارش می‌دهد؛ ستون اضافه نمی‌کند، نوع ثبت نمی‌کند و چیزی را نشان‌گذاری نمی‌کند، و تطبیق و ویرایش `datasource:` را با `sync_schema.py` به‌اشتراک دارد (همان قاعده، همان کد). وقتی دقیقاً همین را می‌خواهید و هیچ تغییر دیگری در `schema.yaml` نمی‌خواهید از آن استفاده کنید. هرچه آن می‌کند `sync_schema.py` هم می‌کند، پس گام اول توصیه‌شده نیست و برای کارکردن pipeline‌های موجود می‌ماند.
 
 ۳. **هدایت پرسش‌ها.** با چند منبع، هر پرسش پیش از ساخت پرامپت به **یک** منبع هدایت می‌شود و مدل فقط جدول‌های همان منبع (به‌اضافهٔ جدول‌های مشترک) را می‌بیند. `description:` بالای جدول‌های منبع در پرامپت چاپ می‌شود و `keywords:` فهرست واژه یا عبارت فارسی یا انگلیسی است. کلیدواژه به‌صورت «کلمهٔ کامل» پس از یکسان‌سازی حرف‌های عربی/فارسی، ارقام، نیم‌فاصله و بزرگی/کوچکی حروف با پرسش مقایسه می‌شود: `stock` داخل `stockholder` پیدا نمی‌شود و شکل جمع یا پیشوندی واژهٔ دیگری است، پس هر شکلی را که انتظار دارید بنویسید. اگر کلیدواژه‌ای پیدا نشود، انتخاب بر اساس ادامهٔ گفتگو، سپس جدول‌هایی که لایهٔ بازیابی پیدا می‌کند و در آخر منبع پیش‌فرض است؛ اگر مدل `OUT_OF_SCOPE` بگوید، پرسش **یک بار** با منبع بعدی تکرار می‌شود (CLI تکرار نمی‌کند).
 
-۴. **پیش‌پرواز و راه‌اندازی دوباره.** `python -m scripts.verify_deployment` (بخش ۰.۴) برای هر منبع یک‌بار چک‌های دیتابیس را اجرا می‌کند و دو چک ویژهٔ چند منبع دارد: «`Tables map to data sources`» و «`Tables are in their data source`» که برای جدولی که همهٔ ستون‌هایش در منبع تعیین‌شده نیست ولی در منبع دیگری هست خطی مثل `stock_dim.Broker: not in sales, found in inventory — set datasource: inventory` را می‌نویسد. اگر هرگز `assign_datasources.py` را نزده باشید، همین چک با خطی مثل `[FAIL] Tables are in their data source -- 44 table(s): ... not in sales, found in inventory — set datasource: inventory` شکست می‌خورد؛ راهش اجرای آن اسکریپت و جایگزینی `schema.yaml` است (گام ۲ بالا). جدول همهٔ چک‌ها در بخش ۰.۴ است. بعد سرور را دوباره راه بیندازید و در لاگ شروع برای هر منبع یک خط `Prompt path for data source '<name>'` ببینید.
+۴. **پیش‌پرواز و راه‌اندازی دوباره.** `python -m scripts.verify_deployment` (بخش ۰.۴) برای هر منبع یک‌بار چک‌های دیتابیس را اجرا می‌کند و دو چک ویژهٔ چند منبع دارد: «`Tables map to data sources`» و «`Tables are in their data source`» که برای جدولی که همهٔ ستون‌هایش در منبع تعیین‌شده نیست ولی در منبع دیگری هست خطی مثل `stock_dim.Broker: not in sales, found in inventory — set datasource: inventory` را می‌نویسد. اگر هرگز `sync_schema.py` (یا `assign_datasources.py`) را نزده باشید، همین چک با خطی مثل `[FAIL] Tables are in their data source -- 44 table(s): ... not in sales, found in inventory — set datasource: inventory` شکست می‌خورد؛ راهش اجرای آن اسکریپت و جایگزینی `schema.yaml` است (گام ۲ بالا). چک `Schema structure matches the databases` همان آزمون `sync_schema.py --check` است و اگر ساختار `schema.yaml` از دیتابیس عقب باشد خطا می‌دهد. جدول همهٔ چک‌ها در بخش ۰.۴ است. بعد سرور را دوباره راه بیندازید و در لاگ شروع برای هر منبع یک خط `Prompt path for data source '<name>'` ببینید.
 
 ۵. **اندازهٔ بودجهٔ پرامپت.** `PROMPT_RETRIEVAL_TOKEN_BUDGET` برای پرامپت هر منبع جداگانه سنجیده می‌شود، نه برای مجموع آن‌ها، و برآوردگر (`len // 4`) برای متن فارسی حدود ۱۵٪ کمتر می‌شمارد. به‌جای حدس زدن، از ریشهٔ پروژه اجرا کنید:
 
@@ -415,6 +435,7 @@ python -m scripts.verify_deployment
 | `Row cap`* | از طریق executor دستور `SELECT TOP (10 x cap + 10) name FROM sys.all_objects` را اجرا می‌کند و ردیف‌ها را می‌شمارد. | `returned 1500 rows, expected <= 1000`: executor بیشتر از `MAX_ROWS_RETURNED` ردیف برگرداند. تا درست نشود مستقر نکنید؛ تنظیمی برای رفعش نیست، گزارشش دهید. | دیتابیس در دسترس نیست یا پرسش آزمایشی اجرا نمی‌شود (T-SQL است). |
 | `Query timeout`* | `WAITFOR DELAY` را با timeout حداکثر ۵ ثانیه اجرا می‌کند و زمان قطع‌شدنش را می‌سنجد. | `took Ns -- longer than the Ms timeout should allow` یا `WAITFOR DELAY completed ... without the timeout firing`: timeout درایور اعمال نمی‌شود یا سرور `WAITFOR` را پشتیبانی نمی‌کند (برخی ردیف‌های serverless در Azure SQL). `QUERY_TIMEOUT_SECONDS` و درایور را ببینید. | دیتابیس در دسترس نیست یا پرسش آزمایشی اجرا نمی‌شود. |
 | `Tables are in their data source` | `schema.yaml` را با فهرست جدول‌های هر منبع می‌سنجد و برای جدولی که همهٔ ستون‌هایش در منبع تعیین‌شده نیست ولی منبع دیگری آن را دارد شکست می‌خورد. | `N table(s): <table>: not in <assigned>, found in <other> — set datasource: <other>; ...` (ده نمونه، بعد `and N more`). جدول `datasource:` ندارد (پس روی منبع پیش‌فرض می‌رود) یا غلط دارد. `python scripts/assign_datasources.py` را بزنید و `schema.yaml` را عوض کنید (بخش ۰.۳.۳ گام ۲)؛ این گام ۶ و ۷ فهرست «نصب از صفر» است. یا `could not compare schema.yaml with the data sources: ...` وقتی فهرست جدول‌های یک منبع خوانده نشود. | یک منبع داده (`one data source -- nothing to place`). |
+| `Schema structure matches the databases` | همان `python scripts/sync_schema.py --check` در حافظه: از هر منبع سه view کاتالوگ را می‌خواند و اگر همگام‌سازی `schema.yaml` را تغییر می‌داد شکست می‌خورد. | `N column(s) missing from schema.yaml; N column(s) and N table(s) no longer in the database; N column type(s) differ; N datasource: line(s) to set -- run python scripts/sync_schema.py ...`. اسکریپت را بزنید، `schema.synced.yaml` را مرور و `schema.yaml` را جایگزین کنید (بخش ۰.۳.۳ گام ۲). ستونی که قبلاً `# not in database` گرفته شکست نمی‌دهد و در جزئیات `PASS` شمرده می‌شود. | دیتابیسی خوانده نشود (چک اتصال خودش خطا می‌دهد)، `schema.yaml` بار نشود (`project_config/ loads` علت را می‌گوید)، یا چیدمانش خط‌به‌خط قابل‌ویرایش نباشد. |
 | `OpenAI-compatible model exists` | از `OPENAI_BASE_URL` مسیر `/models` را می‌خواهد (timeout ۵ ثانیه، `OPENAI_API_KEY` به‌عنوان bearer) و `OPENAI_MODEL` را میان شناسه‌ها می‌جوید. | `could not reach <base>: ...`: نشانی یا پورت غلط، endpoint خاموش، proxy، یا endpoint بدون مسیر `/models`. یا `'<model>' not found among models <base> lists: [...]`: `OPENAI_MODEL` را برابر یکی از شناسه‌های فهرست کنید. | هرگز. |
 | `API key authentication` | می‌بیند دست‌کم یک کلید تنظیم شده (`API_KEYS_FILE` یا `API_KEYS_JSON`، به‌علاوهٔ دیتابیس اپلیکیشن) تا سرور بالا بیاید، و با `VERIFY_API_KEY` که همان کلید خام احراز می‌شود. | `API key configuration is invalid: ...` (سرور بالا نمی‌آید)؛ `AUTH_REQUIRED is true but there are no configured keys ...` (کلید صادر کنید، بخش ۲.۲)؛ همهٔ کلیدها در دیتابیس اپلیکیشن revoke یا disable شده‌اند؛ یا `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (کپی ناقص، یا به‌جای کلید خام `key_sha256` را گذاشته‌اید). با `AUTH_REQUIRED=false` می‌گذرد و می‌گوید؛ در تولید استفاده نکنید. | هرگز. |
 | `Audit log directory writable` | `LOG_DIR` را در صورت نبودن می‌سازد و یک فایل آزمایشی در آن می‌نویسد و پاک می‌کند؛ قابل نوشتن بودن `audit_log.jsonl` موجود را هم می‌بیند. خودِ `audit_log.jsonl` را هرگز نمی‌نویسد. | `could not create ...` یا `... is not writable`: دسترسی پوشه یا `LOG_DIR` را درست کنید. چون نوشتن ناموفق audit هرگز پرسش کاربر را شکست نمی‌دهد، باید همین‌جا بلند شکست بخورد. | هرگز. |
@@ -1164,7 +1185,7 @@ http://localhost:8080/
 ۵. (اختیاری) رمز را خام در `DB_PASSWORD` بگذارید و از `DB_CONNECTION_URL` بردارید (۶.۳.۰).
 ۶. (اختیاری، برای بیش از یک کلید توصیه می‌شود) کلیدها را به فایل ببرید: `project_config.example/api_keys.example.json` را به `project_config/api_keys.json` کپی کنید، `key_sha256` هر ورودی را با هش چاپ‌شدهٔ `issue_api_key` عوض کنید، `API_KEYS_FILE` را بگذارید و `API_KEYS_JSON` را **بردارید** (۶.۴.۰ و ۶.۶.۱).
 ۷. (اگر لازم است) `API_HOST=0.0.0.0` و `CORS_ALLOWED_ORIGINS` را برای UI‌ای که جز `localhost:8080` سرو می‌شود تنظیم کنید (۶.۰.۲).
-۸. (فقط چند دیتابیس) بخش ۰.۳ همین راهنما را به ترتیب انجام دهید: `datasources.yaml`، `assign_datasources.py`، `keywords:`، `prompt_budget.py` و در صورت نیاز `nolock` برای هر منبعی که DBA‌اش الزام کرده، جداگانه (۶.۱.۰ تا ۶.۶.۰). پیش از جایگزینی `schema.yaml`، نسخهٔ قبلی را کنار بگذارید و ستون‌های «ناموجود» گزارش را درست کنید.
+۸. (فقط چند دیتابیس) بخش ۰.۳ همین راهنما را به ترتیب انجام دهید: `datasources.yaml`، `sync_schema.py` (پس از ۶.۸.۰؛ پیش‌تر `assign_datasources.py`)، `keywords:`، `prompt_budget.py` و در صورت نیاز `nolock` برای هر منبعی که DBA‌اش الزام کرده، جداگانه (۶.۱.۰ تا ۶.۶.۰). پیش از جایگزینی `schema.yaml`، نسخهٔ قبلی را کنار بگذارید و ستون‌های «ناموجود» گزارش را درست کنید.
 ۹. سرور را دوباره راه بیندازید (همهٔ تغییرهای بالا، از جمله `datasources.yaml` و `schema.yaml`، با راه‌اندازی دوباره اثر می‌کنند) و پیش‌پرواز را یک بار دیگر، این بار با `VERIFY_API_KEY`، بزنید.
 ۱۰. (۶.۷.۰، اختیاری ولی توصیه می‌شود) **سنجش دقت را شروع کنید.** ۶.۷.۰ ابزارهایی اضافه کرده که از استفادهٔ واقعی یک مجموعهٔ ارزیابی و یک دروازهٔ ارتقا می‌سازند: `python scripts/harvest_golden.py` (نامزدها از audit log)، `python scripts/golden_sheet.py export` و `import` (بازبینی تحلیل‌گرها در Excel)، `python -m eval.cli verify --accept` (اجرا و فعال‌کردن موردها) و `python -m eval.cli run --live --reference live` (دقت اجرا در برابر SQL مرجع، در همان اجرا و روی همان داده). این‌ها پیش از ۶.۷.۰ وجود ندارند، پس نخستین baseline روی خود ۶.۷.۰ ثبت می‌شود، وقتی audit log پرسش‌های واقعی دارد؛ از آن به بعد پیش از هر ارتقا روی نسخهٔ فعلی baseline ثبت می‌کنید و بعد از آن مقایسه (بخش ۵ همین راهنما همهٔ دستورها را دارد). baseline نوشته‌شده با نسخهٔ قدیمی‌تر هنوز بارگذاری می‌شود ولی با اجرای `--reference live` قابل مقایسه نیست؛ ابزار رد می‌کند و می‌گوید چطور دوباره ثبتش کنید. غیر از این، ۶.۷.۰ چیزی را در طرز اجرای سرور عوض نمی‌کند، و تغییر CI آن (`requirements.lock` که نصب می‌کنید حالا همان است که CI هم آزمایش می‌کند) هم اقدامی نمی‌خواهد.
 
@@ -1243,6 +1264,19 @@ python -m eval.cli run --live --reference live --golden eval_data/golden.jsonl -
 مقایسه می‌شود که `--reference` یکسان داشته باشد؛ baseline قدیمی (بدون
 `--reference live`) رد می‌شود و پیام می‌گوید چطور دوباره ثبتش کنید.
 
+**کفِ مطلق (اختیاری).** آستانه‌های بالا فقط می‌گویند «بدتر از baseline نباشد»؛
+اگر خودِ baseline ضعیف بوده یا دقت در گام‌های کوچک پایین آمده باشد، جلویش را
+نمی‌گیرند. دو کفِ اختیاری این خلأ را می‌بندند و تا وقتی مقدار ندهید **خاموش**‌اند:
+
+- `EVAL_MIN_ACCURACY` یا `--min-accuracy 90`: اگر دقت کل از این درصد کمتر باشد اجرا رد می‌شود.
+- `EVAL_MIN_SOURCE_ACCURACY` یا `--min-source-accuracy 80`: اگر دقت هر یک از منابع داده
+  از این درصد کمتر باشد (یا هیچ موردی `datasource` نداشته باشد و عدد منبعی نباشد) اجرا رد می‌شود.
+
+این کف‌ها به `--baseline` نیازی ندارند، برابر بودن با کف قبول است، و در صورت رد
+شدن کد خروجی `1` است و پیام می‌گوید کدام عدد زیر کدام کف است. پرچمِ خط فرمان بر
+متغیر محیطی مقدم است. فقط برای اجراهای `--live` تنظیمشان کنید؛ اجرای آفلاین
+طبق ساختار ۱۰۰٪ است و از هر کفی رد می‌شود.
+
 ### ۵.۳ عددها یعنی چه
 
 - **دقت اجرا** (execution accuracy): سهم موردهایی که SQL تولیدشده *همان نتیجهٔ*
@@ -1278,13 +1312,89 @@ python -m eval.cli run --live --reference live --golden eval_data/golden.jsonl -
 **این‌ها، بعد از نگاه کردن، امن‌اند:**
 
 - خروجی `python -m scripts.verify_deployment`. هرگز رمز چاپ نمی‌کند: مقصد اتصال با رمز پوشانده نشان داده می‌شود و `VERIFY_API_KEY` تکرار نمی‌شود. اما نام میزبان، دیتابیس و جدول‌ها در آن هست.
-- خروجی `python scripts/assign_datasources.py` و `python scripts/prompt_budget.py`: نام جدول‌ها و عددها؛ هیچ اعتبارنامه یا کلید API چاپ نمی‌شود.
+- خروجی `python scripts/sync_schema.py`، `python scripts/assign_datasources.py` و `python scripts/prompt_budget.py`: نام جدول‌ها و عددها؛ هیچ اعتبارنامه یا کلید API چاپ نمی‌شود.
 - گزارش تجمیعی `python scripts/analyze_audit_log.py` (بخش ۸ از `docs/deployment-runbook.md`)، نه نسخهٔ `--include-examples`.
 - `project_config/schema.yaml`: نام جدول و ستون و توضیح‌ها. ببینید توضیحی مقدار واقعی نقل نکرده باشد (پیش‌نویس بخش ۰.۳.۲ می‌تواند).
 - `project_config/datasources.yaml`. رمز نمی‌تواند داخلش باشد: کلید `password:`، `pwd:` یا `url:` رد می‌شود و فایل فقط *نام* متغیر نگه‌دارندهٔ راز را دارد (`password_env: DB_PASSWORD_SALES`). اما نام سرور، دیتابیس و لاگین در آن هست؛ اگر چیدمان سرورهایتان محرمانه است آن‌ها را خالی کنید.
 - خط‌های شروع سرور (بنر، `CORS allowed origins`، `Prompt path for data source`) و خط `[FAIL]` که دربارهٔ آن می‌پرسید.
 
 هر چه می‌فرستید بنویسید چه چیزی را برداشته‌اید، تا خواننده مقدار خالی‌شده را با مقدار جاافتاده اشتباه نگیرد.
+
+
+## بخش ۷ — تأخیر: گرم‌کردن کش پیشوند و شکستن مرحلهٔ `llm`
+
+مرحلهٔ `llm` تقریباً همهٔ زمان یک پرسش است. دو چیز حالا جدا دیده می‌شوند:
+**prefill** پیشوند ثابت پرامپت (که بعد از هر ری‌استارت یک‌بار کند است) و
+**انتظار در برابر تولید**.
+
+**چرا اولین پرسش بعد از ری‌استارت کند است؟** هر پرسش برای هر منبع داده با
+همان متن شروع می‌شود (پرامپت سیستم، شِما، قواعد، نمونه‌ها: «پیشوند ثابت»).
+سرور مدلی که کش پیشوند دارد فقط دنبالهٔ کوتاه را حساب می‌کند؛ کشِ خالی همهٔ
+پیشوند را. روی مدل محلی بزرگ این حدود یک دقیقه است، و کش بعد از هر
+ری‌استارت سرور مدل خالی است. اول کش پیشوند را در سرور مدل روشن کنید: برای
+vLLM `--enable-prefix-caching` (و `--enable-prompt-tokens-details` تا
+`cached_tokens` گزارش شود). بدون آن، هیچ‌کدام از موارد زیر پرسش را سریع‌تر
+نمی‌کند.
+
+**گرم‌کردن موقع بالا آمدن** — `LLM_PREFIX_WARMUP_ON_STARTUP` (پیش‌فرض
+`true`): سرور موقع شروع، برای هر منبع داده‌ای که پرامپتش پیشوند ثابت دارد،
+یک درخواست به مدل می‌فرستد که فقط خود پیشوند است (`max_tokens=1`، دمای ۰) و
+روی یک نخ پس‌زمینه اجرا می‌شود؛ سرور همان لحظه درخواست می‌پذیرد و پرسشی که
+وسط گرم‌کردن برسد عادی جواب داده می‌شود. پیش‌فرض روشن است چون وقتی چیزی برای
+گرم‌کردن نباشد کاری نمی‌کند: شِمای بزرگ‌تر از `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+(مسیر بازیابی)، `LLM_PROVIDER=mock`، یا نقطهٔ پایانی غیرقابل‌اعتماد بدون
+`LLM_ALLOW_REMOTE`. هر خطا فقط یک خط لاگ است (بدون متن پرامپت و بدون کلید).
+اگر سرور مدل مشترک و پولی به‌ازای توکن است، یا بالا آمدن نباید هیچ ترافیکی
+به مدل بفرستد، `false` کنید. سقف زمان کل: `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS`
+(پیش‌فرض ۱۸۰ ثانیه، باید بزرگ‌تر از صفر باشد).
+
+در لاگ شروع، یک خط برای هر منبع می‌بینید:
+
+```
+LLM prefix warm-up: source=(whole schema) warmed in 41873 ms, prompt_tokens=4612
+```
+
+**گرم‌کردن دستی** — بعد از ری‌استارت جدا سرور مدل (یا بعد از تغییر پرامپت
+سیستم، قواعد، شِما یا نمونه‌ها در پنل ادمین که پیشوند را عوض می‌کند):
+
+```bash
+curl -X POST -H "Authorization: Bearer $OPS_KEY" http://localhost:8000/admin/llm/warmup
+```
+
+قابلیت `operations` می‌خواهد، همان گرم‌کردن را هم‌زمان اجرا می‌کند و برای هر
+منبع `status` (`warmed` / `skipped` / `failed`)، `duration_ms` و
+`prompt_tokens` برمی‌گرداند. اگر گرم‌کردنی در جریان باشد جواب `409` است و
+چیزی فرستاده نمی‌شود. این فقط یک‌بار کش را پر می‌کند: سرور مدلی که خودش
+ری‌استارت شود، یا پیشوند را زیر فشار حافظه بیرون بریزد، یا ماشین دیگری پشت
+load balancer، دوباره سرد است.
+
+**شکستن مرحلهٔ `llm`** — `LLM_STREAM_TIMINGS` (پیش‌فرض `false`): درخواست
+به‌صورت stream فرستاده و به همان پاسخ (همان متن، همان reasoning، همان
+`finish_reason`، همان `usage`) بازسازی می‌شود، و رکورد audit در بلوک `llm` این
+چهار فیلد را می‌گیرد: `ttft_ms` (از ارسال تا اولین توکن = صف + prefill)،
+`generation_ms` (از اولین توکن تا پایان)، `reasoning_tokens` (چند توکن
+استدلال بود؛ `null` یعنی استدلالی دیده نشد، نه صفر) و
+`reasoning_tokens_estimated` (`true` یعنی تخمین از طول متن استدلال، چون همهٔ
+سرورها عدد دقیق را گزارش نمی‌کنند). متن استدلال هرگز ذخیره نمی‌شود. دو فیلد
+اول فقط با `LLM_STREAM_TIMINGS=true` پر می‌شوند؛ رکوردهای قدیمی‌تر این
+فیلدها را ندارند و خواندنشان مشکلی ندارد.
+
+`python scripts/analyze_audit_log.py` بخشی به نام «LLM stage split» چاپ می‌کند
+(p50 و p95 این اعداد). خواندنش:
+
+- `ttft_ms` بالا و `prompt_tokens` نزدیک اندازهٔ پیشوند و
+  `prefix_cache_hit: false` — کش سرد است؛ کش پیشوند سرور مدل را بررسی کنید و
+  بعد از ری‌استارت گرم‌کردن دستی بزنید.
+- `ttft_ms` بالا ولی `prompt_tokens` کوچک و `prefix_cache_hit: true` — سرور
+  مدل درخواست را پشت درخواست‌های دیگر نگه داشته؛ بار سرور مدل را ببینید.
+- `ttft_ms` کم و `generation_ms` زیاد، با `reasoning_tokens` که بیشترِ
+  `completion_tokens` است — مدل دارد فکر می‌کند؛ با `LLM_EXTRA_BODY`
+  استدلال را کم یا خاموش کنید. بالا بردن `LLM_NUM_PREDICT` فقط درخواست را
+  طولانی‌تر می‌کند.
+
+با `LLM_STREAM_TIMINGS` یک نکته: مهلت درخواست (۱۲۰ ثانیه) حالا کل تماس را هم
+محدود می‌کند، و پراکسی‌ای که SSE را بافر کند `ttft_ms` را برابر `total_ms`
+نشان می‌دهد. جزئیات و هزینهٔ آن در `docs/deployment-runbook.md` بخش ۲۰.
 
 ---
 
@@ -1319,12 +1429,17 @@ python -m eval.cli run --live --reference live --golden eval_data/golden.jsonl -
 **چند منبع داده**
 
 - [ ] `datasources.yaml` و یک `DB_PASSWORD_*` برای هر منبع
-- [ ] `python scripts/assign_datasources.py` اجرا و `schema.yaml` (با نسخهٔ پشتیبان `schema.yaml.bak`) با `schema.with_datasources.yaml` جایگزین شده و `--check` می‌گوید `CHECK OK`
-- [ ] ستون‌های «ناموجود» گزارش صفر شده‌اند
+- [ ] `python scripts/sync_schema.py` اجرا و `schema.yaml` (با نسخهٔ پشتیبان `schema.yaml.bak`) با `schema.synced.yaml` جایگزین شده و `--check` می‌گوید `CHECK OK`
+- [ ] ستون‌ها و جدول‌های نشان‌شده با `# not in database` / `# not found in any data source` صفر شده‌اند
 - [ ] `nolock: true` فقط زیر منبع‌هایی است که DBA‌شان خواسته (برای هر منبع جدا)
 - [ ] `python -m scripts.verify_deployment` برای هر منبع سبز
 - [ ] `python scripts/prompt_budget.py` اجرا و `PROMPT_RETRIEVAL_TOKEN_BUDGET` تنظیم شده
 - [ ] کارت‌های «انحراف شِما» و «تازگی واژگان ابعاد» بررسی شده
+
+**تأخیر** (بخش ۷)
+
+- [ ] کش پیشوند در سرور مدل روشن است (vLLM: `--enable-prefix-caching`)
+- [ ] خط `LLM prefix warm-up: ... warmed in ...` در لاگ شروع هست؛ بعد از ری‌استارت سرور مدل: `POST /admin/llm/warmup`
 
 **پیش از ارتقا** (بخش ۵)
 

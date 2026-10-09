@@ -53,7 +53,6 @@ import security.sql_guard as sql_guard
 from config import override_settings
 from database.routing import group_tables_by_datasource, resolve_datasource
 from schema_data.registry import (
-    SchemaConfig,
     bare_table_name,
     effective_qualifier,
     split_table_key,
