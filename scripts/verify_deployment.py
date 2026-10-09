@@ -87,6 +87,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config as cfg
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 _SCRATCH_TABLE = "_nlq_agent_deploy_verify_probe"
 
 
@@ -594,6 +596,62 @@ def check_session_store_writable() -> CheckResult:
     )
 
 
+def _project_config_dir() -> Path:
+    """The directory the application reads ``project_config/`` from.
+
+    Resolved the way ``knowledge.config_loader`` does: a relative
+    ``PROJECT_CONFIG_DIR`` is relative to the repository root, not to the
+    directory this script was started from.
+    """
+    configured = Path(cfg.settings.project_config_dir)
+    return configured if configured.is_absolute() else _REPO_ROOT / configured
+
+
+def _project_config_loaders() -> list[tuple[str, Callable[[], object]]]:
+    """``(file name, loader)`` for every required ``project_config/`` file.
+
+    One entry per name in ``core.project_config_files.REQUIRED_PROJECT_CONFIG_FILES``
+    (a test pins the two together), each the function the application itself
+    uses to read that file, so a pass here means the application can load it.
+
+    Raises:
+        knowledge.config_loader.ConfigNotFoundError: Importing the loaders
+            reads five files of the configured directory; the caller checks
+            that the files exist before importing.
+    """
+    from knowledge.config_loader import (
+        load_aliases,
+        load_business_rules,
+        load_entities,
+        load_examples,
+        load_memory_policy,
+        load_metrics,
+        load_retrieval_hints,
+        load_session_policy,
+        load_system_prompt,
+    )
+    from schema_data.registry import load_schema
+
+    def load_prompt() -> str:
+        prompt = load_system_prompt()
+        if not prompt.strip():
+            raise ValueError("the system prompt is empty")
+        return prompt
+
+    return [
+        ("aliases.yaml", load_aliases),
+        ("entities.yaml", load_entities),
+        ("business_rules.yaml", load_business_rules),
+        ("examples.yaml", load_examples),
+        ("metrics.yaml", load_metrics),
+        ("schema.yaml", load_schema),
+        ("retrieval_hints.yaml", load_retrieval_hints),
+        ("session_policy.yaml", load_session_policy),
+        ("memory_policy.yaml", load_memory_policy),
+        ("system_prompt.md", load_prompt),
+    ]
+
+
 def check_project_config_loads() -> CheckResult:
     """``project_config/`` (or wherever ``PROJECT_CONFIG_DIR`` points) is
     present and loads under the schema the CURRENT code expects.
@@ -604,31 +662,32 @@ def check_project_config_loads() -> CheckResult:
     resolvable/prefetchable-column allowlists Phase 5b's value resolver
     needs (see ``schema_data/registry.py``'s module docstring) -- and that
     surfaces as a ``ConfigNotFoundError``/``ValueError`` the first time a
-    real question is asked, not at startup. Loads every
-    ``knowledge.config_loader`` file plus ``schema_data.registry.load_schema()``
-    here instead, so a stale config fails this preflight with a clear
-    filename and field, not a confusing error mid-query on day one.
+    real question is asked, not at startup. Loads all ten required files
+    (``core.project_config_files.REQUIRED_PROJECT_CONFIG_FILES``: the nine
+    ``knowledge.config_loader`` / ``schema_data.registry`` YAML files and
+    ``system_prompt.md``) here instead, so a stale config fails this
+    preflight with a clear filename and field, not a confusing error
+    mid-query on day one. Every missing file is named at once, not only the
+    first.
     """
-    from knowledge.config_loader import (
-        ConfigNotFoundError,
-        load_aliases,
-        load_business_rules,
-        load_entities,
-        load_examples,
-        load_metrics,
+    from core.project_config_files import (
+        REQUIRED_PROJECT_CONFIG_FILES,
+        missing_project_config_files,
     )
-    from schema_data.registry import load_schema
 
-    loaders: list[tuple[str, Callable[[], object]]] = [
-        ("aliases.yaml", load_aliases),
-        ("entities.yaml", load_entities),
-        ("business_rules.yaml", load_business_rules),
-        ("examples.yaml", load_examples),
-        ("metrics.yaml", load_metrics),
-        ("schema.yaml", load_schema),
-    ]
+    directory = _project_config_dir()
+    missing = missing_project_config_files(directory)
+    if missing:
+        return CheckResult(
+            "project_config/ loads", "FAIL",
+            f"{len(missing)} of {len(REQUIRED_PROJECT_CONFIG_FILES)} required files not found "
+            f"under '{cfg.settings.project_config_dir}': {', '.join(missing)} -- copy each "
+            "from project_config.example/ and edit it for your data",
+        )
 
-    for filename, loader in loaders:
+    from knowledge.config_loader import ConfigNotFoundError
+
+    for filename, loader in _project_config_loaders():
         try:
             loader()
         except ConfigNotFoundError as exc:
@@ -647,7 +706,7 @@ def check_project_config_loads() -> CheckResult:
             )
     return CheckResult(
         "project_config/ loads", "PASS",
-        f"all six files loaded from '{cfg.settings.project_config_dir}'",
+        f"all {len(REQUIRED_PROJECT_CONFIG_FILES)} files loaded from '{cfg.settings.project_config_dir}'",
     )
 
 
