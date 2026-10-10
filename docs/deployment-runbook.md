@@ -24,8 +24,9 @@ Where to start: a first deployment, on one database or several, follows
 verified, running server, with the command for each step and how to tell it
 worked. The numbered sections hold the detail it links to. A deployment that
 queries more than one database also follows §16, in the order it gives. An
-installation already running 6.0 that is moving to 6.7 follows §17, which
-sequences the upgrade notes of every release in between into one checklist.
+installation already running any 6.x release (6.7.0 included) that is moving to
+6.9.1 follows §17, which sequences the upgrade notes of every release in between
+into one checklist.
 Before sending logs or configuration to anyone for help, read §19.
 
 ### First install, in order
@@ -419,12 +420,11 @@ Who writes what:
 | `datasources.yaml` | Only for more than one database (§16). |
 | `api_keys.json` | The key array that `API_KEYS_FILE` names (§1, §2 above). |
 
-`python scripts/verify_deployment.py` (§3) loads six of these (`aliases`,
-`entities`, `business_rules`, `examples`, `metrics`, `schema`) as `project_config/ loads`.
-`session_policy.yaml`, `memory_policy.yaml`, `retrieval_hints.yaml` and
-`system_prompt.md` are not part of that check, so a missing one is not caught
-there; the server reads the system prompt at start-up (§5) and the others when
-they are first needed.
+`python scripts/verify_deployment.py` (§3) checks all ten as `project_config/ loads`
+(6.8.0; before that it loaded only six): it names every file that is missing in one
+message, then loads each through the application's own loaders, and it fails on an
+empty `system_prompt.md`. A relative `PROJECT_CONFIG_DIR` is resolved against the
+repository root, as the server does.
 
 ### 2.2 The setup wizard, `setup_project.py`
 
@@ -449,15 +449,15 @@ It asks questions as it goes, unless told not to. Its options:
 |---|---|
 | `--db-url URL` | The database to describe. Without it: `DB_CONNECTION_URL`, then `DATABASE_URL`; if there is none, interactive mode asks and `--non-interactive` stops. |
 | `--llm-provider openai\|mock` | `openai` (default) is any OpenAI-compatible endpoint; `mock` calls no model and leaves aliases, rules and examples empty. Also `WIZARD_LLM_PROVIDER`. |
-| `--llm-model NAME` | Default `gpt-4o-mini` when `WIZARD_LLM_MODEL` is not set. |
-| `--llm-base-url URL` | Default `https://api.openai.com/v1` when `WIZARD_LLM_BASE_URL` is not set. |
+| `--llm-model NAME` | The model. Default: `WIZARD_LLM_MODEL`, else `OPENAI_MODEL`. |
+| `--llm-base-url URL` | The endpoint. Default: `WIZARD_LLM_BASE_URL`, else `OPENAI_BASE_URL`. A remote endpoint is refused unless `LLM_ALLOW_REMOTE=true`. |
 | `--language fa\|en\|both` | The language analysts ask in. Also `WIZARD_LANGUAGE`. Unset: asked interactively (default `en`), `en` when not interactive. |
 | `--output DIR` | Where to write (default `project_config`). |
 | `--review interactive\|auto` | `auto` is the same as `--non-interactive`. |
 | `--non-interactive` | Accept every suggestion without asking; for scripts. |
 | `--include-schemas a,b` | Only these database schemas. |
-| `--dry-run` | Print the files, write none, and skip the validation step. |
-| `--resume` | Do not write a file that already exists. |
+| `--dry-run` | Print the files and write none, the setup log included; the validation step is skipped. |
+| `--resume` | Continue from the first step `.setup_log.json` does not record as completed (see below). |
 
 What it does, in order. Each step is recorded in `<output>/.setup_log.json`
 under the key shown:
@@ -470,7 +470,7 @@ under the key shown:
 | `step4_rules` | Business rules | One model call per fact table for its value and volume columns and a rule text. |
 | `step5_examples` | Examples | One model call that asks for ten question-and-SQL pairs. |
 | `step6_write` | Review and write | Writes `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` and `relationships.yaml` into `--output`. Interactively each file is shown first: Accept, Edit in `$EDITOR`, Regenerate or Skip. |
-| `step7_validate` | Validation | Loads the four files that have a loader through the application's own validators and prints `OK`, `FAILED: ...` or `skipped` for each, then `Setup complete.` and the number of entities, rules and examples. |
+| `step7_validate` | Validation | Loads the four files that have a loader through the application's own validators and prints `OK`, `FAILED: ...` or `skipped` for each. If any of the ten required `project_config/` files (§2.1) is still missing it lists them with the `cp` command that copies each template from `project_config.example/`, and says `Setup is NOT complete`; it copies nothing. Only when none is missing and none failed does it print `Setup complete.` and the number of entities, rules and examples. |
 
 What it does not do:
 
@@ -485,21 +485,21 @@ What it does not do:
   URL it is given must carry the password itself, percent-encoded (`@` is
   `%40`). Passing it as `--db-url` leaves it in the shell history; the
   `DATABASE_URL` environment variable avoids that.
-- **It does not read `OPENAI_BASE_URL` or `OPENAI_MODEL`.** It has its own
-  settings, which win over those: the options above, or the variables
-  `WIZARD_LLM_PROVIDER`, `WIZARD_LLM_MODEL`, `WIZARD_LLM_BASE_URL` and
-  `WIZARD_LANGUAGE`. With none of them set it asks `https://api.openai.com/v1`
-  for `gpt-4o-mini`. `.env.example` sets all four, so a `.env` copied from it
-  gives the wizard the model name `gpt-oss-20b`, the language `fa` and an
-  **empty** endpoint address (`WIZARD_LLM_BASE_URL=`); an empty address cannot be
-  reached, so set that variable or pass `--llm-base-url` with your endpoint
-  (`http://<llm-host>:<llm-port>/v1`). It also needs a non-empty
-  `OPENAI_API_KEY`. If the key is missing or the endpoint cannot be reached it
-  prints `Warning: LLM unavailable (...)` and carries on with the mock
-  provider, so aliases, rules and examples come out empty. It does not apply `LLM_ALLOW_REMOTE`. What it sends to the model
-  is table and column names, up to ten sample values per table read from the
-  warehouse, and a schema summary: do not point it at a remote endpoint if
-  those values may not leave your network.
+- **Its model settings follow the application's.** For each of endpoint, model and
+  key it takes the flag, then `WIZARD_LLM_BASE_URL` / `WIZARD_LLM_MODEL`, then
+  `OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_API_KEY` (an empty `WIZARD_*`
+  value counts as unset; `.env.example` ships both empty), and it prints one
+  line naming the provider, model and endpoint it chose and where each came
+  from (never the key). `WIZARD_LLM_PROVIDER` (`openai` or `mock`) and
+  `WIZARD_LANGUAGE` are separate settings. A local endpoint needs no key. If
+  the endpoint does not answer, it says so loudly and carries on with the mock
+  provider, so aliases, rules and examples come out empty.
+- **It obeys `LLM_ALLOW_REMOTE`.** What it sends to the model is table and
+  column names, sample values read from the warehouse, and a schema summary.
+  An endpoint that is not local (the application's own definition: `LLM_TRUSTED`,
+  else loopback, private-network and `*.local` hosts are local) is refused,
+  before the wizard touches the database or the endpoint, unless
+  `LLM_ALLOW_REMOTE=true`. Use `--llm-provider mock` to run without a model.
 
 Things to know before you run it:
 
@@ -507,21 +507,29 @@ Things to know before you run it:
   the five files above are replaced by the wizard's output with no backup, in
   interactive mode as well after you accept them. Copy the directory first, or
   run it with `--output project_config_draft` and move over what you want.
-  `--resume` writes nothing into a directory that already has those files, and
-  it does not skip steps 1 to 5 either (the model is still called): the log is
-  a record, not a checkpoint.
-- **At the time of writing, step 7 needs a populated `project_config/`.** It
-  imports the application's knowledge package, which loads `aliases`,
-  `business_rules`, `entities`, `examples` and `metrics` from
-  `PROJECT_CONFIG_DIR`, not from `--output`. On a tree without the template
-  copy (§2.1) it can end with `ConfigNotFoundError: ... metrics.yaml not found`
-  after step 6 has already written its files. Do §2.1 first and it does not
-  arise.
-- **`.setup_log.json` may contain the database URL, including a password written
-  in it.** Do not share it (§19), and delete it when the run is done. (The
-  `# Source:` comment in the generated `entities.yaml` has the password masked.)
-- **In the review menu use Accept, Edit or Skip;** at the time of writing
-  Regenerate shows the same text again.
+- **`--resume` continues, it does not start over.** It runs again from the first
+  step `.setup_log.json` does not record as completed. Steps 1 and 2 always run
+  again, because the connection string is never stored. The aliases, rules and
+  examples of completed model steps are reused instead of generated again, as
+  long as the schema and the language are unchanged (a result made by the mock
+  provider is never reused); a file that already exists is not rewritten. When
+  steps 1 to 6 are recorded and every file exists, only the validation runs,
+  without the database or the model. A run without `--resume` starts a new log.
+- **Step 7 no longer needs a populated `project_config/`.** It validates the
+  files it wrote and lists the required files still missing (§2.1), instead of
+  ending in a `ConfigNotFoundError` traceback on a tree without the template
+  copy. Do §2.1 first anyway: it is what makes the list empty.
+- **`.setup_log.json` holds the connection string with its password masked
+  (6.8.0).** A log written by an earlier version holds the string exactly as
+  typed: delete it, and rotate the password if the file was shared or
+  committed (§19). The `# Source:` comment in the generated `entities.yaml` is
+  masked too, and so are driver errors shown on a failed connection.
+- **In the review menu, Regenerate asks the model again.** For `business_rules.yaml`
+  and `examples.yaml` it re-runs their own step; for `entities.yaml` and
+  `aliases.yaml`, which are both built from the aliases of step 3, it re-runs
+  step 3 without the per-table questions. A failure is reported and the current
+  version kept. It is not offered for `relationships.yaml` (built from the
+  schema) or when there is no model.
 
 ### 2.3 Drafting `schema.yaml`: `database.schema_inspector_cli`
 
@@ -578,8 +586,8 @@ leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables are in their data source`, `Schema structure matches the databases`,
 `OpenAI-compatible model exists`,
 `API key authentication`, `Audit log directory writable`,
-`Session store directory writable`, `project_config/ loads` (the six domain
-files) and `Rate limit sane for deployment`. With several data sources the four database
+`Session store directory writable`, `project_config/ loads` (all ten
+required files) and `Rate limit sane for deployment`. With several data sources the four database
 checks run once per source and each name carries the source, as
 `Database connectivity [sales]`; `Tables are in their data source` is skipped
 with one source. The last line is `N passed, N failed, N skipped`, and the
@@ -641,7 +649,7 @@ data sources, the four marked * print once per source, as
 | `API key authentication` | Checks that at least one key is configured (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) so that the server would start, and, with `VERIFY_API_KEY` set, that this raw key authenticates. | `API key configuration is invalid: ...` (the server would refuse to start; §5); `AUTH_REQUIRED is true but there are no configured keys ...` (issue one, §1); every key revoked or disabled in the application database; or `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (a truncated paste, or the `key_sha256` pasted instead of the raw key). With `AUTH_REQUIRED=false` it passes and says so; do not use that in production. | Never. |
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
 | `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
-| `project_config/ loads` | Loads `aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml` and `schema.yaml` under the current code's models. | `<file> not found under '<dir>'` (§2.1), or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
+| `project_config/ loads` | Checks that all ten required files exist (`aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml`, `schema.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml`, `system_prompt.md`), then loads each under the current code's models. An empty `system_prompt.md` fails. | `N of 10 required files not found under '<dir>': <names>`, with every missing name at once (copy each from `project_config.example/`, §2.1), `<file> not found under '<dir>'`, or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
 
 The most common first-install `[FAIL]` with several data sources is
@@ -1616,32 +1624,43 @@ raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
 with `password_env`; restart and run `python scripts/verify_deployment.py`.
 Remove the old `DB_URL_*` variable afterwards.
 
-## 17. Upgrading from 6.0 to 6.7
+## 17. Upgrading from 6.0 to 6.9.1
 
-One checklist for an installation that is running 6.0.0 and is moving to
-6.7.0. It puts the **Upgrading** notes of 6.0.1 to 6.6.0 in the order to do
-them, and adds what 6.7.0 brings that you will want to use (6.6.1 and 6.7.0
-have no **Upgrading** notes of their own); `CHANGELOG.md` has each release's
-full text. From 5.x, do the 6.0.0
+One checklist for an installation that is running any 6.x release and is moving
+to 6.9.1. It puts the **Upgrading** notes of 6.0.1 to 6.9.1 in the order to do
+them, and adds what 6.7.0 and 6.9.0 bring that you will want to use (6.6.1 and
+6.7.0 have no **Upgrading** notes of their own); `CHANGELOG.md` has each
+release's full text. From 5.x, do the 6.0.0
 notes first: copy `prompts/system_prompt.md` to
 `<PROJECT_CONFIG_DIR>/system_prompt.md` before the first start (the server
 refuses to start without it), and check a relative `PROJECT_CONFIG_DIR`,
 which is now resolved against the repository root.
 
-Steps 1 to 4 and 9 apply to every installation. Steps 5 to 8 are each
-optional: do the ones that fit (a password move, a key file, a UI on another
-origin, several databases). Step 11 is recommended, and comes last on purpose.
+Every step names the release it comes from, so skip the ones for releases you
+already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 17, then
+the parts of step 18 that are new in 6.9.0, and step 19 if it contributes code;
+one on 6.8.0 does steps 1 to 3 and 11 to 17; one on 6.9.0 does steps 1 to 3 and
+15 to 17. Steps 1 to 4, 14 and 16 to 17 apply to every installation. Steps 5 to
+8 are each optional: do the ones that fit (a password move, a key file, a UI on
+another origin, several databases). Steps 9 to 13 and 15 each say what to check or decide, and
+need no action on an installation that does not use the thing they change.
+Steps 18 and 19 come last on purpose.
 
 1. **Back up** `.env` and `project_config/`. Both are outside the repository.
+   If you already have a golden set (6.7.0 or later), record its baseline now,
+   on the version that is running, before the pull (§18.2): the gate compares
+   the new version with a baseline recorded on the old one, and after the
+   pull the old one is gone.
 2. **Pull, then re-run the install.** Every upgrade starts with
    `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
    `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
    python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
-   loads its first variable; 6.3.0: urllib3 2.8.0).
+   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.9.1
+   change no pin in `requirements.lock`, but run the command anyway.
 3. **Run the preflight before restarting**, in its own process:
-   `python scripts/verify_deployment.py` (§3). Two releases made the server
-   refuse input it used to accept silently, and this is where each refusal shows
-   up with its cause:
+   `python scripts/verify_deployment.py` (§3). Several releases made the
+   preflight or the server refuse input it used to accept silently, and this is
+   where each refusal shows up with its cause:
    - *6.3.1, a YAML key written twice.* `[datasources.yaml] is not valid YAML:
      duplicate key 'datasources' (first on line 12, again on line 21)`. A
      duplicate in `datasources.yaml` or `schema.yaml` stops the server; one in
@@ -1656,6 +1675,23 @@ origin, several databases). Step 11 is recommended, and comes last on purpose.
    - *6.4.0, a repeated field inside one key object.* `Invalid API key
      configuration:`. Delete the repeat (a pasted second `denied_columns`
      used to replace the first silently).
+   - *6.8.0, `project_config/ loads` reads all ten required files.* It used to
+     read six, so a missing or invalid `retrieval_hints.yaml`,
+     `session_policy.yaml`, `memory_policy.yaml` or `system_prompt.md` passed
+     and failed later. It now names every missing file at once
+     (`N of 10 required files not found under '<dir>': ...`); copy each from
+     `project_config.example/` and edit it (§2.1).
+   - *6.8.0, a scoped `denied_columns` entry that names nothing real.*
+     `API key authentication` reports `API key configuration is invalid:
+     <source>[<n>].denied_columns: ...` naming the entry (step 9).
+   - *6.9.0, `Schema structure matches the databases` fails the first time.*
+     A `schema.yaml` written before 6.9.0 has no `column_types:` map, so the
+     sync always has types to record and the check fails even when nothing in
+     the databases changed; its message can then read `0 column(s) missing from
+     schema.yaml; 0 column(s) and 0 table(s) no longer in the database; 0 column
+     type(s) differ; 0 datasource: line(s) to set`. That is expected. Step 14
+     is the fix, and it comes before the restart. (The check is skipped, not
+     failed, when a database cannot be read.)
 4. **Check `schema.yaml`** (6.2.0). A generated query that names the wrong
    schema is now refused, and the model's retry corrects it, so nothing needs
    doing for unique table names. If the same table name exists in several
@@ -1682,39 +1718,179 @@ origin, several databases). Step 11 is recommended, and comes last on purpose.
 8. **Several databases only** (6.1.0, 6.3.0, 6.5.0, 6.6.0): do §16 in its order,
    which is the combined form of these notes: describe the sources
    (`datasources.yaml`, one `DB_PASSWORD_*` per source) and create the
-   read-only login on every server (6.1.0); run
-   `python scripts/sync_schema.py` (after 6.8.0; before that, `scripts/assign_datasources.py`) and replace `schema.yaml` with
-   `schema.synced.yaml` after copying the old one aside, then resolve
-   the columns its report marks as not in the database (6.5.0); add `description:` and `keywords:` to
-   each source (6.5.0, optional); run `python scripts/prompt_budget.py` and set
-   the `PROMPT_RETRIEVAL_TOKEN_BUDGET` it prints (6.6.0). If the DBA requires
-   `WITH (NOLOCK)`, set `nolock: true` on that source, and on each other
-   source that needs it: the flag is per source (6.5.0, §16.7).
-9. **Restart** (every change above, including `datasources.yaml` and
-   `schema.yaml`, takes effect at a restart). Then run the preflight once more
-   with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
-   start-up log (§5): the provenance banner, `CORS allowed origins`, and with
-   several sources one `Prompt path for data source` line each.
-10. **After the first day**, read the new audit field (6.5.0): a reader of
-    `audit_log.jsonl` that does not know `datasource_selection` can ignore
-    it. And note what changed on screen, because analysts will ask: the SQL
-    shown in a conversation is laid out in a fixed style (6.5.0; display only,
-    the statement that ran is unchanged), and a refused statement can be
-    opened with the same layout.
-11. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
+   read-only login on every server (6.1.0); add `description:` and `keywords:` to
+   each source (6.5.0, optional); resolve the `datasource:` lines and the columns
+   the databases lack with the sync of step 14 (6.5.0 introduced the
+   `datasource:` lines and the report of missing columns, written then by
+   `scripts/assign_datasources.py`; since 6.9.0 `scripts/sync_schema.py` does
+   it); and after step 14 has replaced `schema.yaml`, run
+   `python scripts/prompt_budget.py` and set the `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+   it prints (6.6.0). If the DBA requires `WITH (NOLOCK)`, set `nolock: true` on
+   that source, and on each other source that needs it: the flag is per source
+   (6.5.0, §16.7).
+9. **Scoped, join-only `denied_columns` (6.8.0).** A plain name such as
+   `NationalID` means what it always did: denied everywhere, every reference.
+   Two things to do, one to know.
+   - *Look at every key's `denied_columns` (key file, `API_KEYS_JSON`, and the
+     admin panel's key editor) for an entry that contains `.` or `:`.* An entry
+     name cannot contain either any more: such an entry is now read as a scoped
+     entry, and if it names no real source, table or column the server stops at
+     start-up and the preflight's `API key authentication` fails, naming it.
+     Correct it or remove it. A mistyped scoped entry fails the same way
+     instead of silently restricting nothing.
+   - *Use the new forms where they fit (optional).* To keep a column usable as
+     a join key while hiding its values, write `schema.Table.Col` (join-only on
+     that table, whichever source runs the query), `Source:schema.Table.Col`
+     (only when the query runs on `Source`) or `Source:Col` (every table of
+     `Source` that has the column); §2 has the table and the rules. A
+     join-only column is allowed only as one side of `a.col = b.col` inside a
+     `JOIN ... ON`; anywhere else the guard refuses the statement with the
+     correctable reason `join_only_column`. The model is told which columns are
+     join-only in one line of the per-question part of the prompt, so the
+     cached static prefix is unchanged. The admin key editor shows and accepts
+     the new forms, and checks them when you save.
+   - *Know that the query cache is invalidated once.* `scope_key` now hashes
+     `denied_columns` as a JSON array, so every cached result is keyed afresh
+     after the upgrade. Nothing needs clearing by hand.
+
+   Join-only hides a column's value, not the fact that a row exists: a join on
+   a filtered foreign key can still probe it. Restrict the foreign keys that
+   point at a hidden key as well (§2).
+10. **Setup wizard leftovers (6.8.0)**, only if you have ever run
+    `setup_project.py` or copied its settings from `.env.example`.
+    - *Delete any `.setup_log.json` written by an earlier version* (by default
+      `project_config/.setup_log.json`, or under the `--output` directory you
+      used), and rotate the database password if the file was shared or
+      committed. Earlier versions stored the connection string in it exactly as
+      typed, password included; the wizard now writes it masked (§2.2).
+    - *Empty `WIZARD_LLM_MODEL` and `WIZARD_LLM_BASE_URL` in `.env`* if you copied
+      the old `.env.example` values (`gpt-oss-20b`, and an empty base URL that
+      meant `https://api.openai.com/v1`). Empty, they follow `OPENAI_MODEL` and
+      `OPENAI_BASE_URL`, and the wizard prints one line naming the endpoint and
+      model it uses. It now also refuses a remote endpoint unless
+      `LLM_ALLOW_REMOTE=true`.
+11. **Table retrieval selects differently by default (6.9.0).** Eleven new
+    `RETRIEVAL_*` settings control which tables the retrieval path puts in the
+    prompt; §18.5 lists them with their defaults. Among them
+    `RETRIEVAL_EXTRA_TABLES` defaults to `3`, and `RETRIEVAL_JOIN_EXPANSION` and
+    `RETRIEVAL_PRUNE` default to `true`. Only a data source on the retrieval path
+    is affected (its schema is over `PROMPT_RETRIEVAL_TOKEN_BUDGET`; the
+    `Prompt path for data source '<name>'` line of the start-up log says which
+    path each source takes, §5); a source on the static prefix gets the same
+    prompt as before. If you accept the new selection there is nothing to do. To
+    restore the previous selection, put these three in `.env` and restart:
+
+    ```ini
+    RETRIEVAL_PRUNE=false
+    RETRIEVAL_JOIN_EXPANSION=false
+    RETRIEVAL_EXTRA_TABLES=0
+    ```
+
+    To see whether the change helps on your own questions, measure table
+    selection before and after with `python -m eval.cli recall` (§18.4).
+12. **Start-up now sends the model server one small request per data source
+    (6.9.0).** `LLM_PREFIX_WARMUP_ON_STARTUP` defaults to `true`: a background
+    thread sends each static-prefix source's prefix once (`max_tokens=1`) so the
+    first question after a restart does not pay the whole prefill (§20). It
+    sends nothing for a source on the retrieval path, with `LLM_PROVIDER=mock`,
+    or to an endpoint that is not trusted while `LLM_ALLOW_REMOTE` is off, and it
+    only helps if the model server caches prefixes (`vllm serve
+    --enable-prefix-caching`). If the model server is shared and metered per
+    token, or start-up must send it nothing, set `LLM_PREFIX_WARMUP_ON_STARTUP=false`.
+    `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` (default `180`) bounds the pass and must
+    be above zero, or the preflight's `Settings.validate()` fails. After the model
+    server restarts on its own, `POST /admin/llm/warmup` (`operations`) does the
+    same pass on demand (§20.3). `LLM_STREAM_TIMINGS` (default `false`) stays off
+    until you turn it on (§20.4); nothing else needs doing.
+13. **Regenerate any schema draft that may quote a password (6.9.0).** Drafts
+    written by `database/schema_inspector.py` (`python -m database.schema_inspector_cli`:
+    `schema.yaml`, `entities.yaml`, `aliases.yaml`, `relationships.yaml`) start
+    with a comment `# Generated: <time> from <url>`. Earlier versions masked the
+    password in that URL with a pattern that left part of a password containing
+    `@` or `:` visible, and never masked `PWD=` inside an `odbc_connect` value.
+    If such a draft was shared or quoted, and the line is still in a copy under
+    `project_config/`, regenerate the draft (or edit the line out), and rotate
+    the database password if it was exposed. The same redaction now covers the
+    application database's refusal messages and the preflight's output.
+14. **Sync `schema.yaml`'s structure with the databases (6.9.0, every
+    installation).** `scripts/sync_schema.py` is now the way to maintain it (§16.3
+    has the full rules). It reads each source's catalogue (three
+    `INFORMATION_SCHEMA` queries per source; names and types only, no row),
+    and never overwrites `schema.yaml`. In order:
+    1. `python scripts/sync_schema.py --dry-run` prints the report and writes
+       nothing. Read it.
+    2. `python scripts/sync_schema.py` writes `project_config/schema.synced.yaml`
+       next to `schema.yaml` (your file with every comment and description
+       kept, plus the `datasource:` lines with several databases, the columns
+       the databases have and the file lacks as `TO BE FILLED` drafts, a
+       `column_types:` map, and markers on what the databases lack) and
+       `project_config/relationships.proposed.yaml` (`--no-relationships`
+       skips it; nothing reads it, so review each entry and copy the right ones
+       by hand).
+    3. Read the report's `== prompt size ==` section before replacing anything:
+       per data source the estimated prefix tokens of the current file and of
+       the proposal, the path each takes, and how many added columns and tables
+       still carry the draft description. A `WARNING:` line means the proposal
+       would move that source from the static prefix to retrieval. It is advice
+       only and changes no exit code.
+    4. `diff` the two files, copy `schema.yaml` to `schema.yaml.bak`, and move
+       the proposal over `schema.yaml`. Resolve what the report marks
+       (`# not in database (sync_schema.py)`, `# not found in any data source`:
+       correct, delete or `--prune`) and write the descriptions marked
+       `# TO BE FILLED`.
+    5. `python scripts/sync_schema.py --check` writes nothing; it must print
+       `CHECK OK: schema.yaml's structure matches the databases` and exit 0.
+       Run it again whenever you want to know whether the databases moved.
+
+    `scripts/assign_datasources.py` stays for pipelines that already call it;
+    it writes only the `datasource:` lines. Run `python scripts/prompt_budget.py`
+    again after the replacement if the prompt-size section showed a source near
+    or over its budget (§16.6).
+15. **Console-encoding workarounds can go (6.9.1).** If a script or scheduled task
+    sets `PYTHONIOENCODING=utf-8` or `PYTHONUTF8=1`, or runs `chcp 65001`, only
+    so Persian output does not crash, remove it. Every command-line program now
+    writes UTF-8 itself; leaving the workaround in place is harmless. Nothing
+    else needs doing.
+16. **Restart** (every change above, including `datasources.yaml` and
+    `schema.yaml`, takes effect at a restart). Then run the preflight once more
+    with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
+    start-up log (§5): the provenance banner, `CORS allowed origins`, and with
+    several sources one `Prompt path for data source` line each. Since 6.9.0
+    each static-prefix source also logs an `LLM prefix warm-up` line a little
+    later (§20.2).
+17. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
+    `audit_log.jsonl` that does not know `datasource_selection` (6.5.0), or the
+    `llm` block's `ttft_ms`, `generation_ms`, `reasoning_tokens` and
+    `reasoning_tokens_estimated` (6.9.0; the first two are filled only with
+    `LLM_STREAM_TIMINGS=true`), can ignore them, and older records stay
+    readable. `python scripts/analyze_audit_log.py` reports the new "LLM stage
+    split" when the records have it. And note what changed on screen, because
+    analysts will ask: the SQL shown in a conversation is laid out in a fixed
+    style (6.5.0; display only, the statement that ran is unchanged), and a refused
+    statement can be opened with the same layout.
+18. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
     adds the tools that turn real usage into an evaluation set and a release
     gate: `python scripts/harvest_golden.py` (candidates from the audit log),
     `python scripts/golden_sheet.py export` and `import` (the analysts' review
     in Excel), `python -m eval.cli verify --accept` (run and activate the
     cases) and `python -m eval.cli run --live --reference live` (execution
     accuracy against the reference SQL, run in the same session on the same
-    data). They do not exist before 6.7.0, so the first baseline is recorded
-    on 6.7.0 itself, once the audit log holds real questions; from then on you
-    record a baseline on the running version *before* each upgrade and compare
-    after it (§18, which has every command). A baseline file written by an
-    older version still loads, but cannot be compared with a
-    `--reference live` run: the tool refuses and says how to record it again.
-    Nothing else in 6.7.0 changes how the server runs.
+    data). They do not exist before 6.7.0, so an installation older than that
+    records its first baseline on 6.7.0 or later, once the audit log holds
+    real questions; from then on you record a baseline on the running version
+    *before* each upgrade and compare after it (§18, which has every command).
+    A baseline file written by an older version still loads, but cannot be
+    compared with a `--reference live` run: the tool refuses and says how to
+    record it again. 6.9.0 adds two optional things to the gate: absolute
+    accuracy floors, `EVAL_MIN_ACCURACY` and `EVAL_MIN_SOURCE_ACCURACY`, both
+    off unless set (§18.2), and `python -m eval.cli recall`, which measures table
+    selection with no model and no database (§18.4). Nothing else in 6.7.0 changes
+    how the server runs.
+19. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
+    to an exact version, and CI now has a `lint` job that fails on
+    `ruff check .`. Run `pip install -r requirements.txt -r requirements-dev.txt`
+    and `ruff check .` before pushing. A deployment that does not change this
+    code does not need the file.
 
 Nothing in 6.0.1 (`DB_POOL_PING_IDLE_SECONDS` defaults to `60`; `0` keeps
 pinging on every checkout), 6.3.2 (one warning per key instead of one per key
@@ -1916,6 +2092,33 @@ generation, and after any change to `schema.yaml`, `entities.yaml`,
 `retrieval_hints.yaml` or the `RETRIEVAL_*` settings. How the stage works, the
 settings and the measured numbers are in `docs/design/RETRIEVAL.md`.
 
+### 18.5 The `RETRIEVAL_*` settings
+
+Eleven settings (6.9.0) decide which tables the retrieval path puts in the
+prompt. They matter only for a data source whose schema is over
+`PROMPT_RETRIEVAL_TOKEN_BUDGET` (§16.6); a source on the static prefix gets the
+whole schema and ignores them. Leave them at the defaults unless
+`eval.cli recall` (§18.4) shows a reason; each change takes effect at a restart.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `RETRIEVAL_EXTRA_TABLES` | `3` | Ranked tables added beside the ones an alias or fact pattern named. `0` restores the old behaviour, where an alias hit ended the search for that kind of table. |
+| `RETRIEVAL_EXTRA_SCORE_RATIO` | `0.5` | An extra table must score at least this fraction of the best of its kind. Higher: fewer extras, higher precision. |
+| `RETRIEVAL_JOIN_EXPANSION` | `true` | Add the tables a question needs to join but did not name (a bridge table, the parent of a classification), found on the foreign-key graph. |
+| `RETRIEVAL_JOIN_MAX_HOPS` | `2` | Longest join, in foreign keys, that is bridged (`2` allows one intermediate table). |
+| `RETRIEVAL_JOIN_MAX_ADDED_TABLES` | `4` | Most tables join expansion adds to one question. |
+| `RETRIEVAL_JOIN_MAX_HUB_DEGREE` | `10` | A table referenced by more tables than this (a calendar shared by every fact) is never a stepping stone between two others. |
+| `RETRIEVAL_INFER_RELATIONSHIPS` | `true` | For join expansion only, take a column named `<Table>_ID` or `<Table>ID` as a key to that table's `ID` when neither `schema.yaml` nor `relationships.yaml` declares it. Nothing is written to configuration. |
+| `RETRIEVAL_PRUNE` | `true` | Drop a candidate that only its description matched, or a column match far below the best, unless it is joined to a better-evidenced table. |
+| `RETRIEVAL_PRUNE_SCORE_RATIO` | `0.85` | A table with column-name evidence must score this fraction of the best to stand on its own. `0` keeps every such table. |
+| `RETRIEVAL_PRUNE_CONNECT_HOPS` | `2` | How many foreign keys may separate a weak candidate from a better one for it to survive. `0` disables the rescue. |
+| `RETRIEVAL_PRUNE_CORROBORATE` | `true` | Two weak candidates joined to each other keep each other. |
+
+The previous selection (before 6.9.0) is `RETRIEVAL_PRUNE=false`,
+`RETRIEVAL_JOIN_EXPANSION=false` and `RETRIEVAL_EXTRA_TABLES=0`. The settings
+are read from `.env` like the others; the same table, with the measured effect
+of each part, is in `docs/design/RETRIEVAL.md` §6.
+
 ## 19. Sharing diagnostics safely
 
 When something goes wrong you will be asked for logs, configuration or command
@@ -1937,8 +2140,9 @@ file.
   which columns each may not see (§10). The same goes for any key export.
 - A raw API key, and `VERIFY_API_KEY`. If a raw key reached a chat or a ticket,
   treat it as leaked: revoke it from the admin panel and issue a new one (§1).
-- `project_config/.setup_log.json`, which may contain the database URL with its
-  password (§2.2).
+- `project_config/.setup_log.json`: one written before 6.8.0 holds the database
+  URL with its password, and the current one holds the aliases, rules and
+  examples the model produced (§2.2).
 - `logs/audit_log.jsonl*` and `logs/query_log.jsonl*` (real questions and the
   SQL generated for them), the SQLite files under `logs/` (`app.db`,
   `sessions.db` and their `-wal` and `-shm` files), `exports/` (result sets),

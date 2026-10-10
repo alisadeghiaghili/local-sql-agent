@@ -169,11 +169,11 @@ its KV cache instead of re-reading the schema on every question.
 | 🏛️ | **Several warehouses** | `datasources.yaml` describes each database or server; every statement runs on the one source that has all its tables (a table may live in several), and each question is routed to one source so the model sees only that source's schema. Per-source `WITH (NOLOCK)` where a DBA requires it. See [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md). |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
 | 💾 | **LRU query cache** | Thread-safe TTL + LRU cache, partitioned by visibility scope so two principals never share a result they should not. |
-| 📊 | **Evaluation harness** | A golden set built from your own audit log and reviewed in Excel, execution accuracy against a reference SQL run live on the same data, error taxonomy, latency percentiles, determinism measurement, and a baseline regression gate to run before an upgrade (`docs/deployment-runbook.md` §18). |
-| 🔬 | **LLM observability** | 21-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
+| 📊 | **Evaluation harness** | A golden set built from your own audit log and reviewed in Excel, execution accuracy against a reference SQL run live on the same data, error taxonomy, latency percentiles, determinism measurement, a baseline regression gate (with optional absolute accuracy floors) to run before an upgrade, and an offline measure of table-selection recall, `python -m eval.cli recall` (`docs/deployment-runbook.md` §18). |
+| 🔬 | **LLM observability** | 26-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 6,531 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
+| 🧪 | **Test suite** | 6,567 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
@@ -226,6 +226,13 @@ cp -r project_config.example project_config
 #       an LLM-assisted wizard that drafts entities.yaml, aliases.yaml,
 #       business_rules.yaml and examples.yaml (it overwrites those files, and
 #       does not write schema.yaml or set `datasource:`).
+# Then bring schema.yaml's structure in step with the database(s), one or
+# several (the preflight of step 5 checks it; docs/deployment-runbook.md §16.3):
+python scripts/sync_schema.py          # writes project_config/schema.synced.yaml
+#   (and relationships.proposed.yaml) and a report; schema.yaml is never
+#   overwritten. Review the proposal, keep schema.yaml.bak, move it over
+#   schema.yaml, then confirm:
+python scripts/sync_schema.py --check  # CHECK OK, exit code 0
 
 # 4. Issue an API key (every route but /health requires one)
 python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
@@ -282,6 +289,17 @@ python -m api
 | `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` | `180` | Total time budget of one warm-up pass |
 | `LLM_STREAM_TIMINGS` | `false` | Stream the model call and reassemble the same response, to record `ttft_ms` (queue + prefill) and `generation_ms` in the audit `llm` block; `reasoning_tokens` is recorded either way. Runbook §20.4 |
 | `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Estimate (`len(text) // 4`, which undercounts Persian by about 15%) up to which the whole schema goes into the prompt as one cacheable, byte-identical prefix; above it the prompt is built per question from retrieved tables. With several data sources it applies to each source's own prefix, not their sum. `python scripts/prompt_budget.py` measures real tokens and prints the value to set |
+| `RETRIEVAL_EXTRA_TABLES` | `3` | Ranked tables added beside the ones an alias or fact pattern named; `0` restores the old behaviour. The `RETRIEVAL_*` settings apply only to a source on the retrieval path (over the budget above); runbook §18.5 |
+| `RETRIEVAL_EXTRA_SCORE_RATIO` | `0.5` | An extra table must score at least this fraction of the best of its kind |
+| `RETRIEVAL_JOIN_EXPANSION` | `true` | Add the tables a question needs to join but did not name (a bridge table), found on the foreign-key graph |
+| `RETRIEVAL_JOIN_MAX_HOPS` | `2` | Longest join, in foreign keys, that join expansion bridges |
+| `RETRIEVAL_JOIN_MAX_ADDED_TABLES` | `4` | Most tables join expansion adds to one question |
+| `RETRIEVAL_JOIN_MAX_HUB_DEGREE` | `10` | A table referenced by more tables than this is never a stepping stone between two others |
+| `RETRIEVAL_INFER_RELATIONSHIPS` | `true` | Take a column named `<Table>_ID` as a key to that table's `ID` for join expansion when nothing declares it |
+| `RETRIEVAL_PRUNE` | `true` | Drop candidates only their description or a weak column match supports, unless joined to a better one |
+| `RETRIEVAL_PRUNE_SCORE_RATIO` | `0.85` | Score fraction a column-evidence table needs to stand on its own |
+| `RETRIEVAL_PRUNE_CONNECT_HOPS` | `2` | Foreign keys allowed between a weak candidate and a better one for it to survive (`0` = no rescue) |
+| `RETRIEVAL_PRUNE_CORROBORATE` | `true` | Two weak candidates joined to each other keep each other |
 | `LOG_DIR` | `logs` | Log file directory (auto-created) |
 | `EXPORT_DIR` | `exports` | Export file directory (auto-created) |
 | `API_KEYS_JSON` | *(empty)* | JSON array of `{"id","name","key_sha256","denied_columns"?,"admin"?,"operations"?,"security"?}` — see [Authentication](#authentication-phase-8) |
@@ -416,7 +434,7 @@ local-sql-agent/
 │   └── system_prompt.md      #   the LLM's system instructions (not YAML)
 ├── project_config.example/   # Same structure, placeholder data — what CI runs against
 ├── appdb/                    # Application database: API keys, role grants, config versions, feedback
-├── core/                     # Shared models, the Persian normaliser, strict YAML loading, the start-up notice
+├── core/                     # Shared models, the Persian normaliser, strict YAML loading, the start-up notice, the UTF-8 console helper, connection-string redaction
 ├── knowledge/                # Lazy loaders + validation for the YAML above
 │   ├── config_loader.py      #   Pydantic models, fail-closed on a missing file
 │   ├── aliases.py            #   (loader, not data)
@@ -438,6 +456,8 @@ local-sql-agent/
 │   ├── entity_retriever.py   #   dimension table detection
 │   ├── fact_retriever.py     #   fact table detection
 │   ├── relationship_retriever.py  # JOIN clause selection
+│   ├── join_paths.py         #   add the bridge/parent tables a question joins through (foreign-key graph)
+│   ├── pruning.py            #   drop candidates the evidence does not support
 │   ├── rule_retriever.py     #   business rule injection
 │   ├── value_resolver.py     #   resolves a named value against the warehouse
 │   ├── dimension_vocabulary.py  # prefetched vocabulary + background refresh
@@ -448,6 +468,8 @@ local-sql-agent/
 │   ├── drift.py              #   schema.yaml vs the live catalogues, incl. tables in the wrong data source
 │   ├── columns.py            #   column allowlist (derived, not authored)
 │   ├── relationships.py      #   FK → JOIN SQL map
+│   ├── sync.py               #   scripts/sync_schema.py's engine: schema.yaml's structure vs the catalogues
+│   ├── relationship_proposals.py #  relationships.proposed.yaml (declared keys and X_ID inference)
 │   └── retriever.py          #   TF-IDF bigram fallback engine
 ├── prompt_engine/
 │   ├── builder.py            #   PromptBuilder.build()
@@ -457,20 +479,24 @@ local-sql-agent/
 ├── llm/
 │   ├── sql_agent.py          #   generate → clean → auto-correct loop
 │   ├── router.py             #   task → endpoint routing, fallback
+│   ├── warmup.py             #   prefix-cache warm-up at start-up and POST /admin/llm/warmup
 │   ├── source_routing.py     #   per-question data source + the single OUT_OF_SCOPE retry
 │   ├── providers.py          #   OpenAI-compatible provider (retries + back-off)
 │   └── base.py               #   LLMBackend ABC
 ├── security/
 │   ├── sql_guard.py          #   clean_sql / validate_sql / ensure_top / transpile / pretty_sql
+│   ├── column_policy.py      #   denied_columns entries, incl. scoped join-only ones (schema.Table.Col, Source:Col)
 │   ├── sql_format.py         #   the house layout of the SQL shown to an analyst (display only)
 │   ├── dialects.py           #   per-dialect profiles (catalogues, timeouts, quoting, table hints)
 │   └── auth.py               #   Principal, API-key resolution, cache scope key
 ├── observability/
 │   ├── audit.py              #   compliance-grade records — never result rows
-│   ├── llm_status.py         #   the 21-field per-request status block
+│   ├── llm_status.py         #   the 26-field per-request status block
 │   └── timing.py             #   per-stage timings
-├── eval/                     # Evaluation harness (python -m eval.cli run | verify)
-│   ├── cli.py                #   run, verify and baseline commands
+├── eval/                     # Evaluation harness (python -m eval.cli run | verify | recall)
+│   ├── cli.py                #   run, verify, recall and baseline commands
+│   ├── recall.py             #   table-selection recall against a golden set, no model and no database
+│   ├── benchmarks/           #   retrieval_synth: 400-table synthetic retrieval benchmark (docs/design/RETRIEVAL.md)
 │   ├── runner.py             #   golden set → CaseResult
 │   ├── compare.py            #   execution accuracy against the reference SQL's live result
 │   ├── verify.py             #   run reviewed cases read-only and activate the ones that hold up
@@ -509,14 +535,14 @@ local-sql-agent/
 ├── docs/
 │   ├── api-contract-v2.md    #   the frozen conversational-session contract
 │   ├── admin-panel-architecture.md  # design of the admin panel
-│   ├── deployment-runbook.md #   first install in order, preflight reference (§3.1), several data sources (§16), upgrading 6.0 to 6.7 (§17), accuracy gate (§18), sharing diagnostics safely (§19)
+│   ├── deployment-runbook.md #   first install in order, preflight reference (§3.1), several data sources (§16), upgrading from 6.0 to 6.9.1 (§17), accuracy gate and table-selection recall (§18), sharing diagnostics safely (§19), latency and the prefix-cache warm-up (§20)
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── dba/                  #   read-only diagnostic kit for the DBA
-│   ├── design/               #   decision records: DATASOURCES.md, TABLE-NAMES.md, UI design
+│   ├── design/               #   decision records: DATASOURCES.md, TABLE-NAMES.md, RETRIEVAL.md, UI design
 │   ├── en/tutorial.md        #   full English tutorial
 │   ├── fa/getting-started.md #   Persian setup guide — راهنمای راه‌اندازی
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 6,531 unit + integration tests
+└── tests/                    # 6,567 unit + integration tests
 ```
 
 ---
@@ -524,12 +550,14 @@ local-sql-agent/
 ## Tests
 
 ```bash
+pip install -r requirements.txt -r requirements-dev.txt   # pytest, pip-audit and the pinned ruff
 pytest tests/ -v                        # all tests
 pytest tests/test_sql_guard.py -v       # one module
 pytest tests/ eval/tests --cov          # exactly what CI measures
+ruff check .                            # the lint job CI runs; rules are pinned in pyproject.toml
 ```
 
-**6,531 tests at 94% branch coverage**, with the build failing below 90%
+**6,567 tests at 94% branch coverage**, with the build failing below 90%
 (`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
 cover is stated in the same file rather than left to be discovered: the
 interactive wizards and CLI front-ends are excluded by policy — their
@@ -541,7 +569,8 @@ CI runs on every pull request to `main` and every push to it, via GitHub
 Actions on Ubuntu, Windows and macOS across Python 3.11, 3.12 and 3.13, each
 combination once on the newest releases `requirements.txt` allows and once on
 the exact pins of `requirements.lock`, with doctests, coverage, a dependency
-audit of `requirements.lock` and an offline evaluation gate. It runs
+audit of `requirements.lock` and an offline evaluation gate, plus a separate `lint` job
+that runs `ruff check .`. It runs
 with `PROJECT_CONFIG_DIR=project_config.example` and no `project_config/`
 present, so the suite never depends on real domain data.
 
@@ -720,7 +749,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 6,531 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 6,567 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
 
 ---
 

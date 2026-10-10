@@ -7,9 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [6.9.1] — 2026-10-09
+
+Every command-line program now writes UTF-8, so Persian output no longer crashes a Windows console or a redirected or piped stream: one shared helper, `core.console.use_utf8_console`, is called from every entry point's `__main__` block, and `scripts/release_notes.py` keeps its own standalone copy for the release workflow.
+
+### Changed
+
+- **docs: the upgrade path from 6.7 to 6.9.1 is complete.** `docs/deployment-runbook.md` §17 and the Persian guide's part 4 are now "Upgrading from 6.0 to 6.9.1", with ordered steps for the 6.8.0, 6.9.0 and 6.9.1 **Upgrading** notes (including that the first preflight on 6.9.x fails `Schema structure matches the databases` until `schema.yaml` is synced once, and that `sync_schema.py` arrived in 6.9.0, not 6.8.0). New runbook §18.5 and Persian §5.4 list the eleven `RETRIEVAL_*` settings and `eval.cli recall`; runbook §2.1, §2.2, §3.1 and the Persian guide are corrected for 6.8.0 (the preflight reads all ten `project_config/` files; the setup wizard follows `OPENAI_*`, obeys `LLM_ALLOW_REMOTE`, masks the connection string and resumes). `.env.example` and the README configuration table gain the `RETRIEVAL_*` settings; the README quick start gains `sync_schema.py`, its project structure the 6.8.0 to 6.9.0 modules, and its tests section `requirements-dev.txt` and `ruff check .`. No code changed.
+
 ### Fixed
 
-- **Every command-line program now prints Persian on a Windows console.** Reports, prompts and error messages carry Persian questions, table names and aliases; when output is piped or redirected, a console on a code page such as cp1252, cp1256 or cp437 cannot encode them, and `print` raised `UnicodeEncodeError` part-way through the output. Only `eval.cli` and `scripts/release_notes.py` guarded against it, each with its own copy. `core/console.py` now has the one helper, `use_utf8_console()`, which switches `sys.stdout` and `sys.stderr` to UTF-8 and keeps each stream's `errors` handler (`reconfigure` would otherwise reset `stderr` from `backslashreplace` to `strict`). Every entry point calls it first in its `if __name__ == "__main__":` block: `app.py`, `setup_project.py`, `webapp/app.py`, `database/schema_inspector_cli.py`, `eval/cli.py`, `eval/benchmarks/retrieval_synth.py`, `tests/test_stress.py` and every program in `scripts/` except the demo server. The web server (`python -m api`) is unchanged. `scripts/release_notes.py` keeps its own stdlib-only copy of the helper, because the release workflow fetches that file alone; a test keeps it standalone and in step with the shared one. `tests/test_cli_utf8_console.py` runs each program on a cp1252 console and fails when a new `__main__` block does not call the helper.
+- **Every command-line program now prints Persian on a Windows console (PR #167).** Reports, prompts and error messages carry Persian questions, table names and aliases; when output is piped or redirected, a console on a code page such as cp1252, cp1256 or cp437 cannot encode them, and `print` raised `UnicodeEncodeError` part-way through the output. Only `eval.cli` and `scripts/release_notes.py` guarded against it, each with its own copy. `core/console.py` now has the one helper, `use_utf8_console()`, which switches `sys.stdout` and `sys.stderr` to UTF-8 and keeps each stream's `errors` handler (`reconfigure` would otherwise reset `stderr` from `backslashreplace` to `strict`). Every entry point calls it first in its `if __name__ == "__main__":` block: `app.py`, `setup_project.py`, `webapp/app.py`, `database/schema_inspector_cli.py`, `eval/cli.py`, `eval/benchmarks/retrieval_synth.py`, `tests/test_stress.py` and every program in `scripts/` except the demo server. The web server (`python -m api`) is unchanged. `scripts/release_notes.py` keeps its own stdlib-only copy of the helper, because the release workflow fetches that file alone; a test keeps it standalone and in step with the shared one. `tests/test_cli_utf8_console.py` runs each program on a cp1252 console and fails when a new `__main__` block does not call the helper.
+
+### Upgrading
+
+- **Drop any console-encoding workaround (PR #167).** If a script or scheduled task sets `PYTHONIOENCODING=utf-8`, `PYTHONUTF8=1` or runs `chcp 65001` only so Persian output does not crash, it can go; leaving it in place is harmless. Nothing else needs doing.
 
 ## [6.9.0] — 2026-10-09
 
