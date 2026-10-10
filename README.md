@@ -173,7 +173,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🔬 | **LLM observability** | 26-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
-| 🧪 | **Test suite** | 6,567 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
+| 🧪 | **Test suite** | 6,597 unit + integration tests at 94% coverage, gated at 90%; GitHub Actions CI on Ubuntu, Windows and macOS across Python 3.11–3.13, plus doctests and an offline evaluation gate. |
 
 ---
 
@@ -535,14 +535,14 @@ local-sql-agent/
 ├── docs/
 │   ├── api-contract-v2.md    #   the frozen conversational-session contract
 │   ├── admin-panel-architecture.md  # design of the admin panel
-│   ├── deployment-runbook.md #   first install in order, preflight reference (§3.1), several data sources (§16), upgrading from 6.0 to 6.9.1 (§17), accuracy gate and table-selection recall (§18), sharing diagnostics safely (§19), latency and the prefix-cache warm-up (§20)
+│   ├── deployment-runbook.md #   first install in order, preflight reference (§3.1), several data sources (§16), upgrading from 6.0 to 6.9.2 (§17), accuracy gate and table-selection recall (§18), sharing diagnostics safely (§19), latency and the prefix-cache warm-up (§20)
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── dba/                  #   read-only diagnostic kit for the DBA
 │   ├── design/               #   decision records: DATASOURCES.md, TABLE-NAMES.md, RETRIEVAL.md, UI design
 │   ├── en/tutorial.md        #   full English tutorial
 │   ├── fa/getting-started.md #   Persian setup guide — راهنمای راه‌اندازی
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
-└── tests/                    # 6,567 unit + integration tests
+└── tests/                    # 6,597 unit + integration tests
 ```
 
 ---
@@ -557,7 +557,7 @@ pytest tests/ eval/tests --cov          # exactly what CI measures
 ruff check .                            # the lint job CI runs; rules are pinned in pyproject.toml
 ```
 
-**6,567 tests at 94% branch coverage**, with the build failing below 90%
+**6,597 tests at 94% branch coverage**, with the build failing below 90%
 (`fail_under` in [`setup.cfg`](setup.cfg)). What that number does *not*
 cover is stated in the same file rather than left to be discovered: the
 interactive wizards and CLI front-ends are excluded by policy — their
@@ -749,7 +749,7 @@ an infringer.
 | **FastAPI service** | `api/` — `/query`, `/v2/sessions*`, `/health`, `/cache`; auth middleware; correlation IDs; LRU + TTL `QueryCache`; typed `NLQError` hierarchy |
 | **Static web client** | `web/` — Persian/RTL, no build step: pipeline view, assumption chips, result-shape selection, charts |
 | **Exports & logging** | `exporters/`, `logs/` — Excel/CSV/JSON exporters; rotating JSONL logger |
-| **Test suite** | `tests/` — 6,567 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
+| **Test suite** | `tests/` — 6,597 unit and integration tests at 94% coverage; GitHub Actions CI on three operating systems across Python 3.11–3.13 |
 
 ---
 
