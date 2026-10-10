@@ -820,12 +820,26 @@ def check_schema_structure_matches_databases() -> CheckResult:
 
     Runs the same comparison as ``python scripts/sync_schema.py --check``
     (:func:`schema_data.sync.sync_schema_text`, default options): FAIL when a
-    sync would change the file -- a ``datasource:`` missing or wrong, a column
-    the database has that ``schema.yaml`` lacks, a recorded column type that
-    differs, a column or table newly missing from the database -- naming the
-    counts and the command that writes the proposed file. Columns already
-    marked ``# not in database`` are reported in the detail, not failed.
-    Reads three ``INFORMATION_SCHEMA`` views per data source and nothing else.
+    sync would change the file in a way that means it is out of step -- a
+    ``datasource:`` missing or wrong, a column the database has that
+    ``schema.yaml`` lacks, a recorded column type that differs, a column or
+    table newly missing from the database -- naming the counts and the
+    command that writes the proposed file
+    (:func:`schema_data.sync.describe_drift`; when the file differs in a way
+    none of the counts covers, it says so and points at ``--dry-run``, never
+    a row of zeros). Columns already marked ``# not in database`` are
+    reported in the detail, not failed.
+
+    A column type that is merely not recorded yet is not drift: a
+    ``schema.yaml`` written before 6.9.0 has no ``column_types:`` map, so
+    every column lands in the sync's ``recorded`` list although nothing in
+    the databases changed. When recording types is the only thing a sync
+    would do (:attr:`schema_data.sync.SyncResult.only_records_types`) the
+    check PASSes and the detail says how many types are not recorded and that
+    ``python scripts/sync_schema.py`` records them. Real drift together with
+    unrecorded types FAILs, and the detail adds ``N column type(s) to
+    record``. Reads three ``INFORMATION_SCHEMA`` views per data source and
+    nothing else.
 
     SKIP when the comparison cannot be made: ``schema.yaml`` does not load
     (``project_config/ loads`` says why), a database cannot be reached (its
@@ -838,7 +852,7 @@ def check_schema_structure_matches_databases() -> CheckResult:
         from database.connection import get_engine
         from database.datasources import datasource_names, default_datasource_name
         from schema_data.registry import schema_yaml_path, validate_schema_yaml_text
-        from schema_data.sync import sync_schema_text
+        from schema_data.sync import describe_drift, sync_schema_text, unrecorded_types_note
 
         original = schema_yaml_path().read_text(encoding="utf-8-sig")
         validate_schema_yaml_text(original)
@@ -861,27 +875,17 @@ def check_schema_structure_matches_databases() -> CheckResult:
         return CheckResult(name, "SKIP", f"schema.yaml cannot be compared: {str(exc).splitlines()[0][:160]}")
     plan = result.plan
     stale = sum(len(t.stale) for t in plan.tables)
-    if not result.changed:
+    if not result.changed or result.only_records_types:
         detail = "schema.yaml matches the databases"
         if stale or any(t.nowhere for t in plan.tables):
             detail += (
                 f" ({stale} column(s) and {sum(t.nowhere for t in plan.tables)} table(s) marked as "
                 "not in the database -- `python scripts/sync_schema.py --prune` removes them)"
             )
+        if result.only_records_types:
+            detail += f"; {unrecorded_types_note(result)}"
         return CheckResult(name, "PASS", detail)
-    parts = [
-        f"{sum(len(t.adds) for t in plan.tables)} column(s) missing from schema.yaml",
-        f"{len(result.stats.marked_columns)} column(s) and {len(result.stats.marked_tables)} table(s) "
-        "no longer in the database",
-        f"{sum(len(t.changed) for t in plan.tables)} column type(s) differ",
-        f"{sum(bool(plan.multi_source and t.placement.found_in and t.placement.wanted != t.placement.current) for t in plan.tables)} "
-        "datasource: line(s) to set",
-    ]
-    return CheckResult(
-        name, "FAIL",
-        "; ".join(parts) + " -- run `python scripts/sync_schema.py`, review schema.synced.yaml "
-        "and replace schema.yaml (`--check` is the same test for CI)",
-    )
+    return CheckResult(name, "FAIL", describe_drift(result))
 
 
 #: Checks run once per data source, in this order, after the global ones
