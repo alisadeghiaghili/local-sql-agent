@@ -764,6 +764,51 @@ class TestCheckSchemaStructureMatchesDatabases:
         result = self._run(self._catalogue(("ID", "int")))
         assert result.status == "PASS" and "1 column(s)" in result.detail
 
+    def test_a_file_from_before_column_types_passes_with_a_note(self, project):
+        """No `column_types:` at all, databases unchanged: nothing has drifted."""
+        (project / "schema.yaml").write_text(
+            self.SCHEMA + "      Name: a name\n", encoding="utf-8",
+        )
+        result = self._run(self._catalogue(("ID", "int"), ("Name", "nvarchar(50)")))
+        assert result.status == "PASS"
+        assert result.detail.startswith("schema.yaml matches the databases; 2 column type(s) not recorded yet")
+        assert "run python scripts/sync_schema.py once to record them" in result.detail
+        assert "schema.synced.yaml" in result.detail
+
+    def test_the_note_keeps_the_marked_column_remark(self, project):
+        (project / "schema.yaml").write_text(
+            self.SCHEMA + "      # not in database (sync_schema.py)\n      Old: x\n", encoding="utf-8",
+        )
+        result = self._run(self._catalogue(("ID", "int")))
+        assert result.status == "PASS"
+        assert "1 column(s) and 0 table(s) marked as not in the database" in result.detail
+        assert "1 column type(s) not recorded yet" in result.detail
+
+    def test_real_drift_with_unrecorded_types_fails_and_counts_the_types(self, project):
+        result = self._run(self._catalogue(("ID", "int"), ("Extra", "int")))
+        assert result.status == "FAIL"
+        assert "1 column(s) missing from schema.yaml" in result.detail
+        assert "1 column type(s) to record" in result.detail
+
+    def test_a_differing_type_still_fails_when_others_are_unrecorded(self, project):
+        (project / "schema.yaml").write_text(
+            self.SCHEMA + "      Name: a name\n    column_types:\n      ID: bigint\n", encoding="utf-8",
+        )
+        result = self._run(self._catalogue(("ID", "int"), ("Name", "text")))
+        assert result.status == "FAIL"
+        assert "1 column type(s) differ" in result.detail and "1 column type(s) to record" in result.detail
+
+    def test_a_failure_is_never_a_row_of_zeros(self, project):
+        """A changed result none of the counts explains says so in words."""
+        from schema_data.sync import UNCOUNTED_DRIFT_NOTE, RenderStats, SyncPlan, SyncResult
+
+        empty = SyncResult(SyncPlan(("default",), "default", ()), "other text", True, RenderStats())
+        with patch("schema_data.sync.sync_schema_text", return_value=empty):
+            result = self._run(self._catalogue(("ID", "int")))
+        assert result.status == "FAIL"
+        assert result.detail == UNCOUNTED_DRIFT_NOTE
+        assert "0 column(s)" not in result.detail and "--dry-run" in result.detail
+
     def test_is_skipped_when_a_database_cannot_be_reached(self, project):
         result = self._run(error=ConnectionError("down"))
         assert result.status == "SKIP" and "ConnectionError" in result.detail

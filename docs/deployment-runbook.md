@@ -78,8 +78,10 @@ is the sign you can move on: do not continue past a step that did not show it.
    (as drafts), a `column_types:` map, and a marker on every column or table
    the databases do not have (§16.3). It also writes `relationships.proposed.yaml`
    for review. Skipping it makes the preflight of step 11 fail with
-   `Tables are in their data source` (several databases) or
-   `Schema structure matches the databases`.
+   `Tables are in their data source` (several databases), and with
+   `Schema structure matches the databases` as soon as the databases differ from
+   the file. A file that only lacks the recorded column types passes that check
+   with a note (step 14 of "Upgrading from 6.0 to 6.9.1", §17).
    *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
    (§16.3).
 7. **Review the proposal, replace `schema.yaml`, check**: read
@@ -644,7 +646,7 @@ data sources, the four marked * print once per source, as
 | `Row cap`* | Runs `SELECT TOP (10 x cap + 10) name FROM sys.all_objects` through the executor and counts the rows. | `returned 1500 rows, expected <= 1000`: the executor returned more rows than `MAX_ROWS_RETURNED` allows. Do not deploy until it holds; there is no setting that fixes it, so report it. | The database is unreachable, or the probe query cannot run (it is T-SQL). |
 | `Query timeout`* | Runs `WAITFOR DELAY` with the timeout cut to at most 5 seconds and times how long the executor takes to abort it. | `took Ns -- longer than the Ms timeout should allow`, or `WAITFOR DELAY completed ... without the timeout firing`: the driver timeout is not applied, or the server does not support `WAITFOR` (some serverless Azure SQL tiers). Check `QUERY_TIMEOUT_SECONDS` and the driver. | The database is unreachable, or the probe cannot run. |
 | `Tables are in their data source` | Compares `schema.yaml` with each source's catalogue and fails for a table whose columns are all missing from the source it is assigned to while another source has it. | `N table(s): <table>: not in <assigned>, found in <other> — set datasource: <other>; ...` (ten hints, then `and N more`). The table has no `datasource:` (so it runs on the default source) or the wrong one. Run `python scripts/sync_schema.py` (or the narrower `python scripts/assign_datasources.py`) and replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". Or `could not compare schema.yaml with the data sources: ...` when a catalogue cannot be read. | One data source (`one data source -- nothing to place`). |
-| `Schema structure matches the databases` | Runs `python scripts/sync_schema.py --check` in memory: reads three catalogue views per source and fails when a sync would change `schema.yaml`. | `N column(s) missing from schema.yaml; N column(s) and N table(s) no longer in the database; N column type(s) differ; N datasource: line(s) to set -- run python scripts/sync_schema.py ...`. Run it, review `schema.synced.yaml`, replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". A column already marked `# not in database` does not fail it; the detail of a `[PASS]` counts them. | A database cannot be read (its own connectivity check fails), `schema.yaml` does not load (`project_config/ loads` says why), or its layout cannot be edited line by line (a flow-style table or `columns: {...}`). |
+| `Schema structure matches the databases` | Runs `python scripts/sync_schema.py --check` in memory: reads three catalogue views per source and fails when `schema.yaml` is out of step with them: a column the database has and the file lacks, a recorded type that differs, a column or table no longer in the database, a `datasource:` line to set. A column type that is merely not recorded yet is not drift (below). | `N column(s) missing from schema.yaml; N column(s) and N table(s) no longer in the database; N column type(s) differ; N datasource: line(s) to set[; N column type(s) to record] -- run python scripts/sync_schema.py ...`. Run it, review `schema.synced.yaml`, replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". `schema.yaml differs from the synced text in a way the drift counts do not cover -- run python scripts/sync_schema.py --dry-run to see it` means the file differs from the synced text in something the counts do not name: read the dry run. A column already marked `# not in database` does not fail it; the detail of a `[PASS]` counts them. A `schema.yaml` written before 6.9.0 has no `column_types:` map; from 6.9.2 that is a `[PASS]` whose detail ends `N column type(s) not recorded yet -- run python scripts/sync_schema.py once to record them (review schema.synced.yaml, replace schema.yaml), so later type changes are detected`. Do it once, so a later type change is detected. | A database cannot be read (its own connectivity check fails), `schema.yaml` does not load (`project_config/ loads` says why), or its layout cannot be edited line by line (a flow-style table or `columns: {...}`). |
 | `OpenAI-compatible model exists` | Asks `OPENAI_BASE_URL` for `/models` (5 second timeout, `OPENAI_API_KEY` as the bearer token) and looks for `OPENAI_MODEL` among the ids it lists. | `could not reach <base>: ...`: wrong URL or port, endpoint down, a proxy, or an endpoint with no `/models` route. Or `'<model>' not found among models <base> lists: [...]`: set `OPENAI_MODEL` to one of the listed ids. | Never. |
 | `API key authentication` | Checks that at least one key is configured (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) so that the server would start, and, with `VERIFY_API_KEY` set, that this raw key authenticates. | `API key configuration is invalid: ...` (the server would refuse to start; §5); `AUTH_REQUIRED is true but there are no configured keys ...` (issue one, §1); every key revoked or disabled in the application database; or `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (a truncated paste, or the `key_sha256` pasted instead of the raw key). With `AUTH_REQUIRED=false` it passes and says so; do not use that in production. | Never. |
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
@@ -1254,6 +1256,7 @@ if anything else differs):
 |---|---|
 | Table has no `datasource:`, or a wrong one (several sources only) | Sets it: `datasource: sales`, or `[sales, inventory]` for a table found in both, in `datasources.yaml` order |
 | Column in a database, not in `schema.yaml` | Appends it to the table's `columns:` as `Name: "<type> column"  # TO BE FILLED (added by sync_schema.py)` and records its type |
+| Column in `schema.yaml` with no entry in `column_types:` (every column of a file written before 6.9.0) | Records its type. This alone is not drift: `--check` and the preflight pass with a note saying how many types are not recorded yet |
 | Column in `schema.yaml`, in no source's table | Keeps it and adds the line `# not in database (sync_schema.py)` above it; `--prune` removes it instead (never one still named in `resolvable_columns` or `prefetchable_columns`) |
 | Recorded type differs from the database | Corrects the entry in the table's `column_types:` map and reports `Table.Column: old -> new`. Types are kept in that map, never in a description |
 | Table in a database, not in `schema.yaml` | Reports it only; `--add-tables 'sales.*'` (a glob on `schema.table`, repeatable) appends the matching ones with draft descriptions |
@@ -1325,10 +1328,16 @@ Then:
    marked `# TO BE FILLED`; the placeholder `<type> column` is what the model sees
    until you do.
 4. Run `python scripts/sync_schema.py --check`. It writes nothing, prints
-   `CHECK OK: schema.yaml's structure matches the databases` and exits 0 when a
-   sync would change nothing; otherwise it prints `CHECK FAILED: ...` and exits 1.
-   Put it in the deploy pipeline to keep the structure honest (the preflight runs
-   the same test as `Schema structure matches the databases`). A column already
+   `CHECK OK: schema.yaml's structure matches the databases` and exits 0 when
+   `schema.yaml` is in step with the databases; otherwise it prints
+   `CHECK FAILED: ...` with the counts and exits 1. Put it in the deploy pipeline
+   to keep the structure honest (the preflight runs the same test as
+   `Schema structure matches the databases`). Column types that are not recorded
+   yet are not out of step: a file written before 6.9.0 has no `column_types:` map,
+   so `--check` exits 0 and adds `N column type(s) not recorded yet -- run python
+   scripts/sync_schema.py once to record them ...` to the `CHECK OK` line, until a
+   plain run has recorded them in `schema.synced.yaml` and you have replaced
+   `schema.yaml` with it (step 2). A column already
    marked `# not in database` does not fail `--check`; it is listed in every
    report until it is removed. `--check --prune` fails while anything is left to
    prune, and `--check --add-tables PATTERN` fails until the matching tables are
@@ -1684,14 +1693,21 @@ Steps 18 and 19 come last on purpose.
    - *6.8.0, a scoped `denied_columns` entry that names nothing real.*
      `API key authentication` reports `API key configuration is invalid:
      <source>[<n>].denied_columns: ...` naming the entry (step 9).
-   - *6.9.0, `Schema structure matches the databases` fails the first time.*
+   - *6.9.0, `Schema structure matches the databases` and the column types.*
      A `schema.yaml` written before 6.9.0 has no `column_types:` map, so the
-     sync always has types to record and the check fails even when nothing in
-     the databases changed; its message can then read `0 column(s) missing from
-     schema.yaml; 0 column(s) and 0 table(s) no longer in the database; 0 column
-     type(s) differ; 0 datasource: line(s) to set`. That is expected. Step 14
-     is the fix, and it comes before the restart. (The check is skipped, not
-     failed, when a database cannot be read.)
+     sync has a type to record for every column although nothing in the
+     databases changed. 6.9.0 and 6.9.1 failed the check for that, with a
+     message of all zeros (`0 column(s) missing from schema.yaml; 0 column(s)
+     and 0 table(s) no longer in the database; ...`). From 6.9.2 an
+     unrecorded type is not drift: when nothing else differs the check passes,
+     and its detail ends `N column type(s) not recorded yet -- run python
+     scripts/sync_schema.py once to record them (review schema.synced.yaml,
+     replace schema.yaml), so later type changes are detected`. Step 14 records
+     them, and it comes before the restart. The check still fails for real
+     drift (a column the databases have and the file lacks, a recorded type that
+     differs, a column or table the databases lost, a `datasource:` line to
+     set), then with `N column type(s) to record` added to the counts. (It is
+     skipped, not failed, when a database cannot be read.)
 4. **Check `schema.yaml`** (6.2.0). A generated query that names the wrong
    schema is now refused, and the model's retry corrects it, so nothing needs
    doing for unique table names. If the same table name exists in several
@@ -1840,7 +1856,12 @@ Steps 18 and 19 come last on purpose.
        `# TO BE FILLED`.
     5. `python scripts/sync_schema.py --check` writes nothing; it must print
        `CHECK OK: schema.yaml's structure matches the databases` and exit 0.
-       Run it again whenever you want to know whether the databases moved.
+       Until the types are recorded (a file from before 6.9.0 has none; the
+       replacement in step 4 records them), the line ends with `N column
+       type(s) not recorded yet -- run python scripts/sync_schema.py once to
+       record them ...`: that is still exit 0, and the note is gone after the
+       replacement. Run it again whenever you want to know whether the
+       databases moved.
 
     `scripts/assign_datasources.py` stays for pipelines that already call it;
     it writes only the `datasource:` lines. Run `python scripts/prompt_budget.py`

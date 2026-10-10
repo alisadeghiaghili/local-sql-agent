@@ -25,7 +25,11 @@ What it does, per table of ``schema.yaml``
 * **Types** live in the table's ``column_types:`` map
   (:class:`schema_data.registry.TableDefinition`), never in a description: a
   column without an entry gets one, an entry that differs from the database
-  is corrected, and each correction is reported.
+  is corrected, and each correction is reported. A file with no entries at
+  all (written before ``column_types:`` existed) is not out of step with the
+  databases: adding the entries is the only edit then
+  (:attr:`SyncResult.only_records_types`), and the preflight and
+  ``sync_schema.py --check`` pass with a note instead of failing.
 * A table the databases do not have gets :data:`schema_data.placement.NOT_FOUND_COMMENT`
   under its key; with ``prune=True`` it is removed (unless
   ``relationships:`` still names it).
@@ -51,7 +55,7 @@ from __future__ import annotations
 import fnmatch
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from database.catalogue import ColumnInfo, TableInfo, table_location
 from schema_data.placement import (
@@ -83,6 +87,7 @@ from schema_data.yaml_text import (
 __all__ = [
     "DRAFT_COMMENT",
     "STALE_COLUMN_COMMENT",
+    "UNCOUNTED_DRIFT_NOTE",
     "ColumnAdd",
     "NewTable",
     "RenderStats",
@@ -95,11 +100,13 @@ __all__ = [
     "build_report",
     "compute_plan",
     "count_drafts",
+    "describe_drift",
     "draft_description",
     "expected_tables",
     "render_synced_text",
     "sync_schema_text",
     "type_family",
+    "unrecorded_types_note",
     "verify_structural_only",
 ]
 
@@ -326,12 +333,24 @@ class SyncResult:
         *text* differs from the input.
     stats:
         Marker changes made by the text edit.
+    only_records_types:
+        The one thing the sync would change is adding ``column_types:`` entries
+        for columns the file already lists (see :func:`_only_records_types`).
+        Such a file is not out of step with the databases: it predates
+        recorded types, or was never given them. False when ``changed`` is
+        false.
     """
 
     plan: SyncPlan
     text: str
     changed: bool
     stats: RenderStats
+    only_records_types: bool = False
+
+    @property
+    def types_to_record(self) -> int:
+        """How many ``column_types:`` entries the sync adds for columns already listed."""
+        return sum(len(t.recorded) for t in self.plan.tables)
 
 
 # ---------------------------------------------------------------------------
@@ -985,7 +1004,55 @@ def sync_schema_text(
     plan = compute_plan(schema, sources, default, catalogues, options)
     text, stats = render_synced_text(original, schema, plan)
     verify_structural_only(schema, validate_schema_yaml_text(text), plan)
-    return SyncResult(plan=plan, text=text, changed=text != original, stats=stats)
+    return SyncResult(
+        plan=plan, text=text, changed=text != original, stats=stats,
+        only_records_types=_only_records_types(original, schema, plan),
+    )
+
+
+def _only_records_types(original: str, schema: SchemaConfig, plan: SyncPlan) -> bool:
+    """Whether recording column types is the only edit *plan* makes to *original*.
+
+    A ``schema.yaml`` written before ``column_types:`` existed lists every
+    column but records no type, so every column lands in
+    :attr:`TablePlan.recorded` although nothing in the databases changed.
+    That absence is not drift. The test is the text itself: *plan* with every
+    ``recorded`` entry left out is rendered, and the result must equal
+    *original*. That covers every other edit at once -- a column to add, a
+    type to correct, a ``datasource:`` line, a marker, a pruned column or
+    table, an appended table -- without listing them here.
+
+    Parameters
+    ----------
+    original:
+        The ``schema.yaml`` text, byte-order mark removed.
+    schema:
+        *original*, validated.
+    plan:
+        :func:`compute_plan`'s result for it (with any ``prune`` /
+        ``add_tables`` options already applied).
+
+    Returns
+    -------
+    bool
+        True when *plan* records at least one type and edits nothing else.
+
+    Examples
+    --------
+    >>> from database.catalogue import ColumnInfo
+    >>> text = "tables:\\n  T:\\n    columns:\\n      ID: pk\\n"
+    >>> info = TableInfo("", "T", False, (ColumnInfo("ID", "int", False),))
+    >>> sync_schema_text(text, ["a"], "a", {"a": {("dbo", "t"): info}}).only_records_types
+    True
+    >>> more = TableInfo("", "T", False, (ColumnInfo("ID", "int", False), ColumnInfo("N", "text", True)))
+    >>> sync_schema_text(text, ["a"], "a", {"a": {("dbo", "t"): more}}).only_records_types
+    False
+    """
+    if not any(t.recorded for t in plan.tables):
+        return False
+    bare = replace(plan, tables=tuple(replace(t, recorded=()) for t in plan.tables))
+    bare_text, _ = render_synced_text(original, schema, bare)
+    return bare_text == original
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1146,111 @@ def build_report(result: SyncResult) -> str:
         f"{len(stats.unmarked_columns)} column(s) and {len(stats.unmarked_tables)} table(s) unmarked"
     )
     return "\n".join(out)
+
+
+#: What the deployment preflight and ``sync_schema.py --check`` say when a
+#: sync would change the file but none of the drift counts is above zero.
+UNCOUNTED_DRIFT_NOTE = (
+    "schema.yaml differs from the synced text in a way the drift counts do not cover -- "
+    "run python scripts/sync_schema.py --dry-run to see it"
+)
+
+
+def unrecorded_types_note(result: SyncResult) -> str:
+    """The note for a file whose only difference is column types not recorded yet.
+
+    Used by the deployment preflight and ``sync_schema.py --check``, so both
+    say the same thing.
+
+    Parameters
+    ----------
+    result:
+        :func:`sync_schema_text`'s result.
+
+    Returns
+    -------
+    str
+        Names how many column types are not recorded and the command that
+        records them.
+
+    Examples
+    --------
+    >>> from database.catalogue import ColumnInfo
+    >>> text = "tables:\\n  T:\\n    columns:\\n      ID: pk\\n"
+    >>> info = TableInfo("", "T", False, (ColumnInfo("ID", "int", False),))
+    >>> result = sync_schema_text(text, ["a"], "a", {"a": {("dbo", "t"): info}})
+    >>> unrecorded_types_note(result).startswith("1 column type(s) not recorded yet -- run python")
+    True
+    """
+    return (
+        f"{result.types_to_record} column type(s) not recorded yet -- run python scripts/sync_schema.py "
+        "once to record them (review schema.synced.yaml, replace schema.yaml), "
+        "so later type changes are detected"
+    )
+
+
+def describe_drift(result: SyncResult) -> str:
+    """What is out of step in a *changed* sync, as counts and the command to run.
+
+    Used by the deployment preflight and ``sync_schema.py --check`` when they
+    fail, so both name the same things. The four counts that are always
+    listed are the columns missing from ``schema.yaml``, the columns and
+    tables no longer in the database, the recorded types that differ and the
+    ``datasource:`` lines to set; ``--prune`` and ``--add-tables`` effects and
+    the column types still to record are added when they are above zero. When
+    the file would change but none of the drift counts is above zero, the
+    result is :data:`UNCOUNTED_DRIFT_NOTE`, never a row of zeros.
+
+    Parameters
+    ----------
+    result:
+        :func:`sync_schema_text`'s result, with ``changed`` true and
+        ``only_records_types`` false (that case is not drift:
+        :func:`unrecorded_types_note`).
+
+    Returns
+    -------
+    str
+        One line.
+
+    Examples
+    --------
+    >>> plan = SyncPlan(("a",), "a", ())
+    >>> describe_drift(SyncResult(plan, "", True, RenderStats())) == UNCOUNTED_DRIFT_NOTE
+    True
+    """
+    plan, stats = result.plan, result.stats
+    counts = [
+        sum(len(t.adds) for t in plan.tables),
+        len(stats.marked_columns),
+        len(stats.marked_tables),
+        sum(len(t.changed) for t in plan.tables),
+        sum(
+            bool(plan.multi_source and t.placement.found_in and t.placement.wanted != t.placement.current)
+            for t in plan.tables
+        ),
+    ]
+    removed_columns = sum(len(t.pruned) for t in plan.tables)
+    removed_tables = sum(t.prune_table for t in plan.tables)
+    extra = []
+    if removed_columns or removed_tables:
+        extra.append(f"{removed_columns} column(s) and {removed_tables} table(s) to remove (--prune)")
+    if plan.new_tables:
+        extra.append(f"{len(plan.new_tables)} table(s) to add (--add-tables)")
+    to_record = [f"{result.types_to_record} column type(s) to record"] if result.types_to_record else []
+    if not any(counts) and not extra:
+        return "; ".join([*to_record, UNCOUNTED_DRIFT_NOTE])
+    parts = [
+        f"{counts[0]} column(s) missing from schema.yaml",
+        f"{counts[1]} column(s) and {counts[2]} table(s) no longer in the database",
+        f"{counts[3]} column type(s) differ",
+        f"{counts[4]} datasource: line(s) to set",
+        *extra,
+        *to_record,
+    ]
+    return "; ".join(parts) + (
+        " -- run `python scripts/sync_schema.py`, review schema.synced.yaml and replace schema.yaml"
+    )
 
 
 def count_drafts(

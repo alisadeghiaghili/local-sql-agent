@@ -254,6 +254,90 @@ class TestCheckMode:
         assert code == EXIT_ERROR
 
 
+class TestCheckModeUnrecordedTypes:
+    """A schema.yaml written before 6.9.0 has no `column_types:`; nothing has drifted."""
+
+    PRE_690 = "tables:\n  T:\n    db_schema: s\n    columns:\n      ID: pk\n      Name: a name\n"
+
+    @staticmethod
+    def cats(*columns):
+        from tests._sync_fixtures import catalogue, tbl
+
+        return {"default": catalogue(tbl("s", "T", list(columns)))}
+
+    @pytest.fixture()
+    def pre_690(self, tmp_path):
+        (tmp_path / "schema.yaml").write_text(self.PRE_690, encoding="utf-8")
+        reset_datasources_cache()
+        with override_settings(project_config_dir=str(tmp_path)):
+            yield tmp_path
+        reset_datasources_cache()
+
+    def test_check_exits_zero_with_the_note_and_writes_nothing(self, pre_690, capsys):
+        code = main(["--check", "--no-relationships"], load_catalogue=loader(self.cats(("ID", "int"), ("Name", "nvarchar(50)"))))
+        out = capsys.readouterr().out
+        assert code == EXIT_OK
+        assert "CHECK OK: schema.yaml's structure matches the databases; 2 column type(s) not recorded yet" in out
+        assert "run python scripts/sync_schema.py once to record them" in out
+        assert "CHECK FAILED" not in out
+        assert sorted(p.name for p in pre_690.iterdir()) == ["schema.yaml"]
+
+    def test_a_plain_run_still_records_the_types(self, pre_690):
+        assert main(["--no-relationships"], load_catalogue=loader(self.cats(("ID", "int"), ("Name", "nvarchar(50)")))) == EXIT_OK
+        synced = validate_schema_yaml_text((pre_690 / SYNCED).read_text(encoding="utf-8"))
+        assert synced.tables["T"].column_types == {"ID": "int", "Name": "nvarchar(50)"}
+        assert schema_text(pre_690) == self.PRE_690
+
+    def test_after_the_types_are_recorded_the_note_is_gone(self, pre_690, capsys):
+        load = loader(self.cats(("ID", "int"), ("Name", "nvarchar(50)")))
+        main(["--no-relationships"], load_catalogue=load)
+        (pre_690 / "schema.yaml").write_text((pre_690 / SYNCED).read_text(encoding="utf-8"), encoding="utf-8")
+        capsys.readouterr()
+        assert main(["--check", "--no-relationships"], load_catalogue=load) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "CHECK OK" in out and "not recorded" not in out
+
+    def test_real_drift_with_unrecorded_types_fails_and_counts_both(self, pre_690, capsys):
+        load = loader(self.cats(("ID", "int"), ("Name", "nvarchar(50)"), ("Extra", "int")))
+        assert main(["--check", "--no-relationships"], load_catalogue=load) == EXIT_CHECK_FAILED
+        out = capsys.readouterr().out
+        assert "CHECK FAILED" in out
+        assert "1 column(s) missing from schema.yaml" in out and "2 column type(s) to record" in out
+
+    def test_a_differing_recorded_type_fails(self, pre_690, capsys):
+        (pre_690 / "schema.yaml").write_text(self.PRE_690 + "    column_types:\n      ID: bigint\n", encoding="utf-8")
+        load = loader(self.cats(("ID", "int"), ("Name", "nvarchar(50)")))
+        assert main(["--check", "--no-relationships"], load_catalogue=load) == EXIT_CHECK_FAILED
+        out = capsys.readouterr().out
+        assert "1 column type(s) differ" in out and "1 column type(s) to record" in out
+
+    def test_prune_makes_a_records_only_file_a_failure_when_there_is_something_to_prune(self, pre_690):
+        (pre_690 / "schema.yaml").write_text(
+            self.PRE_690.replace("      Name: a name\n", "      # not in database (sync_schema.py)\n      Name: a name\n"),
+            encoding="utf-8",
+        )
+        load = loader(self.cats(("ID", "int")))
+        assert main(["--check", "--no-relationships"], load_catalogue=load) == EXIT_OK
+        assert main(["--check", "--prune", "--no-relationships"], load_catalogue=load) == EXIT_CHECK_FAILED
+
+    def test_a_failure_is_never_a_row_of_zeros(self, pre_690, capsys, monkeypatch):
+        """A changed result none of the counts explains says so in words."""
+        from schema_data.sync import UNCOUNTED_DRIFT_NOTE, RenderStats, SyncPlan, SyncResult
+
+        original = script.sync_schema_text
+
+        def uncounted(text, sources, default, catalogues, options):
+            real = original(text, sources, default, catalogues, options)
+            return SyncResult(SyncPlan(real.plan.sources, real.plan.default, ()), text + "# x\n", True, RenderStats())
+
+        monkeypatch.setattr(script, "sync_schema_text", uncounted)
+        load = loader(self.cats(("ID", "int"), ("Name", "nvarchar(50)")))
+        assert main(["--check", "--no-relationships"], load_catalogue=load) == EXIT_CHECK_FAILED
+        out = capsys.readouterr().out
+        assert UNCOUNTED_DRIFT_NOTE in out
+        assert "0 column(s) missing" not in out
+
+
 class TestErrors:
     def test_an_unreadable_source_stops_the_run_and_writes_nothing(self, project, capsys):
         code = main([], load_catalogue=loader({"sales": CATALOGUES["sales"], "inventory": RuntimeError("down")}))

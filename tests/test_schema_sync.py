@@ -848,3 +848,140 @@ class TestReport:
         report = build_report(run(options=SyncOptions(prune=True)))
         assert "sales_dim.Broker.Code (removed)" in report
         assert "Old_Dim.Nothing (removed)" in report
+
+
+# ---------------------------------------------------------------------------
+# A file written before column_types: existed is not out of step
+# ---------------------------------------------------------------------------
+
+#: Written before 6.9.0: every column listed, no ``column_types:`` map at all.
+PRE_RECORDED = "tables:\n  T:\n    db_schema: s\n    columns:\n      ID: pk\n      Name: a name\n"
+PRE_RECORDED_CATALOGUE = {"a": catalogue(tbl("s", "T", [("ID", "int"), ("Name", "nvarchar(50)")]))}
+
+
+def run_single(text: str, cats=None, options=SyncOptions()):
+    return sync_schema_text(text, ["a"], "a", cats or PRE_RECORDED_CATALOGUE, options)
+
+
+class TestOnlyRecordsTypes:
+    def test_a_file_with_no_column_types_only_needs_them_recorded(self):
+        result = run_single(PRE_RECORDED)
+        assert result.changed and result.only_records_types
+        assert result.types_to_record == 2
+        assert "column_types:" in result.text and 'Name: "nvarchar(50)"' in result.text
+
+    def test_the_text_without_the_records_is_the_input(self):
+        """The decision is the rendered text, not a list of cases."""
+        from schema_data.sync import render_synced_text
+
+        schema = validate_schema_yaml_text(PRE_RECORDED)
+        plan = compute_plan(schema, ["a"], "a", PRE_RECORDED_CATALOGUE)
+        bare = dataclasses.replace(plan, tables=tuple(dataclasses.replace(t, recorded=()) for t in plan.tables))
+        assert render_synced_text(PRE_RECORDED, schema, bare)[0] == PRE_RECORDED
+
+    def test_one_missing_entry_in_a_partly_recorded_file_counts_too(self):
+        result = run_single(PRE_RECORDED + "    column_types:\n      ID: int\n")
+        assert result.only_records_types and result.types_to_record == 1
+
+    def test_a_file_that_records_every_type_is_in_sync(self):
+        result = run_single(PRE_RECORDED + "    column_types:\n      ID: int\n      Name: nvarchar(50)\n")
+        assert not result.changed and not result.only_records_types and result.types_to_record == 0
+
+    def test_a_column_the_database_has_is_drift(self):
+        cats = {"a": catalogue(tbl("s", "T", [("ID", "int"), ("Name", "nvarchar(50)"), ("Extra", "int")]))}
+        result = run_single(PRE_RECORDED, cats)
+        assert result.changed and not result.only_records_types
+        assert result.types_to_record == 2
+
+    def test_a_recorded_type_that_differs_is_drift(self):
+        result = run_single(PRE_RECORDED + "    column_types:\n      ID: bigint\n")
+        assert not result.only_records_types
+        assert result.types_to_record == 1 and len(result.plan.tables[0].changed) == 1
+
+    def test_a_column_the_database_lost_is_drift(self):
+        cats = {"a": catalogue(tbl("s", "T", [("ID", "int")]))}
+        result = run_single(PRE_RECORDED, cats)
+        assert not result.only_records_types and result.stats.marked_columns == ["T.Name"]
+
+    def test_pruning_is_an_effect_beyond_recording(self):
+        cats = {"a": catalogue(tbl("s", "T", [("ID", "int")]))}
+        text = PRE_RECORDED.replace("      Name: a name\n", "      # not in database (sync_schema.py)\n      Name: a name\n")
+        assert run_single(text, cats).only_records_types
+        assert not run_single(text, cats, SyncOptions(prune=True)).only_records_types
+
+    def test_a_table_the_database_lost_is_drift(self):
+        result = run_single(PRE_RECORDED, {"a": catalogue()})
+        assert not result.only_records_types and result.stats.marked_tables == ["T"]
+
+    def test_a_datasource_line_to_set_is_drift(self):
+        cats = {"a": catalogue(tbl("s", "T", [("ID", "int"), ("Name", "nvarchar(50)")])), "b": catalogue()}
+        result = sync_schema_text(PRE_RECORDED, ["a", "b"], "a", cats)
+        assert "datasource:" in result.text and not result.only_records_types
+
+    def test_adding_tables_is_an_effect_beyond_recording(self):
+        cats = {"a": catalogue(
+            tbl("s", "T", [("ID", "int"), ("Name", "nvarchar(50)")]), tbl("s", "U", [("ID", "int")]),
+        )}
+        assert run_single(PRE_RECORDED, cats).only_records_types
+        assert not run_single(PRE_RECORDED, cats, SyncOptions(add_tables=("s.U",))).only_records_types
+
+    def test_a_file_with_real_drift_is_not_a_records_only_file(self):
+        result = run()
+        assert result.changed and not result.only_records_types
+        assert not run(result.text).changed
+
+
+class TestDescribeDrift:
+    @staticmethod
+    def result(**plan_fields):
+        from schema_data.placement import Placement
+        from schema_data.sync import RenderStats, SyncPlan, SyncResult, TablePlan
+
+        placement = Placement("T", ("a",), ("a",), ("a",), {})
+        tables = (TablePlan("T", placement, **plan_fields),)
+        return SyncResult(SyncPlan(("a",), "a", tables), "changed", True, RenderStats())
+
+    def test_unrecorded_types_are_named_with_the_command(self):
+        from schema_data.sync import unrecorded_types_note
+
+        note = unrecorded_types_note(run_single(PRE_RECORDED))
+        assert note.startswith("2 column type(s) not recorded yet -- run python scripts/sync_schema.py once")
+        assert "schema.synced.yaml" in note and "later type changes are detected" in note
+
+    def test_real_drift_with_types_to_record_adds_their_count(self):
+        from schema_data.sync import ColumnAdd, describe_drift
+
+        detail = describe_drift(self.result(
+            adds=(ColumnAdd("X", "int", ("a",)),), recorded=(("ID", "int"), ("Name", "text")),
+        ))
+        assert detail.startswith("1 column(s) missing from schema.yaml; ")
+        assert "0 column type(s) differ" in detail and "2 column type(s) to record" in detail
+        assert "python scripts/sync_schema.py" in detail
+
+    def test_a_count_of_nothing_to_record_is_not_listed(self):
+        from schema_data.sync import ColumnAdd, describe_drift
+
+        assert "to record" not in describe_drift(self.result(adds=(ColumnAdd("X", "int", ("a",)),)))
+
+    def test_a_changed_result_whose_counts_are_all_zero_says_so_instead(self):
+        from schema_data.sync import UNCOUNTED_DRIFT_NOTE, describe_drift
+
+        detail = describe_drift(self.result())
+        assert detail == UNCOUNTED_DRIFT_NOTE
+        assert "0 column" not in detail and "--dry-run" in detail
+
+    def test_the_fallback_keeps_a_types_to_record_count(self):
+        from schema_data.sync import UNCOUNTED_DRIFT_NOTE, describe_drift
+
+        detail = describe_drift(self.result(recorded=(("ID", "int"),)))
+        assert detail == f"1 column type(s) to record; {UNCOUNTED_DRIFT_NOTE}"
+
+    def test_pruned_and_added_tables_are_counted_not_reported_as_uncovered(self):
+        from schema_data.sync import describe_drift
+
+        cats = {"a": catalogue(tbl("s", "T", [("ID", "int")]), tbl("s", "U", [("ID", "int")]))}
+        text = PRE_RECORDED.replace("      Name: a name\n", "      # not in database (sync_schema.py)\n      Name: a name\n")
+        detail = describe_drift(run_single(text, cats, SyncOptions(prune=True, add_tables=("s.U",))))
+        assert "1 column(s) and 0 table(s) to remove (--prune)" in detail
+        assert "1 table(s) to add (--add-tables)" in detail
+        assert "do not cover" not in detail

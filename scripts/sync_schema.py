@@ -72,11 +72,21 @@ Default
 ``--dry-run``
     Prints the report; writes nothing.
 ``--check``
-    Writes nothing; exits 1 when running without ``--check`` would change
-    ``schema.yaml`` (including what ``--prune`` / ``--add-tables`` would
-    change if given). For CI and deploy pipelines. Columns marked ``# not in
-    database`` are reported on every run but do not fail the check once
-    marked: ``--prune`` is how they go.
+    Writes nothing; exits 1 when ``schema.yaml`` is out of step with the
+    databases: running without ``--check`` would add or mark a column or
+    table, correct a recorded type, set a ``datasource:`` line, or (if given)
+    do what ``--prune`` / ``--add-tables`` say. For CI and deploy pipelines.
+    The failure line names the counts (:func:`schema_data.sync.describe_drift`);
+    a file that differs in a way none of them covers says so and points at
+    ``--dry-run``. Columns marked ``# not in database`` are reported on every
+    run but do not fail the check once marked: ``--prune`` is how they go.
+
+    A column type that is not recorded yet is not out of step. A
+    ``schema.yaml`` written before 6.9.0 has no ``column_types:`` map, so a
+    plain run would add one entry per column and nothing else; ``--check``
+    then exits 0, prints how many types are not recorded, and says that a
+    plain run records them. Run it once, review ``schema.synced.yaml`` and
+    replace ``schema.yaml``, so later type changes are detected.
 
 A column the read-only login may not see through ``INFORMATION_SCHEMA`` is
 "not in the database" to this script too: check the ``DENY`` grants in
@@ -152,7 +162,9 @@ from schema_data.sync import (  # noqa: E402
     SyncResult,
     build_report,
     count_drafts,
+    describe_drift,
     sync_schema_text,
+    unrecorded_types_note,
 )
 
 __all__ = [
@@ -583,11 +595,11 @@ def main(
 
     if args.check:
         print()
-        if result.changed:
-            print("CHECK FAILED: schema.yaml's structure is out of sync with the databases "
-                  f"(run `python scripts/sync_schema.py` and review {OUTPUT_FILENAME})")
+        if result.changed and not result.only_records_types:
+            print(f"CHECK FAILED: schema.yaml's structure is out of sync with the databases: {describe_drift(result)}")
             return EXIT_CHECK_FAILED
-        print("CHECK OK: schema.yaml's structure matches the databases")
+        note = f"; {unrecorded_types_note(result)}" if result.only_records_types else ""
+        print(f"CHECK OK: schema.yaml's structure matches the databases{note}")
         return EXIT_OK
     if args.dry_run:
         print("\ndry run: nothing written")
