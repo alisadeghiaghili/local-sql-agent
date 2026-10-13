@@ -284,12 +284,21 @@ python setup_project.py `
 python -m database.schema_inspector_cli `
     --db-url "mssql+pyodbc://reader:p%40ss@dbhost:1433/WarehouseDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" `
     --output-dir project_config_draft `
-    --include-schemas sales,ref
+    --include-schemas sales,ref `
+    --exclude-schemas "*_Stg,Replay,Alerts"
 ```
+
+`--exclude-schemas` فهرستی از الگوهای `fnmatch` است که با کاما جدا می‌شوند و بدون توجه به بزرگی و کوچکی حروف با نام شِما مقایسه می‌شوند (`*_Stg` هم `Sales_Stg` و هم `sales_stg` را کنار می‌گذارد؛ یک نام ساده فقط همان شِما را). اگر `--include-schemas` هم داده شود، کنار گذاشتن برنده است. برای انباره‌ای که شِمای staging و replay و آزمایشی زیاد دارد از آن استفاده کنید: هر جدولِ `schema.yaml` توکن prompt مصرف می‌کند.
 
 بدون `--db-url`، متغیر محیطی `DATABASE_URL` یا `DB_CONNECTION_URL` همان شلی را که در آن اجرا می‌کنید می‌خواند (برخلاف ویزارد، `.env` را نمی‌خواند)؛ و مثل ویزارد `DB_PASSWORD` را اعمال نمی‌کند، پس رمز باید کدگذاری‌شده داخل URL باشد. گزینه‌های دیگر: `--exclude-tables a,b`، `--sample-rows N` (پیش‌فرض ۱۰؛ `0` خواندن مقدار نمونه را رد می‌کند)، `--no-row-counts` (بدون `COUNT(*)` برای هر جدول) و `--dry-run` (به‌جای نوشتن چاپ می‌کند). چهار فایل `schema.yaml`، `entities.yaml`، `aliases.yaml` و `relationships.yaml` را در پوشهٔ پیش‌نویس می‌نویسد، هرگز در `project_config/` یا `project_config.example/` (این دو نام را با کد خروج ۲ رد می‌کند) و در پایان `Done.` چاپ می‌کند. پوشهٔ پیش‌نویس در گیت نادیده گرفته می‌شود.
 
-پیش‌نویس نقطهٔ شروع است، نه `schema.yaml`ای که مستقر کنید: هر توضیحش یک جانگهدار است (`TO BE FILLED`)، یادداشت ستون‌ها ممکن است مقدارهای واقعی ردیف‌های زنده را نقل کند، و هیچ جدولی `db_schema` ندارد. تا وقتی آن یادداشت‌ها را بازنویسی نکرده‌اید پوشه را حساس بدانید، توضیح درست بنویسید، به هر جدول `db_schema` بدهید (بخش ۰.۳.۳ گام ۲ و `docs/design/TABLE-NAMES.md`) و بعد `schema.yaml` را در `project_config/` بگذارید. بعد از ویرایش `tests/test_schema_registry_snapshot.py` را اجرا کنید و `python -m scripts.verify_deployment` (بخش ۰.۴) را برای بارگذاری آن بزنید.
+در پایان اجرا، روی stderr تعداد جدول‌ها به‌تفکیک شِما، یادآوری اینکه پیش‌نویس‌ها فقط برای نصب اول‌اند، و اگر بیش از ۱۵۰ جدول نوشته شده باشد یک هشدار (`WARNING`) چاپ می‌شود؛ در آن حالت اجرا را با `--include-schemas` یا `--exclude-schemas` محدود کنید و بعد اندازهٔ prompt را با `python scripts/prompt_budget.py` بسنجید.
+
+هر جدولِ `schema.yaml`ِ پیش‌نویس `db_schema` دارد. اگر نام جدول در کل اجرا یکتا باشد، همان نام ساده کلید می‌شود؛ اگر یک نام در بیش از یک شِما باشد (`Trade` در `sales` و در `ref`)، هر دو حضور با `Schema.Table` کلید می‌شوند (`sales.Trade`، `ref.Trade`)، و ورودی‌های `relationships:` و نام موجودیت‌ها در `entities.yaml` هم به همین شکل نوشته می‌شوند (`docs/design/TABLE-NAMES.md`). فایلی که یک کلید را تکرار کند هنگام بارگذاری رد می‌شود، و پیام خطا همهٔ کلیدهای تکراری را یک‌جا فهرست می‌کند.
+
+**پیش‌نویس‌ها فقط برای نصب اول‌اند.** هر جدولی را که پیدا می‌کنند تازه توصیف می‌کنند، پس نمی‌شود آن‌ها را در `schema.yaml`ای که قبلاً پرورده‌اید ادغام کرد. پیش‌نویس نقطهٔ شروع است، نه `schema.yaml`ای که مستقر کنید: هر توضیحش یک جانگهدار است (`TO BE FILLED`) و یادداشت ستون‌ها ممکن است مقدارهای واقعی ردیف‌های زنده را نقل کند. تا وقتی آن یادداشت‌ها را بازنویسی نکرده‌اید پوشه را حساس بدانید، توضیح درست بنویسید و بعد `schema.yaml` را در `project_config/` بگذارید. بعد از ویرایش `tests/test_schema_registry_snapshot.py` را اجرا کنید و `python -m scripts.verify_deployment` (بخش ۰.۴) را برای بارگذاری آن بزنید.
+
+نصبی که از قبل مستقر است دوباره پیش‌نویس نمی‌سازد. جدول‌های یک شِمای تازه را با `python scripts/sync_schema.py --add-tables 'Schema.*'` اضافه کنید (بخش ۰.۳.۳ و بخش ۱۶.۳ runbook): متن پرورده‌شدهٔ شما را نگه می‌دارد و فقط آنچه در دیتابیس‌ها عوض شده را می‌آورد.
 
 ### ۰.۳.۳ اگر باید روی بیش از یک پایگاه داده کوئری بزنید
 

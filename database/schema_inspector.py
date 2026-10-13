@@ -24,7 +24,10 @@ Typical usage::
     from database.schema_inspector import SchemaInspector
 
     inspector = SchemaInspector("mssql+pyodbc://...")
-    schema = inspector.inspect(include_schemas=["sales", "ref"])
+    schema = inspector.inspect(
+        include_schemas=["sales", "ref"],
+        exclude_schemas=["*_Stg"],      # fnmatch patterns, case-insensitive
+    )
     entities_yaml      = inspector.draft_entities_yaml(schema)
     aliases_yaml       = inspector.draft_aliases_yaml(schema)
     relationships_yaml = inspector.draft_relationships_yaml(schema)
@@ -33,6 +36,7 @@ Typical usage::
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import re
@@ -183,6 +187,103 @@ def _yaml_str(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Table keys
+# ---------------------------------------------------------------------------
+
+def _render_key(parts: tuple[str, ...]) -> str:
+    """Join *parts* into a ``schema.yaml`` table key that parses back to them.
+
+    The plain dotted spelling (``sales.Trade``) is used whenever
+    ``schema_data.registry.split_table_key`` reads it back as exactly
+    *parts*; a part holding a ``.``, ``[`` or ``]`` would be split or
+    mangled, so every part is then bracket-quoted (``[sales].[a.b]``, a
+    ``]`` doubled) -- the spelling the registry documents for such names.
+
+    Examples
+    --------
+    >>> _render_key(("sales", "Trade"))
+    'sales.Trade'
+    >>> _render_key(("Trade",))
+    'Trade'
+    >>> _render_key(("sales", "a.b"))
+    '[sales].[a.b]'
+    """
+    from schema_data.registry import split_table_key  # lazy: keeps import cheap
+
+    plain = ".".join(parts)
+    try:
+        if split_table_key(plain).parts == parts:
+            return plain
+    except ValueError:
+        pass
+    return ".".join("[" + p.replace("]", "]]") + "]" for p in parts)
+
+
+class _TableNamer:
+    """Decides how each table of a snapshot is named in the YAML drafts.
+
+    Follows the project convention (``docs/design/TABLE-NAMES.md``): a table
+    is keyed by its bare name when no other table of the snapshot shares it
+    (compared case-insensitively), and by ``Schema.Table`` -- every
+    occurrence, not just the second one -- when the bare name occurs in more
+    than one schema. The same spelling is used wherever the draft refers to
+    the table (relationship ends), so the references match the keys.
+
+    A table whose schema is unknown cannot be qualified and keeps its bare
+    name.
+
+    Examples
+    --------
+    >>> snap = SchemaSnapshot(tables=[
+    ...     TableInfo(name="Trade", schema="sales"),
+    ...     TableInfo(name="Trade", schema="ref"),
+    ...     TableInfo(name="Customer", schema="sales"),
+    ... ])
+    >>> namer = _TableNamer(snap)
+    >>> [namer.key(t) for t in snap.tables]
+    ['sales.Trade', 'ref.Trade', 'Customer']
+    """
+
+    def __init__(self, snapshot: SchemaSnapshot) -> None:
+        schemas_by_name: dict[str, set[str]] = {}
+        for table in snapshot.tables:
+            schemas_by_name.setdefault(table.name.lower(), set()).add(
+                (table.schema or "").lower()
+            )
+        self._shared = {n for n, schemas in schemas_by_name.items() if len(schemas) > 1}
+        self._by_ref: dict[tuple[str, str], str] = {}
+        self._by_bare: dict[str, list[str]] = {}
+        for table in snapshot.tables:
+            key = self.key(table)
+            self._by_ref[((table.schema or "").lower(), table.name.lower())] = key
+            self._by_bare.setdefault(table.name.lower(), []).append(key)
+
+    def key(self, table: TableInfo) -> str:
+        """The ``schema.yaml`` key (and entity name) of *table*."""
+        if table.schema and table.name.lower() in self._shared:
+            return _render_key((table.schema, table.name))
+        return _render_key((table.name,))
+
+    def ref(self, schema: str | None, name: str, default_schema: str | None = None) -> str:
+        """How a relationship end naming ``schema.name`` is written.
+
+        A table of the snapshot gets its key. A table outside it (excluded
+        schema, say) has no key; it is written ``Schema.Table`` when its
+        schema is known, so the reference is explicit rather than ambiguous.
+        *default_schema* stands in for a foreign key that names no schema.
+        """
+        wanted = schema or default_schema or ""
+        found = self._by_ref.get((wanted.lower(), name.lower()))
+        if found is not None:
+            return found
+        if not schema:
+            bare = self._by_bare.get(name.lower(), [])
+            if len(bare) == 1:
+                return bare[0]
+        return _render_key(((wanted, name) if wanted else (name,)))
+
+
+# ---------------------------------------------------------------------------
 # Classification heuristics
 # ---------------------------------------------------------------------------
 
@@ -323,6 +424,28 @@ def _fetch_row_count(
         return None
 
 
+def schema_is_excluded(schema: str, patterns: list[str] | None) -> bool:
+    """Whether *schema* matches any ``fnmatch`` pattern in *patterns*.
+
+    Matching is case-insensitive and does not depend on the operating system
+    (``fnmatch.fnmatchcase`` on lower-cased text), so ``*_Stg`` excludes
+    ``Sales_Stg`` and ``sales_stg`` alike on every platform.
+
+    Examples
+    --------
+    >>> schema_is_excluded("Sales_Stg", ["*_stg"])
+    True
+    >>> schema_is_excluded("sales", ["*_stg", "Replay"])
+    False
+    >>> schema_is_excluded("replay", ["*_stg", "Replay"])
+    True
+    >>> schema_is_excluded("sales", None)
+    False
+    """
+    name = schema.lower()
+    return any(fnmatch.fnmatchcase(name, p.lower()) for p in patterns or [])
+
+
 # ---------------------------------------------------------------------------
 # Main inspector class
 # ---------------------------------------------------------------------------
@@ -385,6 +508,7 @@ class SchemaInspector:
         include_schemas: list[str] | None = None,
         exclude_tables: list[str] | None = None,
         fetch_row_counts: bool = True,
+        exclude_schemas: list[str] | None = None,
     ) -> SchemaSnapshot:
         """Run full schema inspection and return a :class:`SchemaSnapshot`.
 
@@ -392,6 +516,10 @@ class SchemaInspector:
         ----------
         include_schemas:
             If given, only tables in these schemas are processed.
+        exclude_schemas:
+            ``fnmatch`` patterns (case-insensitive, e.g. ``"*_Stg"``) for
+            schemas to skip. Applied after *include_schemas*, so a schema
+            matching both is skipped.
         exclude_tables:
             Table names (without schema) to skip.
         fetch_row_counts:
@@ -409,6 +537,7 @@ class SchemaInspector:
             s for s in schema_list
             if s not in ("information_schema", "sys", "pg_catalog", "pg_toast")
             and not s.startswith("pg_")
+            and not schema_is_excluded(s, exclude_schemas)
         ]
 
         total = 0
@@ -535,9 +664,13 @@ class SchemaInspector:
             "entities:",
         ]
 
+        namer = _TableNamer(snapshot)
         for table in snapshot.tables:
-            entity_name = table.name
-            lines.append(f"  {entity_name}:")
+            # Same disambiguation as schema.yaml's keys (a name shared by
+            # several schemas becomes Schema.Table), quoted because a bracketed
+            # name would otherwise read as a YAML flow sequence.
+            entity_name = namer.key(table)
+            lines.append(f"  {_yaml_str(entity_name)}:")
             lines.append(f'    table: "{table.name}"')
             if table.schema:
                 lines.append(f'    schema: "{table.schema}"')
@@ -618,6 +751,14 @@ class SchemaInspector:
         ``SchemaConfig.model_validate`` (see ``tests/test_schema_inspector.py``)
         rather than merely asserted here.
 
+        Every table carries ``db_schema`` when its schema is known. A table
+        is keyed by its bare name when that name is unique in *snapshot*,
+        and by ``Schema.Table`` -- every occurrence -- when the name occurs
+        in more than one schema (``docs/design/TABLE-NAMES.md``); the
+        ``relationships`` entries name tables the same way. Without that the
+        file would repeat a mapping key and the strict loader would refuse
+        it.
+
         A table with no columns detected is emitted WITHOUT a ``columns``
         key at all (not an empty map) — per ``schema_data/registry.py``'s
         documented split, that is what keeps a table described-but-not-
@@ -649,8 +790,14 @@ class SchemaInspector:
             "tables:",
         ]
 
+        namer = _TableNamer(snapshot)
         for table in snapshot.tables:
-            lines.append(f"  {_yaml_str(table.name)}:")
+            key = namer.key(table)
+            lines.append(f"  {_yaml_str(key)}:")
+            # A dotted schema name cannot be written as db_schema (the
+            # registry splits it on "."); the bracket-quoted key carries it.
+            if table.schema and "." not in table.schema:
+                lines.append(f"    db_schema: {_yaml_str(table.schema)}")
             desc = f"{table.full_name} — auto-detected {table.classification} table"
             if table.row_count is not None:
                 desc += f" (~{table.row_count} rows)"
@@ -676,10 +823,14 @@ class SchemaInspector:
                 )
             lines.append("")
 
-        lines.append("relationships:")
+        # A bare `relationships:` is YAML null, which SchemaConfig refuses; a
+        # database without foreign keys must still yield a loadable draft.
+        lines.append("relationships:" if snapshot.relationships else "relationships: []")
         for rel in snapshot.relationships:
-            lines.append(f"  - from_table: {_yaml_str(rel.from_table)}")
-            lines.append(f"    to_table: {_yaml_str(rel.to_table)}")
+            from_key = namer.ref(rel.from_schema, rel.from_table)
+            to_key = namer.ref(rel.to_schema, rel.to_table, default_schema=rel.from_schema)
+            lines.append(f"  - from_table: {_yaml_str(from_key)}")
+            lines.append(f"    to_table: {_yaml_str(to_key)}")
             lines.append(f"    join_sql: {_yaml_str(rel.join_hint)}")
             lines.append("")
 

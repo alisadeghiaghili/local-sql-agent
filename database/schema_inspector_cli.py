@@ -10,7 +10,19 @@ Usage
         --db-url "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\
         --output-dir project_config_draft/ \\
         --sample-rows 10 \\
-        --include-schemas sales,ref
+        --include-schemas sales,ref \\
+        --exclude-schemas "*_Stg,Replay"
+
+``--exclude-schemas`` takes comma-separated ``fnmatch`` patterns, matched
+case-insensitively against schema names (``*_Stg`` skips ``Sales_Stg`` and
+``sales_stg``). When ``--include-schemas`` is given too, exclusion wins.
+
+The drafts are for a **first install**: they describe every table they find
+as a fresh entry. An existing deployment adds tables to its curated
+``schema.yaml`` with ``python scripts/sync_schema.py --add-tables
+'Schema.*'``, which keeps the text already written. At the end of a run the
+tool prints the table count per schema to stderr, and warns when more than
+:data:`LARGE_DRAFT_TABLES` tables were written.
 
 All progress messages are written to **stderr** so stdout can be piped or
 redirected without contamination.  With ``--dry-run`` the YAML is printed
@@ -27,6 +39,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 from core.console import use_utf8_console
@@ -42,6 +55,11 @@ from core.console import use_utf8_console
 # --output-dir.
 _PROTECTED_DIR_NAMES = ("project_config", "project_config.example")
 
+#: A draft with more tables than this earns a warning: every table described
+#: in ``schema.yaml`` costs prompt tokens, and a wide warehouse is better
+#: narrowed with ``--include-schemas`` / ``--exclude-schemas`` first.
+LARGE_DRAFT_TABLES = 150
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -54,6 +72,16 @@ def _build_parser() -> argparse.ArgumentParser:
             '      --db-url "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\\n'
             "      --output-dir project_config_draft/ \\\n"
             "      --include-schemas sales,ref\n"
+            "\n"
+            "  # skip staging and scratch schemas (fnmatch patterns, case-insensitive;\n"
+            "  # exclusion wins over --include-schemas)\n"
+            "  python -m database.schema_inspector_cli \\\n"
+            '      --db-url "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\\n'
+            '      --exclude-schemas "*_Stg,Replay,Alerts"\n'
+            "\n"
+            "The drafts are for a first install. An existing deployment adds tables with\n"
+            "  python scripts/sync_schema.py --add-tables 'Schema.*'\n"
+            "which keeps the text already curated in schema.yaml.\n"
         ),
     )
     p.add_argument(
@@ -83,6 +111,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SCHEMAS",
         default=None,
         help="Comma-separated schema names to include (default: all user schemas).",
+    )
+    p.add_argument(
+        "--exclude-schemas",
+        metavar="PATTERNS",
+        default=None,
+        help=(
+            "Comma-separated fnmatch patterns of schemas to skip, matched "
+            'case-insensitively (e.g. "*_Stg,Replay,Alerts"). Wins over '
+            "--include-schemas."
+        ),
     )
     p.add_argument(
         "--exclude-tables",
@@ -128,6 +166,43 @@ def _guard_output_dir(output_dir: Path) -> None:
             raise SystemExit(2)
 
 
+def _split_csv(value: str | None) -> list[str] | None:
+    """Split a comma-separated option into trimmed, non-empty items."""
+    if not value:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()] or None
+
+
+def _print_run_summary(snapshot: object) -> None:
+    """Print the end-of-run summary to stderr.
+
+    The table count per schema, one line saying the drafts are for a first
+    install (and how an existing deployment adds tables), and a warning when
+    more than :data:`LARGE_DRAFT_TABLES` tables were written.
+    """
+    tables = getattr(snapshot, "tables", [])
+    per_schema = Counter(t.schema or "(no schema)" for t in tables)
+    print("", file=sys.stderr)
+    print("Tables per schema:", file=sys.stderr)
+    for schema in sorted(per_schema, key=str.lower):
+        print(f"  {schema}: {per_schema[schema]}", file=sys.stderr)
+    print(f"  Total: {len(tables)}", file=sys.stderr)
+    print(
+        "These drafts are for a first install only. An existing deployment adds "
+        "tables with: python scripts/sync_schema.py --add-tables 'Schema.*' "
+        "(keeps the curated text).",
+        file=sys.stderr,
+    )
+    if len(tables) > LARGE_DRAFT_TABLES:
+        print(
+            f"WARNING: {len(tables)} tables were written (more than "
+            f"{LARGE_DRAFT_TABLES}). Every table described in schema.yaml costs "
+            "prompt tokens; narrow the run with --include-schemas or "
+            "--exclude-schemas, then check the size with scripts/prompt_budget.py.",
+            file=sys.stderr,
+        )
+
+
 def _write_or_print(path: Path, content: str, dry_run: bool) -> None:
     if dry_run:
         print(f"\n{'=' * 70}")
@@ -149,16 +224,9 @@ def main(argv: list[str] | None = None) -> int:
             "--db-url is required (or set DATABASE_URL / DB_CONNECTION_URL env var)."
         )
 
-    include_schemas: list[str] | None = (
-        [s.strip() for s in args.include_schemas.split(",") if s.strip()]
-        if args.include_schemas
-        else None
-    )
-    exclude_tables: list[str] | None = (
-        [t.strip() for t in args.exclude_tables.split(",") if t.strip()]
-        if args.exclude_tables
-        else None
-    )
+    include_schemas = _split_csv(args.include_schemas)
+    exclude_schemas = _split_csv(args.exclude_schemas)
+    exclude_tables = _split_csv(args.exclude_tables)
 
     output_dir = Path(args.output_dir)
     _guard_output_dir(output_dir)
@@ -171,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if include_schemas:
         print(f"  Schemas : {', '.join(include_schemas)}", file=sys.stderr)
+    if exclude_schemas:
+        print(f"  Skipping schemas: {', '.join(exclude_schemas)}", file=sys.stderr)
     if exclude_tables:
         print(f"  Excluded: {', '.join(exclude_tables)}", file=sys.stderr)
     print(f"  Samples : {args.sample_rows} values/column", file=sys.stderr)
@@ -187,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             include_schemas=include_schemas,
             exclude_tables=exclude_tables,
             fetch_row_counts=not args.no_row_counts,
+            exclude_schemas=exclude_schemas,
         )
     except ConnectionError as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
@@ -204,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     _write_or_print(output_dir / "relationships.yaml", relationships_yaml, args.dry_run)
     _write_or_print(output_dir / "schema.yaml",        schema_yaml,        args.dry_run)
 
+    _print_run_summary(snapshot)
     print("", file=sys.stderr)
     print("Done.", file=sys.stderr)
     if not args.dry_run:

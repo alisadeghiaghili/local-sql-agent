@@ -432,7 +432,11 @@ async function refreshOne(name, { force = false, deep = false } = {}) {
     }
     hideForbiddenBanner();
   } catch (err) {
-    body.innerHTML = "";
+    // A card is never left blank: every branch below writes its own text into
+    // the card body. The page-level banner (403) and notice (401) say what is
+    // wrong for the whole page; the card says it for itself, so someone looking
+    // at this card alone, or scrolled away from the top of the page, is not
+    // left with an empty box and no explanation.
     if (err instanceof AdminForbiddenError && CARDS_WHERE_403_IS_A_CAPABILITY_GAP.has(name)) {
       const capability = CARDS_WHERE_403_IS_A_CAPABILITY_GAP.get(name);
       body.innerHTML =
@@ -440,6 +444,9 @@ async function refreshOne(name, { force = false, deep = false } = {}) {
         `کلیدی با <code>--${capability}</code> (یا <code>--full-admin</code>) صادر کنید — ` +
         `<code>python -m scripts.issue_api_key</code>.</p>`;
     } else if (err instanceof AdminForbiddenError) {
+      body.innerHTML =
+        '<p class="admin-loading">این کلید برای این بخش دسترسی مدیریتی ندارد. ' +
+        "توضیح در هشدار بالای صفحه آمده است.</p>";
       showForbiddenBanner(
         "این کلید، کلید مدیریتی نیست — این کلید معتبر است ولی دسترسی مدیریتی ندارد. " +
         (err.message || ""),
@@ -451,6 +458,9 @@ async function refreshOne(name, { force = false, deep = false } = {}) {
       // you have". The key itself is kept -- it is unrecoverable, and a
       // 401 can be a restarted server rather than a bad key.
       updateKeyStatus(hasApiKey());
+      body.innerHTML = hasApiKey()
+        ? '<p class="admin-loading">سرور کلید را نپذیرفت (۴۰۱). توضیح در پیام بالای صفحه آمده است.</p>'
+        : '<p class="admin-loading">کلید API وارد نشده است. یک کلید مدیریتی وارد کنید.</p>';
       showNotice(
         "error",
         hasApiKey()

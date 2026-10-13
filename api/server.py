@@ -36,6 +36,10 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import config as cfg
+# Must stay ahead of every import below that reads project_config/ at import
+# time (security.sql_guard binds the schema allowlist): a broken file then
+# ends the process with three readable lines instead of a traceback.
+import api.startup_preflight  # noqa: F401
 import api.admin_access_requests_routes as admin_access_requests_routes
 import api.admin_config_routes as admin_config_routes
 import api.admin_feedback_routes as admin_feedback_routes

@@ -157,7 +157,11 @@ class TestServerStartupStillFailsFast:
     def test_an_empty_config_dir_stops_the_server_import(self, empty_config_dir):
         done = _run("import api.server", empty_config_dir)
         assert done.returncode != 0
-        assert "ConfigNotFoundError" in done.stderr
+        # One readable line (see core/config_preflight.py), not the
+        # ConfigNotFoundError traceback it used to be.
+        assert "Traceback" not in done.stderr
+        assert "not found" in done.stderr
+        assert "entities.yaml" in done.stderr
 
     @pytest.mark.parametrize(
         ("break_it", "expected"),
@@ -177,4 +181,5 @@ class TestServerStartupStillFailsFast:
         done = _run("import api.server", broken)
 
         assert done.returncode != 0
+        assert "Traceback" not in done.stderr
         assert expected in done.stderr

@@ -120,6 +120,7 @@ def _route(sql: str, datasource: str | None) -> str:
 
 def _execute(
     sql: str, params: Sequence[object] | None, datasource: str | None,
+    *, probe: bool = False,
 ) -> pd.DataFrame:
     """Shared implementation behind :func:`execute_sql` and
     :func:`execute_sql_params` — see :func:`execute_sql`'s docstring for the
@@ -133,7 +134,7 @@ def _execute(
     dialect = cfg.settings.sql_dialect
     profile = get_dialect_profile(dialect)
     source = _route(sql, datasource)
-    if datasource_nolock(source):
+    if not probe and datasource_nolock(source):
         # Only the text sent to the server changes: the caller keeps the
         # validated SQL (the audit trail's generated_sql is that text).
         sql = add_nolock_hints(sql)
@@ -209,7 +210,13 @@ def _execute(
         # database.errors.classify_database_error on the *original* error
         # rather than re-deriving anything from this RuntimeError's own
         # (already sanitised) text.
-        logger.error("SQL execution failed on data source %r: %s", source, exc)
+        # An operator probe (see execute_sql's `probe`) that is meant to fail
+        # is not an incident: DEBUG keeps the text available without a
+        # misleading ERROR (and the SQL and bound values) in the server log.
+        logger.log(
+            logging.DEBUG if probe else logging.ERROR,
+            "SQL execution failed on data source %r: %s", source, exc,
+        )
         classification = classify_database_error(exc)
         raise RuntimeError(f"Database error: {classification.client_message}") from exc
 
@@ -218,7 +225,9 @@ def _execute(
     return df
 
 
-def execute_sql(sql: str, *, datasource: str | None = None) -> pd.DataFrame:
+def execute_sql(
+    sql: str, *, datasource: str | None = None, probe: bool = False,
+) -> pd.DataFrame:
     """Execute *sql* against its data source and return the result as a DataFrame.
 
     Behaviour
@@ -286,6 +295,17 @@ def execute_sql(sql: str, *, datasource: str | None = None) -> pd.DataFrame:
         Run on this data source instead of the one derived from *sql*.
         For operator probes (``/health``, ``scripts/verify_deployment.py``)
         that must reach every source; request-serving code leaves it unset.
+    probe:
+        ``True`` only for an internal operator probe whose *expected*
+        outcome is a failure -- ``scripts/verify_deployment.py``'s query
+        timeout check runs a deliberate ``WAITFOR DELAY`` and wants the
+        timeout. Such a statement is sent exactly as written (no table hints,
+        even on a ``nolock: true`` source; it is not a query against the
+        application's tables and may not parse as a single statement), and
+        its failure is logged at DEBUG instead of as the ``SQL execution
+        failed`` error. Everything else -- routing, timeouts, the rollback-
+        only transaction, the row cap, the ``RuntimeError`` raised -- is
+        unchanged. Request-serving code never sets it.
 
     Returns
     -------
@@ -323,7 +343,7 @@ def execute_sql(sql: str, *, datasource: str | None = None) -> pd.DataFrame:
         ...
     RuntimeError: Database error: ...
     """
-    return _execute(sql, None, datasource)
+    return _execute(sql, None, datasource, probe=probe)
 
 
 def execute_sql_params(

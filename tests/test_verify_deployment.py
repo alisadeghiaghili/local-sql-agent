@@ -834,3 +834,122 @@ class TestCheckSchemaStructureMatchesDatabases:
             names = [c.__name__ for c in build_checks()]
         assert "check_schema_structure_matches_databases" in names
         assert "check_schema_structure_matches_databases" in _DEEP_CHECK_NAMES
+
+
+# ---------------------------------------------------------------------------
+# check_query_timeout: the expected timeout is not logged as a failure
+# ---------------------------------------------------------------------------
+
+class TestCheckQueryTimeoutIsQuiet:
+    """The check runs a deliberate ``WAITFOR DELAY`` and wants it to fail.
+
+    Two lines used to appear in the log for each data source: the warning
+    that ``WITH (NOLOCK)`` was not added (the statement is two statements and
+    does not parse as one T-SQL query) and the ``SQL execution failed``
+    error for the very timeout the check is looking for. The check passed
+    both times. SQLite stands in for the server: it refuses ``WAITFOR`` at
+    once, which is the same ``RuntimeError`` path as a timeout.
+    """
+
+    _NOISE = ("WITH (NOLOCK) was not added", "SQL execution failed")
+
+    @pytest.fixture()
+    def sqlite_source(self, monkeypatch):
+        from sqlalchemy import create_engine
+
+        import database.table_hints as table_hints
+
+        engine = create_engine("sqlite:///:memory:")
+        monkeypatch.setattr(table_hints, "_warned_reasons", set())
+        with override_settings(sql_dialect="sqlite"), \
+             patch("database.connection.get_engine", return_value=engine), \
+             patch("database.executor.get_engine", return_value=engine), \
+             patch("database.executor.datasource_nolock", return_value=True):
+            yield engine
+
+    def _noise(self, caplog) -> list[str]:
+        return [
+            r.getMessage() for r in caplog.records
+            if r.levelno >= logging.WARNING and any(n in r.getMessage() for n in self._NOISE)
+        ]
+
+    def test_the_check_passes_and_emits_neither_line(self, sqlite_source, caplog):
+        from scripts.verify_deployment import check_query_timeout
+
+        with caplog.at_level(logging.DEBUG):
+            result = check_query_timeout()
+
+        assert result.status == "PASS", result.detail
+        assert self._noise(caplog) == []
+
+    def test_the_failure_is_still_kept_at_debug_for_whoever_looks(self, sqlite_source, caplog):
+        from scripts.verify_deployment import check_query_timeout
+
+        with caplog.at_level(logging.DEBUG, logger="database.executor"):
+            check_query_timeout()
+
+        kept = [r for r in caplog.records if "SQL execution failed" in r.getMessage()]
+        assert [r.levelno for r in kept] == [logging.DEBUG]
+
+    def test_the_probe_statement_is_sent_without_table_hints(self, sqlite_source):
+        from scripts.verify_deployment import check_query_timeout
+
+        sent: list[str] = []
+        real = sqlite_source.connect
+
+        def spying_connect(*args, **kwargs):
+            conn = real(*args, **kwargs)
+            original = conn.exec_driver_sql
+            conn.exec_driver_sql = lambda sql, *a, **k: (sent.append(sql), original(sql, *a, **k))[1]
+            return conn
+
+        with patch.object(sqlite_source, "connect", spying_connect):
+            check_query_timeout()
+
+        waits = [s for s in sent if s.startswith("WAITFOR DELAY")]
+        assert waits, sent
+        assert all("NOLOCK" not in s for s in waits)
+
+    def test_a_real_query_failure_is_still_logged_as_an_error(self, sqlite_source, caplog):
+        from database.executor import execute_sql
+
+        with caplog.at_level(logging.WARNING, logger="database.executor"):
+            with pytest.raises(RuntimeError):
+                execute_sql("SELECT * FROM [missing_table]")
+
+        errors = [r for r in caplog.records if "SQL execution failed" in r.getMessage()]
+        assert [r.levelno for r in errors] == [logging.ERROR]
+
+    def test_without_probe_the_same_statement_does_log_both_lines(self, sqlite_source, caplog):
+        # Proves the fixture reproduces the noise, so the quiet tests above
+        # cannot pass merely because nothing would have been logged anyway.
+        from database.executor import execute_sql
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError):
+                execute_sql("WAITFOR DELAY '00:00:15'; SELECT 1 AS x")
+
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert all(noise in messages for noise in self._NOISE)
+
+    def test_a_real_query_still_gets_its_hint_on_a_nolock_source(self, sqlite_source):
+        from database.executor import execute_sql
+
+        with sqlite_source.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE t (a INTEGER)")
+        sent: list[str] = []
+        real = sqlite_source.connect
+
+        def spying_connect(*args, **kwargs):
+            conn = real(*args, **kwargs)
+            original = conn.exec_driver_sql
+            conn.exec_driver_sql = lambda sql, *a, **k: (sent.append(sql), original(sql, *a, **k))[1]
+            return conn
+
+        # SQLite rejects the T-SQL hint, so the call fails -- what matters is
+        # that the hint was added to the text sent, as before.
+        with patch.object(sqlite_source, "connect", spying_connect):
+            with pytest.raises(RuntimeError):
+                execute_sql("SELECT a FROM t")
+
+        assert any("SELECT a FROM t WITH (NOLOCK)" in s for s in sent), sent
