@@ -1979,6 +1979,8 @@ few verbatim questions.
 python scripts/harvest_golden.py --n 150
 #    -> eval_data/candidates.jsonl, status "pending_review". The model's own
 #       SQL is only a proposal. Refuses to overwrite without --force.
+#       Answers analysts have already confirmed (§18.1.1) come first, as
+#       "reviewed" cases, and do not count against --n.
 
 # 2. Give the analysts a spreadsheet (UTF-8 with BOM: Persian opens correctly).
 python scripts/golden_sheet.py export
@@ -2014,6 +2016,79 @@ should be declined as out of scope). Give a case a `datasource`
 one: that is what makes source-selection accuracy measurable.
 Re-harvest later with `--exclude eval_data/golden.jsonl` to add questions
 that are not already in the set.
+
+### 18.1.1 The easiest way to grow the set: analysts confirm answers as they work
+
+The spreadsheet in §18.1 costs the analysts a separate review session, and
+that is why a golden set tends not to get built. The web UI now lets them
+build it without one. Beside «این عدد درست نیست؟» (the wrong-answer flag),
+every answer whose query ran and returned a result carries a toggle,
+**«پاسخ درست است»** ("this answer is correct"). One click stores a
+confirmation; pressing it again withdraws it. A confirmation holds
+identifiers only (session, turn, the confirming principal, the request id
+and the time), never the question, the SQL or any result data, and it
+cannot be given to a turn that was rejected, declined or failed (the server
+answers `409`). Confirming an answer you had flagged removes the flag, and
+flagging one you had confirmed removes the confirmation: the later action
+wins.
+
+`harvest_golden.py` reads the confirmations by default, so the flow into the
+golden set is the one you already have, with the confirmed answers already
+reviewed:
+
+```bash
+python scripts/harvest_golden.py --n 150
+#    -> confirmed answers first (status "reviewed"), then the sample of
+#       "pending_review" candidates. Prints counts, including
+#       "confirmations: read N, included M (...)".
+python scripts/golden_sheet.py export
+#    -> confirmed rows already carry verdict "correct" and a note saying who
+#       confirmed them and when; an analyst only changes one they disagree
+#       with (to "wrong" or "skip") and reviews the rest as before.
+python scripts/golden_sheet.py import
+python -m eval.cli verify --golden eval_data/golden.jsonl            # look first
+python -m eval.cli verify --golden eval_data/golden.jsonl --accept   # then activate
+```
+
+What to know:
+
+- **Status.** A confirmed answer becomes a case with `status = "reviewed"`:
+  a person confirmed its `expected_sql` (the SQL that ran), and
+  `eval.cli verify` has not run it yet. It is not `pending_review` (that
+  would ask a second person to re-judge what the first already judged) and
+  not `active` (that would skip the gate). `verify --accept` is still what
+  runs the SQL against the database, records the rows and activates the case;
+  until then the regression gate skips it.
+- **Provenance.** The case's `notes` name the confirming analyst's principal
+  id, the confirmation time and the audit record it came from, and it is
+  tagged `origin:confirmed`. These are in the file and in `review.csv` (both
+  stay on the server, §18); the console output stays counts only.
+- **Never dropped by `--n`.** Confirmed cases are added before the stratified
+  sample and are not counted against it: `--n 150` gives every confirmed case
+  plus up to 150 sampled ones, and a question is never in the file twice.
+- **De-duplicated.** Two confirmations of the same question (after the
+  Persian/Arabic folding of §18.1) are one case, the most recent
+  confirmation's. A question already in the set (`--exclude`) is skipped.
+- **`--no-confirmations`** harvests only the sample, as before, and does not
+  touch the application database.
+- **The audit log must still hold the turn.** The question and SQL come from
+  the audit record; a confirmation whose record has rotated away is counted
+  (`no audit record`) and skipped, so harvest more often than the log
+  rotates.
+- **A click is a judgement, not a proof.** An analyst who confirms an answer
+  that merely looked right puts it into the set. `verify` still catches SQL
+  that no longer runs or returns nothing where something is expected, and the
+  sheet is the place to catch the rest.
+- **Setup.** The `turn_confirmations` table is created with the other
+  application-database tables the first time the server starts; a deployment
+  that manages the schema with Alembic runs `alembic upgrade head` (revision
+  `0005_turn_confirmations`). `scripts/migrate_app_db.py` carries it between
+  backends with the others.
+
+The confirmations also feed the admin panel's real-use quality card (§20.6).
+There they are a **lower-bound signal, not accuracy**: analysts confirm only
+some answers, and an unconfirmed answer is not a wrong one. The golden set
+and `eval.cli run` (§18.2, §18.3) are what measure accuracy.
 
 ### 18.2 Before an upgrade: the release gate
 
@@ -2388,3 +2463,39 @@ source and kept; it is rebuilt only when the configuration that feeds it
 changes. `build_prompt_segments` takes about 7 µs per call (it was 8 to 23 µs,
 growing with the prefix), so the prompt stage is not where a question's time
 goes.
+
+### 20.6 The same numbers on real use: the quality card
+
+§20.4 reads latency from a log on the server. The admin panel's card
+**«کیفیت در استفاده‌ی واقعی»** (and `GET /admin/quality?days=7`, for
+operations or security keys) shows them continuously, next to the other
+signals the audit log and the analysts' ratings already hold, over the last
+7, 30 or 90 days and over all time, overall and once per data source:
+
+- the share of questions that executed, were rejected by the guard, needed a
+  correction round, returned no rows (of those that executed) or were out of
+  scope, and the error rate by class (guard policy, guard correctable, scope
+  decline, transport, execution, other);
+- how many answers analysts confirmed («پاسخ درست است», §18.1.1) and flagged,
+  and the confirmed share of the answers they rated: a **lower bound, not
+  accuracy**, because they rate only some answers;
+- end-to-end latency p50/p95, and p50/p95 of each stage (`plan`, `prompt`,
+  `llm`, `guard`, `execute`, `interpret`), with the `llm` stage split into
+  `ttft` (queue plus prefill) and `generation`.
+
+The `llm` split exists only for calls made with `LLM_STREAM_TIMINGS=true`
+(§20.4). To get it, set `LLM_STREAM_TIMINGS=true` in `.env` and restart; the
+two `llm · ttft` and `llm · generation` rows fill from the first streamed
+call on, and stay empty (0 samples) until then. That is expected, and the
+card says so under the table. Records written before the restart never gain
+the fields, so give it a day before reading the 7-day figures. Read the split
+with the table in §20.4.
+
+The route reads the whole audit log, so it is cached for
+`ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` per window (the same cache as the
+deployment-checks and schema-drift cards, but it makes no warehouse call), and
+the card stays in the panel's 30-second auto-refresh; its refresh button
+recomputes at once. The same figures print from the command line with
+`python scripts/analyze_audit_log.py` (section "Real-use quality";
+`--quality-days N` sets the window, `--json` adds a `quality` object); both
+carry counts and percentiles only, never a question.
