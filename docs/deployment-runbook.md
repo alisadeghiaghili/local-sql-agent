@@ -25,7 +25,7 @@ verified, running server, with the command for each step and how to tell it
 worked. The numbered sections hold the detail it links to. A deployment that
 queries more than one database also follows §16, in the order it gives. An
 installation already running any 6.x release (6.7.0 included) that is moving to
-6.9.2 follows §17, which sequences the upgrade notes of every release in between
+6.9.3 follows §17, which sequences the upgrade notes of every release in between
 into one checklist.
 Before sending logs or configuration to anyone for help, read §19.
 
@@ -81,7 +81,7 @@ is the sign you can move on: do not continue past a step that did not show it.
    `Tables are in their data source` (several databases), and with
    `Schema structure matches the databases` as soon as the databases differ from
    the file. A file that only lacks the recorded column types passes that check
-   with a note (step 14 of "Upgrading from 6.0 to 6.9.2", §17).
+   with a note (step 14 of "Upgrading from 6.0 to 6.9.3", §17).
    *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
    (§16.3).
 7. **Review the proposal, replace `schema.yaml`, check**: read
@@ -1661,10 +1661,10 @@ raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
 with `password_env`; restart and run `python scripts/verify_deployment.py`.
 Remove the old `DB_URL_*` variable afterwards.
 
-## 17. Upgrading from 6.0 to 6.9.2
+## 17. Upgrading from 6.0 to 6.9.3
 
 One checklist for an installation that is running any 6.x release and is moving
-to 6.9.2. It puts the **Upgrading** notes of 6.0.1 to 6.9.2 in the order to do
+to 6.9.3. It puts the **Upgrading** notes of 6.0.1 to 6.9.3 in the order to do
 them, and adds what 6.7.0 and 6.9.0 bring that you will want to use (6.6.1 and
 6.7.0 have no **Upgrading** notes of their own); `CHANGELOG.md` has each
 release's full text. From 5.x, do the 6.0.0
@@ -1680,7 +1680,8 @@ one on 6.8.0 does steps 1 to 3 and 11 to 17; one on 6.9.0 does steps 1 to 3 and
 15 to 17; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
 `scripts/sync_schema.py` (which also records the column types the 6.9.2 note
 of step 3 is about), step 15 if a console-encoding workaround is still in place,
-and step 16. Steps 1 to 4, 14 and 16 to 17 apply to every installation. Steps 5 to
+and step 16; one on 6.9.2 does steps 1 to 3 and step 16 (6.9.3 changes no
+configuration format). Steps 1 to 4, 14 and 16 to 17 apply to every installation. Steps 5 to
 8 are each optional: do the ones that fit (a password move, a key file, a UI on
 another origin, several databases). Steps 9 to 13 and 15 each say what to check or decide, and
 need no action on an installation that does not use the thing they change.
@@ -1695,7 +1696,7 @@ Steps 18 and 19 come last on purpose.
    `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
    `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
    python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
-   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.9.2
+   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.9.3
    change no pin in `requirements.lock`, but run the command anyway.
 3. **Run the preflight before restarting**, in its own process:
    `python scripts/verify_deployment.py` (§3). Several releases made the
@@ -1706,7 +1707,10 @@ Steps 18 and 19 come last on purpose.
      duplicate in `datasources.yaml` or `schema.yaml` stops the server; one in
      another file fails when that file is first read; `relationships.yaml` is
      skipped with a warning. Remove the duplicate. The later one was the one in
-     effect, so keep that block's content if it is what you meant.
+     effect, so keep that block's content if it is what you meant. From 6.9.3
+     the error lists every duplicate key in the file at once (`N duplicate keys:
+     'X' (lines A, B, C); ...`, at most 20, then `... and M more`), so one run
+     shows all of them; a single duplicate reads as above.
    - *6.4.0, a `.env` line python-dotenv cannot use.* `Invalid configuration:`
      with each line number and variable name. A multi-line `API_KEYS_JSON` must
      be wrapped in single quotes with no apostrophe inside, or moved to
