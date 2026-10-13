@@ -244,3 +244,70 @@ class TestReadCatalogueReflected:
             ("CustomerID",), ("", "customer"), ("ID",),
         )
         assert catalogue[("", "orderids")].is_view is True
+
+
+class TestAttachedSqliteDatabasesAreSchemas:
+    """An ``ATTACH``ed SQLite database is a schema, as it is in SQLAlchemy.
+
+    The tests give a SQLite file a warehouse's many schemas this way. The
+    reflected readers used to look at the connection's own database only, so
+    every attached table was missing from the catalogue, from the table list
+    behind the "table lives in another data source" hint and from the column
+    lists, and a sync would have called all of them new or absent.
+    """
+
+    @pytest.fixture()
+    def engine(self, tmp_path):
+        from sqlalchemy import event
+
+        for name in ("sales", "ref"):
+            side = create_engine(f"sqlite:///{(tmp_path / f'{name}.db').as_posix()}")
+            with side.begin() as conn:
+                conn.execute(text("CREATE TABLE Widget (ID INTEGER PRIMARY KEY, Name TEXT)"))
+            side.dispose()
+        engine = create_engine(f"sqlite:///{(tmp_path / 'main.db').as_posix()}")
+
+        @event.listens_for(engine, "connect")
+        def attach(dbapi_connection, _record):
+            for name in ("sales", "ref"):
+                dbapi_connection.execute(
+                    f'ATTACH DATABASE ? AS "{name}"', ((tmp_path / f"{name}.db").as_posix(),)
+                )
+
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE Own (ID INTEGER)"))
+            conn.execute(text(
+                "CREATE TABLE sales.Line (ID INTEGER PRIMARY KEY, WidgetID INTEGER, "
+                "FOREIGN KEY (WidgetID) REFERENCES Widget (ID))"
+            ))
+            conn.execute(text("CREATE VIEW sales.WidgetNames AS SELECT Name FROM Widget"))
+        yield engine
+        engine.dispose()
+
+    def test_the_same_table_name_in_two_schemas_is_two_entries(self, engine):
+        assert list_tables(engine) == {
+            ("", "own"),
+            ("sales", "widget"), ("sales", "line"), ("sales", "widgetnames"),
+            ("ref", "widget"),
+        }
+
+    def test_columns_are_listed_per_schema(self, engine):
+        columns = list_columns(engine)
+        assert columns[("sales", "widget")] == {"id", "name"}
+        assert columns[("sales", "line")] == {"id", "widgetid"}
+        assert columns[("", "own")] == {"id"}
+
+    def test_the_catalogue_keeps_the_schema_and_its_own_case(self, engine):
+        catalogue = read_catalogue(engine)
+        assert set(catalogue) == set(list_tables(engine))
+        assert catalogue[("sales", "widget")].schema == "sales"
+        assert catalogue[("sales", "widget")].primary_key == ("ID",)
+        assert catalogue[("sales", "widgetnames")].is_view is True
+        assert catalogue[("", "own")].schema == ""
+
+    def test_a_key_inside_a_schema_points_at_a_table_of_that_schema(self, engine):
+        (fk,) = read_catalogue(engine)[("sales", "line")].foreign_keys
+        assert fk.ref_location == ("sales", "widget")
+
+    def test_main_and_temp_are_not_extra_schemas(self, engine):
+        assert {schema for schema, _ in list_tables(engine)} == {"", "sales", "ref"}
