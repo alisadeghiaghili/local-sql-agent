@@ -539,8 +539,16 @@ Things to know before you run it:
 python -m database.schema_inspector_cli \
     --db-url "mssql+pyodbc://reader:p%40ss@dbhost:1433/WarehouseDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
     --output-dir project_config_draft \
-    --include-schemas sales,ref
+    --include-schemas sales,ref \
+    --exclude-schemas "*_Stg,Replay,Alerts"
 ```
+
+`--exclude-schemas` takes comma-separated `fnmatch` patterns, matched against
+schema names without regard to case (`*_Stg` skips `Sales_Stg` and `sales_stg`;
+a plain name skips just that schema). When `--include-schemas` is also given,
+exclusion wins. Use it to leave staging, replay and scratch schemas out of a
+warehouse that has many of them: every table in `schema.yaml` costs prompt
+tokens (§16.6).
 
 Without `--db-url` it reads the `DATABASE_URL` or `DB_CONNECTION_URL`
 environment variable of the shell it runs in (unlike the wizard it does not
@@ -551,20 +559,35 @@ the password percent-encoded in it. Other options: `--exclude-tables a,b`,
 of writing). It writes `schema.yaml`, `entities.yaml`, `aliases.yaml` and
 `relationships.yaml` into the draft directory, never into `project_config/` or
 `project_config.example/` (it refuses those two names with exit code 2), and it
-prints `Done.` at the end. The draft directory is git-ignored.
+prints `Done.` at the end. The draft directory is git-ignored. At the end of a
+run it also prints, to stderr, the number of tables per schema, a reminder that
+the drafts are for a first install only, and a warning when more than 150 tables
+were written (narrow the run with `--include-schemas` / `--exclude-schemas`, then
+size the prompt with `python scripts/prompt_budget.py`).
 
-The draft is a starting point, not a `schema.yaml` to deploy: every description
-is a placeholder (`TO BE FILLED`), column notes may quote real values read from
-live rows, and there is no `db_schema` on any table. Treat the directory as
-sensitive until you have rewritten those notes, write real descriptions, add
-`db_schema` to every table (§16.3), and then copy `schema.yaml` into
+Every table in the draft `schema.yaml` carries `db_schema`. A table is keyed by
+its bare name when no other table in the run has that name; when the same name
+occurs in more than one schema (`Trade` in `sales` and in `ref`), every
+occurrence is keyed `Schema.Table` (`sales.Trade`, `ref.Trade`), and the
+`relationships:` entries and the entity names in `entities.yaml` are spelled the
+same way (`docs/design/TABLE-NAMES.md`). A file that repeats a key is refused on
+load, and the error lists every repeated key at once.
+
+**The drafts are for a first install only.** They describe every table they find
+as a new entry, so they cannot be merged into a `schema.yaml` you have already
+curated. The draft is a starting point, not a `schema.yaml` to deploy: every
+description is a placeholder (`TO BE FILLED`) and column notes may quote real
+values read from live rows. Treat the directory as sensitive until you have
+rewritten those notes, write real descriptions, and then copy `schema.yaml` into
 `project_config/`. Run `tests/test_schema_registry_snapshot.py` after editing it,
 as the README says, and `python scripts/verify_deployment.py` (§3) to load it.
 
-Once `schema.yaml` is in `project_config/`, keep it current with
-`python scripts/sync_schema.py` (§16.3) rather than redrafting it: the
-inspector writes a new draft from scratch each time, while the sync keeps
-your descriptions and only brings in what changed in the databases.
+An existing deployment does not redraft. Once `schema.yaml` is in
+`project_config/`, keep it current with `python scripts/sync_schema.py` (§16.3),
+and add the tables of a new schema with
+`python scripts/sync_schema.py --add-tables 'Schema.*'`: it keeps your
+descriptions and only brings in what changed in the databases, while the
+inspector writes a new draft from scratch each time.
 
 ## 3. Run the preflight
 
@@ -1262,6 +1285,11 @@ if anything else differs):
 | Table in a database, not in `schema.yaml` | Reports it only; `--add-tables 'sales.*'` (a glob on `schema.table`, repeatable) appends the matching ones with draft descriptions |
 | Table in `schema.yaml`, in no source | Keeps it with `# not found in any data source`; `--prune` removes it (unless `relationships:` still names it) |
 | Table with no `columns:` key | Left alone (described only, deliberately not queryable) |
+
+To bring a whole new schema into a deployment that already has a curated
+`schema.yaml`, use `--add-tables 'Schema.*'` here, not the inspector of §2.3:
+the inspector's drafts are for a first install only, and the sync keeps the text
+you have already written.
 
 `column_types:` is a new optional map per table, `{column: SQL type}`, written
 only by this script; nothing reads it at run time, so the prompt and the guard's
