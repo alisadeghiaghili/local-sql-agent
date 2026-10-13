@@ -67,6 +67,95 @@ class TestDuplicateKeysAreRefused:
             safe_load_strict("? [1, 2]\n: v\n")
 
 
+def _doc_with_duplicates(n: int) -> str:
+    """``n`` keys ``k00``..., each written twice; ``k00`` on lines 1 and 2."""
+    return "".join(f"k{i:02d}: 1\nk{i:02d}: 2\n" for i in range(n))
+
+
+class TestEveryDuplicateIsReported:
+    def test_one_duplicate_keeps_the_single_key_message(self):
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict("a: 1\nb: 2\na: 3\n")
+        assert str(excinfo.value) == "duplicate key 'a' (first on line 1, again on line 3)"
+
+    def test_several_duplicates_are_listed_together_in_file_order(self):
+        text = "b: 1\na: 1\nb: 2\nc: 1\na: 2\nc: 2\n"
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(text)
+        assert str(excinfo.value) == (
+            "3 duplicate keys: 'b' (lines 1, 3); 'a' (lines 2, 5); 'c' (lines 4, 6)"
+        )
+
+    def test_a_key_written_three_times_lists_all_its_lines(self):
+        text = "a: 1\nb: 1\na: 2\nb: 2\na: 3\n"
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(text)
+        assert str(excinfo.value) == (
+            "2 duplicate keys: 'a' (lines 1, 3, 5); 'b' (lines 2, 4)"
+        )
+
+    def test_a_lone_key_written_three_times_names_every_later_line(self):
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict("a: 1\na: 2\na: 3\n")
+        assert str(excinfo.value) == (
+            "duplicate key 'a' (first on line 1, again on lines 2, 3)"
+        )
+
+    def test_at_most_twenty_are_listed_then_a_count_of_the_rest(self):
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(_doc_with_duplicates(23))
+        message = str(excinfo.value)
+        assert message.startswith("23 duplicate keys: 'k00' (lines 1, 2); 'k01' (lines 3, 4)")
+        assert message.count(" (lines ") == 20
+        assert "'k19' (lines 39, 40)" in message
+        assert "'k20'" not in message
+        assert message.endswith("; ... and 3 more")
+
+    def test_exactly_twenty_have_no_tail(self):
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(_doc_with_duplicates(20))
+        message = str(excinfo.value)
+        assert message.startswith("20 duplicate keys: ")
+        assert "more" not in message
+
+    def test_nested_mappings_are_reported_with_the_top_level(self):
+        text = (
+            "tables:\n"            # 1
+            "  A:\n"               # 2
+            "    x: 1\n"           # 3
+            "    x: 2\n"           # 4
+            "  B:\n"               # 5
+            "    y: 1\n"           # 6
+            "tables2:\n"           # 7
+            "  inner: {k: 1, k: 2}\n"  # 8
+            "tables:\n"            # 9
+            "  C: {}\n"            # 10
+        )
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(text)
+        assert str(excinfo.value) == (
+            "3 duplicate keys: 'tables' (lines 1, 9); 'x' (lines 3, 4); 'k' (lines 8, 8)"
+        )
+
+    def test_same_key_in_two_sibling_mappings_is_two_duplicates(self):
+        text = "p:\n  k: 1\n  k: 2\nq:\n  k: 1\n  k: 2\n"
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(text)
+        assert str(excinfo.value) == "2 duplicate keys: 'k' (lines 2, 3); 'k' (lines 5, 6)"
+
+    def test_a_block_overridden_by_a_later_duplicate_is_still_checked(self):
+        # The first ``a`` block loses to the second, but a repeat inside it
+        # is still an operator mistake.
+        text = "a:\n  x: 1\n  x: 2\na:\n  y: 1\n"
+        with pytest.raises(yaml.YAMLError) as excinfo:
+            safe_load_strict(text)
+        assert str(excinfo.value) == "2 duplicate keys: 'a' (lines 1, 4); 'x' (lines 2, 3)"
+
+    def test_duplicate_inside_a_list_item_is_reported(self):
+        with pytest.raises(yaml.YAMLError, match=r"duplicate key 'n' \(first on line 2, again on line 3\)"):
+            safe_load_strict("items:\n  - n: 1\n    n: 2\n")
+
+
 class TestNonDuplicatesAreAccepted:
     def test_same_key_in_sibling_mappings(self):
         assert safe_load_strict("a: {k: 1}\nb: {k: 2}\n") == {
@@ -186,6 +275,24 @@ class TestOperatorSeesTheRefusal:
                 load_schema()
         assert str(excinfo.value) == (
             "[schema.yaml] duplicate key 'tables' (first on line 1, again on line 5)"
+        )
+
+    def test_every_duplicate_reaches_the_operator_unchanged(self, tmp_path):
+        text = "tables:\n  A: {}\n  B: {}\n  A: {}\n  B: {}\nrelationships: []\n"
+        expected = "2 duplicate keys: 'A' (lines 2, 4); 'B' (lines 3, 5)"
+        with pytest.raises(ValueError) as from_text:
+            validate_schema_yaml_text(text)
+        assert str(from_text.value) == f"[schema.yaml] {expected}"
+        (tmp_path / "schema.yaml").write_text(text, encoding="utf-8")
+        with override_settings(project_config_dir=str(tmp_path)):
+            with pytest.raises(ValueError) as from_disk:
+                load_schema()
+        assert str(from_disk.value) == f"[schema.yaml] {expected}"
+        with pytest.raises(ValueError) as from_datasources:
+            validate_datasources_yaml_text("datasources: {}\ndatasources: {}\nx: 1\nx: 2\n")
+        assert str(from_datasources.value) == (
+            "[datasources.yaml] is not valid YAML: "
+            "2 duplicate keys: 'datasources' (lines 1, 2); 'x' (lines 3, 4)"
         )
 
     def test_a_clean_file_still_loads(self):
