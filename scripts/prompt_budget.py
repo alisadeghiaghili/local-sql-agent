@@ -124,6 +124,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console
 import config as cfg  # noqa: E402 - loads .env, like every entry point
+from core.config_preflight import (  # noqa: E402
+    PROMPT_BUDGET_IMPORT_FILES,
+    exit_if_project_config_unusable,
+)
+
+# The imports below read project_config/ (prompt_engine.static_prefix binds
+# the schema's columns). Run as a program, a broken file ends with one line
+# and exit code 2, as scripts/sync_schema.py does, not a traceback. Imported
+# as a module (scripts/sync_schema.py, the tests) nothing is checked here and
+# the loaders' ValueError reaches the importer as before.
+if __name__ == "__main__":
+    use_utf8_console()
+    exit_if_project_config_unusable(PROMPT_BUDGET_IMPORT_FILES, status=2)
+
 import database.datasources as datasources  # noqa: E402
 from knowledge.config_loader import load_system_prompt, resolve_system_prompt_path  # noqa: E402
 from llm.endpoints import (  # noqa: E402
