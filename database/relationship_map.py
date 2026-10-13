@@ -98,7 +98,7 @@ def _load_from_yaml(path: Path) -> dict[tuple[str, str], list[str]]:
         logger.warning("Cannot read %s: %s", path, exc)
         return {}
 
-    for entry in raw.get("relationships", []):
+    for entry in raw.get("relationships") or []:  # null when no entry is left
         from_t = entry.get("from_table", "").strip()
         to_t   = entry.get("to_table",   "").strip()
         hint   = entry.get("join_hint",  "").strip()

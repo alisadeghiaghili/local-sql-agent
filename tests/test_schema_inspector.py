@@ -236,6 +236,14 @@ class TestDraftsQuoteTheValuesTheyQuote:
         assert set(synonyms) == {'pipe 5" steel', "path\\to", "شرکت نمونه"}
         assert sorted(synonyms["path\\to"]) == ['col"umn', "odd name"]
 
+    def test_relationships_draft_without_any_foreign_key_is_an_empty_list_not_null(self):
+        # A warehouse that declares no foreign key at all; `relationships:` alone is null.
+        snap = SchemaSnapshot(tables=[_table("A", "sales")], source_url="mssql://host/db")
+
+        text = SchemaInspector("sqlite://").draft_relationships_yaml(snap)
+
+        assert safe_load_strict(text) == {"relationships": []}
+
     def test_relationships_draft_parses_and_keeps_the_values(self):
         text = SchemaInspector("sqlite://").draft_relationships_yaml(self._snapshot_with_awkward_values())
 

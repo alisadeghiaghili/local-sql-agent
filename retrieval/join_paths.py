@@ -119,7 +119,9 @@ def _relationships_yaml_entries() -> list[dict]:
         raw = safe_load_strict(path.read_text(encoding="utf-8")) or {}
     except Exception:  # noqa: BLE001 - an unreadable optional file adds no edges
         return []
-    entries = raw.get("relationships", []) if isinstance(raw, dict) else []
+    # `relationships:` with nothing under it (every entry commented out, or the
+    # inspector's draft for a database with no foreign keys) is a null, not [].
+    entries = (raw.get("relationships") if isinstance(raw, dict) else None) or []
     return [e for e in entries if isinstance(e, dict)]
 
 

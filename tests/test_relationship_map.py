@@ -87,6 +87,14 @@ relationships:
         with override_settings(project_config_dir=str(tmp_path)):
             assert relationship_map.get_relationship_map() == {}
 
+    @pytest.mark.parametrize("body", ["relationships:\n", "# every entry commented out\nrelationships: []\n", "{}\n", ""])
+    def test_a_file_with_no_entry_left_loads_as_empty(self, tmp_path, body):
+        # `relationships:` with nothing under it is YAML null, which is what a
+        # hand-edit that comments out the last entry leaves behind.
+        (tmp_path / "relationships.yaml").write_text(body, encoding="utf-8")
+        with override_settings(project_config_dir=str(tmp_path)):
+            assert relationship_map.get_relationship_map() == {}
+
     def test_reset_forces_a_reload_from_the_currently_configured_directory(self, tmp_path):
         with override_settings(project_config_dir=str(tmp_path)):
             assert relationship_map.get_relationship_map() == {}

@@ -843,7 +843,7 @@ class SchemaInspector:
             f"# Generated: {snapshot.generated_at} from {snapshot.source_url}",
             f"# Relationships found: {len(snapshot.relationships)}",
             "",
-            "relationships:",
+            "relationships:" if snapshot.relationships else "relationships: []",
         ]
         for rel in snapshot.relationships:
             lines.append(f"  - from_table: {_yaml_str(rel.from_table)}")
