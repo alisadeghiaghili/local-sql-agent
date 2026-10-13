@@ -565,6 +565,19 @@ value is in being run by a human — and `database/schema_inspector.py` and
 `relationship_map.py` are excluded as a declared ratchet, with the reason
 and the condition for their return written next to the exclusion.
 
+**The setup tools are tested on a warehouse-shaped fixture, not only on small
+sample schemas.** [`tests/_warehouse_shape.py`](tests/_warehouse_shape.py)
+builds, once per session, two SQLite data sources with the shape of a real
+warehouse and invented names: about 260 and 75 tables, many schemas (fact,
+dimension, staging, change-capture, `dbo`), the same table name in up to four
+schemas, one dimension in both sources, no declared foreign keys, empty tables,
+Persian text, and a name with a space and one with a dot. It also writes a
+curated `project_config/`. [`tests/test_setup_on_warehouse_shape.py`](tests/test_setup_on_warehouse_shape.py)
+runs the schema inspector, `scripts/sync_schema.py`, `scripts/assign_datasources.py`,
+`scripts/prompt_budget.py`, the `scripts/verify_deployment.py` checks that need
+no SQL Server and `python -m eval.cli recall` on it, and every one of them must
+stay green: a new setup tool, or a change to one, is not done until it is.
+
 CI runs on every pull request to `main` and every push to it, via GitHub
 Actions on Ubuntu, Windows and macOS across Python 3.11, 3.12 and 3.13, each
 combination once on the newest releases `requirements.txt` allows and once on
