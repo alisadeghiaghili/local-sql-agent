@@ -287,6 +287,7 @@ python -m api
 | `LLM_EXTRA_BODY` | *(empty)* | JSON object merged into every chat-completions request. How you turn a model's reasoning off, since that is not in the OpenAI schema and every server spells it differently |
 | `LLM_PREFIX_WARMUP_ON_STARTUP` | `true` | Send the model server each data source's static prompt prefix once at start-up (background thread, `max_tokens=1`) so the first question does not pay the full prefill. Inert unless the static-prefix path is used; needs prefix caching on the model server (`vllm serve --enable-prefix-caching`). `POST /admin/llm/warmup` does it on demand. Runbook §20 |
 | `LLM_PREFIX_WARMUP_TIMEOUT_SECONDS` | `180` | Total time budget of one warm-up pass |
+| `LLM_PREFIX_KEEPWARM_SECONDS` | `0` (off) | Re-send each static prefix to the model server every N seconds (`0` or at least `30`), so a model server shared with other users does not evict it between questions. A source a real question used within N seconds is skipped, so it sends nothing under traffic. Same rules as the warm-up; paused in maintenance mode. `300` is recommended on a shared server. `GET /admin/llm/warmup` shows its last run. Runbook §20.7 |
 | `LLM_STREAM_TIMINGS` | `false` | Stream the model call and reassemble the same response, to record `ttft_ms` (queue + prefill) and `generation_ms` in the audit `llm` block; `reasoning_tokens` is recorded either way. Runbook §20.4 |
 | `PROMPT_RETRIEVAL_TOKEN_BUDGET` | `6000` | Estimate (`len(text) // 4`, which undercounts Persian by about 15%) up to which the whole schema goes into the prompt as one cacheable, byte-identical prefix; above it the prompt is built per question from retrieved tables. With several data sources it applies to each source's own prefix, not their sum. `python scripts/prompt_budget.py` measures real tokens and prints the value to set |
 | `RETRIEVAL_EXTRA_TABLES` | `3` | Ranked tables added beside the ones an alias or fact pattern named; `0` restores the old behaviour. The `RETRIEVAL_*` settings apply only to a source on the retrieval path (over the budget above); runbook §18.5 |
@@ -479,7 +480,8 @@ local-sql-agent/
 ├── llm/
 │   ├── sql_agent.py          #   generate → clean → auto-correct loop
 │   ├── router.py             #   task → endpoint routing, fallback
-│   ├── warmup.py             #   prefix-cache warm-up at start-up and POST /admin/llm/warmup
+│   ├── warmup.py             #   prefix-cache warm-up at start-up, the periodic keep-warm, POST /admin/llm/warmup
+│   ├── prefix_activity.py    #   when a real request last used each static prefix (the keep-warm skips what is warm)
 │   ├── source_routing.py     #   per-question data source + the single OUT_OF_SCOPE retry
 │   ├── providers.py          #   OpenAI-compatible provider (retries + back-off)
 │   └── base.py               #   LLMBackend ABC

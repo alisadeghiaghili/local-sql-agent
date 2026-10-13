@@ -2412,7 +2412,8 @@ load balancer (the warm-up reaches whichever replica answers). After a model
 server restart, run the warm-up by hand (§20.3). After editing the system
 prompt, business rules, schema or examples in the admin panel the prefix
 changes and the old cache entry is useless; the same manual call prepares the
-new one.
+new one. For the eviction under other people's traffic, `LLM_PREFIX_KEEPWARM_SECONDS`
+repeats the warm-up on an interval (§20.7).
 
 ### 20.3 Warming on demand: `POST /admin/llm/warmup`
 
@@ -2471,7 +2472,7 @@ read it:
 
 | You see | It means | Do |
 |---|---|---|
-| High `ttft_ms`, `prompt_tokens` near the prefix size, `prefix_cache_hit: false` | The prefix was prefilled: a cold cache | Check §20.1 (prefix caching on?), run §20.3 after restarts |
+| High `ttft_ms`, `prompt_tokens` near the prefix size, `prefix_cache_hit: false` | The prefix was prefilled: a cold cache (`prefix_cache_hit` only says the prompt was large, §20.8; the time is what says it was cold) | Check §20.1 (prefix caching on?), run §20.3 after restarts, consider §20.7 |
 | High `ttft_ms`, `prompt_tokens` small, `prefix_cache_hit: true` | The model server queued the request behind others | Look at the model server's load and at `MAX_CONCURRENT_REQUESTS` (how many questions this server lets through at once), not at the prompt |
 | Low `ttft_ms`, high `generation_ms` | Decoding is the cost | Next row |
 | `reasoning_tokens` is most of `completion_tokens` | The model spends its time thinking | `LLM_EXTRA_BODY` to lower or switch off reasoning (§8, `.env.example`) or accept it; raising `LLM_NUM_PREDICT` only makes the call longer |
@@ -2523,3 +2524,152 @@ recomputes at once. The same figures print from the command line with
 `python scripts/analyze_audit_log.py` (section "Real-use quality";
 `--quality-days N` sets the window, `--json` adds a `quality` object); both
 carry counts and percentiles only, never a question.
+
+### 20.7 Keeping the cache warm: `LLM_PREFIX_KEEPWARM_SECONDS`
+
+The start-up warm-up (§20.2) primes the model server's prefix cache once. On a
+model server that other people also use, the cache does not stay primed: when
+their traffic needs the memory, the least recently used prefix is evicted, and
+the next question pays the whole prefill again (about a minute for a large
+prefix on a large local model, and several times that when the server is also
+busy). `LLM_PREFIX_KEEPWARM_SECONDS` (default `0`, off) makes this server send
+each data source's prefix again every that many seconds, so the prefix is never
+the one that has gone unused longest.
+
+What it sends is the warm-up's request, built by the same code: the prefix
+alone, `max_tokens=1`, `temperature=0`, the sampling fields and `LLM_EXTRA_BODY`
+real requests send. The rules are the warm-up's, too:
+
+- **A source a real question used within the last interval is skipped.** That
+  question already refreshed the server's cache, so under traffic the
+  keep-warm sends nothing at all. It only ever fills the quiet stretches.
+- Nothing for a source on the retrieval path (§16.6), nothing under
+  `LLM_PROVIDER=mock`, and nothing to an endpoint that is not trusted unless
+  `LLM_ALLOW_REMOTE` is on.
+- A failure is one `WARNING` line (`LLM prefix warm-up: source=... failed after N ms
+  (ReadTimeout)`), not one per pass: a repeat of the same outcome is logged at
+  `DEBUG` until the outcome changes, and the pass that succeeds again says
+  `(recovered after N failed pass(es))`. No line holds prompt text, response
+  text or a key. A failed pass never affects a question.
+- It **pauses while maintenance mode is on** (nothing is sent; the status
+  says `paused`) and **stops at shutdown**.
+- The first pass is one interval after start-up, not at once; the start-up
+  warm-up (§20.2) is what primes a cold server.
+
+**Recommended value: `300`** (five minutes) for a model server shared with
+other users, set in `.env`, then restart. The value must be `0` or at least
+`30`; `python scripts/verify_deployment.py` and the server's start-up refuse
+anything else. The reasoning: the server's cache has no timer, it evicts the
+oldest entry when memory runs short, so what matters is that your prefix is
+never much older than other people's traffic can age it. Five minutes keeps it
+younger than almost any other entry while sending twelve small requests an
+hour per source. Go lower (`120`) only if the check below shows the prefix is
+gone between passes; do not go below `60`. Leave it at `0` on a model server
+only this deployment uses (nothing else evicts the prefix), when the server
+does not cache prefixes (§20.1), and when every source is on the retrieval
+path (there is nothing to keep).
+
+**What it costs.**
+
+- *Under traffic, nothing.* A source with a question in the last interval is
+  skipped, so a busy deployment sends no keep-warm request at all.
+- *Idle, with the prefix still cached:* per source and pass, one request that
+  the server answers from its cache with a single generated token (milliseconds
+  to about a second of server time), so about 12 requests an hour at `300`.
+- *Idle, with the prefix evicted:* one full prefill, the same cost the next
+  question would have paid. The keep-warm moves that cost off an analyst's
+  question; it does not add a second one unless nobody then asks. On a server
+  that evicts the prefix between *every* pass this is a prefill every interval
+  for no benefit, which is what the check below catches.
+
+**What it saves.** One cold question's wait (the prefill time) for every
+eviction it prevents. The honest estimate is `cold questions per day it
+prevents × prefill seconds`; the audit log gives the first term: the questions
+whose `llm_ms` (or `ttft_ms`, §20.4) sits at the prefill time after an idle
+stretch, and `python scripts/prompt_budget.py` the prefix size.
+
+**Check it is working.**
+
+```bash
+curl -H "Authorization: Bearer $OPS_KEY" http://localhost:8000/admin/llm/warmup
+```
+
+```json
+{"keepwarm": {"enabled": true, "interval_seconds": 300.0, "running": true,
+              "paused": false, "runs": 12, "last_run_at": "2030-01-01T10:20:00+00:00",
+              "last_run_outcome": "warmed",
+              "last_run": [{"source": null, "status": "warmed", "detail": null,
+                            "duration_ms": 640, "prompt_tokens": 4612, "cached_tokens": 4608}]}}
+```
+
+`last_run_outcome` is `warmed` (a prefix was sent and answered), `skipped`
+(every source was kept warm by questions, is on the retrieval path or is not
+allowed; each entry's `detail` says which), `failed`, `paused` (maintenance
+mode) or `busy` (another warm-up was running). With `--enable-prompt-tokens-details` on the
+model server, `cached_tokens` close to `prompt_tokens` and a short
+`duration_ms` mean the prefix was still cached when the keep-warm arrived: the
+interval is short enough. `cached_tokens` far below `prompt_tokens`, pass after
+pass, means the server evicts the prefix faster than the interval: lower it, or
+turn the keep-warm off if the server evicts it whatever you do. The same
+object is returned as `keepwarm` by `POST /admin/llm/warmup` (§20.3), and
+`enabled: false` comes with a `reason` (`LLM_PREFIX_KEEPWARM_SECONDS is 0`,
+`LLM_PROVIDER=mock has no model server`).
+
+**What it cannot do.** It does not make the model server faster when other
+people's requests are queued ahead of yours; a question that waits in their
+queue with a warm prefix is still slow (§20.4: a high `ttft_ms` with a short
+prompt). It keeps one replica warm, the one that answers, not each replica
+behind a load balancer. And it keeps only the *static prefix* warm: a source on
+the retrieval path has none, and its prompts are rebuilt for each question (see
+§20.8 for the one shape of retrieval prompt that is nevertheless identical
+every time).
+
+### 20.8 Reading `prefix_cache_hit`, and how large the prefix is
+
+**`prefix_cache_hit` in the audit `llm` block is not the model server's word
+for it.** It is derived: `prompt_tokens < 0.5 × the source's static-prefix
+estimate` (`docs/api-contract-v2.md` §6). That was a cache signal when the
+backend reported only the tokens it had to compute; an OpenAI-compatible
+server such as vLLM reports the whole prompt in `usage.prompt_tokens` whether
+or not most of it came from the cache. So today `true` means *the prompt was
+short* (a question that went through the retrieval path, or a small source),
+and `false` means *the prompt was about as large as the whole prefix*, which
+is a request that carried it, cached or not. A request can be `false` and
+return in under a second (the server had the prefix) or `false` and take a
+minute (it did not). To tell, look at the request's time against its size:
+
+| `prompt_tokens` | `llm.total_ms` | Reading |
+|---|---|---|
+| near the prefix size | about a second | the server had the prefix cached |
+| near the prefix size | a prefill's worth (tens of seconds) | cold: the prefix was computed |
+| small | long | not a prefill: the request waited behind other people's, or the model decoded for long (`ttft_ms` and `reasoning_tokens`, §20.4, say which) |
+
+The server's own count of cached tokens is `usage.prompt_tokens_details.cached_tokens`
+(vLLM: `--enable-prompt-tokens-details`); the warm-up and keep-warm entries
+report it as `cached_tokens` when the server sends it.
+
+**Prefix size.** The prefix is most of a cold question's cost, so its size is
+latency. `PROMPT_RETRIEVAL_TOKEN_BUDGET=... python scripts/prompt_budget.py
+--no-model` prints each source's characters and estimated tokens
+(`len(text) // 4`, the estimate the whole project uses) without contacting the
+model; without `--no-model` it also asks the model server for the real count.
+For the synthetic `project_config.example` and its own system prompt the
+estimate is 1,798 tokens (7,193 characters). Two formatting changes shrank the
+prefix without removing anything the model reads (the example was 1,815 tokens
+before): a column line is `- Name: description` instead of
+`  - Name: description`, and a business rule's trailing newline no longer adds a
+blank line between rules. The saving is two characters per column, so it grows
+with the schema (about 2% of a large one); the larger levers (a description
+repeated on many columns, rules the model rarely needs) change content, and
+stay with whoever owns `project_config/`.
+
+**A retrieval prompt that is identical every time.** When retrieval finds no
+table for a question, the prompt for a source shows *every* table of that
+source (§16.6). With no tables there is nothing else retrieved either, so that
+prompt is the same bytes up to the question, and a model server with prefix
+caching serves it from cache after the first. It is not a static prefix, so
+neither the warm-up nor the keep-warm sends it, and it is as large as the
+whole source. A source whose whole-schema prompt is large and which meets this
+case often is a candidate for `PROMPT_RETRIEVAL_TOKEN_BUDGET` above its
+estimate (the static path, warmed and kept warm), if the model's context
+window fits it; `python scripts/prompt_budget.py` says whether it does.
