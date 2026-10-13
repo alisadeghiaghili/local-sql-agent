@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
 """``/admin/maintenance``, ``/admin/schema-drift``, ``/admin/vocabulary``,
-``/admin/usage``, ``/admin/cache/*``, ``/admin/llm/warmup``,
+``/admin/usage``, ``/admin/quality``, ``/admin/cache/*``, ``/admin/llm/warmup``,
 ``/admin/security/*`` — the operational tier, admin panel phase 6.
 
 ``docs/admin-panel-architecture.md`` §3 tier 3 is the design contract; the
@@ -244,6 +244,71 @@ def admin_usage(
     hit_records = list(iter_records(hit_paths))
 
     return per_principal_usage(audit_records, hit_records, since=since, until=until)
+
+
+# ---------------------------------------------------------------------------
+# 4b. Real-use quality (analyst confirmations + audit log)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/quality",
+    summary="Real-use quality and latency over a window, overall and per data source (cached)",
+)
+def admin_quality(
+    days: int = Query(
+        7, ge=1, le=3650,
+        description=(
+            "Width in days of the windowed half of the report. The all-time "
+            "half is always included."
+        ),
+    ),
+    refresh: bool = Query(
+        False,
+        description=(
+            "Bypass this route's own cached result and recompute now, "
+            "regardless of ADMIN_EXPENSIVE_CACHE_TTL_SECONDS."
+        ),
+    ),
+    principal: Principal = Depends(require_operations_or_security),
+) -> dict[str, Any]:
+    """A thin surface over :func:`observability.quality.build_quality_report` --
+    the SAME function ``scripts/analyze_audit_log.py`` prints as a section, so
+    the card and the command line can never disagree about a figure.
+
+    Read-only: it reads the audit log files and the confirmation and flag
+    tables (identifiers only) and writes nothing. It returns counts, rates
+    and percentiles -- no question text, SQL or result rows. The confirmed
+    share is a lower-bound signal, not accuracy (the report's ``caveats``
+    say so, and so does the card).
+
+    The audit log is read in full on every computation, so the result is
+    cached for :attr:`config.Settings.admin_expensive_cache_ttl_seconds`
+    per ``days`` value (``refresh=1`` recomputes): the panel's 30-second
+    auto-refresh then costs one read of the log per TTL, not one per tick.
+    If the application database cannot be read, the report is still
+    returned with its ratings marked unavailable.
+    """
+    from observability.quality import build_quality_report, load_ratings
+    from scripts.analyze_audit_log import iter_records, resolve_log_paths
+
+    def _run() -> dict[str, Any]:
+        paths = resolve_log_paths([f"{cfg.settings.log_dir}/audit_log.jsonl*"])
+        records = list(iter_records(paths))
+        ratings = load_ratings()
+        return build_quality_report(
+            records, confirmations=ratings.confirmations, flags=ratings.flags, days=days,
+        )
+
+    cached = admin_expensive_cache.get_or_compute(
+        f"quality:{days}", cfg.settings.admin_expensive_cache_ttl_seconds, _run, force=refresh,
+    )
+    result = dict(cached.value)
+    result["cache"] = {
+        "cached": cached.cached,
+        "age_seconds": round(cached.age_seconds, 1),
+        "ttl_seconds": cached.ttl_seconds,
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------

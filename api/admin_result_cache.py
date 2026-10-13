@@ -167,8 +167,11 @@ class TTLCache:
 
 
 #: Process-wide singleton, one entry per expensive admin card. Keys currently
-#: in use: "health_checks" / "health_checks_deep" (api.admin_routes) and
-#: "schema_drift" (api.admin_ops_routes).
+#: in use: "health_checks" / "health_checks_deep" (api.admin_routes),
+#: "schema_drift" (api.admin_ops_routes) and "quality:<days>"
+#: (api.admin_ops_routes) -- the last is not a warehouse call; it is cached
+#: because it reads the whole audit log, which the panel's 30-second
+#: auto-refresh would otherwise do on every tick.
 admin_expensive_cache = TTLCache()
 
 

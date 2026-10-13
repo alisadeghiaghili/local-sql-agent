@@ -71,6 +71,7 @@
   <a href="#sec-keys">کلیدها</a>
   <a href="#sec-schema">شِما</a>
   <a href="#sec-vocab">واژگان</a>
+  <a href="#sec-quality">کیفیت</a>
   <a href="#sec-usage">مصرف</a>
   <a href="#sec-auth">احراز</a>
 </nav>
@@ -288,6 +289,30 @@
       </div>
     </section>
   </div>
+
+  <!-- Real-use quality: the audit log joined with analysts' "this
+       answer is correct" confirmations and wrong-answer flags, plus latency.
+       GET /admin/quality is server-cached (it reads the whole audit log), so
+       this card stays in the 30s auto-refresh. -->
+  <section class="admin-section" id="sec-quality" aria-labelledby="quality-heading">
+    <div class="admin-section-head">
+      <h2 id="quality-heading">کیفیت در استفاده‌ی واقعی</h2>
+      <div class="admin-section-actions">
+        <label class="admin-inline-label" for="quality-days">بازه</label>
+        <select id="quality-days" class="admin-select">
+          <option value="7" selected>۷ روز</option>
+          <option value="30">۳۰ روز</option>
+          <option value="90">۹۰ روز</option>
+        </select>
+        <button class="admin-btn-refresh" data-refresh="quality" type="button" aria-label="بروزرسانی کیفیت">
+          <svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3M18 4v4h-4M6 20v-4h4"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="quality-body">
+      <p class="admin-loading">در حال بارگذاری…</p>
+    </div>
+  </section>
 
   <!-- Admin panel phase 6: per-analyst usage/rate-limit pressure, and
        failed-authentication visibility. -->

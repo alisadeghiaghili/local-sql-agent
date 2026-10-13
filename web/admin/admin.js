@@ -190,6 +190,17 @@ export class AdminApi {
     return this._get(`/admin/schema-drift${qs}`);
   }
 
+  /** GET /admin/quality -- real-use quality and latency over the last
+   * `days` days and all time (audit log + analyst confirmations and flags).
+   * Read-only; server-cached because it reads the whole audit log, so the
+   * panel's own refresh button passes `refresh` to bypass that cache for
+   * one call and the 30s auto-refresh never does. */
+  async quality({ days = 7, refresh = false } = {}) {
+    const qs = new URLSearchParams({ days: String(days) });
+    if (refresh) qs.set("refresh", "1");
+    return this._get(`/admin/quality?${qs.toString()}`);
+  }
+
   /** GET /admin/vocabulary -- per prefetched column freshness/failure state. */
   async vocabularyStatus() {
     return this._get("/admin/vocabulary");
