@@ -300,6 +300,9 @@ def check_query_timeout(datasource: str | None = None) -> CheckResult:
             execute_sql(
                 f"WAITFOR DELAY '00:00:{probe_timeout + 10:02d}'; SELECT 1 AS x",
                 datasource=datasource,
+                # The timeout IS the expected outcome: no NOLOCK attempt on
+                # this statement and no "SQL execution failed" error line.
+                probe=True,
             )
     except RuntimeError:
         elapsed = time.perf_counter() - start
