@@ -501,3 +501,67 @@ def find_record_by_turn(session_id: str, turn_id: str) -> dict[str, Any] | None:
         if record.get("session_id") == session_id and record.get("turn_id") == turn_id:
             match = record
     return match
+
+
+def turn_executed_successfully(record: dict[str, Any]) -> bool:
+    """Whether the audit *record* shows SQL that ran and returned a result.
+
+    The single definition of "a successful answer" shared by the places
+    that must agree on it: ``POST .../confirmation`` (only such a turn may
+    be confirmed, :mod:`appdb.confirmations`) and the real-use quality
+    report (:mod:`observability.quality`'s execution success rate). All
+    four must hold:
+
+    * no ``error_code`` (a guard rejection, an out-of-scope decline, a
+      timeout and an execution error all carry one);
+    * a non-blank ``generated_sql``;
+    * the guard did not refuse it (``guard.verdict`` is not
+      ``"rejected"``);
+    * a result came back: ``columns`` is a list. A record that carries the
+      key with the value ``None`` produced no result (a clarification
+      turn, or a ``mode="sql"`` request that never executed). A record
+      written before ``columns`` existed has no such key and is judged on
+      the first three alone.
+
+    A zero-row result still counts: the query ran and answered, the answer
+    was empty.
+
+    Parameters
+    ----------
+    record:
+        One audit record as a plain dict (the shape
+        :meth:`AuditRecord.as_dict` writes), possibly from an older
+        version that lacks some fields.
+
+    Returns
+    -------
+    bool
+
+    Examples
+    --------
+    >>> ok = {"generated_sql": "SELECT 1", "guard": {"verdict": "allowed"},
+    ...       "error_code": None, "columns": ["n"], "row_count": 0}
+    >>> turn_executed_successfully(ok)
+    True
+    >>> turn_executed_successfully({**ok, "error_code": "OUT_OF_SCOPE"})
+    False
+    >>> turn_executed_successfully({**ok, "guard": {"verdict": "rejected"}})
+    False
+    >>> turn_executed_successfully({**ok, "columns": None})
+    False
+    >>> turn_executed_successfully({"generated_sql": "SELECT 1"})
+    True
+    >>> turn_executed_successfully({})
+    False
+    """
+    if record.get("error_code"):
+        return False
+    sql = record.get("generated_sql")
+    if not isinstance(sql, str) or not sql.strip():
+        return False
+    guard = record.get("guard")
+    if isinstance(guard, dict) and guard.get("verdict") == "rejected":
+        return False
+    if "columns" in record and record["columns"] is None:
+        return False
+    return True

@@ -103,6 +103,7 @@ from appdb.models import (
     admin_principal_roles,
     config_bundle_versions,
     metadata,
+    turn_confirmations,
     turn_feedback,
 )
 from eval.fingerprint import fingerprint_dataframe
@@ -121,6 +122,7 @@ TABLES_IN_MIGRATION_ORDER: tuple[Table, ...] = (
     config_bundle_versions,
     turn_feedback,
     access_requests,
+    turn_confirmations,
 )
 
 #: ``{table_name: primary_key_column_name}`` for every table whose primary
@@ -133,6 +135,7 @@ AUTOINCREMENT_PK_COLUMNS: dict[str, str] = {
     "config_bundle_versions": "version_id",
     "turn_feedback": "feedback_id",
     "access_requests": "request_id",
+    "turn_confirmations": "confirmation_id",
 }
 
 #: Column-name suffix :func:`_max_activity_timestamp` treats as a
