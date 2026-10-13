@@ -234,6 +234,24 @@ def _reset_api_keys_file_cache_between_tests() -> Iterator[None]:
     _reset_api_keys_file_cache()
 
 
+@pytest.fixture(scope="session")
+def warehouse_shape(tmp_path_factory):
+    """The warehouse-shaped fixture: two SQLite data sources built once per session.
+
+    A realistic stand-in for a real warehouse (many schemas, names repeated
+    across schemas, no declared foreign keys, empty tables, Persian text);
+    ``tests/_warehouse_shape.py`` describes the shape. Every setup tool of the
+    repository is run on it in ``tests/test_setup_on_warehouse_shape.py`` and
+    must stay green. Build it deterministically here, once, so the cost
+    (about a second) is not paid per test; use
+    :func:`tests._warehouse_shape.attached` around any code that opens an
+    engine on it, because a schema is an ``ATTACH``ed database.
+    """
+    from tests._warehouse_shape import build_warehouse
+
+    return build_warehouse(tmp_path_factory.mktemp("warehouse_shape"))
+
+
 @pytest.fixture(autouse=True)
 def _ignore_real_dotenv_problems(monkeypatch) -> None:
     """Keep a developer's own ``.env`` from changing what a test sees.

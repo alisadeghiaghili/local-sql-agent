@@ -213,6 +213,17 @@ class TestLoadedGraph:
         assert getattr(cfg.settings, name) is True
 
 
+class TestRelationshipsYamlWithNoEntry:
+    """``relationships:`` with nothing under it is null, not a list."""
+
+    @pytest.mark.parametrize("body", ["relationships:\n", "relationships: []\n", ""])
+    def test_a_file_without_entries_adds_no_edge_and_does_not_crash(self, tmp_path, body):
+        (tmp_path / "relationships.yaml").write_text(body, encoding="utf-8")
+
+        with cfg.override_settings(project_config_dir=str(tmp_path)):
+            assert join_paths._relationships_yaml_entries() == []
+
+
 class TestContextWiring:
     def _retrieve(self, entities, facts):
         from retrieval.context_retriever import ContextRetriever

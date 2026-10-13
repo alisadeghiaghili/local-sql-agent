@@ -28,13 +28,17 @@ the same server is looked up under that schema in this one.
 
 Any dialect other than SQL Server (the SQLite fixtures the tests use) is
 read through SQLAlchemy's own reflection instead, because only SQL Server
-is guaranteed to have ``INFORMATION_SCHEMA``.
+is guaranteed to have ``INFORMATION_SCHEMA``. Reflection reads the
+connection's own database with the schema ``""`` and, on SQLite, every
+``ATTACH``ed database as a schema of its own name, which is how the tests
+give a SQLite file the many schemas a warehouse has.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy.engine import Engine
@@ -246,15 +250,19 @@ def list_tables(engine: Engine) -> frozenset[tuple[str, str]]:
     -------
     frozenset[tuple[str, str]]
         ``(schema, table)`` pairs, lower-cased, ``""`` for the schema on a
-        dialect without schemas.
+        dialect without schemas (and for SQLite's own database; see
+        :func:`_reflection_scopes`).
     """
     if engine.dialect.name == "mssql":
         with engine.connect() as conn:
             rows = conn.execute(text(TABLES_SQL)).fetchall()
         return frozenset((str(s).lower(), str(t).lower()) for s, t in rows)
     inspector = sa_inspect(engine)
-    names = [*inspector.get_table_names(), *inspector.get_view_names()]
-    return frozenset(("", name.lower()) for name in names)
+    return frozenset(
+        (schema.lower(), name.lower())
+        for schema, scope in _reflection_scopes(inspector)
+        for name in [*inspector.get_table_names(schema=scope), *inspector.get_view_names(schema=scope)]
+    )
 
 
 def list_columns(engine: Engine) -> dict[tuple[str, str], frozenset[str]]:
@@ -281,10 +289,11 @@ def list_columns(engine: Engine) -> dict[tuple[str, str], frozenset[str]]:
             )
     else:
         inspector = sa_inspect(engine)
-        for name in [*inspector.get_table_names(), *inspector.get_view_names()]:
-            columns[("", name.lower())] = {
-                str(col["name"]).lower() for col in inspector.get_columns(name)
-            }
+        for schema, scope in _reflection_scopes(inspector):
+            for name in [*inspector.get_table_names(schema=scope), *inspector.get_view_names(schema=scope)]:
+                columns[(schema.lower(), name.lower())] = {
+                    str(col["name"]).lower() for col in inspector.get_columns(name, schema=scope)
+                }
     return {key: frozenset(names) for key, names in columns.items()}
 
 
@@ -428,36 +437,72 @@ def _assemble(
     }
 
 
+def _reflection_scopes(inspector: Any) -> list[tuple[str, str | None]]:
+    """The ``(schema label, reflection schema)`` pairs a non-SQL-Server engine is read through.
+
+    The connection's own database comes first, labelled ``""`` and reflected
+    with ``schema=None``. On SQLite every other database of the connection
+    (``ATTACH DATABASE ... AS name``) is a schema in SQLAlchemy's reflection
+    and is added under its own name; ``main`` is the connection's own
+    database already and ``temp`` holds only what the connection made. Other
+    dialects keep to the default schema, as before.
+
+    Parameters
+    ----------
+    inspector:
+        ``sqlalchemy.inspect(engine)``.
+
+    Returns
+    -------
+    list[tuple[str, str | None]]
+        ``("", None)`` first, then ``(name, name)`` per attached SQLite database.
+
+    Examples
+    --------
+    >>> from sqlalchemy import create_engine, inspect
+    >>> _reflection_scopes(inspect(create_engine("sqlite://")))
+    [('', None)]
+    """
+    scopes: list[tuple[str, str | None]] = [("", None)]
+    if inspector.dialect.name == "sqlite":
+        scopes.extend(
+            (name, name) for name in inspector.get_schema_names()
+            if name.lower() not in ("main", "temp")
+        )
+    return scopes
+
+
 def _read_catalogue_reflected(engine: Engine) -> dict[tuple[str, str], TableInfo]:
     """The same catalogue through SQLAlchemy reflection (non-SQL Server)."""
     inspector = sa_inspect(engine)
-    views = set(inspector.get_view_names())
     result: dict[tuple[str, str], TableInfo] = {}
-    for name in [*inspector.get_table_names(), *sorted(views)]:
-        pk = inspector.get_pk_constraint(name) or {}
-        foreign = tuple(
-            ForeignKey(
-                name=str(fk.get("name") or ""),
-                columns=tuple(str(c) for c in fk["constrained_columns"]),
-                ref_location=(
-                    str(fk.get("referred_schema") or "").lower(),
-                    str(fk["referred_table"]).lower(),
-                ),
-                ref_columns=tuple(str(c) for c in fk["referred_columns"]),
-            )
-            for fk in inspector.get_foreign_keys(name)
-        )
-        result[("", name.lower())] = TableInfo(
-            schema="", name=name, is_view=name in views,
-            columns=tuple(
-                ColumnInfo(
-                    name=str(col["name"]),
-                    data_type=str(col["type"]).lower().replace(" ", ""),
-                    nullable=bool(col.get("nullable", True)),
+    for label, scope in _reflection_scopes(inspector):
+        views = set(inspector.get_view_names(schema=scope))
+        for name in [*inspector.get_table_names(schema=scope), *sorted(views)]:
+            pk = inspector.get_pk_constraint(name, schema=scope) or {}
+            foreign = tuple(
+                ForeignKey(
+                    name=str(fk.get("name") or ""),
+                    columns=tuple(str(c) for c in fk["constrained_columns"]),
+                    ref_location=(
+                        str(fk.get("referred_schema") or label).lower(),
+                        str(fk["referred_table"]).lower(),
+                    ),
+                    ref_columns=tuple(str(c) for c in fk["referred_columns"]),
                 )
-                for col in inspector.get_columns(name)
-            ),
-            primary_key=tuple(str(c) for c in pk.get("constrained_columns") or ()),
-            foreign_keys=foreign,
-        )
+                for fk in inspector.get_foreign_keys(name, schema=scope)
+            )
+            result[(label.lower(), name.lower())] = TableInfo(
+                schema=label, name=name, is_view=name in views,
+                columns=tuple(
+                    ColumnInfo(
+                        name=str(col["name"]),
+                        data_type=str(col["type"]).lower().replace(" ", ""),
+                        nullable=bool(col.get("nullable", True)),
+                    )
+                    for col in inspector.get_columns(name, schema=scope)
+                ),
+                primary_key=tuple(str(c) for c in pk.get("constrained_columns") or ()),
+                foreign_keys=foreign,
+            )
     return result
