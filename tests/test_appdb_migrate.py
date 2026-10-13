@@ -51,6 +51,7 @@ from appdb.models import (
     admin_principal_roles,
     config_bundle_versions,
     create_all,
+    turn_confirmations,
     turn_feedback,
 )
 
@@ -141,6 +142,16 @@ def _seed_source(db_path) -> str:
                 resolution_note=None,
                 resolved_by=None,
                 resolved_at=None,
+            )
+        )
+        conn.execute(
+            turn_confirmations.insert().values(
+                confirmation_id=1,
+                session_id="s1",
+                turn_id="t1",
+                principal_id="analyst-1",
+                request_id="r1",
+                created_at=_OLD_TIMESTAMP,
             )
         )
     engine.dispose()
