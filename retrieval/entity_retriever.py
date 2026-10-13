@@ -15,8 +15,8 @@ Strategy (two-tier):
 from __future__ import annotations
 
 from knowledge.entities import ENTITIES
-from knowledge.retrieval_hints import FACT_TABLES as _FACT_TABLES
-from retrieval.table_evidence import alias_hits, scored_extras
+from retrieval.table_evidence import named_tables, scored_extras
+from retrieval.table_keys import configured_fact_tables
 from schema_data.retriever import retrieve_tables
 
 
@@ -38,11 +38,12 @@ class EntityRetriever:
             hits in ``entities.yaml`` order, then extras best first). When no
             alias hit, the dimension tables among the TF-IDF top results.
         """
-        results = alias_hits(question, {name: info["aliases"] for name, info in ENTITIES.items()})
+        results = named_tables(question, {name: info["aliases"] for name, info in ENTITIES.items()})
 
         if results:
             return results + [t for t in scored_extras(question, fact=False, exclude=results)]
 
         # TF-IDF fallback — strip fact tables, keep dimensions only
+        fact_tables = configured_fact_tables()
         tfidf_tables = retrieve_tables(question)
-        return [t for t in tfidf_tables if t not in _FACT_TABLES]
+        return [t for t in tfidf_tables if t not in fact_tables]
