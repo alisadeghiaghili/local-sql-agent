@@ -1035,6 +1035,34 @@ class Settings:
     greater than zero. The default is three times the ~1 minute first-
     question prefill that motivated the feature."""
 
+    llm_prefix_keepwarm_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LLM_PREFIX_KEEPWARM_SECONDS", "").strip() or "0")
+    )
+    """Seconds between keep-warm passes; ``0`` (the default) turns it off.
+
+    The start-up warm-up (:attr:`llm_prefix_warmup_on_startup`) primes the
+    model server's prefix cache once. On a model server shared with other
+    users that cache is evicted again whenever their traffic needs the
+    memory, and the next question pays the full prefill of the prefix --
+    about a minute on a large local model. With a value above zero a
+    background thread re-sends each static-prefix source's prefix (the
+    request the warm-up sends: the prefix alone, ``max_tokens=1``) every
+    that many seconds, so the prefix never sits unused for long enough to
+    be the oldest thing in the cache.
+
+    It costs nothing under traffic: a source whose prefix a real request
+    used within the last interval is skipped, because that request already
+    refreshed it. Idle, it costs one cached-prefix lookup and one generated
+    token per source per pass. It obeys every rule the start-up warm-up
+    does: nothing for a source on the retrieval path, nothing under
+    ``LLM_PROVIDER=mock``, nothing to an endpoint that is not trusted unless
+    ``LLM_ALLOW_REMOTE`` is on; every failure is logged once per streak and
+    never fatal. It pauses while maintenance mode is on and stops at
+    shutdown. Its last run is on ``GET /admin/llm/warmup``.
+
+    Must be ``0`` or at least 30: a shorter interval is a load generator,
+    not a keep-warm. Runbook section 20.7 recommends a value."""
+
     llm_stream_timings: bool = field(
         default_factory=lambda: os.getenv("LLM_STREAM_TIMINGS", "false").lower()
         in ("1", "true", "yes")
@@ -1828,6 +1856,16 @@ class Settings:
                 "LLM_PREFIX_WARMUP_TIMEOUT_SECONDS must be greater than zero "
                 f"(got {self.llm_prefix_warmup_timeout_seconds}); set "
                 "LLM_PREFIX_WARMUP_ON_STARTUP=false to turn the warm-up off instead."
+            )
+
+        keepwarm = self.llm_prefix_keepwarm_seconds
+        if keepwarm != keepwarm or keepwarm in (float("inf"), float("-inf")) or (
+            keepwarm != 0 and keepwarm < 30
+        ):
+            raise ValueError(
+                "LLM_PREFIX_KEEPWARM_SECONDS must be 0 (off) or at least 30 "
+                f"(got {keepwarm}); a shorter interval would send the model "
+                "server a request every few seconds for no benefit."
             )
 
 

@@ -367,6 +367,30 @@ def admin_cache_invalidate(
 # 5b. LLM prefix-cache warm-up (latency)
 # ---------------------------------------------------------------------------
 
+@router.get(
+    "/llm/warmup",
+    summary="The periodic prefix-cache keep-warm: settings, last run and outcome",
+)
+def admin_llm_warmup_status(
+    principal: Principal = Depends(require_operations_or_security),
+) -> dict[str, Any]:
+    """What ``LLM_PREFIX_KEEPWARM_SECONDS`` is doing, read-only.
+
+    ``keepwarm`` says whether the periodic keep-warm (:class:`llm.warmup.KeepWarm`)
+    is running, its interval, whether it is paused (maintenance mode), how
+    many passes it has made, when the last one ran (``last_run_at``, UTC)
+    and how it ended (``last_run_outcome``: ``warmed``, ``skipped``,
+    ``failed``, ``paused`` or ``busy``), with one entry per data source in
+    ``last_run`` -- the same entries ``POST /admin/llm/warmup`` returns. A
+    source skipped because a real request used its prefix within the interval
+    says so in its ``detail``. With the keep-warm off, ``enabled`` is
+    ``false`` and ``reason`` says why. No prompt text, no endpoint, no key.
+    """
+    from llm.warmup import keepwarm_status
+
+    return {"keepwarm": keepwarm_status()}
+
+
 @router.post(
     "/llm/warmup",
     summary="Warm the model server's prompt-prefix cache now (operations, recorded)",
@@ -388,7 +412,8 @@ def admin_llm_warmup(principal: Principal = Depends(require_operations)) -> dict
     per data source (``status``, ``duration_ms``, ``prompt_tokens``, never
     prompt text), bounded by ``LLM_PREFIX_WARMUP_TIMEOUT_SECONDS``. A
     source that failed or was skipped is reported in the body, not as an
-    HTTP error: the request itself did what it was asked.
+    HTTP error: the request itself did what it was asked. ``keepwarm`` is
+    the periodic keep-warm's status, as ``GET /admin/llm/warmup`` shows it.
 
     Raises
     ------
@@ -411,7 +436,9 @@ def admin_llm_warmup(principal: Principal = Depends(require_operations)) -> dict
         principal.id, OPERATIONS_CAPABILITY, "llm.warmup", "prefix_cache",
         detail={r.source or "(whole schema)": r.status for r in results},
     )
-    return {"results": [r.as_dict() for r in results]}
+    from llm.warmup import keepwarm_status
+
+    return {"results": [r.as_dict() for r in results], "keepwarm": keepwarm_status()}
 
 
 # ---------------------------------------------------------------------------

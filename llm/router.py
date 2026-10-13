@@ -67,6 +67,7 @@ from typing import Any
 
 import config as cfg
 from llm.base import LLMBackend
+from llm.prefix_activity import activity as prefix_activity
 from security.column_policy import join_only_prompt_line
 
 logger = logging.getLogger(__name__)
@@ -599,6 +600,10 @@ class LLMRouter:
                         "-- terminal, not retried on the rest of the chain",
                         backend.name, task.value,
                     )
+                    # The model read the whole prompt to decline it, so its
+                    # prefix is as fresh in the server's cache as after an
+                    # answer.
+                    self._note_prefix_use(index, segments)
                     raise
                 last_exc = exc
                 logger.warning(
@@ -616,11 +621,24 @@ class LLMRouter:
                 logger.warning(str(last_exc))
                 continue
 
+            self._note_prefix_use(index, segments)
             return result, meta, backend, index > 0
 
         raise RuntimeError(
             f"Every backend in the chain failed for task={task.value}: {last_exc}"
         ) from last_exc
+
+    @staticmethod
+    def _note_prefix_use(index: int, segments: PromptSegments) -> None:
+        """Record that the first backend of a chain just served *segments*' prefix.
+
+        Only the first backend: it is the one :meth:`warm_prefix` (and so
+        the keep-warm, :class:`llm.warmup.KeepWarm`) keeps warm, so a
+        fallback's answer says nothing about it. A prompt with no static
+        prefix records nothing. Never raises.
+        """
+        if index == 0 and segments.static_prefix:
+            prefix_activity.note_use(segments.static_prefix)
 
     @staticmethod
     def _finalize_meta(meta: dict[str, Any], backend: LLMBackend, fallback_used: bool) -> dict[str, Any]:

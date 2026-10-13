@@ -47,6 +47,7 @@ import api.admin_ops_routes as admin_ops_routes
 import api.admin_routes as admin_routes
 import api.admin_write_routes as admin_write_routes
 import api.concurrency as concurrency
+import api.maintenance as maintenance
 import api.runner as runner  # import the MODULE so patch.object(runner, 'run_query') works
 import api.v2_routes as v2_routes
 # Only register_handlers is needed here: the typed exceptions are raised in
@@ -364,7 +365,31 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001 - a cold cache degrades gracefully, startup must not fail
             logger.warning("dimension_vocabulary: startup warm-up failed: %s", exc)
 
-    yield
+    # ── Latency: keep the prefix cache warm while the server runs ──────────
+    # Off unless LLM_PREFIX_KEEPWARM_SECONDS is above zero. It is the same
+    # pass as the start-up warm-up above, repeated, minus any source a real
+    # request used within the interval, so it costs nothing under traffic
+    # (llm/warmup.py's KeepWarm). Paused while maintenance mode is on, and
+    # stopped below at shutdown. A failure to start is a warning.
+    try:
+        from llm.warmup import start_keepwarm
+
+        start_keepwarm(
+            _system_prompt, runner.get_llm_router,
+            paused=lambda: bool(maintenance.get_state()["active"]),
+        )
+    except Exception as exc:  # noqa: BLE001 - an optimisation, startup must not fail on it
+        logger.warning("LLM prefix keep-warm could not be started: %s", type(exc).__name__)
+
+    try:
+        yield
+    finally:
+        try:
+            from llm.warmup import stop_keepwarm
+
+            stop_keepwarm()
+        except Exception as exc:  # noqa: BLE001 - shutdown must not fail on it
+            logger.warning("LLM prefix keep-warm could not be stopped: %s", type(exc).__name__)
 
 
 # docs_url/redoc_url/openapi_url are disabled here and re-registered by hand
