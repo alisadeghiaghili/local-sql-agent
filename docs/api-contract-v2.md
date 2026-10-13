@@ -98,6 +98,9 @@ POST   /v2/sessions/{sid}/turns         → ask; returns a Turn
 POST   /v2/sessions/{sid}/turns?stream=1 → same, as SSE
 PATCH  /v2/sessions/{sid}/turns/{tid}/assumptions → re-run with edited assumptions
 POST   /v2/sessions/{sid}/turns/{tid}/access-request → request access to this turn's denied column
+POST   /v2/sessions/{sid}/turns/{tid}/confirmation → "this answer is correct" (پاسخ درست است)
+DELETE /v2/sessions/{sid}/turns/{tid}/confirmation → withdraw the caller's own confirmation
+GET    /v2/sessions/{sid}/confirmations → the turns of this session the caller confirmed
 GET    /v2/access-requests              → the caller's own access requests + status
 GET    /v2/memory                       → the caller's entries + which keys are rememberable
 PUT    /v2/memory/{key}                 → set one entry
@@ -136,6 +139,53 @@ denying the request is a `security`-only admin action
 (`POST /admin/access-requests/{id}/approve` / `.../deny`, out of scope for
 this document — see the admin panel's own routes) that widens `denied_columns`
 on every live key the requester holds, through the existing ACL path.
+
+`POST .../confirmation` is "this answer is correct" (پاسخ درست است): the
+analyst-facing positive twin of the wrong-answer flag
+(`POST .../feedback`). Each confirmation is evidence — a reviewed golden-set
+candidate (`scripts/harvest_golden.py`) and a figure in the admin panel's
+real-use quality card (`GET /admin/quality`) — so it is one request with no
+body. Like the flag it stores **identifiers only** (`session_id`, `turn_id`,
+`principal_id`, `request_id`, `created_at`; never the question, the SQL or any
+result data): the principal is stamped server-side from the authenticated key
+and `request_id` is resolved server-side from the turn's audit record, so
+there is nothing for a client to forge.
+
+* **Authorisation** is the flag's: the turn's owner only. A turn on someone
+  else's session is `404`, never `403` (§11.5).
+* **Only a successful answer.** The turn's audit record must show SQL that ran
+  and returned a result (no `error_code`, a non-blank `generated_sql`, the
+  guard did not refuse it, a result came back; an empty result still counts).
+  A guard-rejected, out-of-scope or failed turn, or one the audit log no
+  longer holds, is refused with `409` and a message saying why.
+* **At most one confirmation per (turn, principal), and re-confirming is
+  idempotent.** The first call is `201`; a repeat is `200` with
+  `already_confirmed: true` and changes nothing.
+* **Flag and confirmation exclude each other, per principal: the later action
+  wins and the earlier one is removed.** Confirming a turn the caller had
+  flagged deletes that flag if it is still `open` (`removed_flags` in the
+  response); a flag an admin has already resolved is kept, because triage
+  recorded a decision on it. Flagging a turn the caller had confirmed deletes
+  the confirmation (`withdrew_confirmation: true` in the feedback response).
+  Another principal's flags and confirmations are never touched.
+
+```jsonc
+// 201 (200 on a repeat)
+{"confirmed": true, "already_confirmed": false, "removed_flags": 0,
+ "confirmation_id": 12, "session_id": "s_0a1b2c3d4e", "turn_id": "t_3",
+ "principal_id": "analyst-1", "request_id": "r_9f8e7d",
+ "created_at": "2026-10-13T09:30:00+00:00"}
+```
+
+`DELETE .../confirmation` withdraws the caller's own confirmation (another
+principal's confirmation of the same turn is never affected). It is safe to
+repeat: `200` with `{"confirmed": false, "withdrawn": true}`, or
+`"withdrawn": false` when there was nothing to withdraw.
+
+`GET /v2/sessions/{sid}/confirmations` lists the turns of one session the
+caller has confirmed, so the UI can show each turn's state when a transcript
+is opened with one request: `{"confirmations": [...], "turn_ids": ["t_3"]}`.
+Owner-scoped like the rest.
 
 `GET /v2/access-requests` is the caller's own minimal status read — every
 access request they raised, across every session, with its current status and,

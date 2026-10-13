@@ -40,7 +40,13 @@ from appdb.access_requests import (
     list_requests as list_access_requests,
     submit_request,
 )
-from appdb.feedback import TurnNotAuditedError, list_feedback, submit_flag
+from appdb.confirmations import (
+    TurnNotConfirmableError,
+    confirm_turn,
+    list_confirmations,
+    withdraw_confirmation,
+)
+from appdb.feedback import TurnNotAuditedError, list_feedback, submit_flag, withdraw_open_flags
 from knowledge.memory_policy import get_memory_keys
 from security.auth import Principal
 from security.sql_guard import pretty_sql
@@ -654,7 +660,7 @@ def submit_turn_feedback(
         raise HTTPException(status_code=404, detail=f"Unknown turn_id: {turn_id!r}")
 
     try:
-        return submit_flag(
+        row = submit_flag(
             session_id=session_id,
             turn_id=turn_id,
             reporter_principal_id=principal.id,
@@ -666,6 +672,15 @@ def submit_turn_feedback(
         # joined to it (e.g. the audit log has since rotated past it) --
         # 422, not 404: the turn itself is real, only the join failed.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # The later action wins (see submit_turn_confirmation): flagging a turn
+    # this principal had confirmed takes the confirmation back. Done after
+    # the flag is stored, so a failure here leaves both rather than neither;
+    # repeating the flag converges.
+    withdrew_confirmation = withdraw_confirmation(
+        session_id=session_id, turn_id=turn_id, principal_id=principal.id,
+    )
+    return {**row, "withdrew_confirmation": withdrew_confirmation}
 
 
 @router.get(
@@ -691,6 +706,143 @@ def get_turn_feedback(
 
     all_for_session = list_feedback(session_id=session_id)
     return {"feedback": [f for f in all_for_session if f["turn_id"] == turn_id]}
+
+
+# ---------------------------------------------------------------------------
+# POST/DELETE /v2/sessions/{sid}/turns/{tid}/confirmation -- "this answer is
+# correct" (پاسخ درست است)
+# ---------------------------------------------------------------------------
+# The positive twin of the feedback route above. Ownership is enforced the
+# same way (_require_owned_session -- 404, never 403, for a turn on someone
+# else's session), so only the turn's own principal can confirm or withdraw
+# it. The body is empty: the principal is stamped server-side and the
+# request id is resolved from the audit record, so there is nothing for a
+# client to forge. See appdb/confirmations.py for what is stored (ids only).
+
+
+@router.post(
+    "/sessions/{session_id}/turns/{turn_id}/confirmation",
+    status_code=201,
+    summary="Confirm this turn's answer is correct (analyst-facing)",
+)
+def submit_turn_confirmation(
+    session_id: str,
+    turn_id: str,
+    response: Response,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Record that the caller confirms this turn's answer as correct.
+
+    * **Authorisation:** the turn's owner only -- the same rule as
+      flagging (``_require_owned_session``: 404 for another principal's
+      session, so a turn's existence is not disclosed).
+    * **Only a successful answer:** the turn's audit record must show SQL
+      that ran and returned a result. A rejected, declined or failed turn,
+      or one with no audit record to check, is refused with ``409`` and a
+      message saying why.
+    * **Idempotent:** confirming a turn the caller has already confirmed
+      returns the existing confirmation with ``200`` (``already_confirmed:
+      true``) and changes nothing; the first confirmation returns ``201``.
+      At most one confirmation exists per (turn, principal).
+    * **Flag and confirmation interplay:** the later action wins and the
+      earlier one is removed, per principal. Confirming a turn the caller
+      had flagged deletes that flag if it is still open (``removed_flags``
+      says how many); a flag an admin has already resolved is kept, since
+      triage recorded a decision on it. Flagging a confirmed turn removes
+      the confirmation (``withdrew_confirmation`` on the feedback
+      response). Other principals' flags and confirmations are untouched.
+
+    Raises
+    ------
+    HTTPException
+        404 unknown session or turn (or not the caller's session); 409 the
+        turn is not a successful answer.
+    """
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+
+    if get_session_store().find_turn(record, turn_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown turn_id: {turn_id!r}")
+
+    try:
+        row, created = confirm_turn(
+            session_id=session_id, turn_id=turn_id, principal_id=principal.id,
+        )
+    except TurnNotConfirmableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # The later action wins: confirming a turn this principal had flagged
+    # takes the (still open) flag back. After the confirmation is stored,
+    # so a failure leaves both rather than neither; repeating converges.
+    removed_flags = withdraw_open_flags(
+        session_id=session_id, turn_id=turn_id, reporter_principal_id=principal.id,
+    )
+    if not created:
+        response.status_code = 200
+    return {
+        "confirmed": True,
+        "already_confirmed": not created,
+        "removed_flags": removed_flags,
+        **row,
+    }
+
+
+@router.delete(
+    "/sessions/{session_id}/turns/{turn_id}/confirmation",
+    summary="Withdraw the caller's confirmation of this turn's answer",
+)
+def withdraw_turn_confirmation(
+    session_id: str, turn_id: str, principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Delete the caller's own confirmation of the turn.
+
+    Authorised like the confirmation itself (the turn's owner). Withdrawing
+    when there is nothing to withdraw is not an error: the response is
+    ``200`` with ``withdrawn: false``, so the call is safe to repeat.
+    Another principal's confirmation of the same turn is never affected.
+
+    Raises
+    ------
+    HTTPException
+        404 unknown session or turn (or not the caller's session).
+    """
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+
+    if get_session_store().find_turn(record, turn_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown turn_id: {turn_id!r}")
+
+    withdrawn = withdraw_confirmation(
+        session_id=session_id, turn_id=turn_id, principal_id=principal.id,
+    )
+    return {"confirmed": False, "withdrawn": withdrawn}
+
+
+@router.get(
+    "/sessions/{session_id}/confirmations",
+    summary="The turns of this session the caller has confirmed",
+)
+def list_session_confirmations(
+    session_id: str, principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Lets the UI show each turn's confirmed state when a transcript is
+    opened, with one request per session instead of one per turn. Scoped to
+    the caller's own confirmations of a session they own; nothing about
+    another principal's confirmations is exposed."""
+    try:
+        record = get_session_store().require(session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_owned_session(record, principal)
+
+    rows = list_confirmations(session_id=session_id, principal_id=principal.id)
+    return {"confirmations": rows, "turn_ids": [r["turn_id"] for r in rows]}
 
 
 # ---------------------------------------------------------------------------
