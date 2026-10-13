@@ -367,7 +367,7 @@ class TestSchemaInspector:
         for schema, count in source.by_schema().items():
             assert f"  {schema}: {count}\n" in err
         assert f"Total: {len(source.tables)}" in err
-        assert "WARNING: 262 tables were written (more than 150)" in err
+        assert f"WARNING: {len(source.tables)} tables were written (more than 150)" in err
 
     def test_exclude_schemas_removes_staging_replay_and_alerts(self, inspected_without_staging, warehouse_shape):
         kept = [t for t in warehouse_shape.sources[LARGE].tables
@@ -388,11 +388,16 @@ class TestSchemaInspector:
         assert "Shipment" in keys and "sales_Fact.Shipment" not in keys
         assert "sales_Fact.Invoice" in keys and "orders_Fact.Invoice" in keys
 
-    def test_the_large_table_warning_disappears_once_the_count_is_below_150(self, inspected_without_staging):
+    def test_the_large_table_warning_disappears_once_the_count_is_below_150(
+        self, inspected_without_staging, warehouse_shape,
+    ):
+        kept = [t for t in warehouse_shape.sources[LARGE].tables
+                if t.schema not in ("sales_Stg", "orders_Stg", "Replay", "Alerts")]
         err = inspected_without_staging.run.err
         assert inspected_without_staging.run.rc == 0
+        assert len(kept) < 150
         assert "WARNING" not in err
-        assert "Total: 142" in err
+        assert f"Total: {len(kept)}" in err
         per_schema = err.split("Tables per schema:")[1]
         assert "_Stg" not in per_schema and "Replay" not in per_schema and "Alerts" not in per_schema
         assert "Inspecting sales_Stg." not in err and "Inspecting Replay." not in err
