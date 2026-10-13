@@ -25,7 +25,7 @@ verified, running server, with the command for each step and how to tell it
 worked. The numbered sections hold the detail it links to. A deployment that
 queries more than one database also follows §16, in the order it gives. An
 installation already running any 6.x release (6.7.0 included) that is moving to
-6.9.3 follows §17, which sequences the upgrade notes of every release in between
+6.10.0 follows §17, which sequences the upgrade notes of every release in between
 into one checklist.
 Before sending logs or configuration to anyone for help, read §19.
 
@@ -81,7 +81,7 @@ is the sign you can move on: do not continue past a step that did not show it.
    `Tables are in their data source` (several databases), and with
    `Schema structure matches the databases` as soon as the databases differ from
    the file. A file that only lacks the recorded column types passes that check
-   with a note (step 14 of "Upgrading from 6.0 to 6.9.3", §17).
+   with a note (step 14 of "Upgrading from 6.0 to 6.10.0", §17).
    *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
    (§16.3).
 7. **Review the proposal, replace `schema.yaml`, check**: read
@@ -1661,10 +1661,10 @@ raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
 with `password_env`; restart and run `python scripts/verify_deployment.py`.
 Remove the old `DB_URL_*` variable afterwards.
 
-## 17. Upgrading from 6.0 to 6.9.3
+## 17. Upgrading from 6.0 to 6.10.0
 
 One checklist for an installation that is running any 6.x release and is moving
-to 6.9.3. It puts the **Upgrading** notes of 6.0.1 to 6.9.3 in the order to do
+to 6.10.0. It puts the **Upgrading** notes of 6.0.1 to 6.10.0 in the order to do
 them, and adds what 6.7.0 and 6.9.0 bring that you will want to use (6.6.1 and
 6.7.0 have no **Upgrading** notes of their own); `CHANGELOG.md` has each
 release's full text. From 5.x, do the 6.0.0
@@ -1674,18 +1674,19 @@ refuses to start without it), and check a relative `PROJECT_CONFIG_DIR`,
 which is now resolved against the repository root.
 
 Every step names the release it comes from, so skip the ones for releases you
-already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 17, then
-the parts of step 18 that are new in 6.9.0, and step 19 if it contributes code;
-one on 6.8.0 does steps 1 to 3 and 11 to 17; one on 6.9.0 does steps 1 to 3 and
-15 to 17; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
+already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 18, then
+the parts of step 19 that are new in 6.9.0, and step 20 if it contributes code;
+one on 6.8.0 does steps 1 to 3 and 11 to 18; one on 6.9.0 does steps 1 to 3 and
+15 to 18; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
 `scripts/sync_schema.py` (which also records the column types the 6.9.2 note
 of step 3 is about), step 15 if a console-encoding workaround is still in place,
-and step 16; one on 6.9.2 does steps 1 to 3 and step 16 (6.9.3 changes no
-configuration format). Steps 1 to 4, 14 and 16 to 17 apply to every installation. Steps 5 to
+and steps 16 and 17; one on 6.9.2 or 6.9.3 does steps 1 to 3, step 16 and the
+restart in step 17 (6.9.3 changes no configuration format). Steps 1 to 4, 14 and
+16 to 18 apply to every installation. Steps 5 to
 8 are each optional: do the ones that fit (a password move, a key file, a UI on
 another origin, several databases). Steps 9 to 13 and 15 each say what to check or decide, and
 need no action on an installation that does not use the thing they change.
-Steps 18 and 19 come last on purpose.
+Steps 19 and 20 come last on purpose.
 
 1. **Back up** `.env` and `project_config/`. Both are outside the repository.
    If you already have a golden set (6.7.0 or later), record its baseline now,
@@ -1696,7 +1697,7 @@ Steps 18 and 19 come last on purpose.
    `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
    `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
    python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
-   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.9.3
+   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.10.0
    change no pin in `requirements.lock`, but run the command anyway.
 3. **Run the preflight before restarting**, in its own process:
    `python scripts/verify_deployment.py` (§3). Several releases made the
@@ -1907,14 +1908,34 @@ Steps 18 and 19 come last on purpose.
     so Persian output does not crash, remove it. Every command-line program now
     writes UTF-8 itself; leaving the workaround in place is harmless. Nothing
     else needs doing.
-16. **Restart** (every change above, including `datasources.yaml` and
+16. **Confirmed answers and the real-use quality card (6.10.0).** Nothing here
+    renames a setting or changes a file format, and `requirements.lock` has no
+    new pin. Three things to do or decide before the restart:
+    - *Alembic-managed application database only.* The new `turn_confirmations`
+      table is created at start-up like the other application-database tables,
+      so the default setup needs no manual step. A deployment that manages the
+      application database with Alembic runs `alembic upgrade head` from the
+      repository root first; it applies `0005_turn_confirmations`.
+    - *Tell analysts, and review what they confirm.* Under each successful
+      answer they now see a «پاسخ درست است» toggle (§18.1.1). Any analyst can
+      confirm their own answers; there is no separate permission for it. A
+      confirmed answer becomes a reviewed golden case (tag `origin:confirmed`),
+      and `python -m eval.cli verify --accept` checks that its SQL runs, not
+      that the SQL is right, so a wrong confirmation would end up in the
+      accuracy gate of step 19. Check the `origin:confirmed` rows of
+      `scripts/golden_sheet.py export` before accepting them, or harvest with
+      `--no-confirmations` until you trust the confirmations you see.
+    - *Optional: `LLM_STREAM_TIMINGS=true`.* Set it in `.env` if the admin
+      panel's quality card «کیفیت در استفاده‌ی واقعی» (§20.6) should show the
+      time-to-first-token and generation split of the `llm` stage.
+17. **Restart** (every change above, including `datasources.yaml` and
     `schema.yaml`, takes effect at a restart). Then run the preflight once more
     with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
     start-up log (§5): the provenance banner, `CORS allowed origins`, and with
     several sources one `Prompt path for data source` line each. Since 6.9.0
     each static-prefix source also logs an `LLM prefix warm-up` line a little
     later (§20.2).
-17. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
+18. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
     `audit_log.jsonl` that does not know `datasource_selection` (6.5.0), or the
     `llm` block's `ttft_ms`, `generation_ms`, `reasoning_tokens` and
     `reasoning_tokens_estimated` (6.9.0; the first two are filled only with
@@ -1924,7 +1945,7 @@ Steps 18 and 19 come last on purpose.
     analysts will ask: the SQL shown in a conversation is laid out in a fixed
     style (6.5.0; display only, the statement that ran is unchanged), and a refused
     statement can be opened with the same layout.
-18. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
+19. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
     adds the tools that turn real usage into an evaluation set and a release
     gate: `python scripts/harvest_golden.py` (candidates from the audit log),
     `python scripts/golden_sheet.py export` and `import` (the analysts' review
@@ -1942,7 +1963,7 @@ Steps 18 and 19 come last on purpose.
     off unless set (§18.2), and `python -m eval.cli recall`, which measures table
     selection with no model and no database (§18.4). Nothing else in 6.7.0 changes
     how the server runs.
-19. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
+20. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
     to an exact version, and CI now has a `lint` job that fails on
     `ruff check .`. Run `pip install -r requirements.txt -r requirements-dev.txt`
     and `ruff check .` before pushing. A deployment that does not change this
