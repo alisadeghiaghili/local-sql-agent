@@ -1916,13 +1916,15 @@ Steps 19 and 20 come last on purpose.
       so the default setup needs no manual step. A deployment that manages the
       application database with Alembic runs `alembic upgrade head` from the
       repository root first; it applies `0005_turn_confirmations`.
-    - *Tell analysts, and decide who may confirm.* Under each successful answer
-      they now see a «پاسخ درست است» toggle (§18.1.1). Give confirmation access
-      only to analysts whose judgement you trust: a confirmed answer becomes a
-      reviewed golden case (tag `origin:confirmed`), and
-      `python -m eval.cli verify --accept` checks that its SQL runs, not that the
-      SQL is right, so a wrong confirmation ends up in the accuracy gate of
-      step 19.
+    - *Tell analysts, and review what they confirm.* Under each successful
+      answer they now see a «پاسخ درست است» toggle (§18.1.1). Any analyst can
+      confirm their own answers; there is no separate permission for it. A
+      confirmed answer becomes a reviewed golden case (tag `origin:confirmed`),
+      and `python -m eval.cli verify --accept` checks that its SQL runs, not
+      that the SQL is right, so a wrong confirmation would end up in the
+      accuracy gate of step 19. Check the `origin:confirmed` rows of
+      `scripts/golden_sheet.py export` before accepting them, or harvest with
+      `--no-confirmations` until you trust the confirmations you see.
     - *Optional: `LLM_STREAM_TIMINGS=true`.* Set it in `.env` if the admin
       panel's quality card «کیفیت در استفاده‌ی واقعی» (§20.6) should show the
       time-to-first-token and generation split of the `llm` stage.
