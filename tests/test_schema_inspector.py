@@ -194,6 +194,57 @@ class TestEntitiesDraft:
         assert sorted(safe_load_strict(text)["entities"]) == ["[ref].[a.b]", "[sales].[a.b]"]
 
 
+class TestDraftsQuoteTheValuesTheyQuote:
+    """Sample values come from live rows: a ``"`` or a ``\\`` in one must not break a draft.
+
+    ``schema.yaml``'s draft always went through ``_yaml_str``; the entities,
+    aliases and relationships drafts wrote ``"{value}"`` by hand, so the first
+    value like ``Pipe 5" steel`` made the file unreadable.
+    """
+
+    @staticmethod
+    def _snapshot_with_awkward_values() -> SchemaSnapshot:
+        table = TableInfo(
+            name='Odd Name', schema="sales",
+            columns=[
+                ColumnInfo(name='Col"umn', type="varchar", sample_values=['Pipe 5" steel', "Path\\to", "شرکت نمونه"]),
+            ],
+            foreign_keys=[],
+        )
+        other = _table("Plain", "sales")
+        return SchemaSnapshot(
+            tables=[table, other],
+            relationships=[RelationshipInfo('Odd Name', "sales", 'Col"umn', "Plain", "sales", "Id")],
+            source_url="mssql://host/db",
+        )
+
+    def test_entities_draft_parses_and_keeps_the_values(self):
+        text = SchemaInspector("sqlite://").draft_entities_yaml(self._snapshot_with_awkward_values())
+
+        entity = safe_load_strict(text)["entities"]['Odd Name']
+
+        assert entity["table"] == 'Odd Name'
+        (column,) = entity["columns"]
+        assert column["name"] == 'Col"umn'
+        assert column["sample_values"] == ['Pipe 5" steel', "Path\\to", "شرکت نمونه"]
+
+    def test_aliases_draft_parses_and_keeps_the_values(self):
+        text = SchemaInspector("sqlite://").draft_aliases_yaml(self._snapshot_with_awkward_values())
+
+        synonyms = safe_load_strict(text)["synonyms"]
+
+        assert set(synonyms) == {'pipe 5" steel', "path\\to", "شرکت نمونه"}
+        assert sorted(synonyms["path\\to"]) == ['col"umn', "odd name"]
+
+    def test_relationships_draft_parses_and_keeps_the_values(self):
+        text = SchemaInspector("sqlite://").draft_relationships_yaml(self._snapshot_with_awkward_values())
+
+        (entry,) = safe_load_strict(text)["relationships"]
+
+        assert entry["from_table"] == 'Odd Name'
+        assert entry["from_column"] == 'Col"umn'
+
+
 class _FakeSqlaInspector:
     """The slice of SQLAlchemy's ``Inspector`` that ``inspect`` uses."""
 

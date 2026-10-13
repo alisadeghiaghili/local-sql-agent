@@ -671,27 +671,27 @@ class SchemaInspector:
             # name would otherwise read as a YAML flow sequence.
             entity_name = namer.key(table)
             lines.append(f"  {_yaml_str(entity_name)}:")
-            lines.append(f'    table: "{table.name}"')
+            lines.append(f"    table: {_yaml_str(table.name)}")
             if table.schema:
-                lines.append(f'    schema: "{table.schema}"')
+                lines.append(f"    schema: {_yaml_str(table.schema)}")
             lines.append(f'    classification: "{table.classification}"  # auto-detected')
             if table.row_count is not None:
                 lines.append(f"    row_count: {table.row_count}")
             lines.append("    aliases: []  # TO BE FILLED: add natural language aliases")
             lines.append("    columns:")
             for col in table.columns:
-                lines.append(f"      - name: \"{col.name}\"")
-                lines.append(f"        type: \"{col.type}\"")
+                lines.append(f"      - name: {_yaml_str(col.name)}")
+                lines.append(f"        type: {_yaml_str(col.type)}")
                 if col.is_pk:
                     lines.append("        is_pk: true")
                 if col.sample_values:
-                    samples_yaml = ", ".join(f'"{v}"' for v in col.sample_values[:5])
+                    samples_yaml = ", ".join(_yaml_str(v) for v in col.sample_values[:5])
                     lines.append(f"        sample_values: [{samples_yaml}]")
             if table.foreign_keys:
                 lines.append("    foreign_keys:")
                 for fk in table.foreign_keys:
-                    lines.append(f"      - column: \"{fk.column}\"")
-                    lines.append(f"        references: \"{fk.reference_str}\"")
+                    lines.append(f"      - column: {_yaml_str(fk.column)}")
+                    lines.append(f"        references: {_yaml_str(fk.reference_str)}")
             lines.append("")
 
         return "\n".join(lines)
@@ -733,9 +733,9 @@ class SchemaInspector:
                         table.name.lower(),
                         col.name.lower().replace("_", " "),
                     })
-                    tokens_yaml = ", ".join(f'"{t}"' for t in tokens)
+                    tokens_yaml = ", ".join(_yaml_str(t) for t in tokens)
                     lines.append(f"  # from {table.full_name}.{col.name}")
-                    lines.append(f'  "{key}": [{tokens_yaml}]  # REVIEW')
+                    lines.append(f"  {_yaml_str(key)}: [{tokens_yaml}]  # REVIEW")
 
         return "\n".join(lines)
 
@@ -846,15 +846,15 @@ class SchemaInspector:
             "relationships:",
         ]
         for rel in snapshot.relationships:
-            lines.append("  - from_table: \"" + rel.from_table + "\"")
+            lines.append(f"  - from_table: {_yaml_str(rel.from_table)}")
             if rel.from_schema:
-                lines.append("    from_schema: \"" + rel.from_schema + "\"")
-            lines.append("    from_column: \"" + rel.from_column + "\"")
-            lines.append("    to_table: \"" + rel.to_table + "\"")
+                lines.append(f"    from_schema: {_yaml_str(rel.from_schema)}")
+            lines.append(f"    from_column: {_yaml_str(rel.from_column)}")
+            lines.append(f"    to_table: {_yaml_str(rel.to_table)}")
             if rel.to_schema:
-                lines.append("    to_schema: \"" + rel.to_schema + "\"")
-            lines.append("    to_column: \"" + rel.to_column + "\"")
-            lines.append("    join_hint: \"" + rel.join_hint + "\"")
+                lines.append(f"    to_schema: {_yaml_str(rel.to_schema)}")
+            lines.append(f"    to_column: {_yaml_str(rel.to_column)}")
+            lines.append(f"    join_hint: {_yaml_str(rel.join_hint)}")
             lines.append("")
         return "\n".join(lines)
 
