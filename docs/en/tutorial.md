@@ -972,6 +972,25 @@ def test_health_ok_when_both_up(client):
     assert r.json()["status"] == "ok"
 ```
 
+### Setup tools and the warehouse-shaped fixture
+
+Most fixtures are small, tidy sample schemas, and a setup tool that is green on
+those can still fail on a real warehouse (the schema inspector once wrote about
+70 duplicate keys for a database that repeats table names across schemas).
+`tests/_warehouse_shape.py` builds the shape a real warehouse has, with
+invented names: two SQLite data sources whose schemas are `ATTACH`ed databases
+(fact, dimension, staging and change-capture schemas, the same name in up to
+four of them, one dimension in both sources, no declared foreign keys), plus a
+curated `project_config/`. The session fixture `warehouse_shape` in
+`tests/conftest.py` builds it once, and `tests/test_setup_on_warehouse_shape.py`
+runs every setup tool on it: `database.schema_inspector_cli`,
+`scripts/sync_schema.py`, `scripts/assign_datasources.py`,
+`scripts/prompt_budget.py`, the `scripts/verify_deployment.py` checks that need
+no SQL Server, and `python -m eval.cli recall`. A setup tool must stay green
+there; when you add one, or change one, add its case to that module. Wrap any
+code that opens an engine on the fixture in `tests._warehouse_shape.attached`,
+because a schema exists only on a connection that has attached it.
+
 ### Running the suite
 
 ```bash
