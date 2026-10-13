@@ -107,6 +107,18 @@ Report sections
     ones, for the timings -- ``LLM_STREAM_TIMINGS=true``); a record written
     before the fields existed contributes to nothing and breaks nothing.
 
+11. ``observability.quality``     — the real-use quality report: the same
+    audit records joined with the analysts' confirmations ("this answer is
+    correct") and wrong-answer flags, over the last ``--quality-days`` days
+    (default 7) and all time, overall and per data source: success, guard
+    rejection, correction, empty-result and out-of-scope rates, error rate
+    by class, confirmed vs flagged answers (a lower-bound signal, **not**
+    accuracy) and latency p50/p95 per stage. Printed after the sections
+    above and added to ``--json`` output as ``"quality"``; counts and
+    percentiles only, so it keeps this script's default privacy mode. The
+    confirmations and flags are read from the application database; when it
+    cannot be read the section says so and the rest still prints.
+
 Handling a partly-stub log
 ----------------------------
 A dev machine's log is typically dominated by ``mock:stub`` / ``ollama:test``
@@ -1404,7 +1416,16 @@ def main(argv: list[str] | None = None) -> int:
         "--json", action="store_true",
         help="Print the full report as JSON instead of the human-readable summary.",
     )
+    parser.add_argument(
+        "--quality-days", type=int, default=7, metavar="N",
+        help=(
+            "Width in days of the windowed half of the real-use quality "
+            "section (default 7); the all-time half is always printed."
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.quality_days < 1:
+        parser.error("--quality-days must be at least 1")
 
     paths = resolve_log_paths(args.paths)
     if not paths:
@@ -1414,10 +1435,24 @@ def main(argv: list[str] | None = None) -> int:
     records = list(iter_records(paths))
     report = build_report(records, include_examples=args.include_examples)
 
+    # Imported here, not at module level: observability.quality imports this
+    # module's aggregation functions, so a top-level import would be a cycle.
+    from observability.quality import build_quality_report, load_ratings, render_quality_text
+
+    ratings = load_ratings()
+    quality = build_quality_report(
+        records,
+        confirmations=ratings.confirmations,
+        flags=ratings.flags,
+        days=args.quality_days,
+    )
+
     if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        print(json.dumps({**report, "quality": quality}, ensure_ascii=False, indent=2))
     else:
         print(render_text(report))
+        print()
+        print(render_quality_text(quality))
 
     return 0
 
