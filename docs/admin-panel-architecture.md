@@ -148,6 +148,15 @@ the security admin, whose actions have no other supervisory mechanism.
   cover it. Either it moves into the database alongside the rest, or
   "promote this to a golden case" needs a defined destination and its own
   provenance. Unanswered on purpose rather than by omission.
+- **Confirmed answers.** The positive twin of the flag: an analyst
+  confirms a correct answer with one click («پاسخ درست است»,
+  `POST/DELETE /v2/sessions/{sid}/turns/{tid}/confirmation`, stored by
+  `appdb.confirmations`). It is bound by the flag's rule: identifiers only,
+  the question and SQL stay in the audit log and are joined on read. Each
+  confirmation becomes a `reviewed` golden-set candidate
+  (`scripts/harvest_golden.py`, then `eval.cli verify --accept`) and a figure
+  in the quality card below. A principal who flags and confirms the same turn
+  keeps the later action only.
 - **Retrieval-miss review.** `scripts/analyze_misses.py` already derives
   synonym gaps from query logs. Surfacing them with a one-click "add this
   synonym" turns diagnosis into a fix.
@@ -159,6 +168,23 @@ the security admin, whose actions have no other supervisory mechanism.
 ### Tier 2 — already computed, currently invisible
 
 - The reports `analyze_audit_log.py` produces.
+- **Real-use quality** — the card «کیفیت در استفاده‌ی واقعی», served by the
+  read-only `GET /admin/quality?days=7` (operations or security, like
+  `/admin/usage`). It is the audit log joined with the confirmations and
+  flags: execution success, guard-rejection, correction, empty-result and
+  out-of-scope rates, error rate by class, confirmed vs flagged answers, and
+  latency p50/p95 overall and per stage (the `llm` stage split into `ttft` and
+  `generation`, present only with `LLM_STREAM_TIMINGS=true`), for the last
+  7/30/90 days and all time, overall and per data source. One computation,
+  `observability.quality.build_quality_report`, backs both the route and the
+  `analyze_audit_log.py` section, so they cannot disagree. The confirmed share
+  of rated answers is labelled on the card as a lower-bound signal, not
+  accuracy. The route reads the whole audit log, so it is cached per window
+  for `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` in `api/admin_result_cache.py` (it
+  makes no warehouse call, so it is **not** in the panel's `EXPENSIVE_CARDS`
+  and stays in the 30-second auto-refresh); the card's refresh button
+  recomputes. It returns counts and percentiles only, never a question, SQL or
+  row.
 - **Prefix-cache hit ratio over time.** The KV-cache architecture carries
   the latency budget and breaks silently: the suite stays green while
   every request pays full prefill. The status block already records the

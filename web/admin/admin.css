@@ -525,6 +525,21 @@
   margin: 0 0 8px;
 }
 
+.admin-inline-label {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.admin-select {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+}
+
 .admin-section-title {
   font-size: 0.78rem;
   color: var(--muted);

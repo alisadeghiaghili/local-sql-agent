@@ -403,6 +403,40 @@ export class Api {
     return res.json();
   }
 
+  /** "پاسخ درست است" — confirms one turn's answer as correct. No request
+   * body: the principal is stamped server-side and the request id is
+   * resolved from the audit record. Idempotent. The server answers 409 for
+   * a turn that was not a successful answer. The response carries
+   * `removed_flags` (an open flag of the caller's on this turn is removed:
+   * the later action wins). */
+  async confirmAnswer(sessionId, turnId) {
+    const res = await this._fetchV2(
+      `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/confirmation`,
+      { method: "POST" },
+    );
+    return res.json();
+  }
+
+  /** Withdraws the caller's own confirmation of a turn. Safe to repeat. */
+  async withdrawConfirmation(sessionId, turnId) {
+    const res = await this._fetchV2(
+      `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/confirmation`,
+      { method: "DELETE" },
+    );
+    return res.json();
+  }
+
+  /** The turns of one session the caller has confirmed:
+   * `{ confirmations: [...], turn_ids: [...] }`. One request per session,
+   * so a reopened transcript shows each turn's confirmed state. */
+  async listConfirmations(sessionId) {
+    const res = await this._fetchV2(
+      `/v2/sessions/${encodeURIComponent(sessionId)}/confirmations`,
+      { method: "GET" },
+    );
+    return res.json();
+  }
+
   /** "درخواست دسترسی" (ADR-004 part 1) -- requests access to the denied
    * column that caused a guard rejection on this turn. No request body:
    * the requester is stamped server-side from the authenticated

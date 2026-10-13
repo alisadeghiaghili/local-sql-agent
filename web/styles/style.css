@@ -758,6 +758,52 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .feedback-status.ok { color: var(--status-good); }
 .feedback-status.error { color: var(--status-critical); }
 
+/* ── "This answer is correct" confirmation (پاسخ درست است) ───────────
+ * A compact row at the foot of the result card, under the table or chart
+ * and outside the collapsed details drawer -- a one-click confirmation
+ * hidden behind a disclosure would barely be used. A toggle button: the
+ * label never changes, aria-pressed carries the state to assistive
+ * technology, and the pressed state is a check mark (added by
+ * render/confirmation.js) plus a solid border and tint -- never colour
+ * alone. Both themes: only design tokens, which tokens.css redefines for
+ * dark mode. Logical properties only, so it flips with dir="rtl".
+ *
+ * It must not move the answer while it toggles: the button has a fixed
+ * minimum width (the check mark does not resize it), the status text sits
+ * beside it in a slot that is always one line tall, and the row never
+ * grows when a message appears. */
+.result-footer {
+  margin-block-start: 12px; padding-block-start: 10px;
+  border-block-start: 1px solid var(--border);
+}
+.confirmation-control {
+  display: flex; align-items: center; gap: 4px 12px;
+  min-block-size: 34px;
+}
+.confirm-toggle {
+  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  border-radius: 8px; padding: 5px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: inherit; min-inline-size: 9.5rem; text-align: center; flex: 0 0 auto;
+  /* The pressed state draws a 2px border; reserve it so 1px -> 2px never
+     changes the box. */
+  box-sizing: border-box; min-block-size: 32px;
+}
+.confirm-toggle:hover { border-color: var(--status-good); }
+.confirm-toggle:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.confirm-toggle[aria-pressed="true"] {
+  border-width: 2px; padding-block: 4px; padding-inline: 12px;
+  border-color: var(--status-good);
+  background: var(--status-good-bg); color: var(--ink);
+}
+.confirm-toggle:disabled { cursor: progress; opacity: 0.7; }
+.confirmation-status {
+  font-size: 12px; flex: 1 1 auto; min-inline-size: 0;
+  min-block-size: 1.4em; line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.confirmation-status.ok { color: var(--status-good); }
+.confirmation-status.error { color: var(--status-critical); }
+
 /* ── "Request access" (ADR-004 part 1) ──────────────────────────────
  * The failure banner's own inline status line -- same size/placement
  * convention as .feedback-status above, appended right after the

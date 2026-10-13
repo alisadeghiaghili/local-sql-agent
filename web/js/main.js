@@ -24,6 +24,7 @@ import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError }
 import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
 import { DEFAULT_BASE_URL, DEFAULT_API_PORT } from "./config.js";
 import { createTurnCard, FAILURE_BY_CODE } from "./render/turn.js";
+import { canConfirm, renderConfirmationControl } from "./render/confirmation.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
 import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
@@ -134,6 +135,15 @@ let api = new Api(state.baseUrl);
 // sessions in the sidebar never discards what was just asked (see
 // switchToSession). Session-local to this tab; never persisted.
 const turnsCache = new Map();
+
+// Turn ids the signed-in analyst has confirmed ("پاسخ درست است") in the
+// sessions opened so far -- what each turn card's confirmation toggle reads
+// its state from, so re-rendering a card (or switching away and back) shows
+// the same state. Turn ids are unique, so one set serves every session.
+// Declared here, above the boot calls below, for the reason
+// HEALTH_STATE_LABEL_KEY is: a const read before its line has run is a
+// ReferenceError (see tests/web_ui/test_web_ui_boot_order.py).
+const confirmedTurnIds = new Set();
 
 wireComposer();
 wireTopbar();
@@ -579,12 +589,26 @@ async function switchToSession(sessionId) {
       handleLiveError(err);
       state.turns = [];
     }
+    await loadConfirmedTurns(sessionId);
   } else {
     state.turns = getSimulatedSessionTurns(sessionId);
   }
   state.nextScriptedIndex = 0;
   renderTranscriptFromTurns(state.turns);
   renderSessionSidebar();
+}
+
+/** Fills confirmedTurnIds from the server for one session. Best effort: a
+ * failure leaves the toggles unpressed rather than blocking the transcript
+ * (the server stays the source of truth, and pressing a toggle is
+ * idempotent). */
+async function loadConfirmedTurns(sessionId) {
+  try {
+    const found = await api.listConfirmations(sessionId);
+    for (const id of found.turn_ids || []) confirmedTurnIds.add(id);
+  } catch {
+    // Not fatal; see above.
+  }
 }
 
 /** Replaces the whole transcript pane with *turns*, already-resolved (no
@@ -1112,9 +1136,47 @@ function turnCtx() {
       if (state.mode === "live") {
         if (!state.sessionId) throw new Error("هیچ گفتگوی زنده‌ای در جریان نیست.");
         await api.submitFeedback(state.sessionId, turnId, category, note);
+        // The server drops this principal's confirmation of the same turn
+        // (the later action wins); the local record follows.
+        confirmedTurnIds.delete(turnId);
         return;
       }
       showNotice("ok", "در حالت نمایشی، گزارش‌ها به سرور واقعی ارسال نمی‌شوند (فقط شبیه‌سازی محلی).");
+    },
+    // "پاسخ درست است" -- confirms an answer; the positive twin of onFlag.
+    // LIVE mode really submits it; SIMULATED mode has no server, so it is
+    // accepted locally and shown as such, like onFlag above.
+    renderConfirmation: (turn, { onReplacedFlag }) => {
+      if (!canConfirm(turn)) return null;
+      const turnId = turn.turn_id;
+      return renderConfirmationControl(turn, {
+        confirmed: confirmedTurnIds.has(turnId),
+        onConfirm: async () => {
+          if (state.mode === "live") {
+            if (!state.sessionId) throw new Error("هیچ گفتگوی زنده‌ای در جریان نیست.");
+            const result = await api.confirmAnswer(state.sessionId, turnId);
+            confirmedTurnIds.add(turnId);
+            return result;
+          }
+          confirmedTurnIds.add(turnId);
+          showNotice("ok", "در حالت نمایشی، تأییدها به سرور واقعی ارسال نمی‌شوند (فقط شبیه‌سازی محلی).");
+          return { removed_flags: 0 };
+        },
+        onWithdraw: async () => {
+          if (state.mode === "live") {
+            if (!state.sessionId) throw new Error("هیچ گفتگوی زنده‌ای در جریان نیست.");
+            await api.withdrawConfirmation(state.sessionId, turnId);
+          }
+          confirmedTurnIds.delete(turnId);
+        },
+        // The server removed this analyst's open flag on the turn (the later
+        // action wins); the flag control mirrors that.
+        onConfirmed: (result) => {
+          const replaced = Boolean(result && result.removed_flags > 0);
+          if (replaced) onReplacedFlag();
+          return replaced;
+        },
+      });
     },
   };
 }

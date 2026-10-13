@@ -46,6 +46,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
 )
 
 metadata = MetaData()
@@ -284,6 +285,40 @@ access_requests = Table(
     Column("resolution_note", Text, nullable=True),
     Column("resolved_by", String(255), nullable=True),
     Column("resolved_at", String(64), nullable=True),
+)
+
+
+#: "This answer is correct" (پاسخ درست است): one analyst's confirmation of
+#: one turn's answer. The positive counterpart of :data:`turn_feedback`,
+#: and bound by the same rule: **identifiers only**. A row never carries
+#: the question, the SQL or any result data -- those already exist, keyed
+#: by the same ``session_id``/``turn_id``, in the analyst audit log
+#: (``observability/audit.py``), and ``request_id`` is resolved from that
+#: audit record at confirmation time (:mod:`appdb.confirmations`), never
+#: accepted from the client.
+#:
+#: At most one row per ``(session_id, turn_id, principal_id)`` -- enforced
+#: by the unique constraint below, not only by the module's
+#: select-then-insert, so two concurrent clicks cannot store two rows.
+#: Withdrawing a confirmation deletes the row (current state only, like
+#: :data:`admin_principal_roles`): there is no tombstone, because nothing
+#: downstream needs the history of a click that was taken back.
+turn_confirmations = Table(
+    "turn_confirmations",
+    metadata,
+    Column("confirmation_id", Integer, primary_key=True, autoincrement=True),
+    Column("session_id", String(64), nullable=False),
+    Column("turn_id", String(64), nullable=False),
+    #: Stamped server-side from the authenticated principal -- never
+    #: accepted from the request body.
+    Column("principal_id", String(255), nullable=False),
+    #: The audit record's own request id, resolved by joining on
+    #: (session_id, turn_id) when the confirmation was stored.
+    Column("request_id", String(64), nullable=True),
+    Column("created_at", String(64), nullable=False),
+    UniqueConstraint(
+        "session_id", "turn_id", "principal_id", name="uq_turn_confirmations_turn_principal",
+    ),
 )
 
 

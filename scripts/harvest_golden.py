@@ -64,6 +64,41 @@ How candidates are chosen
   proposed as ``expect = "out_of_scope"``; any other failure proposes
   nothing -- a reviewer supplies the SQL.
 
+Confirmed answers come first (on by default, ``--no-confirmations`` opts out)
+-------------------------------------------------------------------------------
+Analysts confirm a correct answer with one click ("پاسخ درست است",
+``POST /v2/sessions/{sid}/turns/{tid}/confirmation``, stored by
+:mod:`appdb.confirmations`). Each confirmed turn is the cheapest evidence
+there is, so it is harvested *before* the stratified sample:
+
+* The confirmation is joined to its audit record by ``(session_id,
+  turn_id)``; the question and the SQL that ran come from that record (the
+  confirmation row holds only identifiers). A confirmation whose record has
+  rotated out of the log, or whose record does not show a successful
+  execution, is counted and skipped.
+* The case is ``status = "reviewed"``, not ``"pending_review"``:
+  ``"reviewed"`` is "a person confirmed the ``expected_sql`` and
+  ``eval.cli verify`` has not run it yet" (:data:`eval.models.GoldenCaseStatus`),
+  and a confirmation is exactly that -- the analyst saw the answer that SQL
+  produced and said it was right. ``pending_review`` would ask a second
+  person to re-judge what the first has already judged, and ``active``
+  would skip the gate: ``python -m eval.cli verify --accept`` still runs the
+  SQL against the database and is what activates the case.
+* ``expected_sql`` is the SQL that ran; ``expect`` is ``"empty"`` for a
+  zero-row result, else ``"success"``.
+* Provenance lives in ``notes`` (the case model has no dedicated field, and
+  ``notes`` is where the harvest already names the source record): the
+  confirming analyst's principal id, the confirmation time, and the audit
+  record. The case is tagged :data:`CONFIRMED_TAG`.
+* Two confirmations of the same normalised question are one case; the most
+  recent confirmation wins. A question already in a ``--exclude`` golden
+  set is skipped like any other.
+* Confirmed cases are never counted against ``--n``: the sample is drawn
+  from the remaining questions, and the file holds the confirmed cases plus
+  up to ``--n`` sampled ones.
+* ``scripts/golden_sheet.py export`` lists them with the verdict already
+  ``correct``, so analysts see them as confirmed and need only skim.
+
 The file is never overwritten without ``--force`` (which keeps the previous
 one as ``.bak``).
 """
@@ -77,7 +112,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +122,7 @@ from core.console import use_utf8_console
 from core.persian import normalize_for_matching
 from eval.models import GoldenCase
 from eval.store import dump_cases, load_cases_or_empty, write_text_atomic
+from observability.audit import turn_executed_successfully
 from scripts.analyze_audit_log import (
     _TRANSPORT_ERROR_CODES,
     iter_records,
@@ -102,6 +138,11 @@ _WHITESPACE_RE = re.compile(r"\s+")
 #: Substrings that mark an ``llm.model`` as a stub/test backend (see
 #: ``analyze_audit_log.records_by_model``): their records are not real traffic.
 _TEST_BACKEND_MARKERS: tuple[str, ...] = ("mock:", ":test", "stub")
+
+#: Tag carried by every case harvested from an analyst's confirmation.
+#: ``scripts/golden_sheet.py export`` recognises a case by it and pre-fills
+#: its verdict as ``correct``.
+CONFIRMED_TAG = "origin:confirmed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +167,10 @@ class Candidate:
         The record's ``error_code`` for an ``"error"`` outcome, else ``None``.
     request_id, timestamp:
         Identify the source record (never the user).
+    confirmed_by, confirmed_at:
+        For a candidate that comes from an analyst's confirmation: the
+        confirming principal's id and the confirmation time. ``None`` for
+        every sampled candidate.
     """
 
     key: str
@@ -137,6 +182,13 @@ class Candidate:
     error_code: str | None
     request_id: str
     timestamp: str
+    confirmed_by: str | None = None
+    confirmed_at: str | None = None
+
+    @property
+    def is_confirmed(self) -> bool:
+        """True for a candidate that comes from an analyst's confirmation."""
+        return self.confirmed_by is not None
 
     @property
     def stratum(self) -> tuple[str, str, str]:
@@ -378,11 +430,20 @@ def stratified_sample(
 
 
 def candidate_to_case(cand: Candidate) -> GoldenCase:
-    """The ``pending_review`` :class:`~eval.models.GoldenCase` for *cand*.
+    """The :class:`~eval.models.GoldenCase` for *cand*.
+
+    A sampled candidate becomes ``pending_review``: its SQL is the model's
+    unreviewed proposal. A candidate that comes from an analyst's
+    confirmation (``cand.is_confirmed``) becomes ``reviewed``: a person has
+    seen the answer that SQL produced and said it is correct, which is what
+    :data:`eval.models.GoldenCaseStatus` means by ``"reviewed"``;
+    ``eval.cli verify --accept`` still has to run it before it counts.
 
     The id is derived from the source record, so harvesting the same log
     twice gives the same ids. The notes name the record (``request_id`` and
-    timestamp), never the user.
+    timestamp); only for a confirmed case do they also name the confirming
+    principal and the confirmation time (the provenance the case model
+    keeps in ``notes``), never a sampled record's user.
 
     Examples
     --------
@@ -391,6 +452,11 @@ def candidate_to_case(cand: Candidate) -> GoldenCase:
     >>> case.status, case.expected_sql, case.datasource, case.tags
     ('pending_review', 'SELECT 1', 'sales', ['lang:en', 'source:sales', 'outcome:success'])
     >>> "r1" in case.notes and "2026-01-02" in case.notes
+    True
+    >>> done = candidate_to_case(replace(cand, confirmed_by="analyst-1", confirmed_at="2026-01-03T00:00:00+00:00"))
+    >>> done.status, done.id.startswith("confirmed_"), CONFIRMED_TAG in done.tags
+    ('reviewed', True, True)
+    >>> "analyst-1" in done.notes and "2026-01-03" in done.notes
     True
     """
     digest = hashlib.sha256(
@@ -410,23 +476,34 @@ def candidate_to_case(cand: Candidate) -> GoldenCase:
         "out_of_scope": "declined as out of scope",
         "error": f"failed ({cand.error_code})",
     }[cand.outcome]
-    notes = (
-        f"Harvested from audit record {cand.request_id or '(no request id)'} "
-        f"at {cand.timestamp or '(no timestamp)'}: the system {describe}. "
-        + (
-            "expected_sql is the model's own, unreviewed proposal."
-            if expected_sql
-            else "No SQL is proposed; the reviewer supplies it."
+    if cand.is_confirmed:
+        tags.append(CONFIRMED_TAG)
+        notes = (
+            f"Confirmed correct by analyst {cand.confirmed_by} at "
+            f"{cand.confirmed_at or '(no time)'}: the system {describe} in audit record "
+            f"{cand.request_id or '(no request id)'} at {cand.timestamp or '(no timestamp)'}. "
+            "expected_sql is the SQL that ran."
         )
-    )
+        status = "reviewed"
+    else:
+        notes = (
+            f"Harvested from audit record {cand.request_id or '(no request id)'} "
+            f"at {cand.timestamp or '(no timestamp)'}: the system {describe}. "
+            + (
+                "expected_sql is the model's own, unreviewed proposal."
+                if expected_sql
+                else "No SQL is proposed; the reviewer supplies it."
+            )
+        )
+        status = "pending_review"
     return GoldenCase(
-        id=f"cand_{digest}",
+        id=f"{'confirmed' if cand.is_confirmed else 'cand'}_{digest}",
         question=cand.question,
         tags=tags,
         expected_sql=expected_sql,
         expect=expect,  # type: ignore[arg-type]
         notes=notes,
-        status="pending_review",
+        status=status,  # type: ignore[arg-type]
         datasource=cand.datasource if cand.outcome in ("success", "empty") else None,
     )
 
@@ -449,6 +526,16 @@ class HarvestResult:
         Distinct questions dropped because ``--exclude`` already has them.
     pool:
         Distinct usable questions the sample was drawn from.
+    confirmed:
+        How many of *cases* come from analyst confirmations (they come
+        first, ahead of the sample, and are not counted against ``n``).
+    confirmation_stats:
+        ``{reason: count}`` for the confirmations read: ``"read"``,
+        ``"included"``, ``"duplicate"`` (an older confirmation of a question
+        a newer one covers), ``"no_audit_record"``, ``"not_successful"``,
+        ``"unusable"`` (a record with no question, or from a test backend)
+        and ``"already_known"`` (the question is in an ``--exclude`` set).
+        ``None`` when confirmations were not harvested.
     """
 
     cases: list[GoldenCase]
@@ -457,6 +544,90 @@ class HarvestResult:
     duplicates: int
     already_known: int
     pool: int
+    confirmed: int = 0
+    confirmation_stats: dict[str, int] | None = None
+
+
+def confirmed_candidates(
+    confirmations: Iterable[dict[str, Any]],
+    turn_records: dict[tuple[str, str], dict[str, Any]],
+    *,
+    include_test_backends: bool = False,
+    exclude_keys: frozenset[str] = frozenset(),
+) -> tuple[dict[str, Candidate], dict[str, int]]:
+    """Turn analyst confirmations into candidates, one per normalised question.
+
+    Parameters
+    ----------
+    confirmations:
+        Rows of :func:`appdb.confirmations.list_confirmations` (identifiers
+        only: ``session_id``, ``turn_id``, ``principal_id``, ``created_at``).
+    turn_records:
+        ``{(session_id, turn_id): audit record}`` for the turns the
+        confirmations name; the question and the SQL come from here.
+    include_test_backends:
+        See :func:`classify_record`.
+    exclude_keys:
+        Normalised questions already in a golden set; a confirmed question
+        among them is skipped and counted as ``"already_known"``.
+
+    Returns
+    -------
+    tuple[dict[str, Candidate], dict[str, int]]
+        ``({normalised question: candidate}, stats)`` -- see
+        :attr:`HarvestResult.confirmation_stats` for the stats keys. When
+        two confirmations name the same normalised question the most recent
+        one (by ``created_at``, then by id) wins.
+
+    Examples
+    --------
+    >>> rec = {"question": "How many customers?", "generated_sql": "SELECT 1", "columns": ["n"],
+    ...        "row_count": 1, "request_id": "r1", "timestamp": "2026-01-01", "datasource": "sales"}
+    >>> older = {"confirmation_id": 1, "session_id": "s", "turn_id": "t1",
+    ...          "principal_id": "analyst-1", "created_at": "2026-01-02"}
+    >>> newer = {"confirmation_id": 2, "session_id": "s", "turn_id": "t2",
+    ...          "principal_id": "analyst-2", "created_at": "2026-01-03"}
+    >>> recs = {("s", "t1"): rec, ("s", "t2"): {**rec, "request_id": "r2"}}
+    >>> found, stats = confirmed_candidates([older, newer], recs)
+    >>> [(c.confirmed_by, c.request_id) for c in found.values()]
+    [('analyst-2', 'r2')]
+    >>> stats["read"], stats["included"], stats["duplicate"]
+    (2, 1, 1)
+    >>> confirmed_candidates([older], {})[1]["no_audit_record"]
+    1
+    """
+    stats: Counter[str] = Counter()
+    found: dict[str, Candidate] = {}
+    ordered = sorted(
+        confirmations,
+        key=lambda c: (str(c.get("created_at") or ""), int(c.get("confirmation_id") or 0)),
+    )
+    for conf in ordered:
+        stats["read"] += 1
+        record = turn_records.get((str(conf.get("session_id")), str(conf.get("turn_id"))))
+        if record is None:
+            stats["no_audit_record"] += 1
+            continue
+        if not turn_executed_successfully(record):
+            stats["not_successful"] += 1
+            continue
+        cand, _reason = classify_record(record, include_test_backends=include_test_backends)
+        if cand is None or cand.outcome not in ("success", "empty"):
+            stats["unusable"] += 1
+            continue
+        if cand.key in exclude_keys:
+            stats["already_known"] += 1
+            continue
+        cand = replace(
+            cand,
+            confirmed_by=str(conf.get("principal_id") or ""),
+            confirmed_at=str(conf.get("created_at") or ""),
+        )
+        if cand.key in found:
+            stats["duplicate"] += 1
+        found[cand.key] = cand
+    stats["included"] = len(found)
+    return found, dict(stats)
 
 
 def harvest(
@@ -466,6 +637,7 @@ def harvest(
     seed: int = 0,
     exclude_keys: frozenset[str] = frozenset(),
     include_test_backends: bool = False,
+    confirmations: Iterable[dict[str, Any]] | None = None,
 ) -> HarvestResult:
     """Classify, de-duplicate and sample *records* into candidate cases.
 
@@ -474,13 +646,19 @@ def harvest(
     records:
         Parsed audit records.
     n:
-        Sample size.
+        Sample size. Confirmed cases are *not* part of it (see below).
     seed:
         See :func:`stratified_sample`.
     exclude_keys:
         Normalised questions already in a golden set.
     include_test_backends:
         See :func:`classify_record`.
+    confirmations:
+        Analyst confirmations to harvest first (see
+        :func:`confirmed_candidates`), or ``None`` to harvest none. Each
+        confirmed question becomes a ``reviewed`` case ahead of the sample;
+        the sample is drawn from the other questions, so a confirmed
+        question is never in the file twice and ``n`` never drops one.
 
     Returns
     -------
@@ -502,13 +680,33 @@ def harvest(
     (2, 1, {'transport_error': 1})
     >>> sorted(c.expected_sql or "-" for c in res.cases)
     ['-', 'SELECT 2']
+
+    A confirmed question comes first, as a reviewed case, and is not
+    sampled a second time:
+
+    >>> turn = {**recs[1], "session_id": "s", "turn_id": "t", "columns": ["n"]}
+    >>> conf = [{"confirmation_id": 1, "session_id": "s", "turn_id": "t",
+    ...          "principal_id": "analyst-1", "created_at": "2026-01-04"}]
+    >>> res = harvest([recs[0], turn, recs[2]], n=1, confirmations=conf)
+    >>> [(c.status, c.expected_sql) for c in res.cases], res.confirmed
+    ([('reviewed', 'SELECT 2'), ('pending_review', None)], 1)
     """
     dropped: Counter[str] = Counter()
     latest: dict[str, Candidate] = {}
     records_read = 0
     usable = 0
+    confirmation_rows = list(confirmations) if confirmations is not None else None
+    wanted = (
+        {(str(c.get("session_id")), str(c.get("turn_id"))) for c in confirmation_rows}
+        if confirmation_rows else set()
+    )
+    turn_records: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
         records_read += 1
+        if wanted:
+            turn_key = (str(record.get("session_id")), str(record.get("turn_id")))
+            if turn_key in wanted:
+                turn_records[turn_key] = record  # the last record for a turn wins
         cand, reason = classify_record(record, include_test_backends=include_test_backends)
         if cand is None:
             dropped[reason or "unusable"] += 1
@@ -518,20 +716,38 @@ def harvest(
         if previous is None or cand.timestamp >= previous.timestamp:
             latest[cand.key] = cand
     duplicates = usable - len(latest)
+
+    confirmed: dict[str, Candidate] = {}
+    confirmation_stats: dict[str, int] | None = None
+    if confirmation_rows is not None:
+        confirmed, confirmation_stats = confirmed_candidates(
+            confirmation_rows, turn_records,
+            include_test_backends=include_test_backends, exclude_keys=exclude_keys,
+        )
+
     known = [k for k in latest if k in exclude_keys]
-    pool = [c for k, c in latest.items() if k not in exclude_keys]
+    pool = [c for k, c in latest.items() if k not in exclude_keys and k not in confirmed]
     sample = stratified_sample(pool, n, seed=seed)
+    confirmed_in_order = sorted(confirmed.values(), key=lambda c: (c.confirmed_at or "", c.key))
     return HarvestResult(
-        cases=[candidate_to_case(c) for c in sample],
+        cases=[candidate_to_case(c) for c in [*confirmed_in_order, *sample]],
         records_read=records_read,
         dropped=dict(dropped),
         duplicates=duplicates,
         already_known=len(known),
         pool=len(pool),
+        confirmed=len(confirmed_in_order),
+        confirmation_stats=confirmation_stats,
     )
 
 
-def render_summary(result: HarvestResult, out: str, *, include_examples: bool = False) -> str:
+def render_summary(
+    result: HarvestResult,
+    out: str,
+    *,
+    include_examples: bool = False,
+    confirmation_note: str = "not harvested",
+) -> str:
     """The text the script prints: counts only, unless *include_examples*.
 
     Parameters
@@ -543,6 +759,10 @@ def render_summary(result: HarvestResult, out: str, *, include_examples: bool = 
     include_examples:
         Opt in to printing up to five verbatim candidates (question and
         proposed SQL). The first line then says so.
+    confirmation_note:
+        What to print on the ``confirmations`` line when no confirmations
+        were harvested (``--no-confirmations``, or the application database
+        could not be read), so the reader knows why.
 
     Returns
     -------
@@ -555,6 +775,8 @@ def render_summary(result: HarvestResult, out: str, *, include_examples: bool = 
     >>> text = render_summary(res, "eval_data/candidates.jsonl")
     >>> "secret" in text, "SELECT 1" in text, "wrote 1 candidate(s)" in text
     (False, False, True)
+    >>> "0 confirmed + 1 sampled" in text
+    True
     >>> "secret question?" in render_summary(res, "x", include_examples=True)
     True
     """
@@ -570,7 +792,30 @@ def render_summary(result: HarvestResult, out: str, *, include_examples: bool = 
     lines.append(f"  duplicate questions  : {result.duplicates}")
     lines.append(f"  already in golden set: {result.already_known}")
     lines.append(f"distinct candidates    : {result.pool}")
-    lines.append(f"wrote {len(result.cases)} candidate(s) to {out}")
+    stats = result.confirmation_stats
+    if stats is None:
+        lines.append(f"confirmations          : {confirmation_note}")
+    else:
+        detail = ", ".join(
+            f"{label} {stats[key]}"
+            for key, label in (
+                ("duplicate", "older duplicates"),
+                ("no_audit_record", "no audit record"),
+                ("not_successful", "not a successful answer"),
+                ("unusable", "unusable"),
+                ("already_known", "already in golden set"),
+            )
+            if stats.get(key)
+        )
+        lines.append(
+            f"confirmations          : read {stats.get('read', 0)}, "
+            f"included {result.confirmed}" + (f" ({detail})" if detail else "")
+        )
+    sampled = len(result.cases) - result.confirmed
+    lines.append(
+        f"wrote {len(result.cases)} candidate(s) to {out} "
+        f"({result.confirmed} confirmed + {sampled} sampled)"
+    )
     for label, extract in (
         ("by data source", lambda c: c.datasource or "(none)"),
         ("by outcome", lambda c: next(t[8:] for t in c.tags if t.startswith("outcome:"))),
@@ -623,6 +868,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Keep records from stub/test backends (dropped by default).",
     )
     parser.add_argument(
+        "--no-confirmations", action="store_true",
+        help=(
+            "Do not harvest analysts' confirmations (\"this answer is correct\"). By default "
+            "each confirmed answer becomes a 'reviewed' case ahead of the sample and does not "
+            "count against --n."
+        ),
+    )
+    parser.add_argument(
         "--include-examples", action="store_true",
         help=(
             "Opt-in: also print a few verbatim candidates. NOT the default -- the default "
@@ -653,15 +906,35 @@ def main(argv: list[str] | None = None) -> int:
         for path in args.exclude
         for c in load_cases_or_empty(path)
     )
+    confirmations: list[dict[str, Any]] | None = None
+    confirmation_note = "skipped (--no-confirmations)"
+    if not args.no_confirmations:
+        # Imported here: it reaches the application database, which a run
+        # with --no-confirmations must not touch.
+        from observability.quality import load_ratings
+
+        ratings = load_ratings()
+        confirmations = ratings.confirmations
+        if confirmations is None:
+            confirmation_note = (
+                f"unavailable (application database not read: {ratings.error}); "
+                "fix it and run again, or pass --no-confirmations"
+            )
     result = harvest(
         iter_records(paths),
         n=args.n,
         seed=args.seed,
         exclude_keys=exclude_keys,
         include_test_backends=args.include_test_backends,
+        confirmations=confirmations,
     )
     write_text_atomic(out_path, dump_cases(result.cases), backup=True)
-    print(render_summary(result, str(out_path), include_examples=args.include_examples))
+    print(
+        render_summary(
+            result, str(out_path), include_examples=args.include_examples,
+            confirmation_note=confirmation_note,
+        )
+    )
     return 0
 
 

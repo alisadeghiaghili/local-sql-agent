@@ -48,7 +48,7 @@ function makeFakeElement() {
 // so a card added there without being added here fails loudly.
 const CARDS = [
   "summary", "health", "cache", "config", "feedback", "accessRequests",
-  "maintenance", "keys", "schemaDrift", "vocabulary", "usage", "authFailures",
+  "maintenance", "keys", "schemaDrift", "vocabulary", "quality", "usage", "authFailures",
 ];
 
 // Plain recorders for the elements under test.

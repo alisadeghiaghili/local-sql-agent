@@ -53,7 +53,7 @@ const $ = (id) => document.getElementById(id);
  * before the module finishes its first pass. */
 const CARDS = [
   "summary", "health", "cache", "config", "feedback", "accessRequests",
-  "maintenance", "keys", "schemaDrift", "vocabulary", "usage", "authFailures",
+  "maintenance", "keys", "schemaDrift", "vocabulary", "quality", "usage", "authFailures",
 ];
 
 /* Cards whose data comes from a real warehouse round trip beyond a
@@ -69,6 +69,13 @@ const CARDS = [
  * only the audit log, the application database, or in-process
  * bookkeeping -- cheap enough to keep on the ordinary cadence. */
 const EXPENSIVE_CARDS = new Set(["health", "schemaDrift"]);
+
+/* "quality" is deliberately NOT in EXPENSIVE_CARDS. It reads the whole audit
+ * log (files, not the warehouse), which would be too much to do every 30
+ * seconds -- so GET /admin/quality is cached on the server for
+ * ADMIN_EXPENSIVE_CACHE_TTL_SECONDS (api/admin_result_cache.py, the same
+ * cache the two cards above use), and the auto-refresh tick is served from
+ * it. Its own refresh button forces a recompute (refreshOne's `force`). */
 
 /* Cards whose 403 is an ordinary, expected outcome rather than a wrong
  * credential, and so must render inside the card instead of raising the
@@ -181,9 +188,10 @@ function wireTopbar() {
 
   $("admin-refresh-all").addEventListener("click", refreshAll);
   // A card's OWN refresh button is a deliberate "run this now" from the
-  // operator -- for the two expensive cards this forces a fresh run past
-  // the server's own cache (?refresh=1); refreshOne ignores `force` for
-  // every other card, which has no such cache to bypass.
+  // operator -- for the server-cached cards (the two expensive ones, and
+  // "quality") this forces a fresh run past the server's own cache
+  // (?refresh=1); refreshOne ignores `force` for every other card, which
+  // has no such cache to bypass.
   document.querySelectorAll("[data-refresh]").forEach((btn) => {
     btn.addEventListener("click", () => refreshOne(btn.dataset.refresh, { force: true }));
   });
@@ -425,6 +433,8 @@ async function refreshOne(name, { force = false, deep = false } = {}) {
       renderSchemaDrift(await api.schemaDrift({ refresh: force }));
     } else if (name === "vocabulary") {
       renderVocabulary(await api.vocabularyStatus());
+    } else if (name === "quality") {
+      renderQuality(await api.quality({ days: Number($("quality-days").value) || 7, refresh: force }));
     } else if (name === "usage") {
       renderUsage(await api.usage());
     } else if (name === "authFailures") {
@@ -478,6 +488,7 @@ async function refreshOne(name, { force = false, deep = false } = {}) {
 }
 
 $("include-examples-toggle").addEventListener("change", () => refreshOne("summary"));
+$("quality-days").addEventListener("change", () => refreshOne("quality"));
 $("feedback-status-filter").addEventListener("change", () => refreshOne("feedback"));
 
 /* ── Cache clear: say the cost BEFORE doing it (spec §5) ────────────── */
@@ -638,8 +649,8 @@ function kv(label, value) {
   return `<dt>${escapeHtml(label)}</dt><dd dir="ltr">${escapeHtml(value)}</dd>`;
 }
 
-/** A small "این نتیجه از کش است / همین الان اجرا شد" line for the two
- * server-cached expensive cards (health, schemaDrift) -- api/admin_result_cache.py's
+/** A small "این نتیجه از کش است / همین الان اجرا شد" line for the
+ * server-cached cards (health, schemaDrift, quality) -- api/admin_result_cache.py's
  * `cache` block on each response. 2026 warehouse-load audit, Required
  * item 1: showing the age is how an operator tells a genuinely fresh
  * result from one that is up to ADMIN_EXPENSIVE_CACHE_TTL_SECONDS old. */
@@ -1087,6 +1098,152 @@ function renderVocabulary(payload) {
       }
     });
   });
+}
+
+/* ── Real-use quality ────────────────────────────────────────────────
+ *
+ * One computation (observability/quality.py), two surfaces: this card and
+ * scripts/analyze_audit_log.py's section. Two notes belong on the card and
+ * are not optional:
+ *
+ * - the confirmed share is NOT accuracy. Analysts rate only some answers,
+ *   and an unrated answer is not a correct one;
+ * - the llm stage split (ttft / generation) exists only for calls made with
+ *   LLM_STREAM_TIMINGS=true, so it is often empty -- say why, not "no data".
+ *
+ * Every field is read defensively: an older server, or an empty log, must
+ * leave a sentence in the card, never a thrown error or a blank box. */
+
+const QUALITY_STAGES = ["plan", "prompt", "llm", "guard", "execute", "interpret"];
+
+/** A 0..1 rate as a percentage string, or an em dash when it has no denominator. */
+function fmtRate(rate) {
+  if (rate === null || rate === undefined || Number.isNaN(Number(rate))) return "—";
+  return `${(Number(rate) * 100).toFixed(1)}%`;
+}
+
+/** Milliseconds rounded, or an em dash. */
+function fmtMs(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return String(Math.round(Number(value)));
+}
+
+function qualityStageRow(label, stats) {
+  const s = stats || {};
+  return (
+    `<tr><td dir="ltr">${escapeHtml(label)}</td>` +
+    `<td class="num">${escapeHtml(fmtNum(s.count ?? 0))}</td>` +
+    `<td class="num" dir="ltr">${fmtMs(s.p50)}</td>` +
+    `<td class="num" dir="ltr">${fmtMs(s.p95)}</td></tr>`
+  );
+}
+
+function qualitySourceRow(name, m) {
+  const ratings = m.ratings || {};
+  const rated = ratings.available
+    ? `${fmtNum(ratings.confirmed ?? 0)} / ${fmtNum(ratings.flagged ?? 0)}`
+    : "—";
+  const total = (m.latency && m.latency.total_ms) || {};
+  return (
+    `<tr><td dir="ltr">${escapeHtml(name)}</td>` +
+    `<td class="num">${escapeHtml(fmtNum(m.questions ?? 0))}</td>` +
+    `<td class="num" dir="ltr">${fmtRate(m.execution_success_rate)}</td>` +
+    `<td class="num" dir="ltr">${fmtRate(m.guard_rejection_rate)}</td>` +
+    `<td class="num" dir="ltr">${fmtRate(m.needed_correction_rate)}</td>` +
+    `<td class="num" dir="ltr">${fmtRate(m.empty_result_rate)}</td>` +
+    `<td class="num" dir="ltr">${fmtRate(m.out_of_scope_rate)}</td>` +
+    `<td class="num">${rated}</td>` +
+    `<td class="num" dir="ltr">${fmtMs(total.p50)}</td>` +
+    `<td class="num" dir="ltr">${fmtMs(total.p95)}</td></tr>`
+  );
+}
+
+function qualitySection(title, section) {
+  const overall = (section && section.overall) || null;
+  if (!overall) return "";
+  const ratings = overall.ratings || {};
+  const latency = overall.latency || {};
+  const total = latency.total_ms || {};
+  const tiles = [
+    statTile({ label: "پرسش‌ها", value: fmtNum(overall.questions ?? 0) }),
+    statTile({ label: "اجرای موفق", value: fmtRate(overall.execution_success_rate), sub: `${overall.executed ?? 0}` }),
+    statTile({ label: "ردشده توسط گارد", value: fmtRate(overall.guard_rejection_rate), sub: `${overall.guard_rejected ?? 0}` }),
+    statTile({ label: "نیازمند اصلاح", value: fmtRate(overall.needed_correction_rate), sub: `${overall.needed_correction ?? 0}` }),
+    statTile({ label: "نتیجهٔ خالی (از اجراشده‌ها)", value: fmtRate(overall.empty_result_rate), sub: `${overall.empty_results ?? 0}` }),
+    statTile({ label: "خارج از دامنه", value: fmtRate(overall.out_of_scope_rate), sub: `${overall.out_of_scope ?? 0}` }),
+    statTile({ label: "تأییدشده / گزارش‌شده", value: ratings.available ? `${fmtNum(ratings.confirmed ?? 0)} / ${fmtNum(ratings.flagged ?? 0)}` : "—" }),
+    statTile({
+      label: "سهم تأییدشده از ارزیابی‌شده‌ها",
+      value: ratings.available ? fmtRate(ratings.confirmed_share_of_rated) : "—",
+      sub: "حد پایین، نه دقت",
+    }),
+    statTile({ label: "تأخیر کل p50", value: fmtMs(total.p50), unit: "ms" }),
+    statTile({ label: "تأخیر کل p95", value: fmtMs(total.p95), unit: "ms" }),
+  ];
+
+  const classes = Object.entries(overall.error_rate_by_class || {});
+  const classRows = classes.map(
+    ([bucket, e]) =>
+      `<tr><td dir="ltr">${escapeHtml(bucket)}</td>` +
+      `<td class="num">${escapeHtml(fmtNum(e.count ?? 0))}</td>` +
+      `<td class="num" dir="ltr">${fmtRate(e.rate)}</td></tr>`,
+  );
+
+  const bySource = Object.entries((section && section.by_datasource) || {});
+  const sourceRows = bySource.map(([name, m]) => qualitySourceRow(name, m));
+
+  const byStage = latency.by_stage_ms || {};
+  const split = latency.llm_split || {};
+  const stageRows = QUALITY_STAGES.map((stage) => qualityStageRow(stage, byStage[stage]));
+  stageRows.push(qualityStageRow("llm · ttft", split.ttft_ms));
+  stageRows.push(qualityStageRow("llm · generation", split.generation_ms));
+
+  const out = [
+    `<p class="admin-section-title">${escapeHtml(title)}</p>`,
+    `<div class="admin-stats">${tiles.join("")}</div>`,
+  ];
+  if (classRows.length) {
+    out.push(
+      '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+      "<th>دستهٔ خطا</th><th>تعداد</th><th>نرخ از کل پرسش‌ها</th>" +
+      `</tr></thead><tbody>${classRows.join("")}</tbody></table></div>`,
+    );
+  }
+  if (sourceRows.length) {
+    out.push(
+      '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+      "<th>منبع داده</th><th>پرسش‌ها</th><th>اجرای موفق</th><th>گارد</th><th>اصلاح</th>" +
+      "<th>خالی</th><th>خارج از دامنه</th><th>تأیید / گزارش</th><th>p50 (ms)</th><th>p95 (ms)</th>" +
+      `</tr></thead><tbody>${sourceRows.join("")}</tbody></table></div>`,
+    );
+  }
+  out.push(
+    '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+    "<th>مرحله</th><th>نمونه‌ها</th><th>p50 (ms)</th><th>p95 (ms)</th>" +
+    `</tr></thead><tbody>${stageRows.join("")}</tbody></table></div>`,
+  );
+  return out.join("");
+}
+
+function renderQuality(report) {
+  const body = $("quality-body");
+  const days = report.window_days ?? 7;
+  const sections = [
+    qualitySection(`${fmtNum(days)} روز گذشته`, report.recent),
+    qualitySection("کل دوره", report.all_time),
+  ].filter(Boolean);
+
+  const out = [formatCacheAge(report.cache)];
+  if (!sections.length) {
+    out.push('<p class="admin-loading">داده‌ای در این بازه یافت نشد.</p>');
+  } else {
+    out.push(...sections);
+  }
+  out.push(
+    '<p class="admin-cache-age">سهم تأییدشده «حد پایین» است، نه دقت: تحلیل‌گران فقط بخشی از پاسخ‌ها را ارزیابی می‌کنند و پاسخ ارزیابی‌نشده درست‌شمرده نمی‌شود.</p>',
+    '<p class="admin-cache-age">مراحل زمان‌بندی llm (ttft و generation) فقط با <code>LLM_STREAM_TIMINGS=true</code> نمایش داده می‌شوند.</p>',
+  );
+  body.innerHTML = out.join("");
 }
 
 /* ── Admin panel phase 6: per-analyst usage and rate-limit pressure ──── */

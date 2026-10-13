@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 import config as cfg
 from appdb.engine import get_app_engine
@@ -259,6 +259,45 @@ def list_feedback(
     with engine.connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return [_public(dict(row)) for row in rows]
+
+
+def withdraw_open_flags(
+    *, session_id: str, turn_id: str, reporter_principal_id: str,
+) -> int:
+    """Delete the still-open flags *reporter_principal_id* raised on a turn.
+
+    The flag half of "the later action wins": when a principal confirms an
+    answer they had flagged (:mod:`appdb.confirmations`), the earlier flag
+    is removed so the turn does not sit in the triage queue under a verdict
+    its reporter has taken back. Only ``status == "open"`` rows go. A flag
+    an admin has already resolved stays: triage recorded a decision on it
+    (possibly a config version or a golden case id, see
+    :func:`resolve_feedback`), and deleting the row would orphan that
+    record. Another principal's flags on the same turn are never touched.
+
+    Parameters
+    ----------
+    session_id, turn_id:
+        The turn.
+    reporter_principal_id:
+        Whose open flags to delete.
+
+    Returns
+    -------
+    int
+        How many flags were deleted (usually 0 or 1).
+    """
+    engine = get_app_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            delete(turn_feedback).where(
+                turn_feedback.c.session_id == session_id,
+                turn_feedback.c.turn_id == turn_id,
+                turn_feedback.c.reporter_principal_id == reporter_principal_id,
+                turn_feedback.c.status == "open",
+            )
+        )
+    return int(result.rowcount or 0)
 
 
 # ---------------------------------------------------------------------------

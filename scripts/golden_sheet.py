@@ -32,7 +32,11 @@ the columns
     Blank. ``correct`` (the proposal is right), ``wrong`` (use
     ``correct_sql`` instead) or ``skip`` (not a usable test question: drop
     it). A blank verdict means "not reviewed yet": the row is left alone,
-    so a sheet can be imported in several rounds.
+    so a sheet can be imported in several rounds. A case an analyst already
+    confirmed in the product ("پاسخ درست است"; see
+    ``scripts/harvest_golden.py``) is exported with the verdict already
+    ``correct`` and its ``notes`` saying who confirmed it and when; change
+    it to ``wrong`` or ``skip`` only if you disagree.
 ``expect``
     ``success`` (default), ``empty`` (the right answer is a zero-row
     result) or ``out_of_scope`` (the system should decline; no SQL).
@@ -84,6 +88,7 @@ from core.persian import normalize_for_matching
 from eval.models import GoldenCase
 from eval.store import load_cases_or_empty, write_golden_cases, write_text_atomic
 from exporters.sanitize import defuse_formula
+from scripts.harvest_golden import CONFIRMED_TAG
 from security.sql_guard import validate_sql
 
 #: The sheet's columns, in order.
@@ -113,6 +118,25 @@ def refuse_formula(value: str) -> str:
     return value
 
 
+def is_confirmed_case(case: GoldenCase) -> bool:
+    """True for a case an analyst already confirmed in the product.
+
+    Such a case is ``reviewed`` and tagged
+    :data:`~scripts.harvest_golden.CONFIRMED_TAG` by
+    ``scripts/harvest_golden.py``.
+
+    Examples
+    --------
+    >>> is_confirmed_case(GoldenCase(id="a", question="q", expected_sql="SELECT 1",
+    ...                              status="reviewed", tags=[CONFIRMED_TAG]))
+    True
+    >>> is_confirmed_case(GoldenCase(id="b", question="q", expected_sql="SELECT 1",
+    ...                              status="reviewed"))
+    False
+    """
+    return case.status == "reviewed" and CONFIRMED_TAG in case.tags
+
+
 def render_sheet(cases: Sequence[GoldenCase]) -> str:
     """The CSV text (with BOM, CRLF line ends) for *cases*.
 
@@ -134,6 +158,14 @@ def render_sheet(cases: Sequence[GoldenCase]) -> str:
     True
     >>> "چند مشتری؟" in text and "'=x" in text
     True
+
+    A case an analyst already confirmed in the product is pre-filled as
+    ``correct``:
+
+    >>> done = GoldenCase(id="c2", question="q", expected_sql="SELECT 1", status="reviewed",
+    ...                   tags=[CONFIRMED_TAG])
+    >>> render_sheet([done]).splitlines()[1].split(",")[4]
+    'correct'
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
@@ -144,7 +176,7 @@ def render_sheet(cases: Sequence[GoldenCase]) -> str:
             defuse_formula(case.question),
             defuse_formula(case.expected_sql or ""),
             "",
-            "",
+            "correct" if is_confirmed_case(case) else "",
             case.expect,
             case.datasource or "",
             defuse_formula(case.notes),
@@ -434,12 +466,19 @@ def _export(args: argparse.Namespace) -> int:
         )
         return 2
     cases = load_cases_or_empty(args.cases)
-    reviewable = [c for c in cases if c.status in ("pending_review", "pending_expected")]
+    reviewable = [
+        c for c in cases
+        if c.status in ("pending_review", "pending_expected") or is_confirmed_case(c)
+    ]
     if not reviewable:
-        print(f"No pending_review / pending_expected cases in {args.cases}.", file=sys.stderr)
+        print(f"No pending_review / pending_expected / confirmed cases in {args.cases}.", file=sys.stderr)
         return 1
     write_text_atomic(out, render_sheet(reviewable), backup=True)
-    print(f"Wrote {len(reviewable)} row(s) to {out} (UTF-8 with BOM; open it in Excel).")
+    confirmed = sum(1 for c in reviewable if is_confirmed_case(c))
+    print(
+        f"Wrote {len(reviewable)} row(s) to {out} (UTF-8 with BOM; open it in Excel)."
+        + (f" {confirmed} already confirmed by analysts (verdict pre-filled as correct)." if confirmed else "")
+    )
     return 0
 
 

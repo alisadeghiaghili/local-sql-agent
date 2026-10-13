@@ -102,5 +102,18 @@ export function renderFeedbackControl(turn, onFlag) {
     }
   });
 
+  /** Undo a submitted flag in the UI: the analyst confirmed the same
+   * answer afterwards, and the server removed the flag (the later action
+   * wins -- see render/confirmation.js). The control becomes usable again,
+   * collapsed and empty, as if nothing had been submitted. */
+  root.reopen = () => {
+    form.querySelectorAll("select, textarea, button").forEach((n) => { n.disabled = false; });
+    form.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "این عدد درست نیست؟";
+    status.textContent = "";
+    status.className = "feedback-status";
+  };
+
   return root;
 }
