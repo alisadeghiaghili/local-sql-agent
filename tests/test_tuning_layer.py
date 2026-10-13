@@ -139,6 +139,16 @@ _ALLOWED_MODULE_CONSTANTS = {
         "display-truncation length inside the interactive, untested, "
         "coverage-excluded setup wizard; never read by the running engine"
     ),
+    "core/yaml_loading.py::_MAX_LISTED_DUPLICATES": (
+        "how many repeated keys one error message lists before '... and N "
+        "more'; a display cap on text read by an operator, not a threshold "
+        "any behaviour depends on (the file is refused whatever it is)"
+    ),
+    "database/schema_inspector_cli.py::LARGE_DRAFT_TABLES": (
+        "table count above which the schema-inspector CLI prints an advisory "
+        "warning at the end of a run; one-off onboarding tool, never read by "
+        "the running engine, and the warning changes no exit code"
+    ),
     "retrieval/value_resolver.py::_in_flight_resolutions": (
         "not a constant at all -- a mutable counter of running resolution "
         "workers, guarded by _resolution_slots. Its 0 is an initial value, "
