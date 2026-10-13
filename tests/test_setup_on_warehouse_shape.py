@@ -466,8 +466,16 @@ class Sync:
         return self._tables[0]
 
 
-def _sync(*argv: str) -> Run:
-    return _capture(sync_main, list(argv))
+def _sync(*argv: str, catalogues: dict | None = None) -> Run:
+    """Run ``sync_schema.py``; with *catalogues* its sources are not read again.
+
+    The default loader reflects every table of both sources through the
+    engines of :func:`environment` (half a second a run); the runs whose point
+    is elsewhere are given the catalogues read once by the ``catalogues`` fixture.
+    """
+    if catalogues is None:
+        return _capture(sync_main, list(argv))
+    return _capture(lambda args: sync_main(args, load_catalogue=catalogues.__getitem__), list(argv))
 
 
 def _collect(directory: Path, run: Run) -> Sync:
@@ -511,23 +519,26 @@ class AddedTables:
 
 
 @pytest.fixture(scope="module")
-def added_tables(warehouse_shape, tmp_path_factory) -> AddedTables:
+def added_tables(warehouse_shape, catalogues, tmp_path_factory) -> AddedTables:
     directory = write_project_config(tmp_path_factory.mktemp("sync_add") / "project_config", warehouse_shape)
     with environment(warehouse_shape, directory):
         # The proposals are not what these runs are about (and are the slow part of a big file).
         first = _collect(directory, _sync(
             "--add-tables", "sales_Stg.*", "--add-tables", "ledger_Fact.*", "--no-relationships",
+            catalogues=catalogues,
         ))
         _replace_schema_yaml(directory, first.synced)
-        second = _collect(directory, _sync("--add-tables", "ledger_Stg.*", "--no-relationships"))
+        second = _collect(directory, _sync(
+            "--add-tables", "ledger_Stg.*", "--no-relationships", catalogues=catalogues,
+        ))
     return AddedTables(first, second)
 
 
 class TestSyncSchema:
-    def test_dry_run_prints_the_report_and_writes_nothing(self, project):
+    def test_dry_run_prints_the_report_and_writes_nothing(self, project, catalogues):
         before = _files(project)
 
-        run = _sync("--dry-run")
+        run = _sync("--dry-run", catalogues=catalogues)
 
         assert run.rc == 0
         assert "dry run: nothing written" in run.out
@@ -538,7 +549,7 @@ class TestSyncSchema:
     def test_the_hand_written_file_is_out_of_step_so_check_exits_one_and_writes_nothing(self, project):
         before = _files(project)
 
-        run = _sync("--check")
+        run = _sync("--check")          # through the engines, the way the deploy gate runs it
 
         assert run.rc == 1
         assert "CHECK FAILED" in run.out
@@ -601,14 +612,25 @@ class TestSyncSchema:
         # A role-prefixed column that fits several `Party` tables is dropped, not guessed.
         assert "BuyerParty_ID: several tables match" in default_sync.run.out
 
-    def test_after_replacing_schema_yaml_with_the_proposal_check_passes(self, project, default_sync):
+    def test_after_replacing_schema_yaml_with_the_proposal_check_passes(self, project, default_sync, catalogues):
         _replace_schema_yaml(project, default_sync.synced)
 
-        run = _sync("--check")
+        run = _sync("--check", catalogues=catalogues)
 
         assert run.rc == 0, run.out
         assert "CHECK OK" in run.out
         assert _files(project).count(SYNCED) == 0
+
+    def test_a_schema_yaml_with_windows_line_endings_is_read_the_same(self, project, default_sync, catalogues):
+        # A file edited on Windows has CRLF line endings; the byte-for-byte comparison
+        # the sync makes of its own output must not trip on them.
+        crlf = default_sync.synced.replace("\r\n", "\n").replace("\n", "\r\n")
+        (project / "schema.yaml").write_bytes(crlf.encode("utf-8"))
+
+        run = _sync("--check", catalogues=catalogues)
+
+        assert run.rc == 0, run.out + run.err
+        assert "CHECK OK" in run.out
 
     def test_the_first_add_tables_run_adds_a_fact_schema_and_a_staging_schema_without_a_duplicate(
         self, added_tables, warehouse_shape,

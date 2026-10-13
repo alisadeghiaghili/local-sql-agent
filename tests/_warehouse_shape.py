@@ -810,7 +810,7 @@ def write_project_config(destination: Path, warehouse: Warehouse) -> Path:
         "business_rules.yaml": _BUSINESS_RULES,
     }
     for name, text in texts.items():
-        (destination / name).write_text(text, encoding="utf-8")
+        (destination / name).write_text(text, encoding="utf-8", newline="\n")
     example = _REPO_ROOT / "project_config.example"
     for name in ("session_policy.yaml", "memory_policy.yaml", "system_prompt.md"):
         shutil.copyfile(example / name, destination / name)
@@ -856,5 +856,5 @@ def write_golden(path: Path) -> Path:
         )
         for case_id, question, sql, source in GOLDEN_QUESTIONS
     ]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return path
