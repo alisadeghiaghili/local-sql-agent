@@ -13,9 +13,9 @@
  *   outcome line               (rows · guard · top)
  *   failure state              (what happened · why · a control to press)
  *   SQL                        (collapsible; expanded on first/failure)
- *   result
+ *   result                     (+ a «پاسخ درست است» footer, successful answers only)
  *   interpretation             (when requested — opted into, so main flow)
- *   pipeline / LLM / warnings / confirm + flag   (collapsed; opt in to expand)
+ *   pipeline / LLM / warnings / flag   (collapsed; opt in to expand)
  *
  * Partial/null Turn data is tolerated throughout (contract §6).
  * SQL display: web/js/sql-display.js. Copy: copySourceOfTruth(turn).
@@ -297,6 +297,10 @@ export function createTurnCard(turn, ctx) {
   // settles can leave the actual chart/table scrolled past, off the top —
   // the result card itself is the right, much shorter target.
   let resultEl = null;
+  // The two ways of rating an answer undo each other on the server (the
+  // later action wins); each control mirrors that in the UI through these.
+  let confirmation = null;
+  let feedback = null;
   if (!turn.error && !isGuardRejected(turn)) {
     const resultCard = el("div", "card");
     resultCard.appendChild(el("div", "card-title", "نتیجه"));
@@ -305,6 +309,20 @@ export function createTurnCard(turn, ctx) {
       guardRejected: false,
       onRerun: ctx.onRerun ? () => ctx.onRerun(turn.turn_id) : undefined,
     }));
+    // «پاسخ درست است»: visible on the answer itself, in a footer under the
+    // table or chart -- not in the collapsed section further down, where a
+    // one-click confirmation would barely be used. The page (main.js) builds the
+    // control, which owns the request and the confirmed-turns record, and
+    // returns null for a turn that is not a successful answer, so the
+    // footer exists only then.
+    confirmation = ctx.renderConfirmation
+      ? ctx.renderConfirmation(turn, { onReplacedFlag: () => { if (feedback) feedback.reopen(); } })
+      : null;
+    if (confirmation) {
+      const footer = el("div", "result-footer");
+      footer.appendChild(confirmation);
+      resultCard.appendChild(footer);
+    }
     body.appendChild(tagLate(resultCard));
     resultEl = resultCard;
   }
@@ -344,23 +362,13 @@ export function createTurnCard(turn, ctx) {
   drawerBody.appendChild(llmCard);
 
   if (turn.result && ctx.onFlag) {
-    // Both ways of rating the answer sit together: "this answer is correct"
-    // (successful answers only) beside the existing "this number is wrong".
-    // Each undoes the other on the server (the later action wins), and the
-    // two controls mirror that so neither shows a stale state.
-    const flagWrap = el("div", "card rating-controls");
-    let confirmation = null;
-    const feedback = renderFeedbackControl(turn, async (category, note) => {
+    // The wrong-answer flag stays here, in the drawer. Flagging an answer
+    // the analyst had confirmed resets the toggle on the answer above.
+    const flagWrap = el("div", "card");
+    feedback = renderFeedbackControl(turn, async (category, note) => {
       await ctx.onFlag(turn.turn_id, category, note);
       if (confirmation) confirmation.setConfirmed(false);
     });
-    // The confirmation toggle is built by the page (main.js), which owns the
-    // request and the confirmed-turns record; it returns null for a turn
-    // that is not a successful answer.
-    confirmation = ctx.renderConfirmation
-      ? ctx.renderConfirmation(turn, { onReplacedFlag: () => feedback.reopen() })
-      : null;
-    if (confirmation) flagWrap.appendChild(confirmation);
     flagWrap.appendChild(feedback);
     drawerBody.appendChild(flagWrap);
   }

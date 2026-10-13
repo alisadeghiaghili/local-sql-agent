@@ -2021,9 +2021,12 @@ that are not already in the set.
 
 The spreadsheet in §18.1 costs the analysts a separate review session, and
 that is why a golden set tends not to get built. The web UI now lets them
-build it without one. Beside «این عدد درست نیست؟» (the wrong-answer flag),
-every answer whose query ran and returned a result carries a toggle,
-**«پاسخ درست است»** ("this answer is correct"). One click stores a
+build it without one. Every answer whose query ran and returned a result
+carries a toggle, **«پاسخ درست است»** ("this answer is correct"), in a footer
+right under the result table or chart: visible on the answer, with nothing to
+open first. (The wrong-answer flag «این عدد درست نیست؟» stays in the
+collapsed «جزئیات» drawer.) The toggle is absent on an answer that was
+rejected, declined as out of scope or failed. One click stores a
 confirmation; pressing it again withdraws it. A confirmation holds
 identifiers only (session, turn, the confirming principal, the request id
 and the time), never the question, the SQL or any result data, and it

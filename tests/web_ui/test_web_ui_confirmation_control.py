@@ -18,10 +18,10 @@ at the boundary that matters:
 * confirming a turn the analyst had flagged reports the replaced flag, and
   the flag control's ``reopen()`` makes it usable again.
 
-Two source-level checks pin the wiring the shim cannot observe: ``turn.js``
-places the control beside the flag control, gated on ``canConfirm``, and the
-stylesheet styles the pressed state with design tokens and logical
-properties only (RTL).
+Where the control sits (on the answer, outside the details drawer) is pinned
+by ``test_web_ui_confirmation_placement.py``. One source-level check here pins
+what the shim cannot observe: the stylesheet styles the pressed state with
+design tokens and logical properties only (RTL).
 
 Requires ``node`` on PATH. Skipped (not failed) when unavailable.
 """
@@ -72,27 +72,6 @@ def test_confirmation_control_is_an_accessible_toggle_that_recovers_from_failure
         f"harness did not report completion (partial run?).\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
-
-
-def test_turn_card_places_the_confirmation_beside_the_flag_control() -> None:
-    source = (_RENDER_DIR / "turn.js").read_text(encoding="utf-8")
-    # turn.js takes the control from the page rather than importing it, so the
-    # harnesses that stage turn.js with an explicit import list keep working.
-    assert 'from "./confirmation.js"' not in source
-    flag_block = source[source.index("if (turn.result && ctx.onFlag)"):]
-    flag_block = flag_block[: flag_block.index("drawerBody.appendChild(flagWrap)")]
-    assert "ctx.renderConfirmation(" in flag_block
-    assert "renderFeedbackControl(" in flag_block, "the flag control stays, next to it"
-    assert "feedback.reopen()" in flag_block, "confirming must reset a replaced flag in the UI"
-    assert "confirmation.setConfirmed(false)" in flag_block, "flagging must reset the confirmation in the UI"
-
-
-def test_page_builds_the_control_only_for_a_successful_answer() -> None:
-    main = (_REPO_ROOT / "web" / "js" / "main.js").read_text(encoding="utf-8")
-    block = main[main.index("renderConfirmation: (turn"):]
-    block = block[: block.index("onConfirmed:")]
-    assert "if (!canConfirm(turn)) return null;" in block
-    assert "api.confirmAnswer(" in block and "api.withdrawConfirmation(" in block
 
 
 def test_confirmation_styles_use_tokens_and_logical_properties_only() -> None:

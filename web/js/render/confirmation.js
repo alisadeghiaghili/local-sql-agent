@@ -115,10 +115,12 @@ export function renderConfirmationControl(turn, handlers) {
           ? "ثبت شد — گزارش قبلی شما جایگزین شد."
           : "ثبت شد — سپاس از تأیید شما.";
       status.className = "confirmation-status ok";
+      status.title = status.textContent;
     } catch (err) {
       setConfirmed(wasConfirmed);
       status.textContent = (err && err.message) || "ثبت تأیید ناموفق بود.";
       status.className = "confirmation-status error";
+      status.title = status.textContent;  // the line is one row tall; the full text stays reachable
     } finally {
       button.disabled = false;
     }
