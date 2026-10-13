@@ -93,15 +93,25 @@ def _using_example_config() -> bool:
 #: way the code then did (``project_config.example`` and the system prompt
 #: above), and kept as hashes so the test cannot drift with the code it
 #: guards. See ``TestSingleSourceIsByteForByteUnchanged``.
+#:
+#: Re-captured once, deliberately, when the prompt text was compacted: a
+#: column line lost its two-space indent (``  - Name: ...`` became
+#: ``- Name: ...``) and each business rule is stripped before the rules are
+#: joined (a rule's trailing newline no longer adds a blank line). Those two
+#: formatting changes are the whole difference --
+#: ``tests/test_prefix_compaction.py`` reverses them and gets the previous
+#: hash back (``077df029a140``, 3805 characters, estimate 951), and checks
+#: that nothing the model reads was dropped. The suffix is untouched, so
+#: ``seg_question_sha`` is unchanged.
 _GOLDEN = {
-    "prefix_sha": "077df029a140b8e4a6a061cebf5221ab044d4c3b4670a69141950adb9a7f4fd8",
-    "prefix_len": 3805,
-    "estimate": 951,
-    "prefix_version": "077df029a140",
-    "static_full_sha": "5423c8f6933dab7fcaee280b33a5f3ff15ea91134fd7784d0a63fd3d6d27ca84",
+    "prefix_sha": "29ca520c1b25d1bdaa9d0cf7991b7fd6e9b7f08c65640b8d8f0dcaab57bde2ed",
+    "prefix_len": 3738,
+    "estimate": 934,
+    "prefix_version": "29ca520c1b25",
+    "static_full_sha": "a323fd0776594e75501f480e9caf68343a7e2a10f5ac626254796f307ed09952",
     "seg_question_sha": "1d77a0f1ec95c3df16f07159b30ca9c95988321626d7e89b3458187137fab0a7",
-    "retrieval_sha": "04544cc6fa6afa8bfa61d92f0e42b0ab20d085aaafb73f202cf857442626c5ea",
-    "retrieval_empty_sha": "8b53521f6a25883b9364ca0f543e0a2e7a5d21d01f20ec2a4d3afb40a6b3539b",
+    "retrieval_sha": "88c5907176ad131618c8979ae4f33b8801067ba7d268ae075a351ab7d2cf0efc",
+    "retrieval_empty_sha": "9166bd336275379f9332e1813e726dea7b3029204079f6c3d7cfd4684e9b96d7",
 }
 
 
@@ -114,7 +124,7 @@ def _legacy_static_prefix(system_prompt: str) -> str:
     table, every relationship, every example, in the one template."""
     return STATIC_PREFIX_TEMPLATE.format(
         system_prompt=system_prompt,
-        business_rules="\n\n".join(BUSINESS_RULES.values()),
+        business_rules="\n\n".join(rule.strip() for rule in BUSINESS_RULES.values()),
         metrics=sp_module._all_metrics_text(),
         schema=SchemaRegistry.build_schema_context(None),
         relationships="\n".join(SchemaRegistry.get_relationships(list(TABLE_COLUMNS.keys()))),

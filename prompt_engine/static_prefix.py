@@ -130,7 +130,7 @@ def _all_business_rules_text() -> str:
     and that order comes from ``project_config/business_rules.yaml``, so
     this is stable across calls within one process.
     """
-    return "\n\n".join(BUSINESS_RULES.values())
+    return "\n\n".join(text for text in (rule.strip() for rule in BUSINESS_RULES.values()) if text)
 
 
 def _all_metrics_text() -> str:
