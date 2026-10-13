@@ -15,7 +15,7 @@
  *   SQL                        (collapsible; expanded on first/failure)
  *   result
  *   interpretation             (when requested — opted into, so main flow)
- *   pipeline / LLM / warnings / feedback   (collapsed; opt in to expand)
+ *   pipeline / LLM / warnings / confirm + flag   (collapsed; opt in to expand)
  *
  * Partial/null Turn data is tolerated throughout (contract §6).
  * SQL display: web/js/sql-display.js. Copy: copySourceOfTruth(turn).
@@ -51,6 +51,7 @@ function el(tag, className, text) {
  *   onAskWithoutColumn?: (turnId: string, column: string) => void,
  *   onRequestAccess?: (turnId: string, column: string) => Promise<{already_pending: boolean}>,
  *   onFlag?: (turnId: string, category: string, note: string) => Promise<void>,
+ *   renderConfirmation?: (turn: object, hooks: {onReplacedFlag: () => void}) => HTMLElement | null,
  *   progressive?: boolean,
  * }} ctx
  */
@@ -343,8 +344,24 @@ export function createTurnCard(turn, ctx) {
   drawerBody.appendChild(llmCard);
 
   if (turn.result && ctx.onFlag) {
-    const flagWrap = el("div", "card");
-    flagWrap.appendChild(renderFeedbackControl(turn, (category, note) => ctx.onFlag(turn.turn_id, category, note)));
+    // Both ways of rating the answer sit together: "this answer is correct"
+    // (successful answers only) beside the existing "this number is wrong".
+    // Each undoes the other on the server (the later action wins), and the
+    // two controls mirror that so neither shows a stale state.
+    const flagWrap = el("div", "card rating-controls");
+    let confirmation = null;
+    const feedback = renderFeedbackControl(turn, async (category, note) => {
+      await ctx.onFlag(turn.turn_id, category, note);
+      if (confirmation) confirmation.setConfirmed(false);
+    });
+    // The confirmation toggle is built by the page (main.js), which owns the
+    // request and the confirmed-turns record; it returns null for a turn
+    // that is not a successful answer.
+    confirmation = ctx.renderConfirmation
+      ? ctx.renderConfirmation(turn, { onReplacedFlag: () => feedback.reopen() })
+      : null;
+    if (confirmation) flagWrap.appendChild(confirmation);
+    flagWrap.appendChild(feedback);
     drawerBody.appendChild(flagWrap);
   }
 

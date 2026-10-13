@@ -758,6 +758,31 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .feedback-status.ok { color: var(--status-good); }
 .feedback-status.error { color: var(--status-critical); }
 
+/* ── "This answer is correct" confirmation (پاسخ درست است) ───────────
+ * Sits beside the wrong-answer control above, in the same collapsed drawer.
+ * A toggle button: the label never changes, aria-pressed carries the state
+ * to assistive technology, and the pressed state is a check mark (added by
+ * render/confirmation.js) plus a solid border and tint -- never colour
+ * alone. Logical properties only, so it flips with dir="rtl". */
+.rating-controls { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 24px; }
+.rating-controls .feedback-control { margin-top: 0; }
+.confirmation-control { display: flex; flex-direction: column; gap: 4px; }
+.confirm-toggle {
+  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  border-radius: 8px; padding: 5px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: inherit;
+}
+.confirm-toggle:hover { border-color: var(--status-good); }
+.confirm-toggle:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.confirm-toggle[aria-pressed="true"] {
+  border-width: 2px; border-color: var(--status-good);
+  background: var(--status-good-bg); color: var(--ink);
+}
+.confirm-toggle:disabled { cursor: progress; opacity: 0.7; }
+.confirmation-status { font-size: 12px; }
+.confirmation-status.ok { color: var(--status-good); }
+.confirmation-status.error { color: var(--status-critical); }
+
 /* ── "Request access" (ADR-004 part 1) ──────────────────────────────
  * The failure banner's own inline status line -- same size/placement
  * convention as .feedback-status above, appended right after the
