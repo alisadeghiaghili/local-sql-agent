@@ -2057,10 +2057,11 @@ real questions, the SQL that answers them and, after step 4, real result
 rows. Create it, read it and run the gate on the server; do not copy
 `candidates.jsonl`, `review.csv`, `golden.jsonl`, their `.bak` files or a
 JSON report (`--out`, `--save-baseline`: they carry each case's question and
-SQL) off it. What the commands below **print** is counts and case ids only,
-the same stance as `scripts/analyze_audit_log.py`, and is safe to paste into
-a chat; `--include-examples` on the harvest is the one opt-in that prints a
-few verbatim questions.
+SQL) off it; the one file built to leave is the share file of §18.6. What
+the commands below **print** is counts and case ids only, the same stance as
+`scripts/analyze_audit_log.py`, and is safe to paste into a chat;
+`--include-examples` on the harvest is the one opt-in that prints a few
+verbatim questions.
 
 ### 18.1 Build the set (once, then top it up)
 
@@ -2214,6 +2215,10 @@ baseline, or one recorded with the default `--reference stored`, is refused
 with a message saying how to re-record it. Without `--reference live`, `--live`
 still compares with each case's recorded `expected_fingerprint`, which goes
 stale as the data moves; keep that for a warehouse that does not change.
+A baseline also records which pipeline generated the SQL (`pipeline`, §18.6):
+`--live` runs the server's loop, `--live --single-shot` one model call. A
+baseline written before this field was single-shot, so a production run
+compared with it is refused like the cases above; re-record it.
 
 **Absolute floors (optional).** The thresholds above only say "no worse than
 the baseline": they cannot stop a release whose baseline was already poor, or
@@ -2353,6 +2358,269 @@ The previous selection (before 6.9.0) is `RETRIEVAL_PRUNE=false`,
 are read from `.env` like the others; the same table, with the measured effect
 of each part, is in `docs/design/RETRIEVAL.md` §6.
 
+### 18.6 Accuracy rounds with a reviewer
+
+The model and the warehouse exist only on your server, so whoever reviews the
+accuracy cannot run anything. A **round** is how the two of you work around
+that: you run the evaluation here and send **one** share-safe file; the
+reviewer diagnoses the failures from it and ships fixes that are generic (they
+never mention your data); you re-run and compare the two files. A fingerprint
+only says *that* an answer differed; the share file says *how* (too few rows,
+the right rows in the wrong order, a number two percent off) without a single
+result value leaving the server.
+
+You need the golden set of §18.1 (the more active cases, the less a single
+case swings the numbers; §18.6.3 says how many). Do not copy anything out of
+`eval_data/` except the file in step 4.
+
+**1. Split the set once: a dev half the reviewer studies and a test half
+nobody tunes to.**
+
+```bash
+python -m eval.cli split --golden eval_data/golden.jsonl --out eval_data/split
+```
+
+Within each category (the case's first tag), cases are sorted by `id`; even
+positions go to **dev**, odd positions to **test**. Nothing is random and the
+order of the file does not matter. The command prints the counts and writes
+`dev_ids.txt`, `test_ids.txt` and `split.json` (the counts per category, the
+golden file's name and hash). Run it **once**, before round 1, and keep the
+files: the test half is only worth something if it does not move. Running it
+again on the same file changes nothing; on a changed file it refuses until you
+pass `--force`, which starts a new held-out set on purpose. A case
+added later is in neither file and is left out of a `--split` comparison:
+append its id to one of the two files by hand (to `test` only if the reviewer
+has not seen it), because `split --force` deals every case again. It places every case whatever its `status`, so the next step does
+not shift anyone. Give each category at least two cases, or it has a dev case
+and no test case.
+
+**2. Activate the cases whose reference SQL runs.**
+
+```bash
+python -m eval.cli verify --golden eval_data/golden.jsonl            # look first
+python -m eval.cli verify --golden eval_data/golden.jsonl --accept   # then activate
+```
+
+`--accept` moves a `reviewed` case to `active` only when its reference SQL
+passed the guard, ran, and returned a result as `expect` says (§18.1); only
+`active` cases are run.
+
+**3. Run the round.** `N` is the round number: 1, 2, 3, ...
+
+```bash
+python -m eval.cli run --live --reference live --golden eval_data/golden.jsonl \
+    --share eval_data/share/round-N.json --share-only-ids eval_data/split/dev_ids.txt \
+    --out eval_data/round-N.report.json
+```
+
+**`--live` measures what an analyst gets.** It generates through the server's
+own loop (`SQLAgent`): the SQL guard, correctable rejections, up to the
+configured correction rounds with the hints that name the columns or tables
+that exist, source routing, the row cap the server injects into a statement
+that has none (`DEFAULT_TOP_N`) and the executor's query timeout and
+`MAX_ROWS_RETURNED`. The reference SQL is run as written, so a question whose
+reference returns more rows than the cap is scored the way the analyst would
+see it: a result of exactly cap rows, every one of them a row of the reference,
+**passes** as `match_capped` once a count confirms it (the analyst saw the
+right rows, cut short by policy), while any other subset stays
+`actual_is_subset` and fails. **One difference, on purpose:** the run has no caller, so
+no per-key `denied_columns` policy is applied; a deployment whose keys deny
+columns is measured as if they did not. `--single-shot` makes one model call
+and no correction (the old behaviour): a model-only number, lower than the
+analyst's, useful to see what the correction loop is worth. The mode is printed
+in the report, written to `pipeline` in the `--out` report and to
+`run.pipeline` (`production` or `single_shot`) in the share file; **a baseline
+(§18.2) or a `compare` across the two modes is refused**, because the
+difference would be the pipeline and not a fix. Choose one for all the rounds.
+Offline `eval.cli run` (what CI does) is unchanged, and no CI job runs `--live`.
+
+**`--share-only-ids` keeps the held-out half's content on the server.** With
+`eval_data/split/dev_ids.txt` only the dev cases carry the question, the SQL,
+the error text and the diagnosis; every other case carries only `case_id`,
+`tags`, `passed` and `mismatch_class`, and the `summary` still counts all of
+them. The reviewer cannot tune to what the file does not hold, and `compare
+--split test` still works on it. Use it every round; without it the file holds
+both halves in full.
+
+`--share` is refused with one line and exit status 2 unless the run is
+`--live --reference live` (the diagnosis compares the generated result with
+the same-run reference; offline replay and a stored fingerprint have none),
+and before anything is loaded or sent to the model. The path must be outside
+the repository checkout or under its git-ignored `eval_data/`; a path anywhere
+else in the tree (`docs/`, `eval_data.example/`, the root) is refused, so the
+file cannot end up in a commit. The file is written owner-only, as UTF-8 with
+sorted keys and cases sorted by id, so two rounds `diff` cleanly. The normal
+report (`--out`) is written as well, and `--baseline`, `--min-accuracy` and
+the other options of §18.2 work as before.
+
+The bundle keeps both SQL texts **verbatim**, filters and literal values
+included, because telling a wrong filter from a right one needs the filter. If
+the SQL itself must not leave, add `--share-redact-literals`: every string and
+numeric literal in both SQL texts becomes a placeholder (`:str`, `:num`),
+found by parsing the SQL with sqlglot, never by pattern. The reviewer then
+sees the shape of the query and not what it filters on, which diagnoses fewer
+failures; the header says which mode was used.
+
+**4. Look at it, then send that one file.** Open `eval_data/share/round-N.json`
+in an editor. The `privacy` block at the top says what is inside, and `detail`
+how many cases carry it; the cases follow. Send **only** `eval_data/share/round-N.json`.
+
+Never send: `eval_data/round-N.report.json` (`--out`: it has each case's
+unredacted error text, fingerprints and the model's SQL), `golden.jsonl`,
+`candidates.jsonl`, `review.csv`, a baseline, any `.bak`, anything else from
+`eval_data/`, `.env`, `project_config/`, `logs/` (§19 has the full list). Before you send, read the
+`question` fields: they are what your users typed and are kept verbatim. If a
+question names a person or a company, take that case out of the golden set
+and run the round again.
+
+**Privacy: what the share file contains, exactly.**
+
+- *In it:* a header (format version, application version, `prefix_version`,
+  model name, the golden file's name and hash, `PROMPT_RETRIEVAL_TOKEN_BUDGET`,
+  each data source's prompt path (static prefix or retrieval), start and end
+  time, the `privacy` block); for each case its id, tags, **question**,
+  reference SQL, generated SQL, status, expected and selected data source, the
+  SQL guard's rejection reasons and run failures **per correction round**
+  (round, class and redacted message, so a repeated rejection shows), the number
+  of self-correction rounds, the latency, the error text, and a **diagnosis**
+  computed on the server from the two result frames: a class
+  (`match`, `match_capped`, `row_count_differs`, `column_count_differs`,
+  `column_names_differ`, `same_rows_different_order`,
+  `values_differ_same_shape`, `actual_is_subset`, `actual_is_superset`,
+  `actual_empty`, `expected_empty` or `not_executed`), `capped`, the cap
+  value, `uncapped_rows` and `reference_uncapped_rows` (counts) when the cap
+  applied, `capped_unverified`,
+  the row counts, the **column names** of both results and, for a single
+  numeric cell, a bucket of the relative error (`<1%`, `<10%`, `>=10%`); and a
+  summary (execution accuracy overall, per tag and per data source, the
+  distribution of the classes, correction rounds, latency p50 and p95).
+  With `--share-only-ids`, a case outside the list has only its id, tags,
+  `passed` and `mismatch_class`.
+- *Changed on the way out:* error text and the per-round messages have every
+  quoted string replaced by `'…'` and every run of four or more digits
+  (Persian digits too) by `#`, and are cut at 600 characters; with `--share-redact-literals` so are the
+  literals in the two SQL texts.
+- *Never in it:* result rows or any cell value from either query, credentials,
+  `.env` values, the endpoint URL or host, API keys, principal ids, a case's
+  `notes` or recorded rows. The model is named, not located.
+- *Two things stay readable, and you should know it:* the questions, and the
+  result column names. A column name is schema, but a `PIVOT` query turns data
+  values into column names, and an alias can carry whatever the model wrote.
+  The diagnosis cannot tell, so read the column names too if your SQL pivots.
+- The golden file is identified by its base name and a SHA-256 of its text
+  (line endings normalised), never by its directory.
+
+**The reviewer's rule.** Look at the failures of the **dev** ids, tune to
+those, and use the **test** half only as a number (the next sections). With
+`--share-only-ids` the file cannot show the test half's content; without it the
+discipline is the reviewer's alone. A fix that raises dev and lowers test is
+overfit, and `compare` shows it.
+
+#### 18.6.1 How the fixes come back
+
+- **Code** comes in a release. Upgrade as §17 describes; record a baseline on
+  the version you run today first (§18.2) if you want the usual gate as well.
+- **Configuration** comes as a reviewed patch to `business_rules.yaml`,
+  `examples.yaml` or `aliases.yaml` (the files whose wording the model and the
+  retrieval read). Read the patch like any change to the prompt: it is text the
+  model will see on every request. Apply it either through the admin
+  configuration versions (`POST /admin/config/versions`; each change is a new
+  version and `POST /admin/config/restore` reverts it) or by editing the file
+  by hand. Then run `python scripts/verify_deployment.py` and restart the
+  server, because the files are read at start-up. A change to
+  `business_rules.yaml` or `examples.yaml` changes `prefix_version`, so the
+  model server's prefix cache is cold once (§20.1); `POST /admin/llm/warmup`
+  warms it.
+- A patch is generic: it names tables, columns and rules of your schema, never a
+  value from a question. If one does, send it back.
+
+#### 18.6.2 Compare with the previous round
+
+```bash
+python -m eval.cli compare eval_data/share/round-1.json eval_data/share/round-2.json
+python -m eval.cli compare eval_data/share/round-1.json eval_data/share/round-2.json \
+    --split test --split-file eval_data/split/test_ids.txt --fail-on-regression
+```
+
+It reads both files by `case_id` (a plain `--out` report works as well, with
+the classes it recorded) and prints ids and counts, never a question, SQL or
+value: the cases **fixed**, **regressed**, **still failing**, **added** and
+**removed**; the accuracy before and after overall, on the cases both rounds
+have, and per tag; and the shift in the count of each mismatch class (a fix to
+retrieval should move `actual_is_subset` and `column_count_differs` before it
+moves anything else). It needs no model, no database and no `project_config/`,
+so the reviewer can run it too.
+
+`--split dev|test` with `--split-file` limits the comparison to one half; the
+file is `dev_ids.txt` or `test_ids.txt` from step 1 (a JSON list of ids, or an
+object with `dev` and `test` lists, also works). With `--fail-on-regression`
+the exit status is `1` when any compared case passed in the old round and
+fails in the new one, so `--split test --fail-on-regression` is a regression
+in the held-out half. Without the flag the status is `0`. **Two rounds
+generated by different pipelines (`run.pipeline`: `production` against
+`single_shot`) are refused with status `2`**; `--allow-mixed` compares them
+anyway, with a note that the deltas include the pipeline. A bundle written for
+a different golden file, or judged with a different `--reference`, is
+compared with a note saying so.
+
+#### 18.6.3 When to stop
+
+The numbers that count are measured on the **test** half, with the halves of
+step 1 unchanged between the rounds. Read them from
+`compare ... --split test` (the "Execution accuracy" and "Per-tag accuracy"
+lines), and the per-source figures from the `summary` block of the share file.
+
+- **Accuracy 7.5:** held-out (test) execution accuracy of **at least 75%**,
+  **no tag below 60%**, on **two consecutive rounds**. One good round is
+  luck or a fix tuned to the cases; the second, with different fixes, is not.
+- **Accuracy 8** (the roadmap target): execution accuracy of **at least 80%
+  on at least 150 cases**, **with every data source at 75% or better**
+  (`summary.per_datasource`).
+
+A tag with only a few test cases swings by whole tens of points on one case:
+read each tag's denominator, and add cases to a thin tag (§18.1) rather than
+discount its miss. A set below 150 active cases can reach 7.5 but not 8.
+
+#### 18.6.4 What the numbers do and do not say
+
+The default figure is execution accuracy of the pipeline an analyst uses, so
+`corrections` is real and a `guard_rejected` case is one that ran out of
+correction rounds. Read `guard_rejections` in the file round by round: the same
+message twice means the correction text did not help; a different message each
+round means the model is searching. What it does not cover: per-key
+`denied_columns`, the result cache, and the interpretation step. **The row
+cap:** a question that asks for everything returns the first rows and no more,
+as it does for the analyst. A result with exactly as many rows as the cap (the
+`TOP n` the server injected, or `MAX_ROWS_RETURNED` if lower), fewer than the
+reference has, every row of it a row of the reference (the same matching rules
+as `compare`; for a reference with `ORDER BY ... TOP`, the first rows in that
+order), qualifies for `match_capped`. It is not excused when a row is not in
+the reference, nor when the result stops short of the cap. **A qualifying result
+is then verified with one more read-only query:** `SELECT COUNT(*) FROM (<the
+model's SQL before the cap was injected>) AS q`, built from the syntax tree
+(an `ORDER BY` without `TOP`/`OFFSET`, a `WITH` clause and repeated or unnamed
+columns, which SQL Server rejects in a derived table, are removed, hoisted or
+named) and run through the same executor, so the query timeout and the
+rolled-back read-only transaction apply. The case passes as `match_capped` only
+if that count equals the reference's row count (`uncapped_rows` in the
+diagnosis records it). An over-filtered query that merely returns a cap's worth
+of valid rows has a smaller count and is `actual_is_subset`, a failure. If the
+count cannot be asked (the SQL does not parse into a derived table, the guard
+refuses it, a timeout) the case **fails** as `actual_is_subset` with
+`capped_unverified: true`; there is no silent pass. **When the reference result
+itself reached `MAX_ROWS_RETURNED`** its length is not its size, so the
+reference is counted the same way (`SELECT COUNT(*) FROM (<the reference SQL>)
+AS q`, same builder, same executor) and the two uncapped counts must be equal
+(`uncapped_rows == reference_uncapped_rows`; there is no "at least" rule). If
+the reference count cannot be asked, the case is `capped_unverified` and fails.
+If the
+model wrote its own `TOP` and only `MAX_ROWS_RETURNED` cut the result, the same
+check runs on its SQL as written. `--single-shot` has no cap, so
+`match_capped` never appears there. Only the counts are exported, never a row
+value. `--single-shot` gives
+the model-only figure; never compare it with a production round. §18.3
+describes how "the same answer" is decided.
+
 ## 19. Sharing diagnostics safely
 
 When something goes wrong you will be asked for logs, configuration or command
@@ -2380,8 +2648,9 @@ file.
 - `logs/audit_log.jsonl*` and `logs/query_log.jsonl*` (real questions and the
   SQL generated for them), the SQLite files under `logs/` (`app.db`,
   `sessions.db` and their `-wal` and `-shm` files), `exports/` (result sets),
-  `eval_data/` and every report written from it (§18), and
-  `project_config_draft/` (drafts may quote real values, §2.3).
+  `eval_data/` and every report written from it (§18; the one exception is the
+  share file, below), and `project_config_draft/` (drafts may quote real
+  values, §2.3).
 
 **Safe to send, after you have looked at it:**
 
@@ -2392,6 +2661,8 @@ file.
   output: table names, column names, types and numbers; no credential or API key is printed.
 - The aggregate report of `python scripts/analyze_audit_log.py` (§8), but not
   the `--include-examples` one.
+- The share file of `python -m eval.cli run --share` (§18.6), after you have
+  read it: it holds your questions and both SQL texts and no result value.
 - `project_config/schema.yaml`: table and column names and their descriptions.
   Check that no description quotes a real value (a draft from §2.3 can).
 - `project_config/datasources.yaml`. It cannot hold a password: a `password:`,

@@ -297,6 +297,166 @@ class GoldenCase:
         }
 
 
+#: How a result differs from the reference, from :mod:`eval.diagnosis`.
+#:
+#: ``match``
+#:     The same answer (the verdict of :mod:`eval.compare`).
+#: ``match_capped``
+#:     Passed: the result has exactly as many rows as the row cap (the
+#:     ``TOP n`` the server injected, or ``MAX_ROWS_RETURNED`` if lower),
+#:     fewer than the reference, every row is one the reference has, **and**
+#:     a count of the model's SQL without the cap equals the reference's row
+#:     count (:mod:`eval.capcheck`), so it is not an over-filtered query that
+#:     merely returns a cap's worth of valid rows. The analyst saw the right
+#:     rows, cut short by policy. Only the production pipeline has a cap, so
+#:     ``--single-shot`` never produces it. When the count disagrees, or
+#:     cannot be asked, the class is ``actual_is_subset`` and the case fails.
+#: ``not_executed``
+#:     The generated SQL, or the reference, never produced a result.
+#: ``column_count_differs``, ``actual_empty``, ``expected_empty``
+#:     The shapes differ: a different number of columns; no rows where the
+#:     reference has some; rows where the reference has none.
+#: ``actual_is_subset`` / ``actual_is_superset``
+#:     Fewer (more) rows than the reference, and every row of the smaller
+#:     result is in the larger one: a filter too tight (too loose).
+#: ``row_count_differs``
+#:     A different number of rows and neither contains the other.
+#: ``same_rows_different_order``
+#:     The same rows, but the reference's ``ORDER BY`` with ``TOP`` /
+#:     ``OFFSET`` makes the order part of the answer.
+#: ``column_names_differ``
+#:     The same data, but the columns are not lined up as the reference
+#:     selects them (another order, or other names): the two agree once the
+#:     columns are matched by name, or by content.
+#: ``values_differ_same_shape``
+#:     The same number of rows and columns, different values.
+MismatchClass = Literal[
+    "match",
+    "match_capped",
+    "row_count_differs",
+    "column_count_differs",
+    "column_names_differ",
+    "same_rows_different_order",
+    "values_differ_same_shape",
+    "actual_is_subset",
+    "actual_is_superset",
+    "actual_empty",
+    "expected_empty",
+    "not_executed",
+]
+
+#: Every :data:`MismatchClass`, in the order declared on the type.
+MISMATCH_CLASSES: tuple[str, ...] = get_args(MismatchClass)
+
+#: The buckets of :attr:`MismatchDiagnosis.relative_error_bucket`.
+RELATIVE_ERROR_BUCKETS: tuple[str, ...] = ("<1%", "<10%", ">=10%")
+
+
+@dataclass(frozen=True, slots=True)
+class MismatchDiagnosis:
+    """How the generated SQL's result differs from the reference's, without any value.
+
+    Computed on the machine that ran both queries (see
+    :func:`eval.diagnosis.diagnose_results`) from the two result frames and
+    holding only their *shape*: counts and column names. Column names are
+    schema, not data; no cell value is ever kept here, which is what makes a
+    diagnosis safe to put in a file that leaves the server.
+
+    Parameters
+    ----------
+    mismatch_class:
+        See :data:`MismatchClass`.
+    expected_rows, actual_rows:
+        Row counts of the reference and of the generated SQL's result;
+        ``None`` for a query that did not run.
+    expected_columns, actual_columns:
+        Column names, in selected order; ``None`` for a query that did not
+        run.
+    relative_error_bucket:
+        Only for two single-cell numeric results that differ:
+        ``"<1%"``, ``"<10%"`` or ``">=10%"`` (relative to the reference).
+        Never the numbers. ``None`` otherwise.
+    capped, row_cap:
+        ``capped`` is true for ``match_capped``; ``row_cap`` is the cap the
+        server applied to that result (a count, never a value), and is also
+        recorded for a capped-looking result that did not qualify.
+    uncapped_rows:
+        For a result that qualified for ``match_capped``: the number of rows
+        the model's SQL returns without the cap, from one extra count query.
+        A count, never a value; ``None`` otherwise.
+    reference_uncapped_rows:
+        When the reference result itself reached ``MAX_ROWS_RETURNED`` (its
+        length is not its size), the reference's own counted row count, which
+        ``uncapped_rows`` must equal; ``None`` otherwise.
+    capped_unverified:
+        True when a count query could not be run or built (the model's, or
+        the reference's when it was cut): the case then fails as
+        ``actual_is_subset`` rather than passing unverified.
+
+    Examples
+    --------
+    >>> d = MismatchDiagnosis("match", 3, 3, ["n"], ["total"])
+    >>> d.to_dict()["mismatch_class"]
+    'match'
+    >>> MismatchDiagnosis.from_dict(d.to_dict()) == d
+    True
+    """
+
+    mismatch_class: MismatchClass
+    expected_rows: int | None = None
+    actual_rows: int | None = None
+    expected_columns: list[str] | None = None
+    actual_columns: list[str] | None = None
+    relative_error_bucket: str | None = None
+    capped: bool = False
+    row_cap: int | None = None
+    uncapped_rows: int | None = None
+    reference_uncapped_rows: int | None = None
+    capped_unverified: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-friendly dict."""
+        return {
+            "mismatch_class": self.mismatch_class,
+            "expected_rows": self.expected_rows,
+            "actual_rows": self.actual_rows,
+            "expected_columns": (
+                None if self.expected_columns is None else list(self.expected_columns)
+            ),
+            "actual_columns": (
+                None if self.actual_columns is None else list(self.actual_columns)
+            ),
+            "relative_error_bucket": self.relative_error_bucket,
+            "capped": self.capped,
+            "row_cap": self.row_cap,
+            "uncapped_rows": self.uncapped_rows,
+            "reference_uncapped_rows": self.reference_uncapped_rows,
+            "capped_unverified": self.capped_unverified,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MismatchDiagnosis":
+        """Inverse of :meth:`to_dict`; absent keys read as ``None``."""
+        name = data["mismatch_class"]
+        if name not in MISMATCH_CLASSES:
+            raise ValueError(f"unknown mismatch_class {name!r}")
+        expected_columns = data.get("expected_columns")
+        actual_columns = data.get("actual_columns")
+        return cls(
+            mismatch_class=name,
+            expected_rows=data.get("expected_rows"),
+            actual_rows=data.get("actual_rows"),
+            expected_columns=None if expected_columns is None else list(expected_columns),
+            actual_columns=None if actual_columns is None else list(actual_columns),
+            relative_error_bucket=data.get("relative_error_bucket"),
+            capped=bool(data.get("capped", False)),
+            row_cap=data.get("row_cap"),
+            uncapped_rows=data.get("uncapped_rows"),
+            reference_uncapped_rows=data.get("reference_uncapped_rows"),
+            capped_unverified=bool(data.get("capped_unverified", False)),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class CaseResult:
     """Outcome of running one :class:`GoldenCase` through the pipeline.
@@ -344,6 +504,24 @@ class CaseResult:
         :attr:`actual_fingerprint` only for diagnosis -- the verdict comes
         from :func:`eval.compare.compare_frames`, which ignores column
         names that the fingerprint includes.
+    diagnosis:
+        How the result differs from the reference (counts and column names,
+        never a value), set by a ``--reference live`` run that got as far as
+        executing the generated SQL. ``None`` otherwise and in a report
+        written before this field existed.
+    corrections:
+        Self-correction rounds spent on this question: the number of
+        generations after the first. The default ``--live`` pipeline runs
+        the server's own correction loop (:mod:`eval.pipeline`), so this is
+        real; ``--single-shot`` generates once and it is ``0``.
+    guard_rejections:
+        The SQL guard's rejections of this question's SQL, one per round
+        that was rejected, as ``{"round": <1 = first try>, "class":
+        <exception class>, "message": <text>}``. Raw text: it is redacted
+        when it goes into a share bundle (:mod:`eval.share`), not here.
+    execution_errors:
+        The same for rounds whose SQL passed the guard and then failed to
+        run (the server corrects those too).
     """
 
     case_id: str
@@ -357,6 +535,10 @@ class CaseResult:
     expected_datasource: str | None = None
     selected_datasource: str | None = None
     reference_fingerprint: str | None = None
+    diagnosis: MismatchDiagnosis | None = None
+    corrections: int = 0
+    guard_rejections: list[dict[str, Any]] = field(default_factory=list)
+    execution_errors: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -378,6 +560,10 @@ class CaseResult:
             "expected_datasource": self.expected_datasource,
             "selected_datasource": self.selected_datasource,
             "reference_fingerprint": self.reference_fingerprint,
+            "diagnosis": None if self.diagnosis is None else self.diagnosis.to_dict(),
+            "corrections": self.corrections,
+            "guard_rejections": [dict(r) for r in self.guard_rejections],
+            "execution_errors": [dict(r) for r in self.execution_errors],
         }
 
 
@@ -428,6 +614,12 @@ class EvalReport:
         the cases that name a ``datasource`` and expect SQL; ``None`` for
         an offline run (where the "selection" replays the reference and is
         right by construction) and when no case names a source.
+    pipeline:
+        What generated the SQL in a live run: ``"production"`` (the server's
+        own ``SQLAgent`` loop: guard, correction rounds, row cap; the
+        default) or ``"single_shot"`` (one model call, no correction: the
+        model-only number). ``None`` for an offline run, and for a report
+        written before this field existed, which was always single-shot.
     """
 
     mode: Literal["offline", "live"]
@@ -445,11 +637,13 @@ class EvalReport:
     reference: Literal["stored", "live"] = "stored"
     source_accuracy: dict[str, tuple[int, int]] = field(default_factory=dict)
     source_selection: tuple[int, int] | None = None
+    pipeline: Literal["production", "single_shot"] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict (used by :mod:`eval.baseline`)."""
         return {
             "mode": self.mode,
+            "pipeline": self.pipeline,
             "total": self.total,
             "passed": self.passed,
             "accuracy_pct": self.accuracy_pct,

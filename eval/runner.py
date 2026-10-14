@@ -49,17 +49,18 @@ parameter (``backend``, ``execute_fn``) by the function that needs it.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable, Sequence
-from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
 from eval.compare import ComparisonOptions, compare_to_reference
 from eval.fingerprint import fingerprint_dataframe
-from eval.models import CaseResult, CaseStatus, GoldenCase
+from eval.capcheck import verify_capped_match
+from eval.diagnosis import diagnose_not_executed, diagnose_results
+from eval.models import CaseResult, CaseStatus, GoldenCase, MismatchDiagnosis
+from eval.store import load_golden_cases  # noqa: F401 - re-exported
 from llm.base import LLMBackend
 from prompt_engine.builder import PromptBuilder
 from retrieval.context_retriever import ContextRetriever
@@ -106,14 +107,92 @@ class SourceTrace:
 
     def __init__(self) -> None:
         self.chosen: str | None = None
+        self.corrections: int = 0
+        self.attempts: int = 0
+        self.row_cap: int | None = None
+        self.precap_sql: str | None = None
+        self.guard_rejections: list[dict[str, Any]] = []
+        self.execution_errors: list[dict[str, Any]] = []
 
     def record(self, source: str | None) -> None:
         """Store *source* as the choice made for the current question."""
         self.chosen = source
 
+    def record_corrections(self, rounds: int) -> None:
+        """Store how many self-correction rounds the current question took.
+
+        The live generators here generate once and never call this, so a
+        :class:`~eval.models.CaseResult` reports ``0``; a generator that
+        does correct itself reports its rounds through this method.
+        """
+        self.corrections = max(0, int(rounds))
+
+    def record_row_cap(self, cap: int | None) -> None:
+        """Store the row cap the server applied to the current question's result."""
+        self.row_cap = cap
+
+    def record_precap_sql(self, sql: str | None) -> None:
+        """Store the model's SQL as it was before the cap was injected (in memory only)."""
+        self.precap_sql = sql
+
+    def begin_attempt(self) -> int:
+        """Count one more generation attempt; return its round (1 = first try).
+
+        ``corrections`` follows: the attempts after the first.
+        """
+        self.attempts += 1
+        self.corrections = self.attempts - 1
+        return self.attempts
+
+    def record_guard_rejection(self, exc_class: str, message: str) -> None:
+        """Remember that the current round's SQL was rejected by the guard."""
+        self.guard_rejections.append(
+            {"round": max(self.attempts, 1), "class": exc_class, "message": message}
+        )
+
+    def record_execution_error(self, exc_class: str, message: str) -> None:
+        """Remember that the current round's SQL passed the guard and failed to run."""
+        self.execution_errors.append(
+            {"round": max(self.attempts, 1), "class": exc_class, "message": message}
+        )
+
     def reset(self) -> None:
-        """Forget the previous question's choice."""
+        """Forget the previous question's choice and rounds."""
         self.chosen = None
+        self.corrections = 0
+        self.attempts = 0
+        self.row_cap = None
+        self.precap_sql = None
+        self.guard_rejections = []
+        self.execution_errors = []
+
+
+class PipelineFailure(Exception):
+    """A production-pipeline generator gave up after its correction rounds.
+
+    Raised by :mod:`eval.pipeline`'s generator so :func:`run_case` can report
+    *how* the question ended (``guard_rejected`` or ``execution_error``) and
+    the last SQL tried, instead of a generic ``generation_error``.
+
+    Parameters
+    ----------
+    kind:
+        ``"guard_rejected"`` or ``"execution_error"``.
+    message:
+        The final error text (raw; redacted when shared).
+    sql:
+        The last candidate SQL, when there was one.
+    """
+
+    def __init__(
+        self,
+        kind: Literal["guard_rejected", "execution_error"],
+        message: str,
+        sql: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.sql = sql
 
 
 # ---------------------------------------------------------------------------
@@ -121,63 +200,8 @@ class SourceTrace:
 # ---------------------------------------------------------------------------
 
 
-def load_golden_cases(path: str | Path) -> list[GoldenCase]:
-    """Load every case from a ``golden.jsonl`` file.
-
-    Each non-blank line must be one JSON object accepted by
-    :meth:`~eval.models.GoldenCase.from_dict`.
-
-    Parameters
-    ----------
-    path:
-        Path to a ``.jsonl`` file, one golden case per line.
-
-    Returns
-    -------
-    list[GoldenCase]
-
-    Raises
-    ------
-    ValueError
-        If a line is not valid JSON, if a line fails
-        :class:`~eval.models.GoldenCase` validation, or if the file
-        contains no cases at all.
-
-    Examples
-    --------
-    >>> import tempfile, os
-    >>> content = (
-    ...     '{"id": "a", "question": "how many?", "expected_sql": "SELECT 1"}\\n'
-    ...     '\\n'
-    ...     '{"id": "b", "question": "how many more?", "expected_sql": "SELECT 2"}\\n'
-    ... )
-    >>> fd, path = tempfile.mkstemp(suffix=".jsonl")
-    >>> _ = os.write(fd, content.encode("utf-8"))
-    >>> os.close(fd)
-    >>> cases = load_golden_cases(path)
-    >>> [c.id for c in cases]
-    ['a', 'b']
-    >>> os.remove(path)
-    """
-    golden_path = Path(path)
-    cases: list[GoldenCase] = []
-    with golden_path.open("r", encoding="utf-8") as fh:
-        for line_no, raw_line in enumerate(fh, start=1):
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            try:
-                data = json.loads(stripped)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{golden_path}:{line_no}: invalid JSON: {exc}") from exc
-            try:
-                cases.append(GoldenCase.from_dict(data))
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{golden_path}:{line_no}: {exc}") from exc
-
-    if not cases:
-        raise ValueError(f"{golden_path}: no golden cases found")
-    return cases
+# load_golden_cases lives in eval.store (a module that needs no project_config/);
+# re-exported here, where it has always been importable from.
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +340,8 @@ def run_case(
         error: str | None = None,
         latency: float | None = None,
         reference_fingerprint: str | None = None,
+        diagnosis: MismatchDiagnosis | None = None,
+        guard_rejections: list[dict[str, Any]] | None = None,
     ) -> CaseResult:
         return CaseResult(
             case_id=case.id,
@@ -329,10 +355,21 @@ def run_case(
             expected_datasource=case.datasource,
             selected_datasource=_selected(generated_sql),
             reference_fingerprint=reference_fingerprint,
+            diagnosis=diagnosis,
+            corrections=source_trace.corrections if source_trace is not None else 0,
+            guard_rejections=[
+                *(source_trace.guard_rejections if source_trace is not None else []),
+                *(guard_rejections or []),
+            ],
+            execution_errors=list(
+                source_trace.execution_errors if source_trace is not None else []
+            ),
         )
 
     try:
         raw_sql = generate_fn(case.question)
+    except PipelineFailure as exc:
+        return _finish(exc.kind, generated_sql=exc.sql, error=str(exc))
     except ValueError as exc:
         if str(exc) == _OUT_OF_SCOPE_SENTINEL:
             if case.is_out_of_scope:
@@ -355,7 +392,16 @@ def run_case(
     try:
         validate_sql(raw_sql)
     except ValueError as exc:
-        return _finish("guard_rejected", generated_sql=raw_sql, error=str(exc))
+        return _finish(
+            "guard_rejected",
+            generated_sql=raw_sql,
+            error=str(exc),
+            guard_rejections=[{
+                "round": max(source_trace.attempts, 1) if source_trace is not None else 1,
+                "class": type(exc).__name__,
+                "message": str(exc),
+            }],
+        )
 
     try:
         df = execute_fn(raw_sql)
@@ -384,6 +430,7 @@ def run_case(
                 actual_fingerprint=actual_fingerprint,
                 error=f"reference expected_sql rejected by the guard: {exc}",
                 latency=pipeline_latency,
+                diagnosis=diagnose_not_executed(actual=df),
             )
         try:
             reference_df = execute_fn(case.expected_sql)
@@ -394,6 +441,7 @@ def run_case(
                 actual_fingerprint=actual_fingerprint,
                 error=f"reference expected_sql failed: {type(exc).__name__}: {exc}",
                 latency=pipeline_latency,
+                diagnosis=diagnose_not_executed(actual=df),
             )
         try:
             reference_fingerprint: str | None = fingerprint_dataframe(reference_df)
@@ -402,13 +450,32 @@ def run_case(
         comparison = compare_to_reference(
             case.expected_sql, reference_df, df, options=options
         )
-        if comparison.equal:
+        try:
+            diagnosis: MismatchDiagnosis | None = diagnose_results(
+                case.expected_sql, reference_df, df, options=options,
+                row_cap=source_trace.row_cap if source_trace is not None else None,
+            )
+        except Exception:  # noqa: BLE001 - a diagnosis is an extra; the verdict above stands
+            diagnosis = None
+        if diagnosis is not None and diagnosis.mismatch_class == "match_capped":
+            # Right rows, cut by the cap -- or an over-filtered query that returns a cap's
+            # worth? One count of the uncapped SQL decides (eval.capcheck); a count that
+            # cannot be asked is a failure, never a pass.
+            diagnosis = verify_capped_match(
+                diagnosis,
+                source_trace.precap_sql if source_trace is not None else None,
+                execute_fn,
+                reference_sql=case.expected_sql,
+            )
+        capped_match = diagnosis is not None and diagnosis.mismatch_class == "match_capped"
+        if comparison.equal or capped_match:
             return _finish(
                 "pass",
                 generated_sql=raw_sql,
                 actual_fingerprint=actual_fingerprint,
                 latency=pipeline_latency,
                 reference_fingerprint=reference_fingerprint,
+                diagnosis=diagnosis,
             )
         return _finish(
             "fingerprint_mismatch",
@@ -417,6 +484,7 @@ def run_case(
             error=f"result differs from the live reference: {comparison.reason}",
             latency=pipeline_latency,
             reference_fingerprint=reference_fingerprint,
+            diagnosis=diagnosis,
         )
 
     if case.expected_fingerprint is None or actual_fingerprint == case.expected_fingerprint:

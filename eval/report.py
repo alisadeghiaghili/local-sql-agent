@@ -121,6 +121,7 @@ def build_report(
     results: Sequence[CaseResult],
     mode: Literal["offline", "live"],
     reference: Literal["stored", "live"] = "stored",
+    pipeline: Literal["production", "single_shot"] | None = None,
 ) -> EvalReport:
     """Aggregate *results* into an :class:`~eval.models.EvalReport`.
 
@@ -138,6 +139,9 @@ def build_report(
         How each result was judged (``"stored"`` fingerprint or ``"live"``
         reference execution) — recorded on the report; a baseline can only
         be compared with a run that used the same one.
+    pipeline:
+        For a live run, what generated the SQL: ``"production"`` or
+        ``"single_shot"`` (see :attr:`~eval.models.EvalReport.pipeline`).
 
     Returns
     -------
@@ -206,6 +210,7 @@ def build_report(
         reference=reference,
         source_accuracy=source_accuracy,
         source_selection=source_selection,
+        pipeline=pipeline,
     )
 
 
@@ -251,6 +256,16 @@ def render_text(report: EvalReport) -> str:
             "generation quality. Run with --live for that."
         )
     if report.mode == "live":
+        if report.pipeline == "production":
+            lines.append(
+                "Pipeline: production -- the server's own generation loop (SQL guard, "
+                "self-correction rounds, row cap)."
+            )
+        elif report.pipeline == "single_shot":
+            lines.append(
+                "Pipeline: single_shot -- one model call per question, no correction: "
+                "a model-only figure, below what users get."
+            )
         if report.reference == "live":
             lines.append(
                 "Reference: live -- each case's expected_sql was executed in this run "

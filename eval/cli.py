@@ -49,6 +49,20 @@ Usage::
     python -m eval.cli run --golden eval_data.example/golden.jsonl --live --determinism \\
         --determinism-repeats 5 --determinism-out eval_data/determinism.json
 
+    # Accuracy rounds with a reviewer (runbook 18.6). Split the golden set once
+    # into a dev half the reviewer may study and a test half nobody tunes to:
+    python -m eval.cli split --golden eval_data/golden.jsonl --out eval_data/split
+    # A run that also writes ONE share-safe file (needs --live --reference live);
+    # --share-only-ids keeps the test half's content on the server. --live
+    # generates through the server's own correction loop; --single-shot makes
+    # one model call instead (a model-only number):
+    python -m eval.cli run --golden eval_data/golden.jsonl --live --reference live \\
+        --share eval_data/share/round-1.json --share-only-ids eval_data/split/dev_ids.txt \\
+        --out eval_data/round-1.report.json
+    # Compare two rounds; limit to the held-out half and fail on a regression:
+    python -m eval.cli compare eval_data/share/round-1.json eval_data/share/round-2.json \\
+        --split test --split-file eval_data/split/test_ids.txt --fail-on-regression
+
 By default the harness runs in **offline** mode: no database connection,
 no LLM call — see :func:`eval.runner.make_offline_generator` and
 :func:`eval.runner.make_offline_executor`. Passing ``--live`` switches to
@@ -57,6 +71,14 @@ a real :class:`~llm.providers.OpenAIBackend` (built from :mod:`config`'s
 imported lazily, inside :func:`_build_live_callables`, only when
 ``--live`` is actually requested — this module never opens a network or
 database connection at import time.
+
+Start-up needs no ``project_config/``: ``--help``, ``split`` and ``compare``
+work without one, because everything that reads it (the runner, the SQL guard,
+the prompt builder) is imported inside the command that needs it. ``run``,
+``verify`` and ``recall`` check the files first
+(:func:`core.config_preflight.exit_if_project_config_unusable`) and, when one
+cannot be loaded, print ``cannot load project_config: ...`` on one line and
+exit with status 2, as ``scripts/prompt_budget.py`` does.
 """
 
 from __future__ import annotations
@@ -64,9 +86,12 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import config as cfg
+from core.config_preflight import SERVER_IMPORT_FILES, exit_if_project_config_unusable
 from core.console import use_utf8_console
 from eval.baseline import (
     BaselineThresholds,
@@ -81,31 +106,24 @@ from eval.determinism import DEFAULT_REPEATS as DEFAULT_DETERMINISM_REPEATS
 from eval.models import GoldenCase
 from eval.recall import evaluate_recall, render_recall_text, report_to_json
 from eval.report import build_report, render_text, save_json_report
-from eval.runner import (
-    ExecuteFn,
-    GenerateFn,
-    SourceTrace,
-    load_golden_cases,
-    make_live_generator,
-    make_live_structured_generator,
-    make_offline_executor,
-    make_offline_generator,
-    run_golden_set,
-)
-from eval.store import write_golden_cases
-from eval.verify import render_verify_text, verify_cases
-from knowledge.config_loader import resolve_system_prompt_path
+from eval.store import load_golden_cases, write_golden_cases
 
-_DEFAULT_SYSTEM_PROMPT_PATH = resolve_system_prompt_path()
+if TYPE_CHECKING:  # the runner and everything it imports read project_config/
+    from eval.runner import ExecuteFn, GenerateFn, SourceTrace
+
+#: ``run``, ``verify`` and ``recall`` import the runner, the SQL guard or
+#: retrieval, which bind these files at import time.
+_COMMANDS_NEEDING_PROJECT_CONFIG = frozenset({"run", "verify", "recall"})
 
 
-def _load_system_prompt(path: Path = _DEFAULT_SYSTEM_PROMPT_PATH) -> str:
+def _load_system_prompt(path: Path | None = None) -> str:
     """Read the system prompt text used to build a live prompt.
 
     Parameters
     ----------
     path:
-        Path to the system prompt file.
+        Path to the system prompt file; ``<PROJECT_CONFIG_DIR>/system_prompt.md``
+        when ``None``.
 
     Returns
     -------
@@ -126,13 +144,19 @@ def _load_system_prompt(path: Path = _DEFAULT_SYSTEM_PROMPT_PATH) -> str:
     'You are a T-SQL expert.'
     >>> os.remove(path)
     """
+    if path is None:
+        from knowledge.config_loader import resolve_system_prompt_path
+
+        path = resolve_system_prompt_path()
     if not path.exists():
         raise FileNotFoundError(f"system prompt not found: {path}")
     return path.read_text(encoding="utf-8")
 
 
 def _build_live_callables(
-    structured: bool = False, trace: SourceTrace | None = None
+    structured: bool = False,
+    trace: SourceTrace | None = None,
+    single_shot: bool = False,
 ) -> tuple[GenerateFn, ExecuteFn]:
     """Lazily construct a real ``(generate_fn, execute_fn)`` pair for ``--live`` mode.
 
@@ -143,22 +167,40 @@ def _build_live_callables(
     Parameters
     ----------
     structured:
-        When ``True``, use :func:`~eval.runner.make_live_structured_generator`
+        With *single_shot*, use :func:`~eval.runner.make_live_structured_generator`
         (Phase 2 task 3's constrained-JSON path) instead of
         :func:`~eval.runner.make_live_generator` (free text + ``clean_sql``).
         This is what ``--structured`` compares against the default.
     trace:
         Optional :class:`~eval.runner.SourceTrace` the generator records
-        its data-source choice on, for source-selection accuracy.
+        its data-source choice, correction rounds and rejections on.
+    single_shot:
+        ``False`` (the default) builds the production pipeline
+        (:func:`eval.pipeline.make_production_pipeline`): the server's own
+        ``SQLAgent`` loop with the guard, correction rounds, row cap and
+        query timeout. ``True`` makes one model call per question and no
+        correction (``--single-shot``): the model-only number.
 
     Returns
     -------
     tuple[GenerateFn, ExecuteFn]
     """
     from database.executor import execute_sql
-    from llm.providers import OpenAIBackend
+
+    from eval.runner import SourceTrace as _SourceTrace
 
     system_prompt = _load_system_prompt()
+    if not single_shot:
+        from eval.pipeline import make_production_pipeline
+
+        return make_production_pipeline(
+            system_prompt, trace if trace is not None else _SourceTrace(), execute_sql
+        )
+
+    from llm.providers import OpenAIBackend
+
+    from eval.runner import make_live_generator, make_live_structured_generator
+
     backend = OpenAIBackend.from_settings()
     generate_fn = (
         make_live_structured_generator(backend, system_prompt, trace)
@@ -181,6 +223,8 @@ def _build_executor() -> ExecuteFn:
 
 def _build_offline_callables(cases: Sequence[GoldenCase]) -> tuple[GenerateFn, ExecuteFn]:
     """Build the offline/CI replay ``(generate_fn, execute_fn)`` pair for *cases*."""
+    from eval.runner import make_offline_executor, make_offline_generator
+
     return make_offline_generator(cases), make_offline_executor(cases)
 
 
@@ -196,6 +240,7 @@ def _print_prefix_cache_probe(question: str) -> None:
     the underlying exception, rather than an invented number.
     """
     from llm.providers import OpenAIBackend
+
     from eval.runner import measure_prefix_cache
 
     system_prompt = _load_system_prompt()
@@ -283,6 +328,7 @@ def _print_determinism_probe(
     from llm.providers import OpenAIBackend
 
     from eval.determinism import probe_determinism, render_determinism_text, save_determinism_json
+    from eval.runner import make_live_generator, make_live_structured_generator
 
     system_prompt = _load_system_prompt()
     backend = OpenAIBackend.from_settings()
@@ -358,8 +404,114 @@ def _print_floor_failures(messages: Sequence[str]) -> None:
         print(f"  - {message}")
 
 
+def _pipeline_refusal(args: argparse.Namespace) -> str | None:
+    """Why ``--single-shot`` / ``--structured`` cannot be honoured, or ``None``."""
+    if args.single_shot and not args.live:
+        return "--single-shot only applies with --live (offline replay has no model)"
+    if args.structured and args.live and not args.single_shot:
+        return (
+            "--structured needs --single-shot: the constrained-JSON generator makes one "
+            "call and has no correction loop, so it cannot be the production pipeline"
+        )
+    return None
+
+
+def _share_refusal(args: argparse.Namespace) -> str | None:
+    """Why ``--share`` / ``--share-redact-literals`` cannot be honoured, or ``None``.
+
+    A share bundle carries a diagnosis of how each answer differs from its
+    reference, which only a ``--live --reference live`` run has: offline
+    replay is right by construction, and a stored fingerprint cannot say
+    *how* a result differs. Checked before anything is loaded or run, so a
+    wrong command line costs nothing.
+    """
+    if args.share_redact_literals and not args.share:
+        return "--share-redact-literals only applies together with --share PATH"
+    if args.share_only_ids and not args.share:
+        return "--share-only-ids only applies together with --share PATH"
+    if not args.share:
+        return None
+    if not (args.live and args.reference == "live"):
+        return (
+            "--share requires --live --reference live: the share file diagnoses how each "
+            "generated result differs from its live reference, and offline replay or a "
+            "stored fingerprint has no such result to compare. "
+            "Run: python -m eval.cli run --golden FILE --live --reference live --share PATH"
+        )
+    from eval.share import check_share_path
+
+    problem = check_share_path(args.share)
+    if problem is None and args.out and Path(args.out).resolve() == Path(args.share).resolve():
+        problem = "--share and --out must be different files"
+    return problem
+
+
+def _model_name(args: argparse.Namespace) -> str:
+    """The name of the model that generates SQL: the router's primary in the production pipeline."""
+    if not args.single_shot:
+        try:
+            from llm.router import LLMRouter, TaskType
+
+            return str(LLMRouter.from_settings()._chain_for(TaskType.SQL_GENERATION)[0].name)
+        except Exception:  # noqa: BLE001 - the header falls back to the plain setting
+            pass
+    return str(cfg.settings.openai_model)
+
+
+def _collect_run_info(args: argparse.Namespace) -> dict[str, object]:
+    """The header facts of a share bundle, read from the live configuration.
+
+    Imported lazily like the other live wiring. Holds the model *name* (never
+    the endpoint, host or key), the prompt prefix version and, for each data
+    source, whether its questions take the static-prefix or the retrieval
+    path. Tests replace this function.
+    """
+    from core.version import __version__
+    from database.datasources import datasource_names
+    from prompt_engine.static_prefix import prefix_version, should_use_static_prefix
+
+    system_prompt = _load_system_prompt()
+    return {
+        "app_version": __version__,
+        "prefix_version": prefix_version(system_prompt),
+        "model": _model_name(args),
+        "prompt_retrieval_token_budget": cfg.settings.prompt_retrieval_token_budget,
+        "sources": {
+            name: "static" if should_use_static_prefix(system_prompt, name) else "retrieval"
+            for name in datasource_names()
+        },
+        "structured": bool(args.structured),
+        "float_tolerance": args.float_tolerance,
+    }
+
+
+def _read_detail_ids(args: argparse.Namespace, cases: Sequence[GoldenCase]) -> set[str]:
+    """The ids of ``--share-only-ids FILE``; a typo costs a warning, not the run."""
+    from eval.rounds import read_case_ids
+
+    ids = set(read_case_ids(args.share_only_ids))
+    unknown = ids - {c.id for c in cases}
+    if unknown:
+        print(
+            f"warning: {len(unknown)} id(s) in {Path(args.share_only_ids).name} are not in "
+            "the golden file and are ignored",
+            file=sys.stderr,
+        )
+    return ids
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _run(args: argparse.Namespace) -> int:
     """Execute the ``run`` subcommand. Returns the process exit code."""
+    from eval.runner import SourceTrace, run_golden_set
+
+    refusal = _pipeline_refusal(args) or _share_refusal(args)
+    if refusal is not None:
+        print(f"error: {refusal}", file=sys.stderr)
+        return 2
     if args.determinism and not args.live:
         _refuse_offline_determinism()
     if args.reference == "live" and not args.live:
@@ -371,15 +523,27 @@ def _run(args: argparse.Namespace) -> int:
     # duplicate-question check either.
     runnable = [c for c in cases if c.is_runnable]
 
+    # Read before anything is built or run, so a configuration problem costs nothing.
+    run_info = _collect_run_info(args) if args.share else {}
+    try:
+        detail_ids = _read_detail_ids(args, cases) if args.share_only_ids else None
+    except (OSError, ValueError) as exc:
+        print(f"error: --share-only-ids: {exc}", file=sys.stderr)
+        return 2
+    pipeline = ("single_shot" if args.single_shot else "production") if args.live else None
+
     trace: SourceTrace | None = None
     if args.live:
         trace = SourceTrace()
-        generate_fn, execute_fn = _build_live_callables(structured=args.structured, trace=trace)
+        generate_fn, execute_fn = _build_live_callables(
+            structured=args.structured, trace=trace, single_shot=args.single_shot
+        )
         mode = "live"
     else:
         generate_fn, execute_fn = _build_offline_callables(runnable)
         mode = "offline"
 
+    started_at = _now_iso()
     results = run_golden_set(
         cases,
         generate_fn,
@@ -388,7 +552,10 @@ def _run(args: argparse.Namespace) -> int:
         options=ComparisonOptions(tolerance=args.float_tolerance),
         source_trace=trace,
     )
-    report = build_report(results, mode=mode, reference=args.reference)
+    finished_at = _now_iso()
+    report = build_report(
+        results, mode=mode, reference=args.reference, pipeline=pipeline,
+    )
 
     print(render_text(report))
 
@@ -406,6 +573,31 @@ def _run(args: argparse.Namespace) -> int:
     if args.out:
         save_json_report(report, args.out)
         print(f"\nJSON report written to {args.out}")
+
+    if args.share:
+        from eval.share import build_share_bundle, write_share_bundle
+
+        bundle = build_share_bundle(
+            report,
+            cases,
+            golden_path=args.golden,
+            run_info=run_info,
+            started_at=started_at,
+            finished_at=finished_at,
+            redact_literals=args.share_redact_literals,
+            detail_ids=detail_ids,
+        )
+        write_share_bundle(bundle, args.share)
+        literals = "redacted" if args.share_redact_literals else "verbatim"
+        scope = (
+            "" if detail_ids is None
+            else f"; full detail for {bundle['detail']['cases_with_detail']} of "
+                 f"{bundle['detail']['cases_total']} cases"
+        )
+        print(
+            f"Share file written to {args.share} (pipeline {pipeline}; SQL literals "
+            f"{literals}{scope}; no result values)"
+        )
 
     if args.save_baseline:
         save_baseline(report, args.save_baseline)
@@ -461,6 +653,8 @@ def _verify(
     had a problem. Prints counts and case ids only -- never a question or
     a row.
     """
+    from eval.verify import render_verify_text, verify_cases
+
     cases = load_golden_cases(args.golden)
     execute_fn = (executor_factory or _build_executor)()
     result = verify_cases(cases, execute_fn, accept=args.accept, refresh=args.refresh)
@@ -505,6 +699,122 @@ def _recall(args: argparse.Namespace) -> int:
     return 0
 
 
+def _split(args: argparse.Namespace) -> int:
+    """Execute the ``split`` subcommand: write the dev / test id files.
+
+    ``0`` on success, ``2`` when an output path is refused or the split files
+    already exist with other content (the held-out half must not move between
+    rounds; ``--force`` replaces them on purpose).
+    """
+    import json
+
+    from eval.share import check_share_path, golden_file_info
+    from eval.split import split_cases
+    from eval.store import write_text_atomic
+
+    out_dir = Path(args.out)
+    targets = {name: out_dir / name for name in ("dev_ids.txt", "test_ids.txt", "split.json")}
+    for target in targets.values():
+        problem = check_share_path(target, what="split files")
+        if problem is not None:
+            print(f"error: {problem}", file=sys.stderr)
+            return 2
+
+    try:
+        cases = load_golden_cases(args.golden)
+        result = split_cases(cases)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    texts = {
+        "dev_ids.txt": "".join(f"{i}\n" for i in result.dev_ids),
+        "test_ids.txt": "".join(f"{i}\n" for i in result.test_ids),
+    }
+    summary = {
+        "golden": golden_file_info(args.golden),
+        "rule": (
+            "within each tags[0] category, case ids sorted ascending; even positions to dev, "
+            "odd positions to test"
+        ),
+        "counts": result.counts,
+        "categories": result.categories,
+    }
+    texts["split.json"] = json.dumps(summary, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+
+    if not args.force:
+        changed = [
+            name for name in ("dev_ids.txt", "test_ids.txt")
+            if targets[name].exists()
+            and targets[name].read_text(encoding="utf-8").replace("\r\n", "\n") != texts[name]
+        ]
+        if changed:
+            print(
+                f"error: {', '.join(changed)} already exist in {out_dir} with other content. "
+                "The test half must stay fixed between rounds; pass --force only to start a "
+                "new held-out set on purpose.",
+                file=sys.stderr,
+            )
+            return 2
+    for name, text in texts.items():
+        write_text_atomic(targets[name], text)
+
+    counts = result.counts
+    print(f"Split of {args.golden}: {counts['total']} cases -> {counts['dev']} dev, {counts['test']} test")
+    for category, halves in result.categories.items():
+        print(f"  {category:<24s} dev {halves['dev']:>3d}   test {halves['test']:>3d}")
+    print(f"Written to {out_dir}: dev_ids.txt, test_ids.txt, split.json")
+    return 0
+
+
+def _compare(args: argparse.Namespace) -> int:
+    """Execute the ``compare`` subcommand. Returns the process exit code.
+
+    ``0`` normally; ``1`` with ``--fail-on-regression`` when any compared
+    case regressed (with ``--split test``, a regression in the held-out
+    half); ``2`` when an input cannot be read.
+    """
+    import json
+
+    from eval.rounds import (
+        PipelineMismatch,
+        compare_runs,
+        load_run,
+        read_case_ids,
+        render_comparison,
+    )
+
+    if bool(args.split) != bool(args.split_file):
+        print("error: --split and --split-file go together", file=sys.stderr)
+        return 2
+    try:
+        old = load_run(args.old)
+        new = load_run(args.new)
+        only_ids = read_case_ids(args.split_file, args.split) if args.split else None
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        comparison = compare_runs(
+            old, new, only_ids=only_ids, split=args.split, allow_mixed=args.allow_mixed
+        )
+    except PipelineMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(comparison.to_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+    else:
+        print(render_comparison(comparison))
+    if args.fail_on_regression and comparison.regressed:
+        where = f" in {args.split}" if args.split else ""
+        print(
+            f"REGRESSION{where}: {len(comparison.regressed)} case(s) passed before and fail now",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the ``eval.cli`` argument parser.
 
@@ -538,13 +848,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use a real OpenAI-compatible backend and database connection instead of offline replay.",
     )
     run_parser.add_argument(
+        "--single-shot",
+        action="store_true",
+        default=False,
+        dest="single_shot",
+        help=(
+            "With --live, make ONE model call per question and no correction (the old "
+            "behaviour): a model-only figure. Without it --live generates through the "
+            "server's own loop (SQLAgent: guard, correction rounds with hints, row cap, "
+            "query timeout), which is what an analyst gets. The mode is recorded in the "
+            "report (pipeline) and the share file (run.pipeline); a baseline or a "
+            "comparison across the two is refused. No principal policy "
+            "(denied columns) is applied in either mode. Requires --live."
+        ),
+    )
+    run_parser.add_argument(
         "--structured",
         action="store_true",
         default=False,
         help=(
-            "With --live, use Phase 2 task 3's constrained-JSON generation path "
-            "(llm.structured_schema.SQL_GENERATION_SCHEMA) instead of free text + "
-            "clean_sql. Ignored without --live."
+            "With --live --single-shot, use Phase 2 task 3's constrained-JSON generation "
+            "path (llm.structured_schema.SQL_GENERATION_SCHEMA) instead of free text + "
+            "clean_sql. Ignored without --live; refused with --live unless --single-shot."
         ),
     )
     run_parser.add_argument(
@@ -677,6 +1002,44 @@ def build_parser() -> argparse.ArgumentParser:
             "Only meaningful with --live."
         ),
     )
+    run_parser.add_argument(
+        "--share",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Also write a share-safe JSON bundle to PATH: per case the question, both SQL "
+            "texts, the status and a value-free diagnosis of how the result differs from "
+            "the reference (a class, row and column counts, column names), plus a summary. "
+            "No result rows or cell values, credentials, endpoints or principal ids; error "
+            "text is redacted. Requires --live --reference live. PATH must be outside the "
+            "repository checkout or under its git-ignored eval_data/; the file is "
+            "owner-only (runbook 18.6)."
+        ),
+    )
+    run_parser.add_argument(
+        "--share-redact-literals",
+        action="store_true",
+        default=False,
+        dest="share_redact_literals",
+        help=(
+            "With --share: replace every string and numeric literal in the generated and "
+            "expected SQL with a placeholder. Without it the SQL is kept verbatim, because "
+            "diagnosing a wrong filter needs the filter."
+        ),
+    )
+    run_parser.add_argument(
+        "--share-only-ids",
+        default=None,
+        metavar="FILE",
+        dest="share_only_ids",
+        help=(
+            "With --share: a file of case ids (dev_ids.txt from 'split': one id per "
+            "line, or a JSON list). Only those cases carry the question, SQL, error "
+            "text and diagnosis in the share file; every other case carries only "
+            "case_id, tags, passed and mismatch_class, and the summary still covers "
+            "all cases. Use it so the held-out half's content never leaves the server."
+        ),
+    )
     run_parser.set_defaults(func=_run)
 
     verify_parser = subparsers.add_parser(
@@ -763,6 +1126,82 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recall_parser.set_defaults(func=_recall)
 
+    split_parser = subparsers.add_parser(
+        "split",
+        help=(
+            "Write a deterministic dev / test split of a golden set: within each tags[0] "
+            "category, ids sorted, even positions to dev, odd to test."
+        ),
+    )
+    split_parser.add_argument("--golden", required=True, help="Path to a golden.jsonl file.")
+    split_parser.add_argument(
+        "--out",
+        required=True,
+        help="Directory to write dev_ids.txt, test_ids.txt and split.json into.",
+    )
+    split_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Replace existing split files that differ (the held-out half then changes).",
+    )
+    split_parser.set_defaults(func=_split)
+
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help=(
+            "Compare two rounds (share bundles or --out reports) by case id: fixed, "
+            "regressed, still failing, added, removed, accuracy deltas and the shift in "
+            "mismatch classes. Needs no database, model or project_config."
+        ),
+    )
+    compare_parser.add_argument("old", help="The earlier round: a --share bundle or an --out report.")
+    compare_parser.add_argument("new", help="The later round.")
+    compare_parser.add_argument(
+        "--split",
+        choices=("dev", "test"),
+        default=None,
+        help="Limit the comparison to one half of a split. Needs --split-file.",
+    )
+    compare_parser.add_argument(
+        "--split-file",
+        default=None,
+        dest="split_file",
+        metavar="PATH",
+        help=(
+            "A file of case ids for --split: dev_ids.txt / test_ids.txt as written by "
+            "'split' (one id per line), a JSON list, or a JSON object with dev / test lists."
+        ),
+    )
+    compare_parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        default=False,
+        dest="fail_on_regression",
+        help=(
+            "Exit 1 when any compared case passed in OLD and fails in NEW. With "
+            "--split test that is a regression in the held-out half."
+        ),
+    )
+    compare_parser.add_argument(
+        "--allow-mixed",
+        action="store_true",
+        default=False,
+        dest="allow_mixed",
+        help=(
+            "Compare rounds generated by different pipelines (production against "
+            "single_shot). Refused by default, because the production pipeline corrects "
+            "its own mistakes and the difference would be the pipeline, not a fix."
+        ),
+    )
+    compare_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Print the comparison as JSON (ids, counts and percentages only).",
+    )
+    compare_parser.set_defaults(func=_compare)
+
     return parser
 
 
@@ -799,6 +1238,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in _COMMANDS_NEEDING_PROJECT_CONFIG:
+        # One line and exit status 2 instead of an import-time traceback;
+        # --help, split and compare never get here, so they work with no
+        # project_config/ at all.
+        exit_if_project_config_unusable(SERVER_IMPORT_FILES, status=2)
     return args.func(args)
 
 

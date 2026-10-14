@@ -27,7 +27,65 @@ from pathlib import Path
 
 from core.fileperms import restrict_file
 from eval.models import GoldenCase
-from eval.runner import load_golden_cases
+
+
+def load_golden_cases(path: str | Path) -> list[GoldenCase]:
+    """Load every case from a ``golden.jsonl`` file.
+
+    Each non-blank line must be one JSON object accepted by
+    :meth:`~eval.models.GoldenCase.from_dict`.
+
+    Parameters
+    ----------
+    path:
+        Path to a ``.jsonl`` file, one golden case per line.
+
+    Returns
+    -------
+    list[GoldenCase]
+
+    Raises
+    ------
+    ValueError
+        If a line is not valid JSON, if a line fails
+        :class:`~eval.models.GoldenCase` validation, or if the file
+        contains no cases at all.
+
+    Examples
+    --------
+    >>> import tempfile, os
+    >>> content = (
+    ...     '{"id": "a", "question": "how many?", "expected_sql": "SELECT 1"}\\n'
+    ...     '\\n'
+    ...     '{"id": "b", "question": "how many more?", "expected_sql": "SELECT 2"}\\n'
+    ... )
+    >>> fd, path = tempfile.mkstemp(suffix=".jsonl")
+    >>> _ = os.write(fd, content.encode("utf-8"))
+    >>> os.close(fd)
+    >>> cases = load_golden_cases(path)
+    >>> [c.id for c in cases]
+    ['a', 'b']
+    >>> os.remove(path)
+    """
+    golden_path = Path(path)
+    cases: list[GoldenCase] = []
+    with golden_path.open("r", encoding="utf-8") as fh:
+        for line_no, raw_line in enumerate(fh, start=1):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{golden_path}:{line_no}: invalid JSON: {exc}") from exc
+            try:
+                cases.append(GoldenCase.from_dict(data))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{golden_path}:{line_no}: {exc}") from exc
+
+    if not cases:
+        raise ValueError(f"{golden_path}: no golden cases found")
+    return cases
 
 
 def dump_cases(cases: Iterable[GoldenCase]) -> str:

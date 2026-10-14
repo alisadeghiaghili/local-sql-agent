@@ -169,7 +169,7 @@ its KV cache instead of re-reading the schema on every question.
 | 🏛️ | **Several warehouses** | `datasources.yaml` describes each database or server; every statement runs on the one source that has all its tables (a table may live in several), and each question is routed to one source so the model sees only that source's schema. Per-source `WITH (NOLOCK)` where a DBA requires it. See [`docs/design/DATASOURCES.md`](docs/design/DATASOURCES.md). |
 | ⚡ | **FastAPI HTTP API** | REST endpoints for query, sessions, cache, and health check. |
 | 💾 | **LRU query cache** | Thread-safe TTL + LRU cache, partitioned by visibility scope so two principals never share a result they should not. |
-| 📊 | **Evaluation harness** | A golden set built from your own audit log and reviewed in Excel, execution accuracy against a reference SQL run live on the same data, error taxonomy, latency percentiles, determinism measurement, a baseline regression gate (with optional absolute accuracy floors) to run before an upgrade, and an offline measure of table-selection recall, `python -m eval.cli recall` (`docs/deployment-runbook.md` §18). |
+| 📊 | **Evaluation harness** | A golden set built from your own audit log and reviewed in Excel, execution accuracy against a reference SQL run live on the same data, error taxonomy, latency percentiles, determinism measurement, a baseline regression gate (with optional absolute accuracy floors) to run before an upgrade, an offline measure of table-selection recall, `python -m eval.cli recall`, and rounds with a reviewer who cannot see your data: one share-safe results file with a value-free diagnosis of every miss, `compare` and a dev / test `split` (`docs/deployment-runbook.md` §18, §18.6). |
 | 🔬 | **LLM observability** | 26-field status block per request: tokens, prefix-cache hit, timings, corrections, `finish_reason` read from the response. |
 | 📤 | **Structured exports** | Excel, CSV, JSON with timestamped filenames. |
 | 📋 | **Audit trail** | Compliance-grade JSONL records with principal, guard verdict and timings — and never result rows. |
@@ -495,7 +495,7 @@ local-sql-agent/
 │   ├── audit.py              #   compliance-grade records — never result rows
 │   ├── llm_status.py         #   the 26-field per-request status block
 │   └── timing.py             #   per-stage timings
-├── eval/                     # Evaluation harness (python -m eval.cli run | verify | recall)
+├── eval/                     # Evaluation harness (python -m eval.cli run | verify | recall | split | compare)
 │   ├── cli.py                #   run, verify, recall and baseline commands
 │   ├── recall.py             #   table-selection recall against a golden set, no model and no database
 │   ├── benchmarks/           #   retrieval_synth: 400-table synthetic retrieval benchmark (docs/design/RETRIEVAL.md)
