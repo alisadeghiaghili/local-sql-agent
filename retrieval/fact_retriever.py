@@ -13,8 +13,9 @@ Strategy (two-tier):
 
 from __future__ import annotations
 
-from knowledge.retrieval_hints import FACT_PATTERNS, FACT_TABLES as _FACT_TABLES
-from retrieval.table_evidence import alias_hits, scored_extras
+from knowledge.retrieval_hints import FACT_PATTERNS
+from retrieval.table_evidence import named_tables, scored_extras
+from retrieval.table_keys import configured_fact_tables
 from schema_data.retriever import retrieve_tables
 
 
@@ -34,11 +35,12 @@ class FactRetriever:
         list[str]
             Table names without duplicates, in a deterministic order.
         """
-        matches = alias_hits(question, FACT_PATTERNS)
+        matches = named_tables(question, FACT_PATTERNS)
 
         if matches:
             return matches + scored_extras(question, fact=True, exclude=matches)
 
         # TF-IDF fallback — keep only fact tables
+        fact_tables = configured_fact_tables()
         tfidf_tables = retrieve_tables(question)
-        return [t for t in tfidf_tables if t in _FACT_TABLES]
+        return [t for t in tfidf_tables if t in fact_tables]

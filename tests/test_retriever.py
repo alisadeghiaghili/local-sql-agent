@@ -166,6 +166,25 @@ class TestExpandSynonyms:
         expanded = _expand("volume")
         assert "trade" in expanded.lower()
 
+    @pytest.mark.parametrize("text", ["totals in 2024", "totals in 1399", "sales 1401/05/12", "\u06f1\u06f3\u06f9\u06f9 \u0645\u062c\u0645\u0648\u0639"])
+    def test_a_year_literal_adds_the_words_for_a_year(self, text):
+        expanded = _expand(text).split()
+        assert "year" in expanded
+        assert "\u0633\u0627\u0644" in expanded
+
+    @pytest.mark.parametrize("text", ["top 15 customers", "orders above 1000", "id 12345", "code 0042", "2500 units"])
+    def test_a_number_that_is_not_a_year_adds_nothing(self, text):
+        assert _expand(text) == text
+
+    def test_a_year_literal_forces_the_table_a_year_trigger_names(self):
+        from unittest.mock import patch
+
+        from schema_data.retriever import forced_tables
+
+        with patch("schema_data.retriever._ALWAYS_INCLUDE_NORMALISED", {"Calendar": ["year"]}):
+            assert forced_tables("how many sold in 2023") == ["Calendar"]
+            assert forced_tables("how many sold in total") == []
+
     def test_no_expansion_for_unknown_word(self):
         expanded = _expand("xyzzy")
         assert expanded.strip() == "xyzzy"

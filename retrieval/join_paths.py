@@ -387,7 +387,7 @@ def expand_join_paths(
     []
     """
     import config as cfg
-    from knowledge.retrieval_hints import FACT_TABLES
+    from retrieval.table_keys import configured_fact_tables
 
     settings = cfg.settings
     if not settings.retrieval_join_expansion:
@@ -398,7 +398,8 @@ def expand_join_paths(
         return []
 
     fit = fits or _default_fits
-    start = next((t for t in ordered if t in FACT_TABLES), ordered[0])
+    fact_tables = configured_fact_tables()
+    start = next((t for t in ordered if t in fact_tables), ordered[0])
     component = {start}
     pending = [t for t in ordered if t != start]
     chosen = set(selected)

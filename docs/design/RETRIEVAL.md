@@ -249,7 +249,80 @@ allowlist.
 * "Every table" is still returned for a question nothing matches (existing
   tests encode it); the in-budget recall exposes it, and column evidence made it
   rare on the benchmark (13 cases of 480 on seed 7 before, none after).
-* `entities.yaml` keys are taken as table keys, as before.
+* `entities.yaml`, `fact_tables`, `fact_patterns` and `always_include` may name a
+  table by its bare name where `schema.yaml` keys it `Schema.Table`; they are
+  resolved to the keys (§8.1). A name that matches no key is kept as written.
 * The benchmark is synthetic and written by the same hand as the mechanisms; the
   seeds are independent draws, not an independent generator. The real measure is
   `eval.cli recall` on a real golden set.
+
+## 8. What a real question set showed that the benchmark did not
+
+The synthetic benchmark of §2 scored about 0.96 mean recall. A real deployment's
+own golden set, measured with `eval.cli recall`, scored far lower, and even a
+plain count of one dimension table missed that table. The benchmark writes every
+table in the configuration by its full `schema.yaml` key, which a hand-written
+configuration does not have to. The real numbers belong to that deployment and
+are not in this repository; the
+mechanisms are, and the benchmark's numbers in §8.3 show that fixing them did
+not cost the cases it already had.
+
+Method. The golden set was split before anyone looked at a failure: within each
+first tag, ordered by id, alternate cases went to a development half and a test
+half. Failures were diagnosed on the development half only; the test half was
+measured once before the work and once after. Each development miss was
+attributed to the stage that dropped the table (below), and a fix had to be a
+rule that holds for any schema, with a unit test that names no table of the
+deployment.
+
+### 8.1 Where the tables were lost, by stage
+
+| Stage | What happened | Fix |
+|---|---|---|
+| Alias and fact-pattern path | By far the largest cause. The warehouse repeats table names across schemas, so `schema.yaml` keys are `schema.Name`, while `entities.yaml`, `fact_tables`, `fact_patterns` and `always_include` still said `Name`. A bare name that is not a key names no table: the schema block skips it, the ranking cannot score it, and `name in FACT_TABLES` was false for every key, so the fact/dimension split of the extras and of the TF-IDF fallback was wrong too. The aliased table, found correctly, never reached the prompt, and an unrelated table of the same bare name was sometimes retrieved in its place | `retrieval/table_keys.py` resolves a configured name to the keys it can mean, the way the SQL guard resolves a reference in a query (exact key, brackets and case ignored; otherwise the keys with that bare name, narrowed by a written qualifier). Every reader of those files uses it: the alias retrievers, the extras, pruning, join expansion's choice of the fact table, `always_include`, and the context retriever's warning and value-matching gate |
+| Alias path, ambiguous name | After the above, `Customer` could mean `shop_Dim.Customer` and `other_Dim.Customer`, and retrieving both for every question halves precision | An ambiguous bare name is read in the schemas the configuration's other, unambiguous names live in (a file whose other tables are all `shop_*` means `shop_Dim.Customer`), or in the data source whose `keywords:` the question contains; when neither narrows it, every candidate is kept |
+| Normalisation | Alias matching was a substring test, so `city` never matched `cities` (`-ies` for `-y`) and a plural alias never matched a singular question | Whole words are also compared after the plural stemming the column evidence already uses |
+| Alias path, word order | A multi-word alias (`gear tooth pitch`) is rarely written word for word; "pitch of each tooth on the gear" has all its words and no phrase | A multi-word alias also matches when all its stemmed words occur in the question, in any order |
+| Forced tables (`always_include`) | A question that says "in 2023" or "in 1401" is about a period but contains no word for one, so the calendar dimension was neither forced nor ranked | A four-digit calendar year (1300-1599 Solar Hijri, 1900-2199 Gregorian) adds the words `year` and `سال` to the expanded question, which is all the configured triggers and the descriptions need to see it |
+| TF-IDF and column evidence | Not a cause of any development miss once the above were fixed | unchanged |
+| Extras cap, pruning, join expansion | Not the stage that lost a table once the alias path was right: pruning and join expansion kept what the corrected names supported, and the extras cap lost no development table | unchanged, and no `RETRIEVAL_*` default was changed |
+
+What is left unsolved on the development half is a gold table with no lexical
+link to the question at all (a fact table the reference SQL reads for a question
+that never says what it counts, while a sibling fact table is named by a
+pattern). Lexical retrieval cannot find it, and the ADR against embeddings and
+model-based linking stands.
+
+### 8.2 Consequences worth knowing
+
+* A configuration that already writes full keys is untouched: an exact key
+  resolves to itself, and every test of the previous behaviour passes unchanged.
+* On a configuration that wrote bare names for qualified keys, the retrieved
+  tables are now the schema keys. `ContextRetriever.entities` therefore holds
+  keys, so the dimension vocabulary (`PREFETCH_COLUMNS` is keyed by schema key)
+  is consulted for them, which it silently was not before.
+* A year-shaped number that is not a year ("orders above 2000") also forces the
+  calendar dimension; the cost is one extra table.
+* `eval.cli recall` is the way to see it on your own set: retrieved names that
+  are not keys of `schema.yaml` were the symptom.
+
+### 8.3 Synthetic benchmark, before and after
+
+The benchmark names its tables by full key, so only the stemming, word-order and
+year rules touch it. Mean recall / full-recall % / mean tables / precision /
+source accuracy %, whole set:
+
+| Seed | Before | After |
+|---|---|---|
+| 7 | 0.966 / 92.1 / 4.0 / 0.678 / 95.2 | 0.970 / 93.1 / 4.0 / 0.678 / 95.2 |
+| 11 | 0.951 / 89.2 / 4.0 / 0.680 / 95.6 | 0.955 / 90.2 / 4.0 / 0.679 / 95.6 |
+| 23 | 0.971 / 92.7 / 4.2 / 0.656 / 94.8 | 0.975 / 93.8 / 4.2 / 0.655 / 94.6 |
+
+English questions gain (+0.007, +0.007 and +0.008 recall on the three seeds, from
+the alias rules and the year rule) and Persian questions are unchanged (a
+Persian plural was already found by the substring test). Precision moves by at most 0.002 on a slice, except the
+English measure-only slice of seed 23 (0.925 to 0.975 recall, precision -0.007).
+Source accuracy is unchanged except one case on seed 23. No other slice of §5
+changes. The benchmark cannot show the main fix of §8.1, because its
+configuration names every table by its full key; that is why a real set was
+needed.
