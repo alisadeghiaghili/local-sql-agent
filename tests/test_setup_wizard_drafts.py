@@ -16,8 +16,10 @@ pinned by a class below:
 * rules and relationships depended on declared foreign keys
   (``TestInferredRelationships``).
 
-The database is a stand-in: ``SchemaInspector`` returns a snapshot built here,
-so the wizard's own filtering, keying and merging run for real. The model is a
+The database is a stand-in: the table listing and ``SchemaInspector`` answer from
+a snapshot built here (and, like the real inspector, read only the schemas and
+tables they are asked for), so the wizard's own filtering, keying and merging
+run for real. The model is a
 fake that records every prompt, so "never reaches the model" is checked on the
 prompts themselves. The warehouse-shaped fixture runs the whole wizard against
 real SQLite schemas (``TestOnTheWarehouseShape``).
@@ -28,20 +30,24 @@ from __future__ import annotations
 import copy
 import json
 import re
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import config as cfg
+import database.schema_inspector as inspector_module
 import setup_project as sp
 from core.yaml_loading import safe_load_strict
 from database.schema_inspector import (
     ColumnInfo,
     ForeignKeyInfo,
     RelationshipInfo,
+    SchemaInspector,
     SchemaSnapshot,
     TableInfo,
+    schema_is_excluded,
 )
 
 _URL = "sqlite:///wizard-fixture.db"
@@ -112,14 +118,60 @@ def snapshot_of(*tables: TableInfo, foreign_keys: tuple[tuple[str, ...], ...] = 
     return snap
 
 
+class FakeDatabase:
+    """The database behind a snapshot: a names-only listing and an inspector that reads what it is told to.
+
+    ``inspections`` holds the keyword arguments of every ``inspect()`` call, so
+    a test can see which schemas and tables the wizard asked to read.
+    """
+
+    def __init__(self, snapshot: SchemaSnapshot) -> None:
+        self.snapshot = snapshot
+        self.inspections: list[dict] = []
+
+    def listing(self, _db_url: str) -> dict[str, list[str]]:
+        names: dict[str, list[str]] = {}
+        for t in self.snapshot.tables:
+            names.setdefault(t.schema, []).append(t.name)
+        return names
+
+    def inspect(self, include_schemas=None, exclude_schemas=None, exclude_tables=None, fetch_row_counts=True):
+        self.inspections.append(
+            {"include_schemas": include_schemas, "exclude_schemas": exclude_schemas, "exclude_tables": exclude_tables}
+        )
+        snap = copy.deepcopy(self.snapshot)
+        drop = set()
+        for t in snap.tables:
+            if (
+                (include_schemas and t.schema not in include_schemas)
+                or (exclude_schemas and schema_is_excluded(t.schema, exclude_schemas))
+                or (exclude_tables and t.name in exclude_tables)
+            ):
+                drop.add(sp._identity(t.schema, t.name))
+        sp._drop_tables(snap, drop)
+        return snap
+
+    @property
+    def schemas_read(self) -> set[str]:
+        return {s for call in self.inspections for s in (call["include_schemas"] or [])}
+
+
+@contextmanager
+def database_of(snapshot: SchemaSnapshot):
+    """Patch the wizard's database access so it sees *snapshot*; yields the :class:`FakeDatabase`."""
+    fake = FakeDatabase(snapshot)
+    inspector = MagicMock()
+    inspector.inspect.side_effect = fake.inspect
+    with patch("sqlalchemy.create_engine", return_value=MagicMock()), \
+         patch("database.schema_inspector.SchemaInspector", return_value=inspector), \
+         patch.object(sp, "_list_schema_tables", side_effect=fake.listing):
+        yield fake
+
+
 def run_wizard(out: Path, snapshot: SchemaSnapshot, llm: RecordingLLM | None = None, *extra: str) -> int:
     """Run ``setup_project.main`` non-interactively on *snapshot* and return its status."""
     llm = llm or RecordingLLM()
-    inspector = MagicMock()
-    inspector.inspect.side_effect = lambda **_kwargs: copy.deepcopy(snapshot)
-    with patch("sqlalchemy.create_engine", return_value=MagicMock()), \
-         patch("database.schema_inspector.SchemaInspector", return_value=inspector), \
-         patch.object(sp, "setup_wizard_llm", return_value=llm):
+    with database_of(snapshot), patch.object(sp, "setup_wizard_llm", return_value=llm):
         return sp.main([
             "--db-url", _URL, "--language", "en", "--non-interactive", "--output", str(out), *extra,
         ])
@@ -151,10 +203,7 @@ class TestDraftDirectory:
 
     def test_a_run_without_output_writes_there(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        inspector = MagicMock()
-        inspector.inspect.return_value = snapshot_of(table("sales", "Customer"))
-        with patch("sqlalchemy.create_engine", return_value=MagicMock()), \
-             patch("database.schema_inspector.SchemaInspector", return_value=inspector), \
+        with database_of(snapshot_of(table("sales", "Customer"))), \
              patch.object(sp, "setup_wizard_llm", return_value=RecordingLLM()):
             assert sp.main(["--db-url", _URL, "--language", "en", "--non-interactive"]) == 0
         assert (tmp_path / "project_config_draft" / "entities.yaml").is_file()
@@ -470,23 +519,25 @@ class TestSkippedTables:
         out, llm = tmp_path / "draft", RecordingLLM()
         asked: list[str] = []
 
-        def ask(question, default="", non_interactive=False):
-            asked.append(question)
-            assert llm.calls == 0 or not question.startswith("Schemas")
-            return "ref" if question.startswith("Schemas to leave out") else ""
+        with database_of(_staged()) as db:
+            def ask(question, default="", non_interactive=False):
+                asked.append(question)
+                if question.startswith("Schemas to leave out"):
+                    # Asked before anything is inspected or sent to the model.
+                    assert db.inspections == [] and llm.calls == 0
+                    return "ref"
+                return ""
 
-        inspector = MagicMock()
-        inspector.inspect.side_effect = lambda **_kw: copy.deepcopy(_staged())
-        with patch("sqlalchemy.create_engine", return_value=MagicMock()), \
-             patch("database.schema_inspector.SchemaInspector", return_value=inspector), \
-             patch.object(sp, "setup_wizard_llm", return_value=llm), \
-             patch.object(sp, "_ask", side_effect=ask), \
-             patch.object(sp, "_choose", side_effect=lambda q, choices, default, non_interactive=False: "Accept"):
-            code = sp.main(["--db-url", _URL, "--language", "en", "--output", str(out)])
+            with patch.object(sp, "setup_wizard_llm", return_value=llm), \
+                 patch.object(sp, "_ask", side_effect=ask), \
+                 patch.object(sp, "_choose", side_effect=lambda q, choices, default, non_interactive=False: "Accept"):
+                code = sp.main(["--db-url", _URL, "--language", "en", "--output", str(out)])
         assert code == 0
         shown = capsys.readouterr().out
-        assert "Schemas and their table counts:" in shown and "sales: 2" in shown and "ref: 1" in shown
+        assert "Schemas and the tables that would be read:" in shown and "sales: 2" in shown and "ref: 1" in shown
         assert any(q.startswith("Schemas to leave out") for q in asked)
+        # The answer narrowed the inspection itself, not only its result.
+        assert "ref" not in db.schemas_read and "Replay" in db.schemas_read
         assert "Region" not in " ".join(llm.prompts)
         assert "Region" not in entity_keys(out)
 
@@ -629,3 +680,217 @@ class TestOnTheWarehouseShape:
         # `Invoice` was unique in the first run and is shared now: re-keyed, not duplicated.
         assert "Invoice" in first_keys and "Invoice" not in entity_keys(out)
         assert {"sales_Fact.Invoice", "orders_Fact.Invoice"} <= set(entity_keys(out))
+
+
+# ---------------------------------------------------------------------------
+# Schemas that are left out are never read
+# ---------------------------------------------------------------------------
+
+class TestExcludedSchemasAreNeverRead:
+    def test_the_inspection_is_asked_for_the_remaining_schemas_only(self, tmp_path):
+        with database_of(_staged()) as db:
+            run_wizard_on(db, tmp_path / "draft", "--exclude-schemas", "ref,replay")
+        (call,) = db.inspections
+        assert call["include_schemas"] == ["sales"]
+        assert call["exclude_schemas"] == ["ref", "replay"]
+        assert db.schemas_read == {"sales"}
+
+    def test_a_staging_table_with_a_unique_name_is_not_read_and_a_shared_name_is_read_then_dropped(self, tmp_path):
+        snap = snapshot_of(
+            table("sales", "Orders", kind="fact"), table("sales", "Orders_Inserts"),
+            table("ref", "Region"), table("ref", "Region_Inserts"), table("sales", "Region_Inserts"),
+        )
+        with database_of(snap) as db:
+            run_wizard_on(db, tmp_path / "draft")
+        (call,) = db.inspections
+        # `Orders_Inserts` is unique in the listing: never read. `Region_Inserts` is
+        # in two schemas, so the bare name cannot be passed; both are dropped after the read.
+        assert call["exclude_tables"] == ["Orders_Inserts"]
+        assert sorted(entity_keys(tmp_path / "draft")) == ["Orders", "Region"]
+
+    def test_a_schema_that_is_all_staging_is_not_read(self, tmp_path):
+        with database_of(_staged()) as db:
+            run_wizard_on(db, tmp_path / "draft")
+        assert "Sales_Stg" not in db.schemas_read
+
+    def test_a_same_named_table_in_another_schema_is_not_lost_to_the_staging_rule(self, tmp_path):
+        snap = snapshot_of(table("sales", "Orders_Inserts"), table("ref", "Orders_Inserts"), table("ref", "Keep"))
+        out = tmp_path / "draft"
+        with cfg.override_settings(staging_patterns="table:*_Inserts"), database_of(snap) as db:
+            run_wizard_on(db, out)
+        assert db.inspections[0]["exclude_tables"] is None
+        assert entity_keys(out) == ["Keep"]
+
+    def test_nothing_left_to_read_means_no_inspection_at_all(self, tmp_path):
+        # An empty include list means "every schema" to the inspector: it must not run.
+        with database_of(_staged()) as db:
+            code = run_wizard_on(db, tmp_path / "draft", "--exclude-schemas", "*")
+        assert code == 0 and db.inspections == []
+        assert entity_keys(tmp_path / "draft") == []
+
+    def test_include_and_exclude_together(self, tmp_path):
+        with database_of(_staged()) as db:
+            run_wizard_on(db, tmp_path / "draft", "--include-schemas", "sales,ref", "--exclude-schemas", "sales")
+        assert db.schemas_read == {"ref"}
+
+    def test_a_listing_failure_stops_the_run_without_the_password(self, tmp_path, capsys):
+        secret = "hunter2-distinctive"
+        with patch.object(sp, "_list_schema_tables", side_effect=RuntimeError(f"cannot open {_URL} {secret}")), \
+             patch.object(sp, "step1_connection", return_value=f"mssql+pyodbc://u:{secret}@h/d"), \
+             patch.object(sp, "setup_wizard_llm", return_value=RecordingLLM()):
+            with pytest.raises(SystemExit):
+                sp.main(["--db-url", _URL, "--language", "en", "--non-interactive", "--output", str(tmp_path / "d")])
+        captured = capsys.readouterr()
+        assert secret not in captured.out + captured.err
+
+
+def run_wizard_on(db: FakeDatabase, out: Path, *extra: str) -> int:
+    """Run the wizard against a database already patched in by :func:`database_of`."""
+    with patch.object(sp, "setup_wizard_llm", return_value=RecordingLLM()):
+        return sp.main([
+            "--db-url", _URL, "--language", "en", "--non-interactive", "--output", str(out), *extra,
+        ])
+
+
+class TestOnRealSchemasNothingExcludedIsRead:
+    """The same, on the warehouse fixture's SQLite schemas, with a spy on the table reader."""
+
+    def _run(self, warehouse, out: Path, *extra: str, interactive_answer: str | None = None):
+        from tests._warehouse_shape import LARGE, attached
+
+        read: list[tuple[str, str]] = []
+        sampled: list[str] = []
+        original_table = SchemaInspector._inspect_table
+        original_samples = inspector_module._fetch_samples
+
+        def spy_table(self, engine, inspector, schema, table_name, fetch_row_counts):
+            read.append((schema, table_name))
+            return original_table(self, engine, inspector, schema, table_name, fetch_row_counts)
+
+        def spy_samples(engine, schema, table_name, column, rows):
+            sampled.append(schema)
+            return original_samples(engine, schema, table_name, column, rows)
+
+        order: list[str] = []
+        argv = ["--db-url", warehouse.sources[LARGE].url, "--language", "en", "--output", str(out),
+                "--allow-repeated-answers", *extra]
+        patches = [
+            patch.object(SchemaInspector, "_inspect_table", spy_table),
+            patch("database.schema_inspector._fetch_samples", spy_samples),
+            patch.object(sp, "setup_wizard_llm", return_value=RecordingLLM()),
+        ]
+        if interactive_answer is None:
+            argv.append("--non-interactive")
+        else:
+            def ask(question, default="", non_interactive=False):
+                if question.startswith("Schemas to leave out"):
+                    order.append(f"asked after {len(read)} tables read")
+                    return interactive_answer
+                return ""
+
+            patches += [
+                patch.object(sp, "_ask", side_effect=ask),
+                patch.object(sp, "_choose", side_effect=lambda q, choices, default, non_interactive=False: "Accept"),
+            ]
+        with attached(warehouse), ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            code = sp.main(argv)
+        return code, read, sampled, order
+
+    def test_an_excluded_schema_is_never_inspected_or_sampled(self, warehouse_shape, tmp_path):
+        code, read, sampled, _ = self._run(
+            warehouse_shape, tmp_path / "draft", "--include-schemas", "sales_Fact,orders_Fact,common",
+            "--exclude-schemas", "orders_*",
+        )
+        assert code == 0
+        schemas = {schema for schema, _ in read}
+        assert schemas == {"sales_Fact", "common"}
+        assert "orders_Fact" not in set(sampled)
+
+    def test_change_capture_tables_with_unique_names_are_never_read(self, warehouse_shape, tmp_path):
+        code, read, _, _ = self._run(warehouse_shape, tmp_path / "draft", "--include-schemas", "sales_Fact,Replay")
+        assert code == 0
+        assert not [name for _, name in read if re.search(r"_(Inserts|Updates|Deletes)$", name)]
+        assert "Replay" not in {schema for schema, _ in read}
+
+    def test_the_interactive_answer_decides_what_is_read(self, warehouse_shape, tmp_path):
+        code, read, sampled, order = self._run(
+            warehouse_shape, tmp_path / "draft", "--include-schemas", "sales_Fact,orders_Fact",
+            interactive_answer="orders_Fact",
+        )
+        assert code == 0
+        assert order == ["asked after 0 tables read"]
+        assert {schema for schema, _ in read} == {"sales_Fact"}
+        assert "orders_Fact" not in set(sampled)
+
+
+# ---------------------------------------------------------------------------
+# An empty new answer never wipes an earlier one
+# ---------------------------------------------------------------------------
+
+class SilentLLM(RecordingLLM):
+    """A model with nothing to say (or an endpoint that fails) for the named tables.
+
+    *aliases* and *rules* hold schema-qualified table names (``sales.Customer``).
+    """
+
+    def __init__(self, aliases: tuple[str, ...] = (), rules: tuple[str, ...] = (), fail: bool = False) -> None:
+        super().__init__()
+        self.aliases, self.rules, self.fail = aliases, rules, fail
+
+    def generate(self, prompt: str, expect_json: bool = True):
+        silent = (
+            any(f"Fact table: {n}\n" in prompt for n in self.rules) if "business rules expert" in prompt
+            else any(f"Table name: {n}\n" in prompt for n in self.aliases) if "Table name:" in prompt
+            else False
+        )
+        if not silent:
+            return super().generate(prompt, expect_json)
+        self.prompts.append(prompt)
+        if self.fail:
+            raise RuntimeError("endpoint down")
+        return {"rules": {"rule_text": ""}} if "business rules expert" in prompt else {"aliases": []}
+
+
+class TestEmptyAnswersDoNotWipeEarlierEntries:
+    def _curated(self, out: Path) -> SchemaSnapshot:
+        snap = snapshot_of(
+            table("sales", "Customer"), table("sales", "Region"),
+            table("sales", "Orders", "ID", "Amount", kind="fact"),
+            table("sales", "Payments", "ID", "Amount", kind="fact"),
+        )
+        run_wizard(out, snap)
+        return snap
+
+    @pytest.mark.parametrize("fail", [False, True], ids=["empty answer", "failing endpoint"])
+    def test_a_table_without_a_new_answer_keeps_its_aliases_and_rule(self, tmp_path, capsys, fail):
+        out = tmp_path / "draft"
+        snap = self._curated(out)
+        rules_before = read_yaml(out / "business_rules.yaml")["rules"]
+        capsys.readouterr()
+        run_wizard(out, snap, SilentLLM(aliases=("sales.Customer",), rules=("sales.Orders",), fail=fail))
+        entities = read_yaml(out / "entities.yaml")["entities"]
+        assert entities["Customer"]["aliases"] == ["alias of sales.Customer"]
+        assert entities["Region"]["aliases"] == ["alias of sales.Region"]
+        rules = read_yaml(out / "business_rules.yaml")["rules"]
+        assert rules["Orders"] == rules_before["Orders"]
+        assert not rules["Orders"]["rule_text"].startswith("Primary fact table")
+        assert rules["Payments"] != rules_before["Payments"]  # a real new answer still replaces
+        summary = capsys.readouterr().out
+        assert "entities.yaml: 1 earlier entry kept because this run gave no answer for it: Customer" in summary
+        assert "business_rules.yaml: 1 earlier entry kept because this run gave no answer for it: Orders" in summary
+        assert "(1 of the kept have no new answer from the model)" in summary
+
+    def test_a_first_run_still_writes_the_placeholder_rule(self, tmp_path):
+        out = tmp_path / "draft"
+        run_wizard(out, snapshot_of(table("sales", "Orders", "ID", "Amount", kind="fact")),
+                   SilentLLM(rules=("sales.Orders",)))
+        assert read_yaml(out / "business_rules.yaml")["rules"]["Orders"]["rule_text"].startswith("Primary fact table")
+
+    def test_a_real_answer_replaces_an_earlier_placeholder(self, tmp_path):
+        out = tmp_path / "draft"
+        snap = snapshot_of(table("sales", "Orders", "ID", "Amount", kind="fact"))
+        run_wizard(out, snap, SilentLLM(rules=("sales.Orders",)))
+        run_wizard(out, snap)
+        assert read_yaml(out / "business_rules.yaml")["rules"]["Orders"]["rule_text"].startswith("Value column")

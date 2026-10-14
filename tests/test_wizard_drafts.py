@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from core.wizard_drafts import (
     back_up,
+    hold_back_empty,
     merge_examples,
     merge_mapping,
     merge_relationships,
@@ -75,3 +76,19 @@ class TestMergeNeverShrinks:
         merged, stats = merge_relationships([odd], [], None)
         assert merged == [odd] and stats.kept == 1
 
+
+
+class TestHoldBackEmpty:
+    def test_an_empty_new_value_is_dropped_only_where_the_old_one_has_content(self):
+        kept, held = hold_back_empty({"A": ["x"], "B": []}, {"A": [], "B": [], "C": []}, lambda v: not v)
+        assert kept == {"B": [], "C": []} and held == ("A",)
+
+    def test_the_rename_and_case_are_taken_into_account(self):
+        kept, held = hold_back_empty({"Trade": "text"}, {"sales.TRADE": ""}, lambda v: not v, {"Trade": "sales.Trade"})
+        assert kept == {} and held == ("sales.TRADE",)
+
+    def test_a_held_entry_is_counted_as_kept_by_the_merge(self):
+        old = {"A": ["x"]}
+        fresh, held = hold_back_empty(old, {"A": []}, lambda v: not v)
+        merged, stats = merge_mapping(old, fresh)
+        assert merged == old and (stats.kept, stats.replaced) == (1, 0) and held == ("A",)
