@@ -594,3 +594,75 @@ class TestDeepChecksAreOptIn:
         deep_names = {c["name"] for c in deep.json()["checks"]}
         assert "Login is read-only" not in light_names
         assert "Login is read-only" in deep_names
+
+
+# ---------------------------------------------------------------------------
+# 6. The curation checks: file reads only, so the card runs them without ?deep=1
+# ---------------------------------------------------------------------------
+
+class TestCurationChecksOnTheCard:
+    """A raw inspector draft in ``project_config/`` shows on the card as it does in the CLI."""
+
+    NAMES = {
+        "project_config/ is curated, not a raw draft",
+        "Aliases are curated",
+        "Every data source is described",
+        "No staging or change-capture tables",
+        "No live sample values in descriptions",
+    }
+
+    def _card(self, app_and_client, monkeypatch, directory):
+        import scripts.verify_deployment as verify_deployment_module
+
+        checks = [
+            verify_deployment_module.check_project_config_is_curated,
+            verify_deployment_module.check_aliases_are_curated,
+            verify_deployment_module.check_every_data_source_is_described,
+            verify_deployment_module.check_no_staging_tables,
+            verify_deployment_module.check_no_sample_values_in_descriptions,
+        ]
+        monkeypatch.setattr(verify_deployment_module, "build_checks", lambda: checks)
+        _, client = app_and_client
+        with override_settings(
+            auth_required=True, api_keys_json=_KEYS_JSON, project_config_dir=str(directory),
+        ):
+            headers = {"Authorization": f"Bearer {RAW_ADMIN_KEY}"}
+            response = client.get("/admin/health/checks?refresh=1", headers=headers)
+        assert response.status_code == 200
+        return {c["name"]: c for c in response.json()["checks"]}
+
+    def test_a_draft_shows_failures_and_advice_without_deep_checks(self, app_and_client, monkeypatch, tmp_path):
+        (tmp_path / "schema.yaml").write_text(
+            "# AUTO-GENERATED DRAFT - review and edit before moving to project_config/\n"
+            "tables:\n"
+            "  Invoice_Inserts:\n"
+            "    db_schema: s\n"
+            "    description: 's.Invoice_Inserts — auto-detected fact table (~3 rows)'\n"
+            "    columns:\n"
+            "      Phone: 'varchar column; e.g. 09120000001'\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "aliases.yaml").write_text(
+            "ring_aliases: {}\nsynonyms:\n  \"2024-05-01 10:00:00\": [\"t\"]  # REVIEW\n", encoding="utf-8",
+        )
+
+        checks = self._card(app_and_client, monkeypatch, tmp_path)
+
+        assert set(checks) == self.NAMES
+        assert checks["project_config/ is curated, not a raw draft"]["status"] == "FAIL"
+        assert "schema.yaml" in checks["project_config/ is curated, not a raw draft"]["detail"]
+        assert checks["Aliases are curated"]["status"] == "FAIL"
+        # Advice is a PASS with a detail that starts with "advice:": the card has no other status to show.
+        for name in ("No staging or change-capture tables", "No live sample values in descriptions"):
+            assert checks[name]["status"] == "PASS"
+            assert checks[name]["detail"].startswith("advice: ")
+        assert "09120000001" not in str(checks)
+
+    def test_a_curated_directory_is_all_green(self, app_and_client, monkeypatch):
+        from pathlib import Path
+
+        example = Path(__file__).resolve().parent.parent / "project_config.example"
+
+        checks = self._card(app_and_client, monkeypatch, example)
+
+        assert {c["status"] for c in checks.values()} == {"PASS"}
