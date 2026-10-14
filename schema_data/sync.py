@@ -38,6 +38,16 @@ What it does, per table of ``schema.yaml``
 
 Tables the databases have and ``schema.yaml`` lacks are reported; those
 matching an ``add_tables`` pattern (a glob on ``schema.table``) are appended.
+A table in an *excluded* schema (the system schemas, ``EXCLUDE_SCHEMAS``, the
+source's ``exclude_schemas:``, ``--exclude-schemas``; see
+:mod:`database.schema_filter`) is neither listed nor added: the report says how
+many it skipped, per schema. Exclusion is for discovery only -- a table
+``schema.yaml`` already lists is synced exactly as before.
+
+:func:`draft_schema_text` is the same rendering for a first install: it plans
+every table of the catalogues against an empty ``schema.yaml``, so the inspector's
+draft and a later ``--add-tables`` produce the same keys, ``datasource:`` lines
+and column layout.
 
 Safety
 ------
@@ -58,6 +68,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from database.catalogue import ColumnInfo, TableInfo, table_location
+from database.schema_filter import SYSTEM_SCHEMAS, schema_is_excluded
 from schema_data.placement import (
     NOT_FOUND_COMMENT,
     Placement,
@@ -102,6 +113,7 @@ __all__ = [
     "count_drafts",
     "describe_drift",
     "draft_description",
+    "draft_schema_text",
     "expected_tables",
     "render_synced_text",
     "sync_schema_text",
@@ -149,10 +161,18 @@ class SyncOptions:
     add_tables:
         Glob patterns on ``schema.table`` (case-insensitive); a table in a
         database, not in ``schema.yaml``, that matches one is added.
+    exclude_schemas:
+        ``{source: fnmatch patterns}`` of schemas that source's catalogue is
+        not searched in for tables ``schema.yaml`` lacks (see
+        :func:`database.schema_filter.exclusion_patterns`). The system
+        schemas (:data:`~database.schema_filter.SYSTEM_SCHEMAS`) are skipped
+        in every source whether or not it is listed. A table already in
+        ``schema.yaml`` is never affected.
     """
 
     prune: bool = False
     add_tables: tuple[str, ...] = ()
+    exclude_schemas: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -293,6 +313,10 @@ class SyncPlan:
     skipped_new:
         ``(schema.table, reason)`` for a table matched by ``add_tables`` that
         could not be added.
+    excluded:
+        ``(schema, table)`` of the database tables ``schema.yaml`` lacks that
+        were left out because their schema is excluded (in every source that
+        has them); neither listed nor added.
     """
 
     sources: tuple[str, ...]
@@ -301,6 +325,7 @@ class SyncPlan:
     new_tables: tuple[NewTable, ...] = ()
     unlisted: tuple[tuple[str, tuple[str, ...]], ...] = ()
     skipped_new: tuple[tuple[str, str], ...] = ()
+    excluded: tuple[tuple[str, str], ...] = ()
 
     @property
     def multi_source(self) -> bool:
@@ -505,12 +530,13 @@ def compute_plan(
         found = [(name, catalogues[name][location]) for name in placement.found_in]
         table_plans.append(_plan_table(table, placement, found, options, placement.key in mentioned))
 
-    new_tables, unlisted, skipped = _plan_new_tables(
+    new_tables, unlisted, skipped, excluded = _plan_new_tables(
         schema, sources, catalogues, in_schema, options,
     )
     return SyncPlan(
         sources=tuple(sources), default=default, tables=tuple(table_plans),
         new_tables=tuple(new_tables), unlisted=tuple(unlisted), skipped_new=tuple(skipped),
+        excluded=tuple(excluded),
     )
 
 
@@ -588,13 +614,23 @@ def _plan_new_tables(
     catalogues: Mapping[str, SourceTables],
     in_schema: set[tuple[str, str]],
     options: SyncOptions,
-) -> tuple[list[NewTable], list[tuple[str, tuple[str, ...]]], list[tuple[str, str]]]:
-    """Database tables ``schema.yaml`` lacks: which to add, which to list."""
+) -> tuple[
+    list[NewTable], list[tuple[str, tuple[str, ...]]], list[tuple[str, str]], list[tuple[str, str]],
+]:
+    """Database tables ``schema.yaml`` lacks: which to add, which to list, which exclusion left out."""
     seen: dict[tuple[str, str], list[tuple[str, TableInfo]]] = {}
+    left_out: dict[tuple[str, str], TableInfo] = {}
     for source in sources:
+        patterns = (*SYSTEM_SCHEMAS, *options.exclude_schemas.get(source, ()))
         for location, info in catalogues[source].items():
-            if location not in in_schema:
+            if location in in_schema:
+                continue
+            if schema_is_excluded(info.schema, patterns):
+                left_out.setdefault(location, info)
+            else:
                 seen.setdefault(location, []).append((source, info))
+    # A table one source excludes and another does not is a candidate (from the other).
+    excluded = [(info.schema, info.name) for location, info in left_out.items() if location not in seen]
 
     bare_counts: dict[str, int] = {}
     for key in schema.tables:
@@ -637,7 +673,7 @@ def _plan_new_tables(
         (_display(found[0][1]), tuple(source for source, _ in found))
         for location, found in seen.items() if location not in chosen_locations
     ]
-    return new_tables, unlisted, skipped
+    return new_tables, unlisted, skipped, excluded
 
 
 # ---------------------------------------------------------------------------
@@ -1010,6 +1046,73 @@ def sync_schema_text(
     )
 
 
+def draft_schema_text(
+    sources: Sequence[str],
+    default: str,
+    catalogues: Mapping[str, SourceTables],
+    header: Sequence[str] = (),
+    exclude_schemas: Mapping[str, tuple[str, ...]] | None = None,
+) -> SyncResult:
+    """A first-install ``schema.yaml``: every table of the catalogues, as ``--add-tables '*'`` writes it.
+
+    The catalogues are planned against an empty ``schema.yaml`` and each table
+    is rendered by the code that appends tables to an existing file, so the
+    keys (bare unless the name is shared across schemas), ``db_schema``,
+    ``datasource:`` lines (only with several sources; a table in several
+    sources once, as a list), draft descriptions and ``column_types:`` are the
+    ones a later sync would write. The result is validated and compared with
+    the plan like any sync.
+
+    Parameters
+    ----------
+    sources, default:
+        The data sources (default first) and the default one.
+    catalogues:
+        ``{source: {(schema, table): TableInfo}}``.
+    header:
+        Comment lines for the top of the file.
+    exclude_schemas:
+        Per-source exclusion patterns (see :class:`SyncOptions`); the system
+        schemas are always skipped.
+
+    Returns
+    -------
+    SyncResult
+        ``text`` is the new file; ``plan.new_tables`` the tables written and
+        ``plan.skipped_new`` those that could not be (a name no key can spell).
+
+    Raises
+    ------
+    ValueError
+        If the text does not validate or differs from the plan.
+
+    Examples
+    --------
+    >>> from database.catalogue import ColumnInfo
+    >>> info = TableInfo("sales", "Order", False, (ColumnInfo("ID", "int", False),))
+    >>> print(draft_schema_text(["a"], "a", {"a": {("sales", "order"): info}}).text, end="")
+    tables:
+    <BLANKLINE>
+      Order:
+        description: "sales.Order"  # TO BE FILLED (added by sync_schema.py)
+        db_schema: "sales"
+        columns:
+          ID: "int column"  # TO BE FILLED (added by sync_schema.py)
+        column_types:
+          ID: "int"
+    """
+    schema = SchemaConfig()
+    options = SyncOptions(add_tables=("*",), exclude_schemas=exclude_schemas or {})
+    plan = compute_plan(schema, sources, default, catalogues, options)
+    lines = [*header, "tables:" if plan.new_tables else "tables: {}"]
+    for table in plan.new_tables:
+        lines.append("")
+        lines.extend(_new_table_lines(table, plan.multi_source, 2, 2, ""))
+    text = "\n".join(lines) + "\n"
+    verify_structural_only(schema, validate_schema_yaml_text(text), plan)
+    return SyncResult(plan=plan, text=text, changed=True, stats=RenderStats())
+
+
 def _only_records_types(original: str, schema: SchemaConfig, plan: SyncPlan) -> bool:
     """Whether recording column types is the only edit *plan* makes to *original*.
 
@@ -1082,10 +1185,10 @@ def build_report(result: SyncResult) -> str:
     plan, stats = result.plan, result.stats
     out: list[str] = []
 
-    def section(title: str, rows: Sequence[str]) -> None:
+    def section(title: str, rows: Sequence[str], count: int | None = None) -> None:
         if out:
             out.append("")
-        out.append(f"== {title}: {len(rows)} ==")
+        out.append(f"== {title}: {len(rows) if count is None else count} ==")
         out.extend(f"  {row}" for row in rows[:REPORT_LIST_LIMIT])
         if len(rows) > REPORT_LIST_LIMIT:
             out.append(f"  ... and {len(rows) - REPORT_LIST_LIMIT} more")
@@ -1124,6 +1227,18 @@ def build_report(result: SyncResult) -> str:
         + [f"{n.key}: added ({_added_from(n)})" for n in plan.new_tables]
         + [f"{name}: not added ({why})" for name, why in plan.skipped_new],
     )
+    if plan.excluded:
+        per_schema: dict[str, int] = {}
+        for schema_name, _ in plan.excluded:
+            per_schema[schema_name] = per_schema.get(schema_name, 0) + 1
+        section(
+            "tables in excluded schemas, not listed or added (EXCLUDE_SCHEMAS, exclude_schemas:, --exclude-schemas)",
+            [
+                f"{name}: {count}"
+                for name, count in sorted(per_schema.items(), key=lambda item: item[0].lower())
+            ],
+            count=len(plan.excluded),
+        )
     section(
         "tables in schema.yaml found in no data source",
         [

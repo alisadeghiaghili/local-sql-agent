@@ -745,3 +745,132 @@ class TestTheChecksInTheReport:
             statuses = [getattr(verify, name)().status for name in CURATION_CHECK_NAMES]
 
         assert statuses == ["SKIP"] * 5
+
+
+# ---------------------------------------------------------------------------
+# 6. No table in an excluded schema
+# ---------------------------------------------------------------------------
+
+class TestNoTableInAnExcludedSchema:
+    NAME = "No table in an excluded schema"
+
+    @staticmethod
+    def schema(*tables: tuple[str, str]) -> str:
+        return _schema(*[(key, schema, CURATED_ROW) for key, schema in tables])
+
+    def test_it_is_a_global_check_after_the_other_advice_and_reads_files_only(self):
+        names = [c.__name__ for c in verify.build_checks()]
+
+        assert names.count("check_no_table_in_excluded_schema") == 1
+        assert names.index("check_no_table_in_excluded_schema") == names.index("check_no_sample_values_in_descriptions") + 1
+
+    def test_it_is_not_a_deep_check(self):
+        from api.admin_routes import _DEEP_CHECK_NAMES
+
+        assert "check_no_table_in_excluded_schema" not in _DEEP_CHECK_NAMES
+
+    def test_pass_when_the_configured_exclusion_matches_no_table(self, project):
+        _write(project, "schema.yaml", self.schema(("A", "sales"), ("B", "ref")))
+
+        with cfg.override_settings(exclude_schemas="*_Stg"):
+            result = verify.check_no_table_in_excluded_schema()
+
+        assert result.name == self.NAME
+        assert (result.status, result.detail) == ("PASS", "none of the 2 table(s) is in an excluded schema")
+
+    def test_skip_when_nothing_is_excluded_beyond_the_system_schemas_and_nothing_matches(self, project):
+        _write(project, "schema.yaml", self.schema(("A", "sales")))
+
+        result = verify.check_no_table_in_excluded_schema()
+
+        assert result.status == "SKIP"
+        assert "no schema is excluded beyond the system schemas" in result.detail
+
+    def test_a_listed_table_in_an_excluded_schema_is_advice_with_its_key_and_both_fixes(self, project):
+        _write(project, "schema.yaml", self.schema(("A", "sales"), ("Batch", "Load_Stg"), ("sales_Stg.Order", "")))
+
+        with cfg.override_settings(exclude_schemas="*_Stg"):
+            result = verify.check_no_table_in_excluded_schema()
+
+        assert result.status == "PASS"                        # advice, like the other doctor advice
+        assert result.detail.startswith("advice: 2 of 3 table(s) are in a schema the setup tools are told not to scan: ")
+        assert "Batch" in result.detail and "sales_Stg.Order" in result.detail
+        assert "remove them from schema.yaml, or narrow the exclusion" in result.detail
+        assert "EXCLUDE_SCHEMAS" in result.detail and "exclude_schemas:" in result.detail
+
+    def test_a_system_schema_counts_even_with_nothing_configured(self, project):
+        _write(project, "schema.yaml", self.schema(("Audit", "cdc"), ("A", "sales")))
+
+        result = verify.check_no_table_in_excluded_schema()
+
+        assert result.detail.startswith("advice: 1 of 2 table(s)") and "Audit" in result.detail
+
+    def test_matching_ignores_case(self, project):
+        _write(project, "schema.yaml", self.schema(("A", "Load_STG")))
+
+        with cfg.override_settings(exclude_schemas="*_stg"):
+            assert verify.check_no_table_in_excluded_schema().detail.startswith("advice: 1 of 1")
+
+    def test_a_sources_own_list_applies_to_the_tables_assigned_to_it_only(self, project):
+        _write(project, "datasources.yaml", TWO_SOURCES.replace(
+            "url_env: DB_URL_ARCHIVE", "url_env: DB_URL_ARCHIVE\n    exclude_schemas: [old]"))
+        _write(
+            project, "schema.yaml",
+            "tables:\n"
+            "  InMain:\n    db_schema: old\n    datasource: main\n    columns: {ID: k}\n"
+            "  InArchive:\n    db_schema: old\n    datasource: archive\n    columns: {ID: k}\n"
+            "  InBoth:\n    db_schema: old\n    datasource: [main, archive]\n    columns: {ID: k}\n",
+        )
+        from database.datasources import reset_datasources_cache
+
+        reset_datasources_cache()
+        try:
+            result = verify.check_no_table_in_excluded_schema()
+        finally:
+            reset_datasources_cache()
+
+        # Only the table assigned to `archive` alone is excluded everywhere it lives.
+        assert result.detail.startswith("advice: 1 of 3 table(s)") and "InArchive" in result.detail
+        assert "InMain" not in result.detail and "InBoth" not in result.detail
+
+    def test_a_schema_that_does_not_load_is_skipped(self, project):
+        _write(project, "schema.yaml", "tables: [not, a, mapping]\n")
+
+        assert verify.check_no_table_in_excluded_schema().status == "SKIP"
+
+    def test_an_invalid_datasources_yaml_is_skipped_not_a_crash(self, project):
+        _write(project, "schema.yaml", self.schema(("A", "sales")))
+        _write(project, "datasources.yaml", "datasources:\n  a:\n    url_env: X\n    exclude_schemas: 1\n")
+        from database.datasources import reset_datasources_cache
+
+        reset_datasources_cache()
+        try:
+            result = verify.check_no_table_in_excluded_schema()
+        finally:
+            reset_datasources_cache()
+
+        assert result.status == "SKIP" and "datasources.yaml did not load" in result.detail
+
+    def test_the_message_is_ascii_and_holds_keys_only(self, project):
+        _write(project, "schema.yaml", self.schema(("A", "Load_Stg")))
+
+        with cfg.override_settings(exclude_schemas="*_Stg"):
+            assert verify.check_no_table_in_excluded_schema().render().isascii()
+
+    def test_the_doctor_helper_reports_tables_excluded_in_every_source_they_live_in(self):
+        view = doctor.SchemaView(parsed=True, tables=(
+            doctor.SchemaTable("A", "old", "A", "", ("m",), ()),
+            doctor.SchemaTable("B", "old", "B", "", ("m", "n"), ()),
+            doctor.SchemaTable("C", "", "C", "", (), ()),
+        ))
+
+        found = doctor.tables_in_excluded_schemas(view, {"m": ["old"], "n": []}, "m")
+
+        assert [t.key for t in found] == ["A"]
+
+    def test_is_staging_matches_what_the_staging_count_matches(self):
+        patterns = doctor.parse_staging_patterns("*_Stg, table:*_Inserts")
+
+        assert doctor.is_staging("Sales_Stg", "Invoice", patterns)
+        assert doctor.is_staging("sales", "INVOICE_INSERTS", patterns)
+        assert not doctor.is_staging("sales", "Invoice", patterns)

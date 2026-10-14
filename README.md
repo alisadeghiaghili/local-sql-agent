@@ -225,8 +225,11 @@ cp -r project_config.example project_config
 #       drafts schema.yaml (the SQL guard's allowlist) for you to review;
 #   python setup_project.py
 #       an LLM-assisted wizard that drafts entities.yaml, aliases.yaml,
-#       business_rules.yaml and examples.yaml (it overwrites those files, and
-#       does not write schema.yaml or set `datasource:`).
+#       business_rules.yaml, examples.yaml and relationships.yaml into
+#       project_config_draft/ (it refuses to write into project_config/ unless
+#       --overwrite-live, which backs up what it replaces; a second run merges
+#       into the first). Review the drafts, then copy the files you accept into
+#       project_config/. It does not write schema.yaml or set `datasource:`.
 # Then bring schema.yaml's structure in step with the database(s), one or
 # several (the preflight of step 5 checks it; docs/deployment-runbook.md §16.3):
 python scripts/sync_schema.py          # writes project_config/schema.synced.yaml

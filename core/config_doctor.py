@@ -12,7 +12,7 @@ silently vanish, and the vocabulary the retrieval layer relies on is gone.
 None of that is an error to the loaders, so nothing told the operator.
 
 This module reads the files of a ``project_config/`` directory (file reads
-only, no database) and answers five questions, each as plain data that
+only, no database) and answers six questions, each as plain data that
 ``scripts/verify_deployment.py`` turns into a preflight check:
 
 * :func:`find_draft_headers` and :func:`placeholder_descriptions`: is any file
@@ -21,6 +21,8 @@ only, no database) and answers five questions, each as plain data that
 * :func:`sources_without_tables`: does every data source have tables?
 * :func:`staging_tables`: are there staging or change-capture tables?
 * :func:`sample_value_notes`: do descriptions quote copied sample values?
+* :func:`tables_in_excluded_schemas`: does ``schema.yaml`` list a table whose
+  schema the setup tools are told never to scan?
 
 Nothing here ever returns a value read from a description or a note: the
 answers are counts and table keys, so a message built from them cannot leak
@@ -45,7 +47,9 @@ placeholder_descriptions(view) -> tuple[int, int]
 read_aliases(directory) -> AliasesView | None
 non_word_synonym_keys(keys) -> int
 parse_staging_patterns(raw) -> list[StagingPattern]
+is_staging(schema, name, patterns) -> bool
 staging_tables(view, patterns) -> dict[str, int]
+tables_in_excluded_schemas(view, patterns_by_source, default) -> list[SchemaTable]
 sample_value_notes(view) -> SampleValueFindings
 sources_without_tables(view, sources, default) -> list[str]
 """
@@ -55,6 +59,7 @@ from __future__ import annotations
 import fnmatch
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -75,6 +80,7 @@ __all__ = [
     "SchemaView",
     "StagingPattern",
     "find_draft_headers",
+    "is_staging",
     "non_word_synonym_keys",
     "parse_staging_patterns",
     "placeholder_descriptions",
@@ -83,6 +89,7 @@ __all__ = [
     "sample_value_notes",
     "sources_without_tables",
     "staging_tables",
+    "tables_in_excluded_schemas",
 ]
 
 #: What the inspector writes on the first line of every draft file. A file
@@ -530,6 +537,27 @@ def parse_staging_patterns(raw: str) -> list[StagingPattern]:
     return patterns
 
 
+def is_staging(schema: str, name: str, patterns: Sequence[StagingPattern]) -> bool:
+    """Whether a staging pattern matches the table *name* in *schema*.
+
+    A bare pattern is compared with the last part of the schema, a ``table:``
+    pattern with the table name; both lower-cased. The inspector uses the same
+    test to leave staging tables out of a draft.
+
+    >>> patterns = parse_staging_patterns("*_Stg, table:*_Inserts")
+    >>> is_staging("Sales_Stg", "Invoice", patterns), is_staging("sales", "Invoice_Inserts", patterns)
+    (True, True)
+    >>> is_staging("sales", "Invoice", patterns), is_staging("sales", "Invoice", [])
+    (False, False)
+    """
+    schema_low = schema.rsplit(".", 1)[-1].lower()
+    name_low = name.lower()
+    return any(
+        fnmatch.fnmatchcase(name_low if p.on_table else schema_low, p.pattern)
+        for p in patterns
+    )
+
+
 def staging_tables(view: SchemaView, patterns: list[StagingPattern]) -> dict[str, int]:
     """Count the tables a staging pattern matches, per schema.
 
@@ -541,14 +569,52 @@ def staging_tables(view: SchemaView, patterns: list[StagingPattern]) -> dict[str
     if not patterns:
         return {}
     for table in view.tables:
-        schema = table.schema.rsplit(".", 1)[-1].lower()
-        name = table.name.lower()
-        if any(
-            fnmatch.fnmatchcase(name if p.on_table else schema, p.pattern)
-            for p in patterns
-        ):
+        if is_staging(table.schema, table.name, patterns):
             counts[table.schema] += 1
     return dict(counts)
+
+
+# ---------------------------------------------------------------------------
+# 4b. Tables in schemas the setup tools are told not to scan
+# ---------------------------------------------------------------------------
+
+def tables_in_excluded_schemas(
+    view: SchemaView,
+    patterns_by_source: Mapping[str, Sequence[str]],
+    default: str,
+) -> list[SchemaTable]:
+    """The ``schema.yaml`` tables whose schema is excluded in every source they are in.
+
+    The exclusion (``database.schema_filter``) only decides what the setup
+    tools *propose* from a database; a table ``schema.yaml`` already lists is
+    kept and synced. A listed table in an excluded schema is a contradiction
+    the operator should resolve, either by removing the table or by narrowing
+    the exclusion, so it is reported. A table belongs to the sources its
+    ``datasource:`` line names, to *default* when it has none, and counts only
+    when every one of them excludes its schema. A table whose schema is not
+    known (a bare key with no ``db_schema``) is never reported.
+
+    >>> view = SchemaView(parsed=True, tables=(
+    ...     SchemaTable("Run_Log", "Replay", "Run_Log", "", (), ()),
+    ...     SchemaTable("Invoice", "sales", "Invoice", "", (), ()),
+    ...     SchemaTable("Bare", "", "Bare", "", (), ()),
+    ... ))
+    >>> [t.key for t in tables_in_excluded_schemas(view, {"main": ["replay", "sys"]}, "main")]
+    ['Run_Log']
+    >>> tables_in_excluded_schemas(view, {"main": []}, "main")
+    []
+    """
+    from database.schema_filter import schema_is_excluded
+
+    found: list[SchemaTable] = []
+    for table in view.tables:
+        schema = table.schema.rsplit(".", 1)[-1]
+        if not schema:
+            continue
+        sources = table.datasource or (default,)
+        if all(schema_is_excluded(schema, patterns_by_source.get(s, ())) for s in sources):
+            found.append(table)
+    return found
 
 
 # ---------------------------------------------------------------------------

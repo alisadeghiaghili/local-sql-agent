@@ -627,6 +627,21 @@ class Settings:
     change-capture process writes. An empty value turns the check off. The
     check only advises (it never fails), and reads ``schema.yaml``, not the
     database."""
+    exclude_schemas: str = field(
+        default_factory=lambda: os.getenv("EXCLUDE_SCHEMAS", "")
+    )
+    """Database schemas the setup tools never scan, for every data source:
+    comma-separated ``fnmatch`` patterns, matched case-insensitively against
+    the schema name (``*_Stg`` matches ``Sales_Stg`` and ``sales_stg``). Added
+    to the always-excluded system schemas
+    (:data:`database.schema_filter.SYSTEM_SCHEMAS`) and to a data source's own
+    ``exclude_schemas:`` list in ``datasources.yaml``, so a deployment with a
+    single ``DB_CONNECTION_URL`` has the same control as one with several
+    sources. It decides which catalogue tables the inspector drafts, the
+    ``sync_schema.py`` report lists and ``--add-tables`` adds; a table
+    ``schema.yaml`` already lists is synced as before, and the preflight check
+    ``No table in an excluded schema`` reports one that sits in such a schema.
+    Empty (the default) excludes nothing beyond the system schemas."""
     # ── query result cache ────────────────────────────────────────────────
     cache_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("CACHE_TTL_SECONDS", "300"))
