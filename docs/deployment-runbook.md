@@ -2058,8 +2058,9 @@ Steps 21 and 22 come last on purpose.
       on 6.11.0 or earlier is single-shot: `--baseline` and `compare` refuse to
       set it against a production run (`compare --allow-mixed` overrides, with
       a note). Record a new one on 6.12.0 after the restart, in the mode you
-      will gate on (`--live --reference live --save-baseline ...`), and add `--single-shot` to every command that must stay model-only, which
-      still compares with the baseline of step 1. Offline runs (CI) are
+      will gate on (`--live --reference live --save-baseline ...`), and add
+      `--single-shot` to every command that must stay model-only, which still
+      compares with the baseline of step 1. Offline runs (CI) are
       unchanged. The run applies no per-key `denied_columns` policy, and §18.6
       has the commands for rounds with a reviewer (`--share`, `compare`,
       `split`).
