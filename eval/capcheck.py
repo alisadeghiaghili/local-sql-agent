@@ -134,6 +134,14 @@ def count_query(sql: str, dialect: str = "tsql") -> str:
         isinstance(tree, exp.SetOperation) or not _has_row_limit(tree)
     ):
         last.set("order", None)
+    # Newer sqlglot releases attach a set operation's trailing ORDER BY to the
+    # set operation itself rather than to its last branch; strip it there too.
+    if (
+        isinstance(tree, exp.SetOperation)
+        and tree.args.get("order") is not None
+        and not _has_row_limit(tree)
+    ):
+        tree.set("order", None)
     if isinstance(tree, exp.Select):
         _name_projections(tree)
 
