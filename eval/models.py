@@ -384,9 +384,14 @@ class MismatchDiagnosis:
         For a result that qualified for ``match_capped``: the number of rows
         the model's SQL returns without the cap, from one extra count query.
         A count, never a value; ``None`` otherwise.
+    reference_uncapped_rows:
+        When the reference result itself reached ``MAX_ROWS_RETURNED`` (its
+        length is not its size), the reference's own counted row count, which
+        ``uncapped_rows`` must equal; ``None`` otherwise.
     capped_unverified:
-        True when that count query could not be run or built: the case then
-        fails as ``actual_is_subset`` rather than passing unverified.
+        True when a count query could not be run or built (the model's, or
+        the reference's when it was cut): the case then fails as
+        ``actual_is_subset`` rather than passing unverified.
 
     Examples
     --------
@@ -406,6 +411,7 @@ class MismatchDiagnosis:
     capped: bool = False
     row_cap: int | None = None
     uncapped_rows: int | None = None
+    reference_uncapped_rows: int | None = None
     capped_unverified: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -424,6 +430,7 @@ class MismatchDiagnosis:
             "capped": self.capped,
             "row_cap": self.row_cap,
             "uncapped_rows": self.uncapped_rows,
+            "reference_uncapped_rows": self.reference_uncapped_rows,
             "capped_unverified": self.capped_unverified,
         }
 
@@ -445,6 +452,7 @@ class MismatchDiagnosis:
             capped=bool(data.get("capped", False)),
             row_cap=data.get("row_cap"),
             uncapped_rows=data.get("uncapped_rows"),
+            reference_uncapped_rows=data.get("reference_uncapped_rows"),
             capped_unverified=bool(data.get("capped_unverified", False)),
         )
 

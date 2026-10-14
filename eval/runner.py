@@ -465,6 +465,7 @@ def run_case(
                 diagnosis,
                 source_trace.precap_sql if source_trace is not None else None,
                 execute_fn,
+                reference_sql=case.expected_sql,
             )
         capped_match = diagnosis is not None and diagnosis.mismatch_class == "match_capped"
         if comparison.equal or capped_match:

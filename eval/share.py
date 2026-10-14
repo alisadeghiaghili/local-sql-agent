@@ -244,6 +244,7 @@ def _case_record(
         "capped": False,
         "row_cap": None,
         "uncapped_rows": None,
+        "reference_uncapped_rows": None,
         "capped_unverified": False,
     }
     diagnosis["mismatch_class"] = mismatch_class_for(

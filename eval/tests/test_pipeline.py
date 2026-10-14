@@ -63,9 +63,11 @@ class Warehouse:
     """SQLite behind a T-SQL front; records every statement it was asked to run."""
 
     def __init__(
-        self, fail_first: bool = False, label: str = "v", fail_counts: bool = False
+        self, fail_first: bool = False, label: str = "v", fail_counts: bool = False,
+        cut: bool = False,
     ) -> None:
         self.fail_counts = fail_counts
+        self.cut = cut  # emulate the executor's fetchmany(MAX_ROWS_RETURNED)
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.execute(f"CREATE TABLE {T} (ID INTEGER, Label TEXT)")
         self.conn.executemany(
@@ -81,7 +83,12 @@ class Warehouse:
         if self.fail_first and len(self.calls) == 1:
             self.fail_first = False
             raise RuntimeError("Database error: transient failure")
-        return pd.read_sql_query(sqlglot.transpile(sql, read="tsql", write="sqlite")[0], self.conn)
+        frame = pd.read_sql_query(
+            sqlglot.transpile(sql, read="tsql", write="sqlite")[0], self.conn
+        )
+        if self.cut and not sql.startswith("SELECT COUNT(*) FROM ("):
+            frame = frame.head(cfg.settings.max_rows_returned)
+        return frame
 
 
 def _pipeline(backend, warehouse, trace=None):
@@ -248,6 +255,43 @@ class TestRowCapAndExecution:
         with cfg.override_settings(default_top_n=3):
             _, warehouse, _ = _run(backend, case=case)
         assert not any(c.startswith("SELECT COUNT(*) FROM (") for c in warehouse.calls)
+
+    def test_a_reference_cut_by_max_rows_is_counted_and_equal_counts_pass(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T}")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=2, max_rows_returned=3):
+            result, warehouse, _ = _run(backend, Warehouse(cut=True), case)
+        assert result.status == "pass"
+        d = result.diagnosis
+        assert (d.expected_rows, d.actual_rows, d.row_cap) == (3, 2, 2)
+        assert (d.uncapped_rows, d.reference_uncapped_rows) == (5, 5)
+        assert sum(c.startswith("SELECT COUNT(*) FROM (") for c in warehouse.calls) == 2
+
+    def test_a_reference_cut_by_max_rows_with_a_different_count_fails(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T} WHERE ID <= 4 ORDER BY ID")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=2, max_rows_returned=3):
+            result, _, _ = _run(backend, Warehouse(cut=True), case)
+        assert result.status == "fingerprint_mismatch"
+        d = result.diagnosis
+        assert d.mismatch_class == "actual_is_subset" and not d.capped
+        assert (d.uncapped_rows, d.reference_uncapped_rows) == (4, 5)
+
+    def test_a_reference_cut_by_max_rows_whose_count_fails_is_unverified(self):
+        class RefBroken(Warehouse):
+            def __call__(self, sql):
+                if sql.startswith("SELECT COUNT(*) FROM (") and "WHERE" not in sql:
+                    self.calls.append(sql)
+                    raise RuntimeError("Database error: timeout")
+                return super().__call__(sql)
+
+        backend = ScriptedBackend(f"SELECT ID FROM {T} WHERE ID > 0")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=2, max_rows_returned=3):
+            result, _, _ = _run(backend, RefBroken(cut=True), case)
+        assert result.status == "fingerprint_mismatch" and not result.passed
+        assert result.diagnosis.capped_unverified is True
+        assert result.diagnosis.reference_uncapped_rows is None
 
     def test_a_capped_result_with_a_wrong_row_fails(self):
         backend = ScriptedBackend(f"SELECT ID FROM {T} ORDER BY ID")  # rows 1 and 2

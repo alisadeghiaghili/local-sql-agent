@@ -2488,7 +2488,8 @@ and run the round again.
   `column_names_differ`, `same_rows_different_order`,
   `values_differ_same_shape`, `actual_is_subset`, `actual_is_superset`,
   `actual_empty`, `expected_empty` or `not_executed`), `capped`, the cap
-  value and `uncapped_rows` (counts) when the cap applied, `capped_unverified`,
+  value, `uncapped_rows` and `reference_uncapped_rows` (counts) when the cap
+  applied, `capped_unverified`,
   the row counts, the **column names** of both results and, for a single
   numeric cell, a bucket of the relative error (`<1%`, `<10%`, `>=10%`); and a
   summary (execution accuracy overall, per tag and per data source, the
@@ -2606,8 +2607,13 @@ diagnosis records it). An over-filtered query that merely returns a cap's worth
 of valid rows has a smaller count and is `actual_is_subset`, a failure. If the
 count cannot be asked (the SQL does not parse into a derived table, the guard
 refuses it, a timeout) the case **fails** as `actual_is_subset` with
-`capped_unverified: true`; there is no silent pass. A reference that was itself
-cut at `MAX_ROWS_RETURNED` only needs the count to reach its length. If the
+`capped_unverified: true`; there is no silent pass. **When the reference result
+itself reached `MAX_ROWS_RETURNED`** its length is not its size, so the
+reference is counted the same way (`SELECT COUNT(*) FROM (<the reference SQL>)
+AS q`, same builder, same executor) and the two uncapped counts must be equal
+(`uncapped_rows == reference_uncapped_rows`; there is no "at least" rule). If
+the reference count cannot be asked, the case is `capped_unverified` and fails.
+If the
 model wrote its own `TOP` and only `MAX_ROWS_RETURNED` cut the result, the same
 check runs on its SQL as written. `--single-shot` has no cap, so
 `match_capped` never appears there. Only the counts are exported, never a row

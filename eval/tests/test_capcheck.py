@@ -135,13 +135,75 @@ class TestVerify:
         other = MismatchDiagnosis("actual_is_subset", 5, 2, ["ID"], ["ID"])
         assert verify_capped_match(other, MODEL_SQL, _counts(1)) is other
 
-    def test_a_reference_cut_by_max_rows_only_needs_the_count_to_reach_it(self):
+    REFERENCE_SQL = f"SELECT ID FROM [{TABLE}]"
+
+    @staticmethod
+    def _by_query(model_count, reference_count, seen=None):
+        """Answers the model's count and the reference's count differently (by the WHERE)."""
+
+        def run(sql):
+            if seen is not None:
+                seen.append(sql)
+            value = model_count if "ID > 1" in sql else reference_count
+            if isinstance(value, Exception):
+                raise value
+            return pd.DataFrame({"n": [value]})
+
+        return run
+
+    def test_a_cut_reference_is_counted_too_and_equal_counts_pass(self):
+        seen: list[str] = []
         with cfg.override_settings(max_rows_returned=5):
-            ok = verify_capped_match(_capped(expected_rows=5), MODEL_SQL, _counts(40))
-            short = verify_capped_match(_capped(expected_rows=5), MODEL_SQL, _counts(4))
-        assert ok.mismatch_class == "match_capped" and ok.uncapped_rows == 40
-        assert short.mismatch_class == "actual_is_subset"
+            result = verify_capped_match(
+                _capped(expected_rows=5), MODEL_SQL, self._by_query(40, 40, seen),
+                reference_sql=self.REFERENCE_SQL)
+        assert result.mismatch_class == "match_capped" and result.capped is True
+        assert (result.uncapped_rows, result.reference_uncapped_rows) == (40, 40)
+        assert len(seen) == 2  # one count for each side
+
+    def test_a_cut_reference_with_a_different_count_fails_even_when_the_model_count_is_larger(self):
+        with cfg.override_settings(max_rows_returned=5):
+            smaller = verify_capped_match(_capped(expected_rows=5), MODEL_SQL,
+                                          self._by_query(30, 40), reference_sql=self.REFERENCE_SQL)
+            larger = verify_capped_match(_capped(expected_rows=5), MODEL_SQL,
+                                         self._by_query(50, 40), reference_sql=self.REFERENCE_SQL)
+        for result, counts in ((smaller, (30, 40)), (larger, (50, 40))):
+            assert result.mismatch_class == "actual_is_subset" and result.capped is False
+            assert (result.uncapped_rows, result.reference_uncapped_rows) == counts
+            assert result.capped_unverified is False
+
+    def test_the_old_at_least_rule_is_gone(self):
+        # 40 >= 5 used to pass; the reference's true size is 7, so 40 is not its answer
+        with cfg.override_settings(max_rows_returned=5):
+            result = verify_capped_match(_capped(expected_rows=5), MODEL_SQL,
+                                         self._by_query(40, 7), reference_sql=self.REFERENCE_SQL)
+        assert result.mismatch_class == "actual_is_subset"
+
+    @pytest.mark.parametrize("reference_sql", [None, "", "SELECT ( FROM"])
+    def test_a_cut_reference_that_cannot_be_counted_is_unverified_and_fails(self, reference_sql):
+        with cfg.override_settings(max_rows_returned=5):
+            result = verify_capped_match(_capped(expected_rows=5), MODEL_SQL,
+                                         self._by_query(40, 40), reference_sql=reference_sql)
+        assert result.mismatch_class == "actual_is_subset"
+        assert result.capped_unverified is True and result.capped is False
+
+    def test_a_cut_reference_whose_count_query_fails_is_unverified_and_fails(self):
+        with cfg.override_settings(max_rows_returned=5):
+            result = verify_capped_match(
+                _capped(expected_rows=5), MODEL_SQL,
+                self._by_query(40, RuntimeError("timeout")), reference_sql=self.REFERENCE_SQL)
+        assert result.mismatch_class == "actual_is_subset"
+        assert result.capped_unverified is True
+        assert result.reference_uncapped_rows is None
+
+    def test_an_uncut_reference_is_not_counted(self):
+        seen: list[str] = []
+        result = verify_capped_match(_capped(expected_rows=5), MODEL_SQL, _counts(5, seen),
+                                     reference_sql=self.REFERENCE_SQL)
+        assert result.mismatch_class == "match_capped" and result.reference_uncapped_rows is None
+        assert len(seen) == 1
 
     def test_only_counts_are_serialised(self):
         text = str(verify_capped_match(_capped(), MODEL_SQL, _counts(5)).to_dict())
         assert "uncapped_rows': 5" in text and "capped_unverified': False" in text
+        assert "reference_uncapped_rows': None" in text

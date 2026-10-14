@@ -30,8 +30,12 @@ the rolled-back read-only transaction apply, and only the count is read.
 Nothing but that count leaves this module.
 
 When the reference itself was cut at ``MAX_ROWS_RETURNED`` its length is not
-the true size: the check then asks only that the uncapped count be at least
-that long.
+its true size, so the reference is counted the same way
+(``SELECT COUNT(*) FROM (<the reference SQL>) AS q``, same builder, same
+executor) and the two uncapped counts must be **equal**
+(``uncapped_rows == reference_uncapped_rows``). There is no relaxation: if the
+reference count cannot be asked, the case is ``capped_unverified`` and fails
+like the model side does.
 """
 
 from __future__ import annotations
@@ -141,10 +145,20 @@ def count_query(sql: str, dialect: str = "tsql") -> str:
     return outer.sql(dialect=dialect)
 
 
+def _count_rows(sql: str, execute_fn: Callable[[str], pd.DataFrame]) -> int:
+    """The row count of *sql* from ``SELECT COUNT(*) FROM (<sql>) AS q``; raises if it cannot be had."""
+    statement = count_query(sql, cfg.settings.sql_dialect)
+    from security.sql_guard import validate_sql
+
+    validate_sql(statement, dialect=cfg.settings.sql_dialect)
+    return int(execute_fn(statement).iat[0, 0])
+
+
 def verify_capped_match(
     diagnosis: MismatchDiagnosis,
     precap_sql: str | None,
     execute_fn: Callable[[str], pd.DataFrame],
+    reference_sql: str | None = None,
 ) -> MismatchDiagnosis:
     """Confirm or demote a ``match_capped`` diagnosis with one count query.
 
@@ -159,14 +173,19 @@ def verify_capped_match(
     execute_fn:
         The run's executor. The count query is validated by the SQL guard and
         run through it, so the timeout and read-only transaction apply.
+    reference_sql:
+        The case's ``expected_sql``. Counted too, but only when the reference
+        result itself reached ``MAX_ROWS_RETURNED`` (it was cut, so its length
+        is not its size); without it such a case cannot be verified.
 
     Returns
     -------
     MismatchDiagnosis
-        ``match_capped`` with ``uncapped_rows`` set when the count agrees with
-        the reference; ``actual_is_subset`` with ``uncapped_rows`` when it does
-        not; ``actual_is_subset`` with ``capped_unverified`` when it could not
-        be asked. Only counts are ever recorded.
+        ``match_capped`` with ``uncapped_rows`` set when the count equals the
+        reference's row count (its counted size when the reference was cut,
+        recorded as ``reference_uncapped_rows``); ``actual_is_subset`` with the
+        counts when it does not; ``actual_is_subset`` with ``capped_unverified``
+        when a count could not be asked. Only counts are ever recorded.
 
     Examples
     --------
@@ -181,6 +200,15 @@ def verify_capped_match(
     'actual_is_subset'
     >>> verify_capped_match(d, "SELECT ( FROM", run).capped_unverified
     True
+
+    A reference that was itself cut is counted too, and the counts must be equal:
+
+    >>> import config as cfg
+    >>> cut = MismatchDiagnosis("match_capped", 5, 3, ["a"], ["a"], capped=True, row_cap=3)
+    >>> with cfg.override_settings(max_rows_returned=5):
+    ...     r = verify_capped_match(cut, sql, run, reference_sql=sql)
+    >>> (r.mismatch_class, r.uncapped_rows, r.reference_uncapped_rows)
+    ('match_capped', 5, 5)
     """
     if diagnosis.mismatch_class != "match_capped":
         return diagnosis
@@ -191,20 +219,24 @@ def verify_capped_match(
     if not precap_sql:
         return unverified
     try:
-        statement = count_query(precap_sql, cfg.settings.sql_dialect)
-        from security.sql_guard import validate_sql
-
-        validate_sql(statement, dialect=cfg.settings.sql_dialect)
-        frame = execute_fn(statement)
-        counted = int(frame.iat[0, 0])
+        counted = _count_rows(precap_sql, execute_fn)
     except Exception:  # noqa: BLE001 - whatever stopped the count, the case is not a pass
         return unverified
 
-    expected = diagnosis.expected_rows or 0
-    reference_was_cut = expected >= cfg.settings.max_rows_returned
-    agrees = counted >= expected if reference_was_cut else counted == expected
-    if agrees:
-        return replace(diagnosis, uncapped_rows=counted)
+    target = diagnosis.expected_rows or 0
+    reference_counted: int | None = None
+    if target >= cfg.settings.max_rows_returned:
+        # The reference result was cut by the executor: its length is not its size.
+        if not reference_sql:
+            return unverified
+        try:
+            reference_counted = _count_rows(reference_sql, execute_fn)
+        except Exception:  # noqa: BLE001 - same rule as the model side
+            return replace(unverified, uncapped_rows=counted)
+        target = reference_counted
+    if counted == target:
+        return replace(diagnosis, uncapped_rows=counted, reference_uncapped_rows=reference_counted)
     return replace(
         diagnosis, mismatch_class="actual_is_subset", capped=False, uncapped_rows=counted,
+        reference_uncapped_rows=reference_counted,
     )
