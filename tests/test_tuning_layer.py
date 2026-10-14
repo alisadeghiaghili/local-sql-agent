@@ -259,6 +259,34 @@ _ALLOWED_MODULE_CONSTANTS = {
         "scoring-model constant of the column-name evidence: a word found only "
         "in a column's description counts this share of one in its name"
     ),
+    "core/config_doctor.py::DRAFT_DESCRIPTION_SHARE": (
+        "invariant: where the preflight draws the line between a curated "
+        "schema.yaml and the inspector's raw draft (more than a quarter of the "
+        "descriptions are the placeholder). A deployment-tunable line would let "
+        "one variable silence the check that exists to catch a draft in place "
+        "of the curated files; it is pinned by tests/test_config_doctor.py at "
+        "its exact edge"
+    ),
+    "core/config_doctor.py::NON_WORD_SYNONYM_SHARE": (
+        "invariant: the share of non-word synonym keys (timestamps, numbers) "
+        "that marks aliases.yaml as the inspector's seeds; the same reasoning "
+        "as DRAFT_DESCRIPTION_SHARE, and pinned at its edge by the same tests"
+    ),
+    "core/config_doctor.py::REVIEW_MARKED_SHARE": (
+        "invariant: the share of synonym lines still carrying the inspector's "
+        "`# REVIEW` marker that marks aliases.yaml as a draft; the same "
+        "reasoning as DRAFT_DESCRIPTION_SHARE"
+    ),
+    "core/config_doctor.py::_HEADER_LINES": (
+        "implementation detail: how many leading lines of a project_config/ "
+        "file are searched for the inspector's draft header (it writes it on "
+        "line 1); not a deployment tuning knob"
+    ),
+    "core/config_doctor.py::_ADDRESS_LENGTH": (
+        "implementation detail: the length at which a segment of words with "
+        "digits looks like a street address to the sample-value advice; a "
+        "heuristic of an advice-only check, not a deployment tuning knob"
+    ),
     "schema_data/sync.py::REPORT_LIST_LIMIT": (
         "implementation detail: how many names one section of the "
         "operator script's printed report lists before '... and N more'. "

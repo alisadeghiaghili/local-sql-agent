@@ -52,6 +52,17 @@ it FAILs when a column, a recorded column type or a ``datasource:`` line of
 ``schema.yaml`` is out of step with the databases, and names the command that
 writes the proposed fix. It SKIPs when a database cannot be read.
 
+Five more checks tell a curated ``project_config/`` from a raw draft of
+``database.schema_inspector_cli`` (they read files only, no database, so the
+admin health card runs them too): ``check_project_config_is_curated`` (the
+``AUTO-GENERATED DRAFT`` header, placeholder descriptions),
+``check_aliases_are_curated`` (synonym seeds), ``check_every_data_source_is_described``
+(a source with no table: a lost database), and two that only advise,
+``check_no_staging_tables`` and ``check_no_sample_values_in_descriptions``.
+There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
+the exit code, the summary line and the admin card need no new state. The file
+reading lives in :mod:`core.config_doctor`.
+
 Safety
 ------
 Every database probe here is read-only, with ONE deliberate exception:
@@ -720,6 +731,251 @@ def check_project_config_loads() -> CheckResult:
     )
 
 
+#: How many table keys / file names the curation checks below print before
+#: summarising the rest.
+_MAX_LISTED = 10
+
+#: Where the runbook explains drafting and curating ``project_config/``.
+_RUNBOOK_CURATION = "docs/deployment-runbook.md section 2.3 and 16.3"
+
+
+def _listed(items: list[str]) -> str:
+    """``a, b, c`` with at most :data:`_MAX_LISTED` items, then ``and N more``."""
+    shown = items[:_MAX_LISTED]
+    more = len(items) - len(shown)
+    return ", ".join(shown) + (f", and {more} more" if more > 0 else "")
+
+
+def _percent(part: int, whole: int) -> str:
+    return f"{100 * part // whole}%" if whole else "0%"
+
+
+def check_project_config_is_curated() -> CheckResult:
+    """``project_config/`` must be curated, not a raw ``schema_inspector_cli`` draft.
+
+    ``database.schema_inspector_cli`` writes drafts: every table of one
+    database, each described by the placeholder ``... -- auto-detected ...
+    table (~N rows)  # TO BE FILLED``, under a ``# AUTO-GENERATED DRAFT``
+    header. An operator who copies those files over a curated
+    ``project_config/`` gets a deployment that loads and starts (6.9.3 made
+    the drafts valid YAML), and that answers worse: curated tables, aliases
+    and a whole data source are gone, and nothing says so. FAIL when any
+    ``*.yaml`` file of ``project_config/`` still carries the draft header
+    (delete the line when the file really was reviewed), or when more than
+    :data:`core.config_doctor.DRAFT_DESCRIPTION_SHARE` of ``schema.yaml``'s
+    table descriptions are still the placeholder. ``schema.yaml`` is read
+    even when its repeated keys keep the strict loader from loading it. File
+    reads only. SKIP when the directory has no ``schema.yaml``.
+    """
+    from core import config_doctor as doctor
+
+    name = "project_config/ is curated, not a raw draft"
+    directory = _project_config_dir()
+    view = doctor.read_schema(directory)
+    if not view.present:
+        return CheckResult(name, "SKIP", "schema.yaml was not found or cannot be read -- `project_config/ loads` says why")
+    drafts = doctor.find_draft_headers(directory)
+    placeholders, total = doctor.placeholder_descriptions(view)
+    mostly_placeholders = total > 0 and placeholders / total > doctor.DRAFT_DESCRIPTION_SHARE
+    if not drafts and not mostly_placeholders:
+        return CheckResult(
+            name, "PASS",
+            f"no file carries the {doctor.DRAFT_HEADER} header; {placeholders} of {total} "
+            "table description(s) are the inspector's placeholder",
+        )
+    found: list[str] = []
+    if drafts:
+        found.append(f"{len(drafts)} file(s) carry the {doctor.DRAFT_HEADER} header: {_listed(drafts)}")
+    if mostly_placeholders:
+        found.append(
+            f"schema.yaml: {placeholders} of {total} table descriptions ({_percent(placeholders, total)}) "
+            "are still the placeholder `auto-detected ... table`"
+        )
+    return CheckResult(
+        name, "FAIL",
+        "; ".join(found) + " -- this is a draft from database.schema_inspector_cli, not a curated "
+        "configuration. Restore the curated files (from a backup or version control) and bring new "
+        "tables in with `python scripts/sync_schema.py --add-tables 'Schema.*'`; if a file was "
+        f"really reviewed, delete its header line ({_RUNBOOK_CURATION})",
+    )
+
+
+def check_aliases_are_curated() -> CheckResult:
+    """``aliases.yaml`` must hold a curated vocabulary, not a draft's seeds.
+
+    The inspector's ``aliases.yaml`` draft has ``ring_aliases: {}`` and, as
+    ``synonyms``, the sample values it read from string columns: with a
+    warehouse that stores timestamps as text, mostly timestamps. FAIL when
+    more than :data:`core.config_doctor.NON_WORD_SYNONYM_SHARE` of the
+    synonym keys are not words (no run of two letters: timestamps, numbers),
+    or more than :data:`core.config_doctor.REVIEW_MARKED_SHARE` of the
+    synonym lines still end in the inspector's ``# REVIEW`` marker. The second
+    test exists because a seed is a sample value of any string column, so
+    only part of a real draft is timestamps and numbers (a quarter of one
+    measured on a production warehouse), while all of it carries the marker.
+
+    An empty ``ring_aliases`` alone is NOT a failure: ``knowledge.aliases``
+    is read by ``retrieval.value_retriever.ValueRetriever.extract_ring``
+    only, which looks for a ring (trading hall) name in the question and sets
+    the ``Ring`` filter; a deployment whose warehouse has no such dimension
+    has nothing to put there, and the setup wizard itself writes an empty map
+    when it finds no dimension table. It is reported as advice in the PASS
+    detail while ``schema.yaml`` or ``entities.yaml`` describe tables, and
+    stands out in the FAIL detail when it comes with non-word seeds. File
+    reads only. SKIP when ``aliases.yaml`` is absent or not a mapping.
+    """
+    from core import config_doctor as doctor
+
+    name = "Aliases are curated"
+    directory = _project_config_dir()
+    aliases = doctor.read_aliases(directory)
+    if aliases is None:
+        return CheckResult(name, "SKIP", "aliases.yaml was not found or is not a mapping -- `project_config/ loads` says why")
+    keys = aliases.synonym_keys
+    non_words = doctor.non_word_synonym_keys(keys)
+    seeds = min(aliases.review_marked, len(keys))
+    empty_rings = aliases.ring_aliases == 0
+    reasons: list[str] = []
+    if keys and non_words / len(keys) > doctor.NON_WORD_SYNONYM_SHARE:
+        reasons.append(f"{non_words} of {len(keys)} synonym keys are not words (timestamps or numbers)")
+    if keys and seeds / len(keys) > doctor.REVIEW_MARKED_SHARE:
+        reasons.append(f"{seeds} of {len(keys)} synonym entries still end in the inspector's `# REVIEW` marker")
+    if reasons:
+        return CheckResult(
+            name, "FAIL",
+            "; ".join(reasons) + ("; ring_aliases is empty" if empty_rings else "")
+            + " -- these are the seeds database.schema_inspector_cli copies from sample values of the "
+            f"live rows, not a vocabulary. Restore the curated aliases.yaml ({_RUNBOOK_CURATION})",
+        )
+    detail = f"{len(keys)} synonym key(s), {aliases.ring_aliases} ring alias(es)"
+    if empty_rings and (
+        doctor.read_schema(directory).tables
+        or (directory / "entities.yaml").is_file()
+    ):
+        detail += (
+            "; advice: ring_aliases is empty -- right when your questions never name a ring (hall), "
+            "since only the ring filter reads it; otherwise add the ring names"
+        )
+    return CheckResult(name, "PASS", detail)
+
+
+def check_every_data_source_is_described() -> CheckResult:
+    """Every data source of ``datasources.yaml`` must have tables in ``schema.yaml``.
+
+    A source with no table is a database the assistant can never be asked
+    about, and the usual cause is a replaced ``schema.yaml`` that was drafted
+    from one database of two. A table belongs to the source its ``datasource:``
+    line names (every one of them for a list) and to the default source when it
+    has none; without ``datasources.yaml`` the one source is ``default`` and
+    every table is in it. FAIL names each source without a table, and the case
+    of no table at all. File reads only. SKIP when ``schema.yaml`` or
+    ``datasources.yaml`` does not load (their own checks say why).
+    """
+    from core import config_doctor as doctor
+
+    name = "Every data source is described"
+    directory = _project_config_dir()
+    view = doctor.read_schema(directory)
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    try:
+        from database.datasources import DEFAULT_DATASOURCE, validate_datasources_yaml_text
+
+        path = directory / "datasources.yaml"
+        if path.is_file():
+            config = validate_datasources_yaml_text(path.read_text(encoding="utf-8-sig"))
+            sources, default = tuple(config.datasources), config.default_name
+        else:
+            sources, default = (DEFAULT_DATASOURCE,), DEFAULT_DATASOURCE
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(name, "SKIP", f"datasources.yaml did not load ({type(exc).__name__}) -- `Tables map to data sources` says why")
+    if not view.tables:
+        return CheckResult(name, "FAIL", "schema.yaml describes no table")
+    missing = doctor.sources_without_tables(view, sources, default)
+    if missing:
+        return CheckResult(
+            name, "FAIL",
+            f"{len(missing)} of {len(sources)} data source(s) have no table in schema.yaml: "
+            f"{', '.join(missing)} -- a whole database is missing from the configuration. Restore the "
+            "curated schema.yaml, or add its tables with `python scripts/sync_schema.py "
+            f"--add-tables 'Schema.*'` ({_RUNBOOK_CURATION})",
+        )
+    return CheckResult(
+        name, "PASS",
+        f"all {len(sources)} data source(s) have tables ({len(view.tables)} table(s) in schema.yaml)",
+    )
+
+
+def check_no_staging_tables() -> CheckResult:
+    """Advise when ``schema.yaml`` describes staging or change-capture tables.
+
+    Staging schemas (``*_Stg``) and the ``<Table>_Inserts`` / ``_Updates`` /
+    ``_Deletes`` tables of a change-capture process copy the tables analysts
+    ask about, so with them in the file the model sees the same name several
+    times and the prompt budget goes to tables nobody should query. A
+    deployment may have a reason for one of them, so this never fails: the
+    PASS detail starts with ``advice:`` and lists the tables per schema, never
+    a value. The patterns are the ``STAGING_PATTERNS`` setting
+    (:attr:`config.Settings.staging_patterns`); empty switches the check off.
+    File reads only. SKIP when ``schema.yaml`` does not load.
+    """
+    from core import config_doctor as doctor
+
+    name = "No staging or change-capture tables"
+    patterns = doctor.parse_staging_patterns(cfg.settings.staging_patterns)
+    if not patterns:
+        return CheckResult(name, "SKIP", "STAGING_PATTERNS is empty -- the check is switched off")
+    view = doctor.read_schema(_project_config_dir())
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    counts = doctor.staging_tables(view, patterns)
+    if not counts:
+        return CheckResult(name, "PASS", f"none of the {len(view.tables)} table(s) matches STAGING_PATTERNS")
+    total = sum(counts.values())
+    per_schema = _listed([
+        f"{schema or '(no schema)'}: {n}"
+        for schema, n in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ])
+    return CheckResult(
+        name, "PASS",
+        f"advice: {total} of {len(view.tables)} table(s) look like staging or change-capture tables "
+        f"({per_schema}) -- they repeat the tables analysts ask about; remove them from schema.yaml "
+        "unless analysts need them (STAGING_PATTERNS sets what counts)",
+    )
+
+
+def check_no_sample_values_in_descriptions() -> CheckResult:
+    """Advise when descriptions quote what look like live sample values.
+
+    The inspector writes a column note as ``<type> column; e.g. a, b, c`` with
+    values read from live rows, and the note goes into the prompt sent to the
+    model: names, phone numbers, addresses and national ids of real people.
+    Looks at the text after each ``e.g.`` in a table description or column
+    note for a digit run of seven or more (phone-like), of exactly ten
+    (national-id-like), or a long segment with digits (address-like); dates
+    and plain words are left alone. Advice only (the PASS detail starts with
+    ``advice:``), because the match is a heuristic. The detail has counts and
+    table keys, never a value. File reads only. SKIP when ``schema.yaml``
+    does not load.
+    """
+    from core import config_doctor as doctor
+
+    name = "No live sample values in descriptions"
+    view = doctor.read_schema(_project_config_dir())
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    found = doctor.sample_value_notes(view)
+    if not found.notes:
+        return CheckResult(name, "PASS", "no description quotes phone-, id- or address-like sample values")
+    return CheckResult(
+        name, "PASS",
+        f"advice: {found.notes} note(s) in {len(found.tables)} table(s) seem to quote live sample values "
+        f"(phone-like: {found.phone_like}, national-id-like: {found.national_id_like}, "
+        f"address-like: {found.address_like}); tables: {_listed(found.tables)} -- the notes are sent "
+        "to the model; replace each `e.g.` list with a description of the column",
+    )
+
+
 def check_rate_limit_sane_for_deployment() -> CheckResult:
     """The rate limit must not throttle legitimate use in THIS deployment's
     shape: one shared service key (or a small handful of them) fronting
@@ -909,6 +1165,11 @@ _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_audit_log_writable,
     check_session_store_writable,
     check_project_config_loads,
+    check_project_config_is_curated,
+    check_aliases_are_curated,
+    check_every_data_source_is_described,
+    check_no_staging_tables,
+    check_no_sample_values_in_descriptions,
     check_rate_limit_sane_for_deployment,
 ]
 
