@@ -63,6 +63,12 @@ There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
 the exit code, the summary line and the admin card need no new state. The file
 reading lives in :mod:`core.config_doctor`.
 
+``check_model_answers_each_prompt`` sends two tiny requests whose prompts differ
+only in a random token and fails when the endpoint answers the second with the
+first's token: a response cache (semantic or prefix) in a gateway in front of the
+model, which would serve one question's answer for a similar question. It spends
+model-server time, so the admin panel runs it only under "deep checks".
+
 Safety
 ------
 Every database probe here is read-only, with ONE deliberate exception:
@@ -358,6 +364,143 @@ def check_openai_model_exists() -> CheckResult:
     return CheckResult(
         "OpenAI-compatible model exists", "FAIL",
         f"'{wanted}' not found among models {base} lists: {sorted(models) or '(none)'}",
+    )
+
+
+#: Name of the response-cache probe, as printed and shown on the admin card.
+_ECHO_CHECK_NAME = "Model endpoint answers each prompt itself"
+
+#: Completion budget of each probe request: a 32-hex nonce is about 20 to 30
+#: tokens, and the rest is headroom for a short preamble or a brief reasoning
+#: pass. Two requests at this size are the whole cost of the check.
+_ECHO_MAX_TOKENS = 128
+
+#: Seconds each probe request may take before the check gives up (SKIP).
+_ECHO_TIMEOUT_SECONDS = 15
+
+
+def _echo_prompt(nonce: str) -> str:
+    """The probe prompt: identical for every nonce except the nonce itself.
+
+    Examples
+    --------
+    >>> _echo_prompt("ab12")
+    'Reply with exactly this token and nothing else: ab12'
+    """
+    return f"Reply with exactly this token and nothing else: {nonce}"
+
+
+def check_model_answers_each_prompt() -> CheckResult:
+    """Two prompts that differ only in a random token must get two different answers.
+
+    A gateway in front of the model server can keep a response cache that
+    matches *similar* prompts (a semantic cache) or prompts that start the
+    same way (a prefix cache) and answer a new prompt with a stored reply.
+    The application then gets another question's answer: in the setup
+    wizard, one alias list for a hundred different tables; in SQL generation,
+    the SQL of "count of inactive customers" for "count of active customers",
+    with nothing to say so.
+
+    The check sends two requests through the same :class:`~llm.providers.OpenAIBackend`
+    settings the server uses (same payload builder, so ``LLM_EXTRA_BODY``,
+    the seed and the temperature apply; only ``max_tokens`` is cut to
+    :data:`_ECHO_MAX_TOKENS`). Each asks for one fresh random token
+    (``uuid4`` hex) and the prompts are identical except for that token. An
+    honest endpoint returns each token to its own request. The check passes
+    when each reply contains its own token and fails when the second reply
+    carries the first token or when either reply lacks its own.
+
+    Skipped under ``LLM_PROVIDER=mock``, for a remote endpoint while
+    ``LLM_ALLOW_REMOTE`` is off, and when the endpoint does not answer (the
+    ``OpenAI-compatible model exists`` check reports that). The detail gives
+    the reply latencies in milliseconds and never the model's text.
+    """
+    name = _ECHO_CHECK_NAME
+    if str(cfg.settings.llm_provider).lower() == "mock":
+        return CheckResult(name, "SKIP", "LLM_PROVIDER=mock has no model endpoint")
+
+    import uuid
+
+    from llm.providers import OpenAIBackend
+    from llm.trust import default_trust_for_url
+
+    base = cfg.settings.openai_base_url.rstrip("/")
+    trusted = (
+        cfg.settings.llm_trusted
+        if cfg.settings.llm_trusted is not None
+        else default_trust_for_url(base)
+    )
+    if not trusted and not cfg.settings.llm_allow_remote:
+        return CheckResult(
+            name, "SKIP",
+            f"{base} is a remote endpoint and LLM_ALLOW_REMOTE is off; no test request is sent to it",
+        )
+
+    class _ProbeBackend(OpenAIBackend):
+        """The server's backend, with only the completion budget cut."""
+
+        def _build_payload(self, prompt: str) -> dict:
+            payload = super()._build_payload(prompt)
+            payload["max_tokens"] = min(
+                int(payload.get("max_tokens") or _ECHO_MAX_TOKENS), _ECHO_MAX_TOKENS,
+            )
+            return payload
+
+    backend = _ProbeBackend(
+        model=cfg.settings.openai_model,
+        api_key=cfg.settings.openai_api_key,
+        base_url=base,
+        trusted=trusted,
+        retries=1,
+        timeout=_ECHO_TIMEOUT_SECONDS,
+    )
+
+    nonces = [uuid.uuid4().hex, uuid.uuid4().hex]
+    replies: list[str] = []
+    latencies: list[int] = []
+    for nonce in nonces:
+        try:
+            raw, meta = backend.generate_with_meta(_echo_prompt(nonce))
+        except Exception as exc:  # noqa: BLE001 - not a cache finding; the model check reports reachability
+            return CheckResult(
+                name, "SKIP",
+                f"the endpoint did not answer a test request ({type(exc).__name__}); "
+                "`OpenAI-compatible model exists` reports an unreachable endpoint",
+            )
+        if not raw and meta.get("finish_reason") == "length":
+            return CheckResult(
+                name, "SKIP",
+                f"the model used all {_ECHO_MAX_TOKENS} tokens of the test request before it "
+                "answered (a reasoning model); the test is inconclusive. Turn reasoning off "
+                "for the request with LLM_EXTRA_BODY to run it",
+            )
+        replies.append(raw)
+        latencies.append(int(meta.get("total_ms") or 0))
+
+    timing = f"replies in {latencies[0]} ms and {latencies[1]} ms"
+    own = [nonces[i] in replies[i] for i in range(2)]
+    if own[0] and own[1]:
+        return CheckResult(name, "PASS", f"each test request was answered with its own token ({timing})")
+
+    consequence = (
+        "A response cache in front of the model returned another prompt's answer. "
+        "The same cache can serve the wrong SQL for a similar question, and the setup "
+        "wizard would write one answer for many tables. Fix: disable response caching "
+        "for this client at the gateway, or point OPENAI_BASE_URL at the model server "
+        "directly (runbook section 20.10)."
+    )
+    if nonces[0] in replies[1]:
+        return CheckResult(
+            name, "FAIL",
+            f"the second test request, which carried a different random token, was answered "
+            f"with the first request's token ({timing}). {consequence}",
+        )
+    which = "first" if not own[0] else "second"
+    return CheckResult(
+        name, "FAIL",
+        f"the reply to the {which} test request did not contain its own random token ({timing}). "
+        f"{consequence} (A model that ignores the instruction fails this way too: "
+        "ask the model server directly to tell the two apart.)",
     )
 
 
@@ -1163,6 +1306,7 @@ _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_tables_in_assigned_sources,
     check_schema_structure_matches_databases,
     check_openai_model_exists,
+    check_model_answers_each_prompt,
     check_api_key_authenticates,
     check_audit_log_writable,
     check_session_store_writable,

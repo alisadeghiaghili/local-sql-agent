@@ -31,6 +31,15 @@ Flags
                     are all done and every file exists only the validation
                     runs. Without ``--resume`` a new log is started.
 
+--allow-repeated-answers
+                    Do not stop a per-table step (3 aliases, 4 business rules)
+                    when 3 tables in a row get the identical answer. By
+                    default the wizard stops there, writes no file and leaves
+                    the run resumable, because identical answers for different
+                    tables mean a response cache in front of the model is
+                    returning one stored reply (see "Repeated answers" below).
+                    For a genuinely tiny schema whose tables really are alike.
+
 LLM endpoint
 ------------
 The model that suggests aliases, rules and examples is chosen, for each of
@@ -43,6 +52,23 @@ that endpoint, so it obeys the application's data-governance rule: an endpoint
 that is not local (see ``llm/trust.py``, ``LLM_TRUSTED``) is refused unless
 ``LLM_ALLOW_REMOTE=true``. If the endpoint does not answer, the wizard says so
 loudly and continues with the mock LLM, which generates nothing.
+
+Repeated answers
+----------------
+Steps 3 and 4 ask the model one question per table. A gateway in front of the
+model server that keeps a *response cache* (semantic or prefix) can answer all
+of them with the reply to the first, and nothing in the reply says so. The
+wizard compares the model's parsed answers as they arrive (the alias list in
+step 3; the rule text, with the table names taken out, in step 4). When 3
+consecutive tables get the identical non-empty answer it stops that step, says
+what it suspects and how to confirm it
+(``python scripts/verify_deployment.py``, the check ``Model endpoint answers
+each prompt itself``), writes no file and exits with status 3; steps already
+completed stay recorded, so ``--resume`` continues after the endpoint is
+fixed. ``--allow-repeated-answers`` turns the stop into a warning. Each of
+these steps ends with a line giving the number of distinct answers against the
+number of tables. Step 5 asks one question for the whole schema, so there is
+nothing to compare.
 
 The wizard writes ``project_config/.setup_log.json`` recording every step
 that was executed and when (and the aliases, rules and examples the model
@@ -648,6 +674,144 @@ def _prompt_examples(schema_summary: str, language: str) -> str:
 
 
 # ===========================================================================
+# Repeated answers: a response cache in front of the model
+# ===========================================================================
+
+#: Consecutive tables with an identical non-empty answer that stop a step.
+_REPEATED_ANSWER_LIMIT = 3
+
+
+class CachedAnswersError(RuntimeError):
+    """Three tables in a row got the identical answer: a response cache is suspected."""
+
+
+def _normalize_rule_text(text: str, table_names: list[str]) -> str:
+    """*text* with the given table names replaced by ``<table>`` and spaces collapsed.
+
+    Two rules that differ only in the name of the table they are about are the
+    same answer.
+
+    Args:
+        text: The rule text the model returned.
+        table_names: Names to take out (the fact table and its dimension tables).
+
+    Returns:
+        The normalised text; ``""`` when *text* has no content.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> _normalize_rule_text("Use  Sales for totals; join Items.", ["Sales", "Items"])
+        'Use <table> for totals; join <table>.'
+        >>> _normalize_rule_text("   ", ["Sales"])
+        ''
+    """
+    import re
+
+    out = " ".join((text or "").split())
+    for name in sorted({n for n in table_names if n}, key=len, reverse=True):
+        out = re.sub(re.escape(name), "<table>", out, flags=re.IGNORECASE)
+    return out
+
+
+class _AnswerGuard:
+    """Watches the model's answers, table by table, for one repeated verbatim.
+
+    Args:
+        step: Label used in messages, such as ``"Step 3"``.
+        what: What an answer is, such as ``"alias list"``.
+        allow: When true the stop becomes a one-time warning.
+        limit: Consecutive identical non-empty answers that count as a repeat.
+
+    Examples:
+        >>> g = _AnswerGuard("Step 3", "alias list")
+        >>> g.observe("A", "x"); g.observe("B", "x")
+        >>> g.observe("C", "x")  # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+            ...
+        CachedAnswersError: Step 3 stopped: ...
+        >>> g = _AnswerGuard("Step 3", "alias list")
+        >>> for t, a in [("A", "x"), ("B", "y"), ("C", "x"), ("D", None)]:
+        ...     g.observe(t, a)
+        >>> g.summary()
+        '2 distinct alias lists for 4 tables (1 without an answer)'
+    """
+
+    def __init__(self, step: str, what: str, *, allow: bool = False,
+                 limit: int = _REPEATED_ANSWER_LIMIT) -> None:
+        self.step = step
+        self.what = what
+        self.allow = allow
+        self.limit = limit
+        self._tables = 0
+        self._answers: set[str] = set()
+        self._empty = 0
+        self._last: str | None = None
+        self._streak: list[str] = []
+        self._warned = False
+        self.repeated = False
+
+    def observe(self, table: str, answer: str | None) -> None:
+        """Record the model's answer for *table*; ``None`` or ``""`` means no answer.
+
+        Raises:
+            CachedAnswersError: When this is the *limit*-th table in a row with
+                the same non-empty answer and repeats are not allowed.
+        """
+        self._tables += 1
+        if not answer:
+            self._empty += 1
+            self._last, self._streak = None, []
+            return
+        self._answers.add(answer)
+        if answer == self._last:
+            self._streak.append(table)
+        else:
+            self._last, self._streak = answer, [table]
+        if len(self._streak) < self.limit:
+            return
+        self.repeated = True
+        if self.allow:
+            if not self._warned:
+                self._warned = True
+                console.print(
+                    f"  Warning: {self.limit} tables in a row got the identical {self.what} "
+                    f"({', '.join(self._streak)}); continuing because of --allow-repeated-answers.",
+                    markup=False,
+                )
+            return
+        raise CachedAnswersError(self._stop_message())
+
+    def _stop_message(self) -> str:
+        shown = ", ".join(self._streak[-self.limit:])
+        return (
+            f"{self.step} stopped: the model endpoint returned the identical {self.what} for "
+            f"{self.limit} different tables in a row ({shown}). That is not an answer per table: "
+            "a response cache in front of the model (a gateway with semantic or prefix caching) "
+            "is answering similar prompts with one stored reply. No file was written and the run "
+            "can be resumed.\n"
+            "  Check it: python scripts/verify_deployment.py "
+            "(the check 'Model endpoint answers each prompt itself').\n"
+            "  Fix it: disable response caching for this client at the gateway, or point "
+            "OPENAI_BASE_URL (or WIZARD_LLM_BASE_URL) at the model server directly; then run "
+            "again with --resume.\n"
+            "  A genuinely tiny schema whose tables really are alike: --allow-repeated-answers."
+        )
+
+    def summary(self) -> str:
+        """``"N distinct answers for M tables"``, plus how many got no answer."""
+        distinct = len(self._answers)
+        text = (
+            f"{distinct} distinct {self.what}{'' if distinct == 1 else 's'} "
+            f"for {self._tables} table{'' if self._tables == 1 else 's'}"
+        )
+        if self._empty:
+            text += f" ({self._empty} without an answer)"
+        return text
+
+
+# ===========================================================================
 # Schema summary helper
 # ===========================================================================
 
@@ -1084,6 +1248,9 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str) -> dict:
     entities: dict[str, dict] = {}
     ring_aliases: dict[str, list[str]] = {}
     total = len(snapshot.tables)
+    guard = _AnswerGuard(
+        "Step 3", "alias list", allow=getattr(args, "allow_repeated_answers", False),
+    )
 
     for idx, table in enumerate(snapshot.tables, 1):
         console.print(f"  [{idx}/{total}] {table.full_name} ...", end=" ")
@@ -1101,6 +1268,11 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str) -> dict:
             aliases, description = [], ""
 
         console.print(f"[green]{len(aliases)} aliases[/green]" if _RICH else f"{len(aliases)} aliases")
+        # The model's own answer, before the operator edits it below.
+        guard.observe(
+            table.full_name,
+            "\n".join(str(a) for a in aliases) if isinstance(aliases, list) and aliases else None,
+        )
 
         if not args.non_interactive and not args.dry_run:
             aliases_str = ", ".join(f'"{a}"' for a in aliases) or "(none)"
@@ -1126,6 +1298,7 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str) -> dict:
         if aliases:
             ring_aliases[table.name] = aliases
 
+    console.print(f"  {guard.summary()}.", markup=False)
     _mark_done(log, "step3_aliases", {
         "entity_count": len(entities),
         "language": language,
@@ -1151,6 +1324,10 @@ def step4_business_rules(args, snapshot, llm, log: dict) -> dict:
     for t in fact_tables:
         fk_map[t.name] = [fk.referred_table for fk in t.foreign_keys]
 
+    guard = _AnswerGuard(
+        "Step 4", "rule text", allow=getattr(args, "allow_repeated_answers", False),
+    )
+
     for table in fact_tables:
         console.print(f"  {table.name} ...", end=" ")
         col_dicts = [{"name": c.name, "type": c.type} for c in table.columns]
@@ -1170,12 +1347,16 @@ def step4_business_rules(args, snapshot, llm, log: dict) -> dict:
             logger.warning("Rule generation failed for %s: %s", table.name, exc)
             rule_text = ""
 
+        # The model's own answer (the fallback below is ours), table names taken out.
+        model_answer = _normalize_rule_text(rule_text, [table.name, table.full_name, *dim_tables])
         if not rule_text:
             rule_text = f"Primary fact table: {table.name}. Columns: {', '.join(c.name for c in table.columns[:8])}."
 
         console.print("[green]done[/green]" if _RICH else "done")
+        guard.observe(table.full_name, model_answer or None)
         rules[table.name] = rule_text
 
+    console.print(f"  {guard.summary()}.", markup=False)
     _mark_done(log, "step4_rules", {
         "rule_count": len(rules),
         "provider": llm.provider,
@@ -1541,6 +1722,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["interactive", "auto"])
     p.add_argument("--include-schemas", metavar="SCHEMAS", default=None)
     p.add_argument("--non-interactive", action="store_true", default=False)
+    p.add_argument("--allow-repeated-answers", action="store_true", default=False,
+                   help="Do not stop step 3 or 4 when 3 tables in a row get the identical "
+                        "answer from the model (a sign that a response cache in front of the "
+                        "model is answering for it). For a genuinely tiny schema.")
     p.add_argument("--dry-run",         action="store_true", default=False,
                    help="Print the generated files; write nothing, the setup log included.")
     p.add_argument("--resume",          action="store_true", default=False,
@@ -1607,8 +1792,11 @@ def main(argv: list[str] | None = None) -> int:
         argv: Command-line arguments; ``sys.argv[1:]`` when ``None``.
 
     Returns:
-        0 on success, 2 when the LLM configuration is refused or invalid.
-        A failed database connection exits the process with status 1.
+        0 on success, 2 when the LLM configuration is refused or invalid,
+        3 when step 3 or 4 stopped because 3 tables in a row got the identical
+        answer (nothing is written; ``--resume`` continues; see
+        ``--allow-repeated-answers``). A failed database connection exits the
+        process with status 1.
 
     Raises:
         SystemExit: On a bad command line or a failed database connection.
@@ -1752,6 +1940,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             examples = step5_examples(args, snapshot, need_llm(), log, language)
         save()
+    except CachedAnswersError as exc:
+        # Nothing is written: no project file, and the steps that finished
+        # stay recorded in the log, so --resume continues from this one.
+        save()
+        console.print(f"ERROR: {exc}", markup=False)
+        return 3
     except (ValueError, RemoteLLMNotAllowedError) as exc:
         console.print(f"ERROR: {exc}", markup=False)
         return 2

@@ -50,6 +50,9 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 #: shows its finding and is cached on its own);
 #: ``check_schema_structure_matches_databases`` reads three catalogue views
 #: of every data source.
+#: ``check_model_answers_each_prompt`` sends two real completion requests to
+#: the model server (GPU time, a gateway log line and, behind a response
+#: cache, two junk entries each time).
 #: All are safe to run deliberately (that is exactly what
 #: ``python -m scripts.verify_deployment`` -- the CLI, unaffected by this
 #: set -- is for) but none belongs in a check this panel would ever
@@ -57,7 +60,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 #: own ``deep`` parameter below.
 _DEEP_CHECK_NAMES = frozenset({
     "check_login_is_read_only", "check_query_timeout", "check_tables_in_assigned_sources",
-    "check_schema_structure_matches_databases",
+    "check_schema_structure_matches_databases", "check_model_answers_each_prompt",
 })
 
 
@@ -137,7 +140,8 @@ def admin_health_checks(
             "Also run check_login_is_read_only (a rolled-back CREATE TABLE "
             "DDL attempt), check_query_timeout (a WAITFOR DELAY probe) and "
             "check_tables_in_assigned_sources and "
-            "check_schema_structure_matches_databases (full catalogue reads). "
+            "check_schema_structure_matches_databases (full catalogue reads) and "
+            "check_model_answers_each_prompt (two tiny model requests). "
             "All are skipped by default from this panel route -- see the "
             "route's own docstring -- and always run from the CLI "
             "(python -m scripts.verify_deployment) regardless of this flag."

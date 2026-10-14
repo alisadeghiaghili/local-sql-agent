@@ -1080,6 +1080,22 @@ class Settings:
     Must be ``0`` or at least 30: a shorter interval is a load generator,
     not a keep-warm. Runbook section 20.7 recommends a value."""
 
+    llm_cache_suspect_ms: int = field(
+        default_factory=lambda: int(os.getenv("LLM_CACHE_SUSPECT_MS", "").strip() or "50")
+    )
+    """Reply time, in milliseconds, under which a repeated SQL text is taken as
+    a sign of a response cache in front of the model; ``0`` switches the early
+    warning off.
+
+    A question whose generated SQL is byte-identical to the SQL of a
+    *different* question seen shortly before, and whose model reply took less
+    than this, makes the server log one ``WARNING`` per streak and write
+    ``suspected_cached_response: true`` in the audit record's ``llm`` block
+    (``observability/response_cache_watch.py``). It never blocks or changes a
+    request: two questions can legitimately map to the same SQL. Generating a
+    statement takes longer than 50 ms on any real model server, so a reply
+    that fast is not a generation. Runbook section 20.10."""
+
     llm_stream_timings: bool = field(
         default_factory=lambda: os.getenv("LLM_STREAM_TIMINGS", "false").lower()
         in ("1", "true", "yes")
@@ -1883,6 +1899,12 @@ class Settings:
                 "LLM_PREFIX_KEEPWARM_SECONDS must be 0 (off) or at least 30 "
                 f"(got {keepwarm}); a shorter interval would send the model "
                 "server a request every few seconds for no benefit."
+            )
+
+        if self.llm_cache_suspect_ms < 0:
+            raise ValueError(
+                "LLM_CACHE_SUSPECT_MS must be 0 (off) or a number of milliseconds "
+                f"(got {self.llm_cache_suspect_ms})."
             )
 
 
