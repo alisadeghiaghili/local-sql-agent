@@ -110,6 +110,24 @@ question that might touch either one.
   found with sqlglot rather than regenerating the SQL); the audit trail
   keeps the validated statement.
 
+- A source may list `exclude_schemas:` (`fnmatch` patterns, compared without
+  regard to case, validated as non-empty strings by
+  `DataSourceDefinition`) for schemas the **setup tools** must not scan in it.
+  It joins the always-excluded system schemas and the global `EXCLUDE_SCHEMAS`
+  setting (`config.Settings.exclude_schemas`, for every source, so a deployment
+  without `datasources.yaml` has the same control) in one rule,
+  `database.schema_filter.exclusion_patterns(source, extra)`, which the
+  first-install inspector, `scripts/sync_schema.py` (its "not in `schema.yaml`"
+  report and `--add-tables`) and the wizard share. It is deliberately a
+  *discovery* rule: it decides which catalogue tables a tool proposes, drafts or
+  reports, and nothing at run time reads it. A table `schema.yaml` already lists
+  is never hidden from drift or sync because of it; the preflight check
+  `No table in an excluded schema` reports a listed table whose schema every
+  source it is assigned to excludes. The inspector reads each source through
+  the application's own engine (`database.connection.get_engine`), so a draft
+  holds what the application's login can query and not what a wider
+  administrative login would show.
+
 ## Tables that live in several sources
 
 A real warehouse pair shares at least one table: a date dimension

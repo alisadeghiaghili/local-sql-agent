@@ -57,6 +57,25 @@ the model is shown only that source's tables (:mod:`retrieval.source_selector`).
 the source -- are the strongest routing signal. Neither affects where a
 statement runs.
 
+Schemas the setup tools skip
+----------------------------
+``exclude_schemas:`` lists ``fnmatch`` patterns (case-insensitive) for the
+schemas of this source that ``database.schema_inspector_cli``,
+``scripts/sync_schema.py`` and the setup wizard must not scan, on top of the
+system schemas and the global ``EXCLUDE_SCHEMAS`` setting
+(:mod:`database.schema_filter`)::
+
+    datasources:
+      sales:
+        host: 10.0.0.5
+        database: SalesDW
+        exclude_schemas: ["*_Stg", Replay]
+
+It decides which *database* tables a tool proposes, drafts or reports. A table
+``schema.yaml`` already lists is synced as before, and the deployment
+preflight reports one that sits in an excluded schema. Nothing at run time
+reads it.
+
 Without ``datasources.yaml``
 ----------------------------
 The file is optional. When it is absent the deployment has exactly one
@@ -125,6 +144,7 @@ __all__ = [
     "datasource_nolock",
     "datasource_keywords",
     "datasource_descriptions",
+    "datasource_exclude_schemas",
     "table_datasources",
     "table_datasource_sets",
     "pick_datasource",
@@ -301,6 +321,14 @@ class DataSourceDefinition(BaseModel):
     options:
         Extra ODBC keywords. ``true``/``false`` become ``yes``/``no``,
         numbers become their text.
+    exclude_schemas:
+        Optional ``fnmatch`` patterns (``["*_Stg", "Replay"]``), matched
+        case-insensitively against schema names, for schemas the setup tools
+        (the inspector, ``sync_schema.py``, the wizard) must not scan in this
+        source. Added to the system schemas and to the global
+        ``EXCLUDE_SCHEMAS`` setting; see :mod:`database.schema_filter`.
+        Discovery only: a table ``schema.yaml`` already lists is not hidden.
+        Must be a list of non-empty strings.
     nolock:
         ``true`` makes every query on this source read its tables
         ``WITH (NOLOCK)`` (:mod:`database.table_hints`, applied by
@@ -325,6 +353,8 @@ class DataSourceDefinition(BaseModel):
     True
     >>> DataSourceDefinition(url_env="DB_URL_MAIN", keywords=["stock", " Stock level "]).keywords
     ['stock', 'Stock level']
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", exclude_schemas=[" *_Stg ", "Replay"]).exclude_schemas
+    ['*_Stg', 'Replay']
     """
 
     model_config = {"extra": "forbid"}
@@ -347,6 +377,7 @@ class DataSourceDefinition(BaseModel):
     options: dict[str, str] = Field(default_factory=dict)
 
     nolock: bool = False
+    exclude_schemas: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -424,6 +455,27 @@ class DataSourceDefinition(BaseModel):
                 )
             seen[folded] = phrase
             cleaned.append(phrase)
+        return cleaned
+
+    @field_validator("exclude_schemas", mode="before")
+    @classmethod
+    def _exclude_schemas_are_patterns(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError(
+                "exclude_schemas must be a list of schema name patterns, not "
+                f"{type(value).__name__} ({value!r})"
+            )
+        cleaned: list[str] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"exclude_schemas[{index}] must be a string, not "
+                    f"{type(item).__name__} ({item!r})"
+                )
+            pattern = item.strip()
+            if not pattern:
+                raise ValueError(f"exclude_schemas[{index}] must not be empty")
+            cleaned.append(pattern)
         return cleaned
 
     @field_validator("nolock", mode="before")
@@ -1184,6 +1236,46 @@ def datasource_descriptions(settings: "Settings | None" = None) -> dict[str, str
         return {DEFAULT_DATASOURCE: ""}
     return {
         name: config.datasources[name].description.strip()
+        for name in datasource_names(settings)
+    }
+
+
+def datasource_exclude_schemas(settings: "Settings | None" = None) -> dict[str, tuple[str, ...]]:
+    """Return ``{source: exclude_schemas}`` for every configured source, default first.
+
+    Read from the definitions alone, like :func:`datasource_keywords`, so it
+    never touches a source's credentials. These are the source's own patterns
+    only; :func:`database.schema_filter.exclusion_patterns` adds the system
+    schemas and the global ``EXCLUDE_SCHEMAS`` setting.
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        ``()`` for a source that lists none. The single-source fallback is
+        ``{"default": ()}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_exclude_schemas()
+    {'default': ()}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ()}
+    return {
+        name: tuple(config.datasources[name].exclude_schemas)
         for name in datasource_names(settings)
     }
 

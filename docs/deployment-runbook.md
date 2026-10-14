@@ -557,49 +557,121 @@ Things to know before you run it:
 ### 2.3 Drafting `schema.yaml`: `database.schema_inspector_cli`
 
 ```bash
-python -m database.schema_inspector_cli \
-    --db-url "mssql+pyodbc://reader:p%40ss@dbhost:1433/WarehouseDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
-    --output-dir project_config_draft \
-    --include-schemas sales,ref \
-    --exclude-schemas "*_Stg,Replay,Alerts"
+python -m database.schema_inspector_cli --output-dir project_config_draft
 ```
 
-`--exclude-schemas` takes comma-separated `fnmatch` patterns, matched against
-schema names without regard to case (`*_Stg` skips `Sales_Stg` and `sales_stg`;
-a plain name skips just that schema). When `--include-schemas` is also given,
-exclusion wins. Use it to leave staging, replay and scratch schemas out of a
-warehouse that has many of them: every table in `schema.yaml` costs prompt
-tokens (§16.6).
+With no `--db-url` the inspector reads `project_config/datasources.yaml` and
+inspects **every data source through the application's own engine for it**
+(`database.connection.get_engine`, the same login the server uses), so a draft
+lists only the tables the application can query. Without `datasources.yaml` the
+one implicit source, `DB_CONNECTION_URL` (with `DB_PASSWORD` applied, as at
+start-up), is used. `--datasource NAME` (repeatable) narrows the run to some
+sources; the `datasource:` lines are still written when the deployment has
+several. The reason it works this way: a draft built under a wide login (a
+Windows administrator, say) listed about 150 change-capture, temporary and
+staging tables that the application's login cannot even query, and they ended
+up in the live `schema.yaml`.
 
-Without `--db-url` it reads the `DATABASE_URL` or `DB_CONNECTION_URL`
-environment variable of the shell it runs in (unlike the wizard it does not
-read `.env`); like the wizard it does not apply `DB_PASSWORD`, so the URL needs
-the password percent-encoded in it. Other options: `--exclude-tables a,b`,
-`--sample-rows N` (default 10; `0` skips reading sample values),
-`--no-row-counts` (skip `COUNT(*)` per table) and `--dry-run` (print instead
-of writing). It writes `schema.yaml`, `entities.yaml`, `aliases.yaml` and
-`relationships.yaml` into the draft directory, never into `project_config/` or
-`project_config.example/` (it refuses those two names with exit code 2), and it
-prints `Done.` at the end. The draft directory is git-ignored. At the end of a
-run it also prints, to stderr, the number of tables per schema, a reminder that
-the drafts are for a first install only, and a warning when more than 150 tables
+`--db-url` still works for a first install before any configuration exists:
+
+```bash
+python -m database.schema_inspector_cli \
+    --db-url "mssql+pyodbc://reader:p%40ss@dbhost:1433/WarehouseDB?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+    --output-dir project_config_draft --include-schemas sales,ref
+```
+
+That is one source, named as the default source, read with the login in the URL
+(percent-encode its password; the wizard's rule), and the tool prints one line
+saying the application's own login may see less. The inspector no longer reads
+`DATABASE_URL`; `--db-url` is the only way to name a URL.
+
+**The draft has the format `sync_schema.py` writes (§16.3), because it is built by
+the same code.** With several sources every table has a `datasource:` line (none
+with one source); a table that exists with the same `schema.table` in several
+sources is written once with `datasource: [sales, reports]`; a table is keyed by
+its bare name unless that name occurs in more than one schema across all the
+selected sources, when every occurrence is keyed `Schema.Table`
+(`docs/design/TABLE-NAMES.md`); `db_schema` is written on a bare-keyed table, a
+qualified key carries its schema. The `relationships:` entries and the entity
+names in `entities.yaml` use the same keys, and `entities.yaml` also gets a
+`datasource:` line per table with several sources. A sync of the draft against
+the same databases changes nothing.
+
+**Which tables are left out.** The end-of-run summary says how many tables and
+schemas each rule skipped:
+
+| Rule | What it skips | Set by |
+|---|---|---|
+| system | `sys`, `INFORMATION_SCHEMA`, `guest`, `cdc`, the nine fixed `db_*` role schemas (`db_owner`, `db_datareader`, ...), `pg_catalog`, `pg_toast`, `pg_*`; any letter case | always |
+| configured exclusion | schemas matching `EXCLUDE_SCHEMAS` (every source) or the source's `exclude_schemas:` | `.env`, `datasources.yaml` |
+| `--exclude-schemas` | schemas matching these comma-separated patterns, for this run | the command line |
+| outside `--include-schemas` | schemas not in this comma-separated list | the command line |
+| `--exclude-tables` | tables with these names, in any schema | the command line |
+| staging | schema or table matching `STAGING_PATTERNS` (§3.1); `--include-staging` keeps them | `.env`, the command line |
+
+Patterns are `fnmatch`, compared without regard to case (`*_Stg` skips `Sales_Stg`
+and `sales_stg`; a plain name skips just that schema); the fixed role schemas are
+matched by exact name, so a schema of your own called `db_sales` is still
+drafted. Exclusion wins over `--include-schemas`. Put a rule you want kept in
+configuration, not in a flag you must remember on every run:
+
+```
+# .env, for every source
+EXCLUDE_SCHEMAS=*_Stg,Replay
+```
+
+```yaml
+# datasources.yaml, for one source (see the example file)
+datasources:
+  sales:
+    ...
+    exclude_schemas: ["*_Stg", Replay]
+```
+
+The exclusion decides what a tool *proposes* from the databases (§16.3 uses the
+same rule for its report and `--add-tables`). It never hides a table that
+`schema.yaml` already lists, and the preflight check
+`No table in an excluded schema` (§3.1) tells you about a listed table that sits
+in one.
+
+**Real values.** No value read from a row is written to `schema.yaml`,
+`entities.yaml` or `aliases.yaml` any more (the application reads no
+`sample_values` key from `schema.yaml`; the `e.g. a, b, c` text the older drafts
+put in a column description went into the prompt, and the `synonyms:` seeds
+into a draft vocabulary). `--sample-values` (with `--sample-rows N`, default 10)
+reads distinct values of string columns and writes them to
+`sample_values.review.yaml` in the draft directory, readable by its owner only;
+nothing loads that file. Use it to write real column descriptions, then delete
+it. `--dry-run` never prints it. Without `--sample-values` no row is read at all
+(only `COUNT(*)` per table, unless `--no-row-counts`).
+
+**Relationships.** Declared foreign keys come first; where a column is named
+like a link (`Order.Customer_ID`, `OrderDate_ID`, `CustomerID`) and no key is
+declared, the same naming rules as `sync_schema.py`'s proposals add a guess, so a
+warehouse with no foreign keys still gets a draft. Every guess carries the
+comment `# INFERRED from column names (not a declared foreign key) -- REVIEW
+before use` in `schema.yaml` and `relationships.yaml`; a declared key has none.
+A relationship to a table the run skipped is not drafted.
+
+Other options: `--output-dir DIR` (default `project_config_draft`),
+`--no-row-counts` and `--dry-run` (print instead of writing). It writes
+`schema.yaml`, `entities.yaml`, `aliases.yaml` and `relationships.yaml` into the
+draft directory, never into `project_config/` or `project_config.example/` (it
+refuses those two names with exit code 2), and it prints `Done.` at the end. The
+draft directory is git-ignored. Exit code 1: a source's catalogue could not be
+read; 2: unknown `--datasource`, an invalid `datasources.yaml`, or a protected
+output directory. At the end of a run it also prints, to stderr, the number of
+tables per schema, the skip counts, the relationship counts, a reminder that the
+drafts are for a first install only, and a warning when more than 150 tables
 were written (narrow the run with `--include-schemas` / `--exclude-schemas`, then
 size the prompt with `python scripts/prompt_budget.py`).
-
-Every table in the draft `schema.yaml` carries `db_schema`. A table is keyed by
-its bare name when no other table in the run has that name; when the same name
-occurs in more than one schema (`Trade` in `sales` and in `ref`), every
-occurrence is keyed `Schema.Table` (`sales.Trade`, `ref.Trade`), and the
-`relationships:` entries and the entity names in `entities.yaml` are spelled the
-same way (`docs/design/TABLE-NAMES.md`). A file that repeats a key is refused on
-load, and the error lists every repeated key at once.
 
 **The drafts are for a first install only.** They describe every table they find
 as a new entry, so they cannot be merged into a `schema.yaml` you have already
 curated. The draft is a starting point, not a `schema.yaml` to deploy: every
-description is a placeholder (`TO BE FILLED`) and column notes may quote real
-values read from live rows. Treat the directory as sensitive until you have
-rewritten those notes, write real descriptions, and then copy `schema.yaml` into
+description is a placeholder (`TO BE FILLED`) and the files carry the
+`AUTO-GENERATED DRAFT` header, which the preflight refuses (§3.1) until you
+delete it after review. Write real descriptions, then copy `schema.yaml` into
 `project_config/`. Run `tests/test_schema_registry_snapshot.py` after editing it,
 as the README says, and `python scripts/verify_deployment.py` (§3) to load it.
 
@@ -637,7 +709,8 @@ leftover placeholders, `.env` lines python-dotenv cannot use),
 required files), the five checks that tell a curated `project_config/` from a raw
 draft (`project_config/ is curated, not a raw draft`, `Aliases are curated`,
 `Every data source is described`, `No staging or change-capture tables` and
-`No live sample values in descriptions`: file reads only, no database call) and
+`No live sample values in descriptions`: file reads only, no database call),
+`No table in an excluded schema` (advice, also file reads only) and
 `Rate limit sane for deployment`. With several data sources the four database
 checks run once per source and each name carries the source, as
 `Database connectivity [sales]`; `Tables are in their data source` is skipped
@@ -708,7 +781,8 @@ data sources, the four marked * print once per source, as
 | `Aliases are curated` | Reads `aliases.yaml`. Counts the synonym keys that are not words (no run of two letters: timestamps, numbers) and the synonym lines that still end in the inspector's `# REVIEW` marker. It also reads an `aliases.yaml` that is not valid YAML (a draft from before 6.9.3 with a quote in a sample value), from its lines. | `N of M synonym keys are not words (timestamps or numbers)` or ``N of M synonym entries still end in the inspector's `# REVIEW` marker``, more than half of them: the synonyms are the inspector's seeds (sample values of string columns, not a vocabulary). Restore the curated `aliases.yaml`. An empty `ring_aliases` is **not** a failure: only `ValueRetriever.extract_ring` reads it, to set the `Ring` filter from a ring (hall) name in the question, so a warehouse without that dimension leaves it empty (the setup wizard writes it empty too when it finds no dimension table). It shows as `advice: ring_aliases is empty` in a `[PASS]` line while `schema.yaml` or `entities.yaml` exists; add the ring names if your questions do name one. | `aliases.yaml` is missing. |
 | `Every data source is described` | Reads `datasources.yaml` (one source named `default` without it) and `schema.yaml`: a table belongs to the source its `datasource:` line names (to each, for a list) and to the default source when it has none. | `N of M data source(s) have no table in schema.yaml: <sources>`: a whole database is missing from the configuration (a `schema.yaml` drafted from one of two databases is the usual cause). Restore the curated `schema.yaml`, or add the tables with `python scripts/sync_schema.py --add-tables 'Schema.*'`. `schema.yaml describes no table` when the file has none. A `datasources.yaml` listing a second source while `schema.yaml` has no `datasource:` line fails here too, naming the second source: run `scripts/sync_schema.py` (§16.3) to write the lines. | `schema.yaml` or `datasources.yaml` does not load (their own checks say why). |
 | `No staging or change-capture tables` | Counts the `schema.yaml` tables whose schema or name matches `STAGING_PATTERNS` (default `*_Stg,*stg*,*staging*,table:*_Inserts,table:*_Updates,table:*_Deletes`). Comma-separated `fnmatch` patterns, case-insensitive; a bare pattern is matched against the schema, a `table:` prefix against the table name; empty switches the check off. | Never fails. A `[PASS]` line starting `advice: N of M table(s) look like staging or change-capture tables (<schema>: N, ...)` lists the counts per schema (never a value). Those tables repeat the ones analysts ask about, so the model sees the same name several times and the prompt budget goes to them; take them out of `schema.yaml` unless analysts need them (the inspector's `--exclude-schemas` keeps them out of a draft). | `STAGING_PATTERNS` is empty, or `schema.yaml` does not load. |
-| `No live sample values in descriptions` | Looks at the text after each `e.g.` in a table description or column note (outside a parenthesis) for a run of 7 or more digits (phone-like; Persian digits too), exactly 10 digits (national-id-like) or a long segment of words with digits (address-like). Dates and plain words are left alone. | Never fails. A `[PASS]` line starting `advice: N note(s) in M table(s) seem to quote live sample values (phone-like: N, national-id-like: N, address-like: N); tables: <keys>` gives counts and table keys, never a value. The inspector's `schema.yaml` quotes up to three values of each text column; the notes go into the prompt sent to the model. Replace each `e.g.` list with a description of the column. | `schema.yaml` does not load. |
+| `No live sample values in descriptions` | Looks at the text after each `e.g.` in a table description or column note (outside a parenthesis) for a run of 7 or more digits (phone-like; Persian digits too), exactly 10 digits (national-id-like) or a long segment of words with digits (address-like). Dates and plain words are left alone. | Never fails. A `[PASS]` line starting `advice: N note(s) in M table(s) seem to quote live sample values (phone-like: N, national-id-like: N, address-like: N); tables: <keys>` gives counts and table keys, never a value. A `schema.yaml` drafted by a release before the inspector stopped writing values quotes up to three values of each text column; the notes go into the prompt sent to the model. Replace each `e.g.` list with a description of the column. | `schema.yaml` does not load. |
+| `No table in an excluded schema` | Reads `schema.yaml` and the exclusion rule of each table's data source(s): the system schemas, `EXCLUDE_SCHEMAS` and the source's `exclude_schemas:` (§2.3). A table counts when its schema (`db_schema`, or the key's qualifier) is excluded in every source it is assigned to; a table whose schema is unknown is never counted. | Never fails. A `[PASS]` line starting `advice: N of M table(s) are in a schema the setup tools are told not to scan: <keys>` lists the first keys and the two fixes: remove the tables from `schema.yaml`, or narrow the exclusion. The exclusion only limits what the inspector and `sync_schema.py` propose, so such a table is still synced. `[SKIP]` when nothing is excluded beyond the system schemas and no table is in one. | `schema.yaml` or `datasources.yaml` does not load. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
 
 The most common first-install `[FAIL]` with several data sources is
@@ -1262,6 +1336,12 @@ needs tables of two sources is refused (§16.10).
    ```
 
    `port` defaults to 1433 and `driver` to `ODBC Driver 18 for SQL Server`.
+   A source may also list `exclude_schemas: ["*_Stg", Replay]`: `fnmatch`
+   patterns, compared without regard to case, for schemas of that source that
+   the setup tools (the inspector, §2.3, and `sync_schema.py`, §16.3) must not
+   scan, on top of the system schemas and the `EXCLUDE_SCHEMAS` setting that
+   applies to every source. A list of non-empty strings; anything else is
+   refused at start-up. Nothing at run time reads it.
    For Windows authentication write `trusted_connection: true` and leave out
    the login and `password_env`; `username_env` names a variable that holds the
    login instead. The file is versioned like `schema.yaml`, so it must never
@@ -1324,9 +1404,25 @@ if anything else differs):
 | Column in `schema.yaml` with no entry in `column_types:` (every column of a file written before 6.9.0) | Records its type. This alone is not drift: `--check` and the preflight pass with a note saying how many types are not recorded yet |
 | Column in `schema.yaml`, in no source's table | Keeps it and adds the line `# not in database (sync_schema.py)` above it; `--prune` removes it instead (never one still named in `resolvable_columns` or `prefetchable_columns`) |
 | Recorded type differs from the database | Corrects the entry in the table's `column_types:` map and reports `Table.Column: old -> new`. Types are kept in that map, never in a description |
-| Table in a database, not in `schema.yaml` | Reports it only; `--add-tables 'sales.*'` (a glob on `schema.table`, repeatable) appends the matching ones with draft descriptions |
+| Table in a database, not in `schema.yaml` | Reports it only; `--add-tables 'sales.*'` (a glob on `schema.table`, repeatable) appends the matching ones with draft descriptions. A table in an excluded schema (below) is neither reported nor added; the report counts them per schema |
 | Table in `schema.yaml`, in no source | Keeps it with `# not found in any data source`; `--prune` removes it (unless `relationships:` still names it) |
 | Table with no `columns:` key | Left alone (described only, deliberately not queryable) |
+
+**Excluded schemas.** The report and `--add-tables` skip the tables of schemas
+that are excluded for the source being read: the system schemas (`sys`,
+`INFORMATION_SCHEMA`, `guest`, `cdc`, the fixed `db_*` role schemas, `pg_*`), the
+`EXCLUDE_SCHEMAS` setting (every source), the source's `exclude_schemas:`
+(`datasources.yaml`) and `--exclude-schemas PATTERNS` for one run (comma-separated
+`fnmatch` patterns, repeatable; compared without regard to case). A pattern such
+as `--add-tables '*'` therefore adds only tables outside those schemas, and the
+report has a section `tables in excluded schemas, not listed or added` with the
+number of tables skipped, per schema. This is for discovery only: a table
+`schema.yaml` already lists is synced exactly as before, in whatever schema it
+is, and an excluded table does not make `--check` fail. The preflight check
+`No table in an excluded schema` (§3.1) lists a table of `schema.yaml` that sits
+in an excluded schema, so the two do not silently disagree.
+`scripts/assign_datasources.py` only reads the tables `schema.yaml` lists, so it
+has nothing to exclude and ignores the setting.
 
 To bring a whole new schema into a deployment that already has a curated
 `schema.yaml`, use `--add-tables 'Schema.*'` here, not the inspector of §2.3:

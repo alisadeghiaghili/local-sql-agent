@@ -174,6 +174,11 @@ _ALLOWED_MODULE_CONSTANTS = {
         "warning at the end of a run; one-off onboarding tool, never read by "
         "the running engine, and the warning changes no exit code"
     ),
+    "database/schema_inspector_cli.py::DEFAULT_SAMPLE_ROWS": (
+        "distinct values per string column that --sample-values writes to the "
+        "review file; one-off onboarding tool, never read by the running "
+        "engine, and --sample-rows overrides it per run"
+    ),
     "retrieval/value_resolver.py::_in_flight_resolutions": (
         "not a constant at all -- a mutable counter of running resolution "
         "workers, guarded by _resolution_slots. Its 0 is an initial value, "

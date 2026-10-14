@@ -54,6 +54,15 @@ feature and one a real security hole:
   under different spellings. Two *different* qualifiers sharing a bare
   name (`sales.Customer`/`ref.Customer`) are not a collision; that is
   exactly the case this feature exists to support.
+- The tools that **write** keys follow one rule: a table is keyed by its bare
+  name unless that name occurs in more than one schema among the tables being
+  written together (across every selected data source, compared
+  case-insensitively), when every occurrence is keyed `Schema.Table`; a part
+  that is not a plain identifier is bracketed (`[Price List]`). The first-install
+  inspector builds its `schema.yaml` with `schema_data.sync.draft_schema_text`,
+  the same code `scripts/sync_schema.py --add-tables` uses, so the two spell a
+  table the same way, and a table present with the same `schema.table` in several
+  sources is one entry with a `datasource:` list.
 - One place parses and normalises every table key: `schema_data.registry`'s
   `TableRef`, `split_table_key`, `effective_qualifier`, `bare_table_name`,
   and `table_reference_sql` (the quoted T-SQL reference, `[q1].[q2].[Name]`
