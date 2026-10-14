@@ -43,11 +43,31 @@ verify
     read-only, records its rows/fingerprint and, with ``--accept``, activates it.
 store
     Atomic ``.jsonl`` read/write for the golden-set files (temp file +
-    replace, ``.bak`` kept, owner-only).
+    replace, ``.bak`` kept, owner-only), and ``load_golden_cases``.
+pipeline
+    The live generation path: the server's own ``SQLAgent`` loop (guard,
+    correction rounds, row cap) under the harness, which is the default for
+    ``run --live``; ``--single-shot`` keeps one model call.
+diagnosis
+    *How* a generated result differs from the reference (a mismatch class,
+    row and column counts, column names, an error bucket for one number),
+    computed from the two frames and never holding a value.
+capcheck
+    The count query that confirms a ``match_capped`` result against the
+    uncapped SQL, so an over-filtered query is not excused by the row cap.
+share
+    The share-safe bundle of ``run --share`` (redacted error text, optional
+    SQL-literal redaction, owner-only file, never inside the tracked tree).
+rounds
+    ``python -m eval.cli compare OLD NEW``: fixed / regressed / still failing
+    / added / removed, accuracy deltas and the shift in mismatch classes.
+split
+    ``python -m eval.cli split``: a deterministic dev / test split of a
+    golden set.
 cli
     ``python -m eval.cli run --golden <path> [--live] [--reference live]
-    [--baseline <path>]`` and ``python -m eval.cli verify --golden <path>
-    [--accept]``
+    [--baseline <path>] [--share <path>]``, ``python -m eval.cli verify
+    --golden <path> [--accept]``, ``split`` and ``compare`` (runbook 18.6)
 
 Design constraints
 -------------------

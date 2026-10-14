@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import config as cfg
-from eval.models import CaseResult, EvalReport
+from eval.models import CaseResult, EvalReport, MismatchDiagnosis
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +326,12 @@ def load_baseline(path: str | Path) -> EvalReport:
                 expected_datasource=r.get("expected_datasource"),
                 selected_datasource=r.get("selected_datasource"),
                 reference_fingerprint=r.get("reference_fingerprint"),
+                diagnosis=(
+                    MismatchDiagnosis.from_dict(r["diagnosis"]) if r.get("diagnosis") else None
+                ),
+                corrections=int(r.get("corrections") or 0),
+                guard_rejections=[dict(g) for g in (r.get("guard_rejections") or [])],
+                execution_errors=[dict(g) for g in (r.get("execution_errors") or [])],
             )
             for r in data["results"]
         ]
@@ -341,6 +347,9 @@ def load_baseline(path: str | Path) -> EvalReport:
             for source, counts in (data.get("source_accuracy") or {}).items()
         }
         selection = data.get("source_selection")
+        pipeline = data.get("pipeline")
+        if pipeline not in (None, "production", "single_shot"):
+            raise ValueError(f"{baseline_path}: unknown pipeline {pipeline!r}")
         return EvalReport(
             mode=data["mode"],
             total=data["total"],
@@ -359,6 +368,7 @@ def load_baseline(path: str | Path) -> EvalReport:
             source_selection=(
                 None if not selection else (selection["correct"], selection["total"])
             ),
+            pipeline=pipeline,
         )
     except KeyError as exc:
         raise ValueError(f"{baseline_path}: missing expected key {exc}") from exc
@@ -452,6 +462,18 @@ def compare_to_baseline(
             f"changes while a live reference does not, so the two accuracy figures "
             f"are not measuring the same thing. Re-record the baseline with "
             f"--reference {current.reference} (--save-baseline)."
+        )
+    # A report written before the field existed was always single-shot.
+    current_pipeline = current.pipeline or ("single_shot" if current.mode == "live" else None)
+    baseline_pipeline = baseline.pipeline or ("single_shot" if baseline.mode == "live" else None)
+    if current_pipeline != baseline_pipeline:
+        raise ValueError(
+            f"Cannot compare a {current_pipeline!r} run with a {baseline_pipeline!r} "
+            f"baseline (--single-shot). 'production' is the server's own loop with "
+            f"correction rounds and the row cap; 'single_shot' is one model call. The "
+            f"first scores higher on the same model, so the difference would read as an "
+            f"improvement or a regression that is only the pipeline. Re-record the "
+            f"baseline in the pipeline you gate on (--save-baseline)."
         )
 
     if thresholds is None:

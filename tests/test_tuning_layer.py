@@ -98,6 +98,31 @@ _ALLOWED_MODULE_CONSTANTS = {
         "knob. It is also written into INTERPRET_TEMPLATE's own wording "
         "('up to 20 rows shown'), so the two would have to move together"
     ),
+    "eval/share.py::FORMAT_VERSION": (
+        "file-format invariant -- it names the layout of the share bundle a "
+        "reviewer's tooling reads; an env-overridable version would let a "
+        "deployment write one layout under another's number"
+    ),
+    "core/redaction.py::_ERROR_TEXT_LIMIT": (
+        "data-governance invariant -- the longest redacted error text that "
+        "leaves the server in a share bundle (a driver message can echo the "
+        "whole statement); a knob would be a way to export more by editing "
+        "one variable"
+    ),
+    "eval/diagnosis.py::_MAX_COLUMNS": (
+        "data-governance invariant -- how many result column names a share "
+        "bundle's diagnosis may carry; bounds what a wide query exports"
+    ),
+    "eval/diagnosis.py::_MAX_NAME_CHARS": (
+        "data-governance invariant -- the longest result column name a share "
+        "bundle's diagnosis may carry; bounds what an alias that smuggles a "
+        "value into a name can export"
+    ),
+    "eval/compare.py::_CONTAINMENT_ROW_LIMIT": (
+        "implementation detail -- the diagnosis' subset/superset check is a "
+        "quadratic scan and is skipped past this many rows (the class then "
+        "falls back to row_count_differs); it changes no verdict"
+    ),
     "eval/fingerprint.py::DEFAULT_FLOAT_PRECISION": (
         "a golden set's expected_fingerprint values are hashed at this "
         "precision; env-tunable would silently desync a deployment from "

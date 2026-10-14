@@ -501,3 +501,156 @@ def compare_to_reference(
     return compare_frames(
         reference, actual, ordered=ordered, order_keys=keys, options=options
     )
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis helpers: *how* two results differ (used by eval.diagnosis)
+# ---------------------------------------------------------------------------
+
+#: Containment is a quadratic scan; past this many rows it is not attempted.
+_CONTAINMENT_ROW_LIMIT = 20_000
+
+
+def _digits_for(tolerance: float) -> int | None:
+    return None if tolerance <= 0.0 else max(0, math.ceil(-math.log10(tolerance)))
+
+
+def multiset_equal(
+    expected: pd.DataFrame, actual: pd.DataFrame, *, options: ComparisonOptions | None = None
+) -> bool:
+    """Whether the two results hold the same rows, ignoring order and column names.
+
+    Unlike :func:`compare_frames` this never looks at row order, so it can
+    tell "the same rows in another order" from "other rows".
+
+    Examples
+    --------
+    >>> a = pd.DataFrame({"s": ["x", "y"]})
+    >>> multiset_equal(a, a.iloc[::-1])
+    True
+    >>> multiset_equal(a, pd.DataFrame({"s": ["x", "z"]}))
+    False
+    """
+    opts = options or ComparisonOptions()
+    if len(expected.columns) != len(actual.columns):
+        return False
+    rows_e, rows_a = _rows_of(expected), _rows_of(actual)
+    return len(rows_e) == len(rows_a) and _multisets_equal(rows_e, rows_a, opts.tolerance)
+
+
+def multiset_contains(
+    larger: pd.DataFrame, smaller: pd.DataFrame, *, options: ComparisonOptions | None = None
+) -> bool:
+    """Whether every row of *smaller* is in *larger* (duplicates counted, order ignored).
+
+    Examples
+    --------
+    >>> big = pd.DataFrame({"n": [1, 2, 2, 3]})
+    >>> multiset_contains(big, pd.DataFrame({"n": [2, 2]}))
+    True
+    >>> multiset_contains(big, pd.DataFrame({"n": [3, 3]}))
+    False
+    >>> multiset_contains(big, pd.DataFrame({"n": [1], "m": [1]}))
+    False
+    """
+    opts = options or ComparisonOptions()
+    if len(larger.columns) != len(smaller.columns):
+        return False
+    rows_big, rows_small = _rows_of(larger), _rows_of(smaller)
+    if len(rows_small) > len(rows_big):
+        return False
+    if len(rows_big) > _CONTAINMENT_ROW_LIMIT:
+        return False
+    groups_big: dict[tuple[Any, ...], list[tuple[Cell, ...]]] = defaultdict(list)
+    groups_small: dict[tuple[Any, ...], list[tuple[Cell, ...]]] = defaultdict(list)
+    for row in rows_big:
+        groups_big[_signature(row)].append(_numeric_part(row))
+    for row in rows_small:
+        groups_small[_signature(row)].append(_numeric_part(row))
+    key = _sort_key(_digits_for(opts.tolerance))
+    for signature, vectors_small in groups_small.items():
+        vectors_big = groups_big.get(signature)
+        if vectors_big is None or len(vectors_big) < len(vectors_small):
+            return False
+        if not vectors_small[0]:
+            continue  # no numeric cells: the signature already matched
+        remaining = sorted(vectors_big, key=key)
+        for vector in sorted(vectors_small, key=key):
+            for index, candidate in enumerate(remaining):
+                if _rows_equal(vector, candidate, opts.tolerance):
+                    del remaining[index]
+                    break
+            else:
+                return False
+    return True
+
+
+def _column_signature(column: pd.Series, digits: int | None) -> tuple[str, ...]:
+    """A column's values as an order-free, tolerance-rounded fingerprint (in memory only)."""
+    keys: list[str] = []
+    for value in column.astype(object):
+        kind, val = normalise_cell(value)
+        if kind in ("i", "f"):
+            keys.append(repr(("num", float(val) if digits is None else round(float(val), digits))))
+        else:
+            keys.append(repr((kind, val)))
+    return tuple(sorted(keys))
+
+
+def align_columns(
+    expected: pd.DataFrame, actual: pd.DataFrame, *, options: ComparisonOptions | None = None
+) -> pd.DataFrame | None:
+    """*actual* with its columns re-ordered to line up with *expected*, if that makes them agree.
+
+    Columns are matched by name when both results have the same distinct
+    names (case-insensitive), otherwise by content: an *actual* column is
+    paired with an *expected* column holding the same multiset of values.
+    The result is returned only when the aligned rows then equal the
+    expected rows (as a multiset) and the alignment is not the identity,
+    which :func:`compare_frames` would already have accepted.
+
+    Returns
+    -------
+    pandas.DataFrame | None
+        The re-ordered *actual*, or ``None`` when no alignment makes the
+        results agree.
+
+    Examples
+    --------
+    >>> e = pd.DataFrame({"name": ["x", "y"], "n": [1, 2]})
+    >>> a = pd.DataFrame({"n": [2, 1], "name": ["y", "x"]})
+    >>> align_columns(e, a).columns.tolist()
+    ['name', 'n']
+    >>> align_columns(e, pd.DataFrame({"name": ["x", "z"], "n": [1, 2]})) is None
+    True
+    """
+    opts = options or ComparisonOptions()
+    width = len(expected.columns)
+    if width == 0 or width != len(actual.columns) or len(expected) != len(actual):
+        return None
+    rows_e = _rows_of(expected)
+    names_e = [str(c).lower() for c in expected.columns]
+    names_a = [str(c).lower() for c in actual.columns]
+    orders: list[list[int]] = []
+    if len(set(names_e)) == width and sorted(names_e) == sorted(names_a):
+        orders.append([names_a.index(name) for name in names_e])
+    digits = _digits_for(opts.tolerance)
+    sig_e = [_column_signature(expected.iloc[:, i], digits) for i in range(width)]
+    sig_a = [_column_signature(actual.iloc[:, j], digits) for j in range(width)]
+    used: set[int] = set()
+    by_content: list[int] = []
+    for signature in sig_e:
+        match = next((j for j in range(width) if j not in used and sig_a[j] == signature), None)
+        if match is None:
+            break
+        used.add(match)
+        by_content.append(match)
+    else:
+        orders.append(by_content)
+    for order in orders:
+        if order == list(range(width)):
+            continue
+        aligned = actual.iloc[:, order]
+        if _multisets_equal(rows_e, _rows_of(aligned), opts.tolerance):
+            return aligned
+    return None
