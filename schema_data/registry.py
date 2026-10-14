@@ -1087,9 +1087,9 @@ class SchemaRegistry:
                 Table: Contract
                 Description: Records every completed trade on the exchange.
                 Columns:
-                  - ContractID: Surrogate primary key
-                  - Volume: Number of lots traded
-                  ...
+                - ContractID: Surrogate primary key
+                - Volume: Number of lots traded
+                ...
 
             Sections are separated by a blank line.  Returns an empty string
             when ``selected_tables`` is non-empty but none of the names exist
@@ -1179,8 +1179,12 @@ class SchemaRegistry:
 
             if columns:
                 lines.append("Columns:")
+                # No indentation before the bullet: it carried no meaning (a
+                # column line is a column line either way) and cost two
+                # characters, and in the usual BPE vocabularies a token,
+                # on every column line of every prompt.
                 for col_name, col_desc in columns.items():
-                    lines.append(f"  - {col_name}: {col_desc}")
+                    lines.append(f"- {col_name}: {col_desc}")
 
             lines.append("")
 

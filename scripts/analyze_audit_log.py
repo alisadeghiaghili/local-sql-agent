@@ -479,6 +479,11 @@ def cache_behaviour(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     llm_records = [rec for rec in records if rec.get("llm")]
     prefix_hits = sum(1 for rec in llm_records if rec["llm"].get("prefix_cache_hit"))
+    server = [
+        rec for rec in llm_records
+        if rec["llm"].get("prefix_cache_hit_source") == "server"
+    ]
+    server_hits = sum(1 for rec in server if rec["llm"].get("prefix_cache_hit"))
 
     return {
         "total_records": total,
@@ -489,6 +494,12 @@ def cache_behaviour(records: list[dict[str, Any]]) -> dict[str, Any]:
         "prefix_cache_hit_rate": (
             round(prefix_hits / len(llm_records), 4) if llm_records else None
         ),
+        # The rate above mixes the server's word with a prompt-size
+        # estimate (runbook 20.8). These count only the calls whose server
+        # reported cached_tokens, and so are the real cache hit rate.
+        "server_reported_count": len(server),
+        "server_hit_count": server_hits,
+        "server_hit_rate": round(server_hits / len(server), 4) if server else None,
     }
 
 
@@ -974,6 +985,65 @@ def llm_latency_split(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def latency_by_cache(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """The ``llm`` stage's time, grouped by whether the server really had the prefix cached.
+
+    Only a call whose ``llm`` block says ``prefix_cache_hit_source ==
+    "server"`` (the server reported ``cached_tokens``) is put in ``hit`` or
+    ``miss``. Every other call -- a record written before the field existed,
+    or by a server that does not report cached tokens -- goes in
+    ``unreported``, because its ``prefix_cache_hit`` is only the prompt-size
+    estimate and grouping by it would call a short prompt a cache hit.
+
+    Each group has ``count`` and, over its records, ``llm_ms`` (the whole
+    stage, ``timings.llm_ms``, which includes correction rounds),
+    ``call_ms`` (``llm.total_ms``: the call the block describes),
+    ``prompt_tokens`` and ``cached_tokens``, each ``{count, mean, p50, p95,
+    p99}``.
+
+    Examples
+    --------
+    >>> recs = [
+    ...     {"timings": {"llm_ms": 900}, "llm": {"prefix_cache_hit": True,
+    ...      "prefix_cache_hit_source": "server", "cached_tokens": 24000, "prompt_tokens": 24100}},
+    ...     {"timings": {"llm_ms": 61000}, "llm": {"prefix_cache_hit": False,
+    ...      "prefix_cache_hit_source": "server", "cached_tokens": 0, "prompt_tokens": 24100}},
+    ...     {"timings": {"llm_ms": 2000}, "llm": {"prefix_cache_hit": True}},
+    ... ]
+    >>> out = latency_by_cache(recs)
+    >>> [(k, out[k]["count"]) for k in ("hit", "miss", "unreported")]
+    [('hit', 1), ('miss', 1), ('unreported', 1)]
+    >>> out["miss"]["llm_ms"]["p50"], out["hit"]["cached_tokens"]["p50"]
+    (61000, 24000)
+    """
+    groups: dict[str, list[dict[str, Any]]] = {"hit": [], "miss": [], "unreported": []}
+    for rec in records:
+        block = rec.get("llm")
+        if not isinstance(block, dict) or not block:
+            continue
+        if block.get("prefix_cache_hit_source") == "server":
+            groups["hit" if block.get("prefix_cache_hit") else "miss"].append(rec)
+        else:
+            groups["unreported"].append(rec)
+
+    def summary(group: list[dict[str, Any]]) -> dict[str, Any]:
+        stage = [
+            r["timings"]["llm_ms"] for r in group
+            if isinstance(r.get("timings"), dict)
+            and isinstance(r["timings"].get("llm_ms"), (int, float))
+            and not isinstance(r["timings"].get("llm_ms"), bool)
+        ]
+        return {
+            "count": len(group),
+            "llm_ms": _stats(stage),
+            "call_ms": _stats(_llm_numbers(group, "total_ms")),
+            "prompt_tokens": _stats(_llm_numbers(group, "prompt_tokens")),
+            "cached_tokens": _stats(_llm_numbers(group, "cached_tokens")),
+        }
+
+    return {name: summary(group) for name, group in groups.items()}
+
+
 # ---------------------------------------------------------------------------
 # Record counts by model, and time range
 # ---------------------------------------------------------------------------
@@ -1211,6 +1281,7 @@ def build_report(
         "correction_rounds": correction_rounds(records),
         "llm_meta_summary": llm_meta_summary(records),
         "llm_latency_split": llm_latency_split(records),
+        "latency_by_cache": latency_by_cache(records),
     }
 
 
@@ -1299,6 +1370,15 @@ def render_text(report: dict[str, Any]) -> str:
         f"  prefix_cache_hit rate  : {cb['prefix_cache_hit_rate']}  "
         f"({cb['prefix_cache_hit_count']}/{cb['llm_call_count']} llm calls)"
     )
+    # .get(): a saved report from an older version has no such keys.
+    if cb.get("server_reported_count"):
+        w(
+            f"  real hit rate (server) : {cb['server_hit_rate']}  "
+            f"({cb['server_hit_count']}/{cb['server_reported_count']} calls with cached_tokens)"
+        )
+    else:
+        w("  real hit rate (server) : n/a (no call reported cached_tokens; the rate above is a "
+          "prompt-size estimate, see runbook 20.8)")
     w("")
 
     w("SQL-shape intent clusters (tables touched + join count; no question text)")
@@ -1375,6 +1455,14 @@ def render_text(report: dict[str, Any]) -> str:
         w(f"  reasoning tokens estimated     : {ls['reasoning_tokens_estimated_count']} "
           f"of {ls['reasoning_tokens_count']}")
         w(f"  reasoning share of completion  : {ls['reasoning_share_of_completion']}")
+    lc = report.get("latency_by_cache")
+    if lc:
+        w("")
+        w("LLM stage by real cache hit (server-reported cached_tokens)")
+        w("-" * 60)
+        for name in ("hit", "miss", "unreported"):
+            g = lc[name]
+            w(f"  {name:<10} n={g['count']:<5} stage: {_fmt_p(g['llm_ms'], 'ms')}")
     w("=" * 60)
 
     return "\n".join(lines)

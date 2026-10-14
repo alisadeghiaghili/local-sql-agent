@@ -439,7 +439,9 @@ Phase 2 latency work measurable.
   "total_ms": 2310,                 // measured wall-clock time of the call
   "tokens_per_second": null,        // needs decode_ms, which this protocol has no separate figure for
 
-  "prefix_cache_hit": true,         // derived, see below
+  "prefix_cache_hit": true,         // the server's word when it gives one, else an estimate; see below
+  "prefix_cache_hit_source": "server", // "server" | "estimate"
+  "cached_tokens": 4592,            // usage.prompt_tokens_details.cached_tokens; null = the server did not say
   "temperature": 0.0,
   "seed": 7,
   "seed_honored": true,             // endpoint reported system_fingerprint AND a seed was requested; null otherwise
@@ -481,10 +483,23 @@ coerced into `"error"`; a total transport failure (no response ever
 arrived) is the one case that still reports `"error"` unconditionally,
 since there is no real response to read a reason from.
 
-`prefix_cache_hit` is derived, and it is the single most useful number in this
-block: on a cache hit `prompt_tokens` collapses to roughly the size of
-the variable suffix instead of the full ~4.6k-token prefix. Rule:
-`prefix_cache_hit = prompt_tokens < (static_prefix_tokens * 0.5)`.
+`prefix_cache_hit` is the single most useful number in this block, and
+`prefix_cache_hit_source` says where it came from.
+
+- `"server"`: the model server reported how many prompt tokens it served from
+  its prefix cache (`usage.prompt_tokens_details.cached_tokens`; vLLM with
+  `--enable-prompt-tokens-details`), kept as `cached_tokens`. The flag is true
+  when that covers at least half of the static prefix (of the whole prompt
+  when it is shorter, or when no prefix is known). This is the real hit.
+- `"estimate"`: the server did not report it (`cached_tokens` is `null`), so
+  the flag is the older rule `prefix_cache_hit = prompt_tokens <
+  (static_prefix_tokens * 0.5)`. It dates from a backend whose prompt count
+  held only the tokens it computed, where a hit made `prompt_tokens` collapse
+  to the variable suffix. An OpenAI-compatible server counts the whole prompt
+  either way, so the estimate now means "the prompt was short", not "the cache
+  was hit". A record written before these two fields existed has neither and
+  counts as an estimate.
+
 Record `static_prefix_tokens` per skill version so the ratio stays meaningful.
 With several data sources the static prefix is per source, so the estimate used
 is the prefix of the source whose tables the model was shown (the audit record's

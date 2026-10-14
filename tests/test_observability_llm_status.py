@@ -52,7 +52,8 @@ class TestHappyPath:
             "backend", "model", "endpoint", "trusted", "endpoint_status", "attempts",
             "finish_reason", "structured_output", "prompt_tokens", "completion_tokens",
             "prefill_ms", "decode_ms", "total_ms", "tokens_per_second",
-            "prefix_cache_hit", "temperature", "seed", "seed_honored", "corrections",
+            "prefix_cache_hit", "prefix_cache_hit_source", "cached_tokens",
+            "temperature", "seed", "seed_honored", "corrections",
             "provider", "fallback_used", "reasoning_detected",
             "ttft_ms", "generation_ms", "reasoning_tokens", "reasoning_tokens_estimated",
         }

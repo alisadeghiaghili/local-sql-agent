@@ -86,10 +86,22 @@ What changed, and what didn't, moving off Ollama
   shows no reasoning at all. Counts only: the reasoning text itself never
   enters this block.
 
-``prefix_cache_hit``
----------------------
-Unchanged in spirit, sourced from the new token fields: ``prefix_cache_hit
-= prompt_tokens < (static_prefix_tokens * 0.5)``. Taken literally that
+``prefix_cache_hit``, ``prefix_cache_hit_source``, ``cached_tokens``
+---------------------------------------------------------------------
+When the server reports ``usage.prompt_tokens_details.cached_tokens`` (vLLM
+with ``--enable-prompt-tokens-details``), that number is recorded as
+``cached_tokens`` and ``prefix_cache_hit`` is true when it covers at least
+half of the static prefix (of the whole prompt when it is shorter, or there
+is no prefix); ``prefix_cache_hit_source`` is then ``"server"``. Without it
+(``cached_tokens`` is ``null``) the older estimate below is used and the
+source is ``"estimate"``: a record written before these fields existed
+carries neither, and counts as an estimate.
+
+The estimate: ``prefix_cache_hit
+= prompt_tokens < (static_prefix_tokens * 0.5)``. It was a cache signal when
+the backend reported only the tokens it computed; an OpenAI-compatible server
+reports the whole prompt, so it now says "the prompt was short", not "the
+cache was hit". It is kept as the fallback. Taken literally that
 formula is true whenever ``prompt_tokens == 0`` — which is exactly what a
 *total transport failure* looks like (no request ever reached the model,
 so no prompt tokens were ever evaluated). Reporting a cache "hit" for a
@@ -153,6 +165,8 @@ class LlmStatus(TypedDict):
     total_ms: int | None
     tokens_per_second: float | None
     prefix_cache_hit: bool
+    prefix_cache_hit_source: str
+    cached_tokens: int | None
     temperature: float
     seed: int | None
     seed_honored: bool | None
@@ -172,6 +186,34 @@ def _int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def server_cached_tokens(usage: Mapping[str, Any] | None) -> int | None:
+    """How many prompt tokens the server says it served from its prefix cache.
+
+    ``usage.prompt_tokens_details.cached_tokens`` -- vLLM reports it only
+    when started with ``--enable-prompt-tokens-details``; other servers do
+    not report it at all. ``None`` means "the server did not say", which is
+    not the same as ``0`` ("the server said nothing was cached").
+
+    Examples
+    --------
+    >>> server_cached_tokens({"prompt_tokens_details": {"cached_tokens": 4592}})
+    4592
+    >>> server_cached_tokens({"prompt_tokens_details": {"cached_tokens": 0}})
+    0
+    >>> server_cached_tokens({"prompt_tokens": 9}) is None
+    True
+    >>> server_cached_tokens({"prompt_tokens_details": None}) is None
+    True
+    >>> server_cached_tokens({"prompt_tokens_details": {"cached_tokens": True}}) is None
+    True
+    """
+    details = (usage or {}).get("prompt_tokens_details")
+    value = details.get("cached_tokens") if isinstance(details, Mapping) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
 
 
 def build_llm_status(
@@ -403,13 +445,27 @@ def build_llm_status(
         True if (seed is not None and body.get("system_fingerprint")) else None
     )
 
-    # See module docstring: never a cache hit at zero prompt tokens, and
-    # never a cache hit when there is no meaningful prefix to compare to.
-    prefix_cache_hit = (
-        prompt_tokens > 0
-        and static_prefix_tokens > 0
-        and prompt_tokens < static_prefix_tokens * 0.5
-    )
+    # When the server reports how many prompt tokens came from its cache,
+    # that is the answer and the estimate below is not consulted. An
+    # OpenAI-compatible server counts the whole prompt in prompt_tokens
+    # whether or not most of it was cached, so the size rule below is only
+    # a guess about the cache there (it says "the prompt was short").
+    cached_tokens = server_cached_tokens(usage)
+    if cached_tokens is not None and prompt_tokens > 0:
+        # Hit = at least half of what could have been cached was: the
+        # static prefix when there is one, else the whole prompt.
+        reference = min(prompt_tokens, static_prefix_tokens) if static_prefix_tokens > 0 else prompt_tokens
+        prefix_cache_hit = cached_tokens > 0 and cached_tokens >= reference * 0.5
+        prefix_cache_hit_source = "server"
+    else:
+        # See module docstring: never a cache hit at zero prompt tokens, and
+        # never a cache hit when there is no meaningful prefix to compare to.
+        prefix_cache_hit = (
+            prompt_tokens > 0
+            and static_prefix_tokens > 0
+            and prompt_tokens < static_prefix_tokens * 0.5
+        )
+        prefix_cache_hit_source = "estimate"
 
     return LlmStatus(
         backend=backend,
@@ -427,6 +483,8 @@ def build_llm_status(
         total_ms=total_ms,
         tokens_per_second=tokens_per_second,
         prefix_cache_hit=prefix_cache_hit,
+        prefix_cache_hit_source=prefix_cache_hit_source,
+        cached_tokens=cached_tokens,
         temperature=temperature,
         seed=seed,
         seed_honored=seed_honored,

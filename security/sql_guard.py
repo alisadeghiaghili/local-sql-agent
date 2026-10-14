@@ -403,6 +403,13 @@ class SqlGuardRejection(ValueError):
     #: override it.
     is_refusal: bool = False
 
+    #: The canonical table key an unknown-column rejection is about
+    #: (``schema.yaml``'s key), set at that one raise site; ``None``
+    #: everywhere else. It lets the self-correction loops
+    #: (:mod:`llm.correction_hints`) list the table's real columns without
+    #: parsing the message.
+    table: str | None = None
+
     def __init__(
         self,
         message: str,
@@ -2118,10 +2125,12 @@ def validate_sql(
             # CorrectableRejection: same reasoning as the unknown-table
             # case above -- a hallucinated column name, plausibly fixed
             # by a retry that names a real one.
-            raise CorrectableRejection(
+            unknown_column = CorrectableRejection(
                 f"Unknown column '{name}' on table '{canonical}'",
                 reason="other", subject=name,
             )
+            unknown_column.table = canonical
+            raise unknown_column
 
     if denied:
         # "*" must not be usable to silently read around an active

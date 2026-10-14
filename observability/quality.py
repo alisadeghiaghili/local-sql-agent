@@ -89,6 +89,7 @@ from typing import Any, Iterable
 from observability.audit import turn_executed_successfully
 from scripts.analyze_audit_log import (
     failure_taxonomy,
+    latency_by_cache,
     latency_report,
     llm_latency_split,
 )
@@ -314,6 +315,12 @@ def compute_metrics(
                 "ttft_ms": split["ttft_ms"],
                 "generation_ms": split["generation_ms"],
             },
+            # The llm stage grouped by the server's own cached_tokens;
+            # calls without it are "unreported", never guessed into a group.
+            "llm_by_cache": {
+                name: {"count": group["count"], "llm_ms": group["llm_ms"]}
+                for name, group in latency_by_cache(records).items()
+            },
         },
     }
 
@@ -529,6 +536,12 @@ def _render_metrics(label: str, m: dict[str, Any], indent: str = "  ") -> list[s
     split = latency["llm_split"]
     lines.append(f"{pad}  llm ttft       {_fmt_stats(split['ttft_ms'])}")
     lines.append(f"{pad}  llm generation {_fmt_stats(split['generation_ms'])}")
+    by_cache = latency.get("llm_by_cache")
+    if by_cache:
+        for name in ("hit", "miss", "unreported"):
+            lines.append(
+                f"{pad}  llm stage, cache {name:<10} {_fmt_stats(by_cache[name]['llm_ms'])}"
+            )
     return lines
 
 

@@ -33,6 +33,24 @@ per-source scoping or the join-only rules change. ``tests/test_llm_warmup.py``
 asserts that a real request's flattened prompt starts with exactly the text
 the warm-up sent.
 
+Keeping it warm
+---------------
+The start-up pass primes the cache once. On a model server shared with other
+users the cache is evicted again whenever their traffic needs the memory, and
+the next question pays the whole prefill. :class:`KeepWarm` (started from
+``api/server.py``'s ``lifespan`` when ``LLM_PREFIX_KEEPWARM_SECONDS`` is above
+zero) repeats the same pass every that many seconds. It is not a second
+implementation of the warm-up: every pass is :func:`warm_prefix_cache`, with
+three differences that only apply to it --
+
+* a source whose prefix a real request used within the last interval is
+  skipped (:mod:`llm.prefix_activity`; the request refreshed the cache, so
+  under traffic the keep-warm sends nothing);
+* a repeated outcome is logged once, then at ``DEBUG`` until it changes (an
+  endpoint that stays down is one warning, not one per pass);
+* it does nothing while ``paused()`` says so (maintenance mode) and stops at
+  shutdown.
+
 Failure policy
 --------------
 A warm-up is an optimisation. Every failure -- an unreachable endpoint, a
@@ -51,9 +69,11 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import config as cfg
+from llm.prefix_activity import PrefixActivity, activity as _default_activity
 from llm.router import (
     LLMRouter,
     PromptSegments,
@@ -182,34 +202,115 @@ def _prefix_segments(system_prompt: str, source: str | None) -> PromptSegments:
     return PromptSegments(static_prefix=built.static_prefix)
 
 
+class _OutcomeLog:
+    """Says each source's outcome once per streak, then only at ``DEBUG``.
+
+    A keep-warm pass repeats every few minutes for as long as the server
+    runs; an endpoint that is down, or a source on the retrieval path, must
+    be one log line and not one per pass. The first time a source has an
+    outcome *kind* it is logged at the level the call site chose; the same
+    kind again is logged at ``DEBUG``; a different kind is a new streak and
+    is logged at its level again. A success that ends a streak of failures
+    says how many passes failed.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._state: dict[str | None, tuple[str, int]] = {}
+
+    def failures_before(self, source: str | None) -> int:
+        """How many consecutive failures *source* had up to now (0 if none)."""
+        with self._lock:
+            kind, count = self._state.get(source, ("", 0))
+        return count if kind == "failed" else 0
+
+    def emit(
+        self, source: str | None, kind: str, level: int, message: str, *args: object,
+    ) -> None:
+        """Log *message* at *level* if *kind* starts a streak for *source*, else at DEBUG."""
+        with self._lock:
+            previous, count = self._state.get(source, ("", 0))
+            new = previous != kind
+            self._state[source] = (kind, 1 if new else count + 1)
+        logger.log(level if new else logging.DEBUG, message, *args)
+
+
 def _warm_one(
-    router: LLMRouter, system_prompt: str, source: str | None, timeout: float,
+    router: LLMRouter,
+    system_prompt: str,
+    source: str | None,
+    timeout: float,
+    *,
+    skip_used_within: float | None = None,
+    outcomes: _OutcomeLog | None = None,
+    activity: PrefixActivity | None = None,
 ) -> SourceWarmup:
-    """Warm one source; never raises."""
+    """Warm one source; never raises.
+
+    Parameters
+    ----------
+    skip_used_within:
+        When given (the keep-warm), a source whose prefix a real request
+        used within this many seconds is skipped: that request already
+        refreshed the server's cache. ``None`` (the start-up pass and
+        ``POST /admin/llm/warmup``) always sends.
+    outcomes:
+        When given (the keep-warm), repeated outcomes are logged once per
+        streak instead of every time.
+    activity:
+        The record of real requests; the process-wide one by default. A
+        successful warm-up is recorded in it too, so a keep-warm pass right
+        after a start-up or manual warm-up does not repeat it.
+    """
     label = _source_label(source)
+    activity = activity if activity is not None else _default_activity
+
+    def say(kind: str, level: int, message: str, *args: object) -> None:
+        if outcomes is not None:
+            outcomes.emit(source, kind, level, message, *args)
+        else:
+            logger.log(level, message, *args)
+
     try:
         segments = _prefix_segments(system_prompt, source)
     except Exception as exc:  # noqa: BLE001 - a warm-up must not fail anything else
-        logger.warning(
+        say(
+            "skipped:unbuildable", logging.WARNING,
             "LLM prefix warm-up: source=%s skipped, could not build the prefix (%s)",
             label, _describe_failure(exc),
         )
         return SourceWarmup(source, "skipped", f"could not build the prefix ({_describe_failure(exc)})")
     if not segments.static_prefix:
-        logger.info(
+        say(
+            "skipped:retrieval", logging.INFO,
             "LLM prefix warm-up: source=%s skipped, its prompt uses retrieval, not a static prefix",
             label,
         )
         return SourceWarmup(source, "skipped", "prompt uses retrieval, not a static prefix")
+    if skip_used_within is not None:
+        idle = activity.seconds_since_use(segments.static_prefix)
+        if idle is not None and idle < skip_used_within:
+            say(
+                "skipped:recent", logging.DEBUG,
+                "LLM prefix warm-up: source=%s skipped, a request used its prefix %.0f s ago",
+                label, idle,
+            )
+            return SourceWarmup(
+                source, "skipped", f"a request used this prefix {idle:.0f} s ago; it is warm",
+            )
 
     start = time.perf_counter()
     try:
         report = router.warm_prefix(segments, timeout=timeout)
     except NotImplementedError:
-        logger.info("LLM prefix warm-up: source=%s skipped, the backend has no prefix cache", label)
+        say(
+            "skipped:no-cache", logging.INFO,
+            "LLM prefix warm-up: source=%s skipped, the backend has no prefix cache", label,
+        )
         return SourceWarmup(source, "skipped", "backend has no prefix cache to warm")
     except RemoteProviderNotAllowedError:
-        logger.info(
+        say(
+            "skipped:remote", logging.INFO,
             "LLM prefix warm-up: source=%s skipped, the endpoint is not trusted "
             "and LLM_ALLOW_REMOTE is off", label,
         )
@@ -217,7 +318,8 @@ def _warm_one(
     except Exception as exc:  # noqa: BLE001 - every failure is logged and swallowed
         elapsed_ms = round((time.perf_counter() - start) * 1000)
         what = _describe_failure(exc)
-        logger.warning(
+        say(
+            "failed", logging.WARNING,
             "LLM prefix warm-up: source=%s failed after %d ms (%s)", label, elapsed_ms, what,
         )
         return SourceWarmup(source, "failed", what, duration_ms=elapsed_ms)
@@ -225,11 +327,15 @@ def _warm_one(
     elapsed_ms = round((time.perf_counter() - start) * 1000)
     prompt_tokens = report.get("prompt_tokens")
     cached_tokens = report.get("cached_tokens")
-    logger.info(
-        "LLM prefix warm-up: source=%s warmed in %d ms, prompt_tokens=%s%s",
+    activity.note_use(segments.static_prefix)
+    recovered = outcomes.failures_before(source) if outcomes is not None else 0
+    say(
+        "warmed", logging.INFO,
+        "LLM prefix warm-up: source=%s warmed in %d ms, prompt_tokens=%s%s%s",
         label, elapsed_ms,
         prompt_tokens if prompt_tokens is not None else "unknown",
         f", cached_tokens={cached_tokens}" if cached_tokens is not None else "",
+        f" (recovered after {recovered} failed pass(es))" if recovered else "",
     )
     return SourceWarmup(
         source, "warmed", None, duration_ms=elapsed_ms,
@@ -242,6 +348,10 @@ def warm_prefix_cache(
     router_factory: Callable[[], LLMRouter],
     *,
     timeout_seconds: float | None = None,
+    skip_used_within: float | None = None,
+    outcomes: _OutcomeLog | None = None,
+    activity: PrefixActivity | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> list[SourceWarmup] | None:
     """Warm the prefix cache for every data source, within one time budget.
 
@@ -263,6 +373,13 @@ def warm_prefix_cache(
         ``None``. The budget bounds each request's timeout, so a request
         that connects slowly and then reads slowly can overrun it by up to
         one more timeout; it is a bound, not a deadline to the millisecond.
+    skip_used_within, outcomes, activity:
+        What distinguishes a keep-warm pass (:class:`KeepWarm`) from the
+        start-up one; see :func:`_warm_one`. The defaults are the start-up
+        pass.
+    cancel:
+        Polled before each source; when it returns true the remaining
+        sources are skipped (the keep-warm's shutdown).
 
     Returns
     -------
@@ -278,7 +395,10 @@ def warm_prefix_cache(
     ['skipped']
     """
     if not _warmup_lock.acquire(blocking=False):
-        logger.info("LLM prefix warm-up: another warm-up is already running, not starting a second")
+        logger.log(
+            logging.DEBUG if outcomes is not None else logging.INFO,
+            "LLM prefix warm-up: another warm-up is already running, not starting a second",
+        )
         return None
     try:
         budget = float(
@@ -290,13 +410,18 @@ def warm_prefix_cache(
             router = router_factory()
             sources = warm_sources()
         except Exception as exc:  # noqa: BLE001 - nothing to warm, nothing to break
-            logger.warning(
-                "LLM prefix warm-up: not started, could not set up (%s)", _describe_failure(exc),
-            )
+            message = "LLM prefix warm-up: not started, could not set up (%s)"
+            if outcomes is not None:
+                outcomes.emit(None, "setup", logging.WARNING, message, _describe_failure(exc))
+            else:
+                logger.warning(message, _describe_failure(exc))
             return [SourceWarmup(None, "skipped", f"could not set up ({_describe_failure(exc)})")]
 
         results: list[SourceWarmup] = []
         for source in sources:
+            if cancel is not None and cancel():
+                results.append(SourceWarmup(source, "skipped", "shutting down"))
+                continue
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 logger.warning(
@@ -305,7 +430,10 @@ def warm_prefix_cache(
                 )
                 results.append(SourceWarmup(source, "skipped", "time budget exhausted"))
                 continue
-            results.append(_warm_one(router, system_prompt, source, remaining))
+            results.append(_warm_one(
+                router, system_prompt, source, remaining,
+                skip_used_within=skip_used_within, outcomes=outcomes, activity=activity,
+            ))
         return results
     finally:
         _warmup_lock.release()
@@ -349,3 +477,302 @@ def start_background_warmup(
     thread = threading.Thread(target=_run, name="llm-prefix-warmup", daemon=True)
     thread.start()
     return thread
+
+
+# ---------------------------------------------------------------------------
+# Keeping the cache warm
+# ---------------------------------------------------------------------------
+
+class KeepWarm:
+    """Repeats the warm-up every *interval_seconds*, skipping what real traffic keeps warm.
+
+    Each pass is :func:`warm_prefix_cache` (so the request, the
+    data-governance gate, the time budget and the "retrieval path means
+    nothing to warm" rule are the warm-up's own), with ``skip_used_within``
+    set to the interval. See the module docstring's "Keeping it warm".
+
+    The first pass runs one interval after :meth:`start`, not at once: the
+    start-up warm-up (or the first question) is what primes a cold server.
+
+    Parameters
+    ----------
+    system_prompt, router_factory:
+        As for :func:`warm_prefix_cache`.
+    interval_seconds:
+        Seconds between passes, and the age under which a real request
+        counts as having kept a prefix warm.
+    paused:
+        Returns true while passes must not send anything (maintenance mode).
+        An exception from it counts as "not paused".
+    activity:
+        The record of real requests (:mod:`llm.prefix_activity`); the
+        process-wide one by default, which is the one the router writes to.
+    wait:
+        ``wait(seconds) -> bool`` blocks for that long and returns true when
+        the keep-warm was stopped meanwhile. The default waits on the stop
+        event; tests pass a fake that advances a fake clock.
+    now:
+        Returns the current wall-clock time, for ``last_run_at``.
+
+    Examples
+    --------
+    >>> from llm.providers import MockBackend
+    >>> router = LLMRouter(default_chain=[MockBackend()])
+    >>> keepwarm = KeepWarm("You are a T-SQL expert.", lambda: router, 60)
+    >>> [r.status for r in keepwarm.run_once()]
+    ['skipped']
+    >>> keepwarm.status()["last_run_outcome"]
+    'skipped'
+    """
+
+    def __init__(
+        self,
+        system_prompt: str,
+        router_factory: Callable[[], LLMRouter],
+        interval_seconds: float,
+        *,
+        paused: Callable[[], bool] | None = None,
+        activity: PrefixActivity | None = None,
+        wait: Callable[[float], bool] | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._system_prompt = system_prompt
+        self._router_factory = router_factory
+        self.interval_seconds = float(interval_seconds)
+        self._paused = paused
+        self._activity = activity if activity is not None else _default_activity
+        self._stop = threading.Event()
+        self._wait = wait if wait is not None else self._stop.wait
+        self._now = now if now is not None else (lambda: datetime.now(timezone.utc))
+        self._outcomes = _OutcomeLog()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._runs = 0
+        self._last_run_at: str | None = None
+        self._last_outcome: str | None = None
+        self._last_results: list[SourceWarmup] = []
+
+    # -- control ---------------------------------------------------------
+
+    def start(self) -> threading.Thread:
+        """Start the daemon thread (once) and return it."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return self._thread
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run, name="llm-prefix-keepwarm", daemon=True,
+            )
+            self._thread.start()
+            return self._thread
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Ask the thread to stop and wait up to *timeout* seconds for it.
+
+        Returns true when it has ended. A pass in the middle of a request
+        to the model server ends with that request (bounded by
+        ``LLM_PREFIX_WARMUP_TIMEOUT_SECONDS``); the thread is a daemon, so a
+        process that is exiting does not wait for it.
+        """
+        self._stop.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+            return not thread.is_alive()
+        return True
+
+    @property
+    def running(self) -> bool:
+        """True while the thread is alive and has not been asked to stop."""
+        thread = self._thread
+        return bool(thread is not None and thread.is_alive() and not self._stop.is_set())
+
+    # -- one pass --------------------------------------------------------
+
+    def _is_paused(self) -> bool:
+        if self._paused is None:
+            return False
+        try:
+            return bool(self._paused())
+        except Exception:  # noqa: BLE001 - a broken pause check must not stop the keep-warm
+            return False
+
+    def run_once(self) -> list[SourceWarmup] | None:
+        """Run one pass now; never raises.
+
+        Returns
+        -------
+        list[SourceWarmup] | None
+            One entry per source, as for :func:`warm_prefix_cache`; ``None``
+            when nothing was attempted (paused, stopped, or another warm-up
+            was running).
+        """
+        if self._stop.is_set():
+            return None
+        if self._is_paused():
+            self._record("paused", [])
+            return None
+        try:
+            results = warm_prefix_cache(
+                self._system_prompt, self._router_factory,
+                skip_used_within=self.interval_seconds,
+                outcomes=self._outcomes, activity=self._activity,
+                cancel=self._stop.is_set,
+            )
+        except Exception as exc:  # noqa: BLE001 - belt and braces: warm_prefix_cache already catches
+            self._outcomes.emit(
+                None, "crashed", logging.WARNING,
+                "LLM prefix keep-warm: a pass stopped unexpectedly (%s)", _describe_failure(exc),
+            )
+            self._record("failed", [SourceWarmup(None, "failed", _describe_failure(exc))])
+            return None
+        if results is None:
+            self._record("busy", [])
+            return None
+        if any(r.status == "failed" for r in results):
+            outcome = "failed"
+        elif any(r.status == "warmed" for r in results):
+            outcome = "warmed"
+        else:
+            outcome = "skipped"
+        self._record(outcome, results)
+        return results
+
+    def _record(self, outcome: str, results: list[SourceWarmup]) -> None:
+        with self._lock:
+            self._runs += 1
+            self._last_run_at = self._now().isoformat()
+            self._last_outcome = outcome
+            self._last_results = list(results)
+
+    def _run(self) -> None:
+        logger.info(
+            "LLM prefix keep-warm: every %.0f s; a source a real request used within that "
+            "time is skipped", self.interval_seconds,
+        )
+        while not self._stop.is_set():
+            if self._wait(self.interval_seconds):
+                break
+            self.run_once()
+        logger.info("LLM prefix keep-warm: stopped")
+
+    # -- what the admin routes show ---------------------------------------
+
+    def status(self) -> dict[str, Any]:
+        """A JSON-ready account of the keep-warm and its last pass.
+
+        ``last_run_outcome`` is ``"warmed"`` (at least one prefix was sent
+        and answered), ``"skipped"`` (every source was skipped: kept warm by
+        traffic, on the retrieval path, or not allowed), ``"failed"`` (at
+        least one request failed), ``"paused"`` (maintenance mode) or
+        ``"busy"`` (another warm-up was running); ``None`` before the first
+        pass. ``last_run`` has one entry per source, as
+        ``POST /admin/llm/warmup`` does. No prompt text anywhere.
+        """
+        paused = self._is_paused()
+        with self._lock:
+            return {
+                "enabled": True,
+                "interval_seconds": self.interval_seconds,
+                "running": self.running,
+                "paused": paused,
+                "runs": self._runs,
+                "last_run_at": self._last_run_at,
+                "last_run_outcome": self._last_outcome,
+                "last_run": [r.as_dict() for r in self._last_results],
+            }
+
+
+#: The keep-warm :func:`start_keepwarm` started, if any.
+_keepwarm: KeepWarm | None = None
+_keepwarm_lock = threading.Lock()
+
+
+def start_keepwarm(
+    system_prompt: str,
+    router_factory: Callable[[], LLMRouter],
+    *,
+    paused: Callable[[], bool] | None = None,
+) -> KeepWarm | None:
+    """Start the process's keep-warm if ``LLM_PREFIX_KEEPWARM_SECONDS`` asks for one.
+
+    Returns ``None`` (and starts nothing) when the setting is ``0``, when
+    ``LLM_PROVIDER=mock`` (there is no model server to keep warm), or when a
+    keep-warm is already running. Never raises.
+
+    Examples
+    --------
+    >>> start_keepwarm("You are a T-SQL expert.", lambda: None) is None
+    True
+    """
+    global _keepwarm
+    try:
+        seconds = float(cfg.settings.llm_prefix_keepwarm_seconds)
+        if seconds <= 0:
+            return None
+        if str(cfg.settings.llm_provider).lower() == "mock":
+            logger.info("LLM prefix keep-warm: not started, LLM_PROVIDER=mock has no model server")
+            return None
+        with _keepwarm_lock:
+            if _keepwarm is not None and _keepwarm.running:
+                return None
+            keepwarm = KeepWarm(system_prompt, router_factory, seconds, paused=paused)
+            keepwarm.start()
+            _keepwarm = keepwarm
+            return keepwarm
+    except Exception as exc:  # noqa: BLE001 - an optimisation, startup must not fail on it
+        logger.warning("LLM prefix keep-warm could not be started: %s", _describe_failure(exc))
+        return None
+
+
+def stop_keepwarm(timeout: float = 5.0) -> None:
+    """Stop the process's keep-warm, if one is running (``lifespan`` shutdown). Never raises."""
+    global _keepwarm
+    with _keepwarm_lock:
+        keepwarm, _keepwarm = _keepwarm, None
+    if keepwarm is None:
+        return
+    try:
+        if not keepwarm.stop(timeout):
+            logger.warning(
+                "LLM prefix keep-warm: still finishing a request to the model server at "
+                "shutdown; it is a daemon thread and ends with the process",
+            )
+    except Exception as exc:  # noqa: BLE001 - shutdown must not fail on it
+        logger.warning("LLM prefix keep-warm could not be stopped: %s", _describe_failure(exc))
+
+
+def keepwarm_status() -> dict[str, Any]:
+    """The keep-warm's status, or the reason there is none.
+
+    With no keep-warm running: ``{"enabled": False, "reason": ...}`` and the
+    same keys with empty values. Safe to call from a request.
+
+    Examples
+    --------
+    >>> keepwarm_status()["enabled"]
+    False
+    """
+    with _keepwarm_lock:
+        keepwarm = _keepwarm
+    if keepwarm is not None:
+        return keepwarm.status()
+    seconds = float(cfg.settings.llm_prefix_keepwarm_seconds)
+    if seconds <= 0:
+        reason = "LLM_PREFIX_KEEPWARM_SECONDS is 0"
+    elif str(cfg.settings.llm_provider).lower() == "mock":
+        reason = "LLM_PROVIDER=mock has no model server"
+    else:
+        reason = "not started"
+    return {
+        "enabled": False,
+        "reason": reason,
+        "interval_seconds": seconds,
+        "running": False,
+        "paused": False,
+        "runs": 0,
+        "last_run_at": None,
+        "last_run_outcome": None,
+        "last_run": [],
+    }
