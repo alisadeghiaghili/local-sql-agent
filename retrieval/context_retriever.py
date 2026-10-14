@@ -34,6 +34,7 @@ from retrieval.join_paths import expand_join_paths
 from retrieval.pruning import prune_selection
 from retrieval.relationship_retriever import RelationshipRetriever
 from retrieval.rule_retriever import RuleRetriever
+from retrieval.table_keys import entity_for_table, resolve_table_ref
 from retrieval.example_retriever import ExampleRetriever
 from retrieval.value_retriever import ValueRetriever
 from security.auth import ANONYMOUS, Principal
@@ -150,7 +151,12 @@ class ContextRetriever:
         # above). match_question_against_vocabulary itself further narrows
         # this to the small-cardinality tables it actually has a vocabulary
         # for (Customer/Supplier are silently skipped, not queried).
-        db_candidate_tables = [t for t in entities if t not in filters]
+        # ValueRetriever keys a ring filter by the entity's configured name,
+        # which may be the bare spelling of a qualified table key.
+        static_tables = {key for name in filters for key in resolve_table_ref(name)}
+        db_candidate_tables = [
+            t for t in entities if t not in filters and t not in static_tables
+        ]
         if db_candidate_tables:
             match_result = match_question_against_vocabulary(
                 normalize_for_matching(question),
@@ -180,7 +186,7 @@ class ContextRetriever:
             for table in match_result.unavailable_tables:
                 if table not in entities:
                     continue
-                label = ENTITIES.get(table, {}).get("label")
+                label = (ENTITIES.get(table) or entity_for_table(table) or {}).get("label")
                 if label:
                     warnings.append(_VOCAB_UNAVAILABLE_WITH_LABEL.format(label=label))
                 else:
