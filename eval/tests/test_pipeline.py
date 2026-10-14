@@ -62,10 +62,12 @@ class ScriptedBackend(LLMBackend):
 class Warehouse:
     """SQLite behind a T-SQL front; records every statement it was asked to run."""
 
-    def __init__(self, fail_first: bool = False) -> None:
+    def __init__(self, fail_first: bool = False, label: str = "v") -> None:
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.execute(f"CREATE TABLE {T} (ID INTEGER, Label TEXT)")
-        self.conn.executemany(f"INSERT INTO {T} VALUES (?, ?)", [(i, f"v{i}") for i in range(1, 6)])
+        self.conn.executemany(
+            f"INSERT INTO {T} VALUES (?, ?)", [(i, f"{label}{i}") for i in range(1, 6)]
+        )
         self.calls: list[str] = []
         self.fail_first = fail_first
 
@@ -190,9 +192,77 @@ class TestRowCapAndExecution:
             result, warehouse, _ = _run(backend, case=case)
         assert warehouse.calls[0] == f"SELECT TOP 3 ID FROM {T}"      # what the analyst's query ran
         assert warehouse.calls[1] == f"SELECT ID FROM {T}"            # the reference is not capped
-        assert result.status == "fingerprint_mismatch"
-        assert result.diagnosis.mismatch_class == "actual_is_subset"  # 3 of 5 rows, as the analyst saw
         assert result.generated_sql == f"SELECT TOP 3 ID FROM {T}"
+        # 3 of the reference's 5 rows, all of them right, cut by policy: a pass
+        assert result.status == "pass"
+        diagnosis = result.diagnosis
+        assert (diagnosis.mismatch_class, diagnosis.capped, diagnosis.row_cap) == ("match_capped", True, 3)
+        assert (diagnosis.expected_rows, diagnosis.actual_rows) == (5, 3)
+
+    def test_a_capped_result_with_a_wrong_row_fails(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T} ORDER BY ID")  # rows 1 and 2
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T} WHERE ID >= 2")
+        with cfg.override_settings(default_top_n=2):
+            result, _, _ = _run(backend, case=case)
+        assert result.status == "fingerprint_mismatch"  # row 1 is not in the reference
+        assert result.diagnosis.mismatch_class == "row_count_differs" and not result.diagnosis.capped
+
+    def test_a_subset_below_the_cap_is_still_wrong(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T} WHERE ID <= 2")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=3):
+            result, _, _ = _run(backend, case=case)
+        assert result.status == "fingerprint_mismatch"
+        assert result.diagnosis.mismatch_class == "actual_is_subset"
+        assert result.diagnosis.capped is False
+
+    def test_max_rows_returned_below_top_n_is_the_cap(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T}")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        warehouse = Warehouse()
+        generate, execute, trace = _pipeline(backend, warehouse)
+        with cfg.override_settings(default_top_n=4, max_rows_returned=2):
+            generate(case.question)
+        assert trace.row_cap == 2
+
+    def test_a_statement_with_its_own_top_is_capped_by_max_rows_returned_only(self):
+        backend = ScriptedBackend(f"SELECT TOP 4 ID FROM {T}")
+        generate, execute, trace = _pipeline(backend, Warehouse())
+        with cfg.override_settings(default_top_n=3, max_rows_returned=10):
+            generate("list?")
+        assert trace.row_cap == 10  # nothing was injected; the model's own TOP is not a policy cap
+
+    def test_no_row_value_reaches_the_share_file_for_a_capped_match(self):
+        from eval.share import build_share_bundle, render_share_json
+        from pathlib import Path
+
+        backend = ScriptedBackend(f"SELECT Label FROM {T}")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT Label FROM {T}")
+        warehouse = Warehouse(label="SENTINEL_CAP_")
+        generate, execute, trace = _pipeline(backend, warehouse)
+        with cfg.override_settings(default_top_n=2):
+            results = run_golden_set([case], generate, execute, reference="live",
+                                     source_trace=trace)
+        report = build_report(results, mode="live", reference="live", pipeline="production")
+        bundle = build_share_bundle(
+            report, [case], golden_path=Path(__file__),
+            run_info={"model": "m"}, started_at="a", finished_at="b")
+        text = render_share_json(bundle)
+        assert "SENTINEL_CAP_" not in text
+        record = bundle["cases"][0]
+        assert (record["passed"], record["status"]) == (True, "pass")
+        assert record["diagnosis"]["mismatch_class"] == "match_capped"
+        assert (record["diagnosis"]["capped"], record["diagnosis"]["row_cap"]) == (True, 2)
+        assert bundle["summary"]["mismatch_classes"]["match_capped"] == 1
+        assert bundle["summary"]["passed"] == 1 and bundle["summary"]["execution_accuracy_pct"] == 100.0
+
+    def test_single_shot_has_no_cap_so_the_class_cannot_appear(self):
+        frame = pd.DataFrame({"ID": [1, 2, 3, 4, 5]})
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        result = run_case(case, lambda q: f"SELECT TOP 3 ID FROM {T}",
+                          lambda sql: frame.head(3) if "TOP" in sql else frame, reference="live")
+        assert result.status == "fingerprint_mismatch"
+        assert result.diagnosis.mismatch_class == "actual_is_subset"
 
     def test_a_statement_with_its_own_cap_is_left_alone(self):
         backend = ScriptedBackend(f"SELECT TOP 2 ID FROM {T} ORDER BY ID")

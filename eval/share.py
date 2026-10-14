@@ -241,6 +241,8 @@ def _case_record(
         "expected_columns": None,
         "actual_columns": None,
         "relative_error_bucket": None,
+        "capped": False,
+        "row_cap": None,
     }
     diagnosis["mismatch_class"] = mismatch_class_for(
         result.status, result.passed,

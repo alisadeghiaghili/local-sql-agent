@@ -301,6 +301,12 @@ class GoldenCase:
 #:
 #: ``match``
 #:     The same answer (the verdict of :mod:`eval.compare`).
+#: ``match_capped``
+#:     Passed: the result has exactly as many rows as the row cap (the
+#:     ``TOP n`` the server injected, or ``MAX_ROWS_RETURNED`` if lower),
+#:     fewer than the reference, and every row is one the reference has. The
+#:     analyst saw the right rows, cut short by policy. Only the production
+#:     pipeline has a cap, so ``--single-shot`` never produces it.
 #: ``not_executed``
 #:     The generated SQL, or the reference, never produced a result.
 #: ``column_count_differs``, ``actual_empty``, ``expected_empty``
@@ -322,6 +328,7 @@ class GoldenCase:
 #:     The same number of rows and columns, different values.
 MismatchClass = Literal[
     "match",
+    "match_capped",
     "row_count_differs",
     "column_count_differs",
     "column_names_differ",
@@ -365,6 +372,10 @@ class MismatchDiagnosis:
         Only for two single-cell numeric results that differ:
         ``"<1%"``, ``"<10%"`` or ``">=10%"`` (relative to the reference).
         Never the numbers. ``None`` otherwise.
+    capped, row_cap:
+        ``capped`` is true for ``match_capped``; ``row_cap`` is the cap the
+        server applied to that result (a count, never a value), and is also
+        recorded for a capped-looking result that did not qualify.
 
     Examples
     --------
@@ -381,6 +392,8 @@ class MismatchDiagnosis:
     expected_columns: list[str] | None = None
     actual_columns: list[str] | None = None
     relative_error_bucket: str | None = None
+    capped: bool = False
+    row_cap: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict."""
@@ -395,6 +408,8 @@ class MismatchDiagnosis:
                 None if self.actual_columns is None else list(self.actual_columns)
             ),
             "relative_error_bucket": self.relative_error_bucket,
+            "capped": self.capped,
+            "row_cap": self.row_cap,
         }
 
     @classmethod
@@ -412,6 +427,8 @@ class MismatchDiagnosis:
             expected_columns=None if expected_columns is None else list(expected_columns),
             actual_columns=None if actual_columns is None else list(actual_columns),
             relative_error_bucket=data.get("relative_error_bucket"),
+            capped=bool(data.get("capped", False)),
+            row_cap=data.get("row_cap"),
         )
 
 

@@ -126,6 +126,7 @@ class TestClasses:
             "same_rows_different_order": _diagnose(TABLE, TABLE.iloc[::-1], sql=RANKED).mismatch_class,
             "values_differ_same_shape": _diagnose(
                 TABLE, TABLE.assign(score=[1, 2, 3])).mismatch_class,
+            "match_capped": _diagnose(TABLE, TABLE.iloc[:1], row_cap=1).mismatch_class,
             "actual_is_subset": _diagnose(TABLE, TABLE.iloc[:1]).mismatch_class,
             "actual_is_superset": _diagnose(TABLE.iloc[:1], TABLE).mismatch_class,
             "actual_empty": _diagnose(TABLE, TABLE.iloc[0:0]).mismatch_class,
@@ -134,6 +135,57 @@ class TestClasses:
         }
         assert set(produced) == set(MISMATCH_CLASSES)
         assert all(key == value for key, value in produced.items())
+
+
+class TestMatchCapped:
+    """The cap must not turn a correct answer into a failure, and must not excuse a wrong one."""
+
+    def test_exactly_the_cap_and_every_row_in_the_reference_is_a_capped_match(self):
+        d = _diagnose(TABLE, TABLE.iloc[[2, 0]], row_cap=2)  # any two of the reference's rows
+        assert d.mismatch_class == "match_capped"
+        assert d.capped is True and d.row_cap == 2
+        assert (d.expected_rows, d.actual_rows) == (3, 2)
+        assert d.relative_error_bucket is None
+
+    def test_a_row_the_reference_does_not_have_is_a_failure(self):
+        wrong = pd.DataFrame({"label": ["p", "ZZ"], "score": [30, 99]})
+        d = _diagnose(TABLE, wrong, row_cap=2)
+        assert d.mismatch_class == "row_count_differs" and d.capped is False
+        assert d.row_cap == 2  # the cap is recorded, but it did not excuse anything
+
+    def test_a_subset_that_stops_short_of_the_cap_is_still_a_subset(self):
+        d = _diagnose(TABLE, TABLE.iloc[:1], row_cap=2)
+        assert d.mismatch_class == "actual_is_subset" and d.capped is False
+
+    def test_without_a_cap_the_class_never_appears(self):
+        assert _diagnose(TABLE, TABLE.iloc[:2]).mismatch_class == "actual_is_subset"
+        assert _diagnose(TABLE, TABLE.iloc[:2], row_cap=None).capped is False
+
+    def test_a_result_as_large_as_the_reference_is_not_a_cut(self):
+        other = pd.DataFrame({"label": ["p", "q", "z"], "score": [30, 20, 11]})
+        assert _diagnose(TABLE, other, row_cap=3).mismatch_class == "values_differ_same_shape"
+
+    def test_duplicates_count_against_the_reference(self):
+        reference = pd.DataFrame({"n": [1, 2, 3, 4]})
+        assert _diagnose(reference, pd.DataFrame({"n": [1, 1]}), row_cap=2).mismatch_class != "match_capped"
+
+    def test_the_column_count_must_agree(self):
+        assert _diagnose(TABLE, TABLE[["label"]].iloc[:2], row_cap=2).mismatch_class == \
+            "column_count_differs"
+
+    def test_an_ordered_reference_needs_its_first_rows_in_order(self):
+        top = pd.DataFrame({"label": list("abcd"), "score": [4, 3, 2, 1]})
+        sql = "SELECT TOP 4 label, score FROM T ORDER BY score DESC"
+        assert _diagnose(top, top.iloc[:2], sql=sql, row_cap=2).mismatch_class == "match_capped"
+        assert _diagnose(top, top.iloc[[2, 3]], sql=sql, row_cap=2).mismatch_class != "match_capped"
+        assert _diagnose(top, top.iloc[[1, 0]], sql=sql, row_cap=2).mismatch_class != "match_capped"
+
+    def test_nothing_but_counts_and_names_is_serialised(self):
+        secret = pd.DataFrame({"label": ["SENTINEL_CAP_A", "SENTINEL_CAP_B", "SENTINEL_CAP_C"],
+                               "score": [918273645, 546372819, 111222333]})
+        text = json.dumps(_diagnose(secret, secret.iloc[:2], row_cap=2).to_dict())
+        assert "SENTINEL" not in text and "918273645" not in text
+        assert '"capped": true' in text and '"row_cap": 2' in text
 
 
 class TestRelativeErrorBucket:

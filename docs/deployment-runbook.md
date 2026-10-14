@@ -2420,7 +2420,9 @@ that exist, source routing, the row cap the server injects into a statement
 that has none (`DEFAULT_TOP_N`) and the executor's query timeout and
 `MAX_ROWS_RETURNED`. The reference SQL is run as written, so a question whose
 reference returns more rows than the cap is scored the way the analyst would
-see it, as a subset. **One difference, on purpose:** the run has no caller, so
+see it: a result of exactly cap rows, every one of them a row of the reference,
+**passes** as `match_capped` (the analyst saw the right rows, cut short by
+policy), while any other subset stays `actual_is_subset` and fails. **One difference, on purpose:** the run has no caller, so
 no per-key `denied_columns` policy is applied; a deployment whose keys deny
 columns is measured as if they did not. `--single-shot` makes one model call
 and no correction (the old behaviour): a model-only number, lower than the
@@ -2481,10 +2483,11 @@ and run the round again.
   (round, class and redacted message, so a repeated rejection shows), the number
   of self-correction rounds, the latency, the error text, and a **diagnosis**
   computed on the server from the two result frames: a class
-  (`match`, `row_count_differs`, `column_count_differs`, `column_names_differ`,
-  `same_rows_different_order`, `values_differ_same_shape`, `actual_is_subset`,
-  `actual_is_superset`, `actual_empty`, `expected_empty` or `not_executed`),
-  the row counts, the **column names** of both results and, for a single
+  (`match`, `match_capped`, `row_count_differs`, `column_count_differs`,
+  `column_names_differ`, `same_rows_different_order`,
+  `values_differ_same_shape`, `actual_is_subset`, `actual_is_superset`,
+  `actual_empty`, `expected_empty` or `not_executed`), `capped` and the cap
+  value (a count) when the cap applied, the row counts, the **column names** of both results and, for a single
   numeric cell, a bucket of the relative error (`<1%`, `<10%`, `>=10%`); and a
   summary (execution accuracy overall, per tag and per data source, the
   distribution of the classes, correction rounds, latency p50 and p95).
@@ -2582,9 +2585,17 @@ The default figure is execution accuracy of the pipeline an analyst uses, so
 correction rounds. Read `guard_rejections` in the file round by round: the same
 message twice means the correction text did not help; a different message each
 round means the model is searching. What it does not cover: per-key
-`denied_columns`, the result cache, and the interpretation step. The row cap
-means a question that asks for everything is scored against the first
-`DEFAULT_TOP_N` rows, which is also what the analyst sees. `--single-shot` gives
+`denied_columns`, the result cache, and the interpretation step. **The row
+cap:** a question that asks for everything returns the first rows and no more,
+as it does for the analyst. A result with exactly as many rows as the cap (the
+`TOP n` the server injected, or `MAX_ROWS_RETURNED` if lower), fewer than the
+reference has, every row of it a row of the reference (the same matching rules
+as `compare`; for a reference with `ORDER BY ... TOP`, the first rows in that
+order), is `match_capped` and counts as passed. It is not excused when a row is
+not in the reference, nor when the result stops short of the cap: a missing
+filter that removes too many rows still looks like a subset, and its row count
+would not equal the cap. `--single-shot` has no cap, so `match_capped` never
+appears there. No row value is exported to say any of this. `--single-shot` gives
 the model-only figure; never compare it with a production round. §18.3
 describes how "the same answer" is decided.
 

@@ -143,6 +143,30 @@ def mismatch_class_for(status: str, passed: bool, diagnosed: str | None) -> str 
     return None
 
 
+def _is_capped_match(
+    expected: pd.DataFrame,
+    actual: pd.DataFrame,
+    row_cap: int | None,
+    ordered: bool,
+    keys: tuple[int, ...] | None,
+    options: ComparisonOptions,
+) -> bool:
+    """Whether *actual* is *expected* cut at exactly *row_cap* rows, and nothing else.
+
+    The row count must equal the cap and be below the reference's (equal
+    counts that are not the same answer are a wrong answer, not a cut), and
+    every row of *actual* must be a row of *expected* under the comparison's
+    own matching rules. A subset that stops short of the cap is not capped.
+    """
+    if not row_cap or len(actual) != row_cap or len(expected) <= row_cap:
+        return False
+    if ordered:
+        return compare_frames(
+            expected.iloc[:row_cap], actual, ordered=True, order_keys=keys, options=options
+        ).equal
+    return multiset_contains(expected, actual, options=options)
+
+
 def diagnose_not_executed(
     expected: pd.DataFrame | None = None, actual: pd.DataFrame | None = None
 ) -> MismatchDiagnosis:
@@ -173,6 +197,7 @@ def diagnose_results(
     *,
     options: ComparisonOptions | None = None,
     dialect: str | None = None,
+    row_cap: int | None = None,
 ) -> MismatchDiagnosis:
     """Classify how *actual* differs from the reference *expected*.
 
@@ -187,6 +212,14 @@ def diagnose_results(
         Comparison tolerance; must be the one the verdict was reached with.
     dialect:
         sqlglot dialect used to read *expected_sql*.
+    row_cap:
+        The row cap the server applied to *actual* (the injected ``TOP n``
+        or ``MAX_ROWS_RETURNED``, whichever is lower), or ``None`` when
+        there was none (``--single-shot``). A result that is not the same
+        answer but has exactly *row_cap* rows, every one of them a row of
+        the reference, is ``match_capped``: the analyst saw the right rows,
+        cut short by policy. For a reference that orders its rows, *actual*
+        must also be the reference's first *row_cap* rows in that order.
 
     Returns
     -------
@@ -207,6 +240,9 @@ def diagnose_results(
     'same_rows_different_order'
     >>> diagnose_results("SELECT s, v FROM T", top, top.iloc[:1], dialect="tsql").mismatch_class
     'actual_is_subset'
+    >>> capped = diagnose_results("SELECT s, v FROM T", top, top.iloc[:1], dialect="tsql", row_cap=1)
+    >>> (capped.mismatch_class, capped.capped, capped.row_cap)
+    ('match_capped', True, 1)
     >>> diagnose_results("SELECT s, v FROM T", top, top[["v", "s"]], dialect="tsql").mismatch_class
     'column_names_differ'
     """
@@ -224,6 +260,8 @@ def diagnose_results(
         mismatch_class = "match"
     elif expected_cols != actual_cols:
         mismatch_class = "column_count_differs"
+    elif _is_capped_match(expected, actual, row_cap, ordered, keys, opts):
+        mismatch_class = "match_capped"
     elif actual_rows == 0 and expected_rows > 0:
         mismatch_class = "actual_empty"
     elif expected_rows == 0 and actual_rows > 0:
@@ -242,7 +280,7 @@ def diagnose_results(
     else:
         mismatch_class = "values_differ_same_shape"
 
-    if mismatch_class != "match":
+    if mismatch_class not in ("match", "match_capped"):
         want, got = _single_number(expected), _single_number(actual)
         if want is not None and got is not None:
             bucket = relative_error_bucket(want, got)
@@ -254,4 +292,6 @@ def diagnose_results(
         expected_columns=_names(expected),
         actual_columns=_names(actual),
         relative_error_bucket=bucket,
+        capped=mismatch_class == "match_capped",
+        row_cap=row_cap if row_cap is not None else None,
     )

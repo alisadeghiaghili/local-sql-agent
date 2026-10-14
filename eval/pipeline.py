@@ -45,6 +45,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+import config as cfg
+
 from eval.runner import ExecuteFn, GenerateFn, PipelineFailure, SourceTrace
 from llm.sql_agent import SQLAgent
 
@@ -168,6 +170,12 @@ def make_production_pipeline(
                 raise  # not a run failure of a guard-approved statement: a transport failure
             raise PipelineFailure("execution_error", str(exc), exc.candidate_sql) from exc  # type: ignore[attr-defined]
         _record_selection(result)
+        # The server cuts a result at the TOP it injected and, whatever the SQL says, at
+        # MAX_ROWS_RETURNED: the lower of the two is what the analyst could ever see.
+        cap = cfg.settings.max_rows_returned
+        if result.injected_top:
+            cap = min(cap, result.injected_top)
+        trace.record_row_cap(cap)
         memo[result.sql] = frame
         return result.sql
 

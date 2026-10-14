@@ -108,6 +108,7 @@ class SourceTrace:
         self.chosen: str | None = None
         self.corrections: int = 0
         self.attempts: int = 0
+        self.row_cap: int | None = None
         self.guard_rejections: list[dict[str, Any]] = []
         self.execution_errors: list[dict[str, Any]] = []
 
@@ -123,6 +124,10 @@ class SourceTrace:
         does correct itself reports its rounds through this method.
         """
         self.corrections = max(0, int(rounds))
+
+    def record_row_cap(self, cap: int | None) -> None:
+        """Store the row cap the server applied to the current question's result."""
+        self.row_cap = cap
 
     def begin_attempt(self) -> int:
         """Count one more generation attempt; return its round (1 = first try).
@@ -150,6 +155,7 @@ class SourceTrace:
         self.chosen = None
         self.corrections = 0
         self.attempts = 0
+        self.row_cap = None
         self.guard_rejections = []
         self.execution_errors = []
 
@@ -439,11 +445,13 @@ def run_case(
         )
         try:
             diagnosis: MismatchDiagnosis | None = diagnose_results(
-                case.expected_sql, reference_df, df, options=options
+                case.expected_sql, reference_df, df, options=options,
+                row_cap=source_trace.row_cap if source_trace is not None else None,
             )
         except Exception:  # noqa: BLE001 - a diagnosis is an extra; the verdict above stands
             diagnosis = None
-        if comparison.equal:
+        capped_match = diagnosis is not None and diagnosis.mismatch_class == "match_capped"
+        if comparison.equal or capped_match:
             return _finish(
                 "pass",
                 generated_sql=raw_sql,
