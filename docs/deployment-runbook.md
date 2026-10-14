@@ -460,6 +460,7 @@ It asks questions as it goes, unless told not to. Its options:
 | `--include-schemas a,b` | Only these database schemas. |
 | `--dry-run` | Print the files and write none, the setup log included; the validation step is skipped. |
 | `--resume` | Continue from the first step `.setup_log.json` does not record as completed (see below). |
+| `--allow-repeated-answers` | Do not stop step 3 or 4 when 3 tables in a row get the identical answer from the model (see "It stops when the model repeats itself" below). Only for a genuinely tiny schema whose tables really are alike. |
 
 What it does, in order. Each step is recorded in `<output>/.setup_log.json`
 under the key shown:
@@ -517,6 +518,26 @@ Things to know before you run it:
   provider is never reused); a file that already exists is not rewritten. When
   steps 1 to 6 are recorded and every file exists, only the validation runs,
   without the database or the model. A run without `--resume` starts a new log.
+- **It stops when the model repeats itself.** Steps 3 and 4 ask one question per
+  table. A gateway with a response cache in front of the model can answer all of
+  them with the reply to the first (§20.10), and nothing in the reply says so: one
+  alias list written for most of a database's tables, and business rules such as `Value
+  column: X. Volume column: X.` on a table where that makes no sense, are what it
+  looks like. The wizard compares the model's answers as they arrive (the alias
+  list in step 3; the rule text with the table names taken out in step 4, empty
+  answers aside). When **3 tables in a row** get the identical answer it stops
+  that step with `Step 3 stopped: the model endpoint returned the identical alias
+  list for 3 different tables in a row (...)`, writes no file, exits with status
+  3 and leaves the run resumable: the steps already recorded stay in
+  `.setup_log.json`, so after the fix (disable response caching for this client
+  at the gateway, or point `OPENAI_BASE_URL` / `WIZARD_LLM_BASE_URL` at the model
+  server directly; `python scripts/verify_deployment.py` confirms it with
+  `Model endpoint answers each prompt itself`) `--resume` continues. Each of the two
+  steps ends with a line such as `183 distinct alias lists for 183 tables`; a
+  number far below the table count is the same warning after the fact, for a
+  repeat that never ran three in a row. `--allow-repeated-answers` turns the stop
+  into one warning, for a schema so small that identical answers are expected.
+  Step 5 asks a single question for the whole schema, so there is nothing to compare.
 - **Step 7 no longer needs a populated `project_config/`.** It validates the
   files it wrote and lists the required files still missing (§2.1), instead of
   ending in a `ConfigNotFoundError` traceback on a tree without the template
@@ -610,7 +631,7 @@ leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then
 `Tables are in their data source`, `Schema structure matches the databases`,
-`OpenAI-compatible model exists`,
+`OpenAI-compatible model exists`, `Model endpoint answers each prompt itself`,
 `API key authentication`, `Audit log directory writable`,
 `Session store directory writable`, `project_config/ loads` (all ten
 required files), the five checks that tell a curated `project_config/` from a raw
@@ -678,6 +699,7 @@ data sources, the four marked * print once per source, as
 | `Tables are in their data source` | Compares `schema.yaml` with each source's catalogue and fails for a table whose columns are all missing from the source it is assigned to while another source has it. | `N table(s): <table>: not in <assigned>, found in <other> — set datasource: <other>; ...` (ten hints, then `and N more`). The table has no `datasource:` (so it runs on the default source) or the wrong one. Run `python scripts/sync_schema.py` (or the narrower `python scripts/assign_datasources.py`) and replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". Or `could not compare schema.yaml with the data sources: ...` when a catalogue cannot be read. | One data source (`one data source -- nothing to place`). |
 | `Schema structure matches the databases` | Runs `python scripts/sync_schema.py --check` in memory: reads three catalogue views per source and fails when `schema.yaml` is out of step with them: a column the database has and the file lacks, a recorded type that differs, a column or table no longer in the database, a `datasource:` line to set. A column type that is merely not recorded yet is not drift (below). | `N column(s) missing from schema.yaml; N column(s) and N table(s) no longer in the database; N column type(s) differ; N datasource: line(s) to set[; N column type(s) to record] -- run python scripts/sync_schema.py ...`. Run it, review `schema.synced.yaml`, replace `schema.yaml` (§16.3); this is step 6 and 7 of "First install, in order". `schema.yaml differs from the synced text in a way the drift counts do not cover -- run python scripts/sync_schema.py --dry-run to see it` means the file differs from the synced text in something the counts do not name: read the dry run. A column already marked `# not in database` does not fail it; the detail of a `[PASS]` counts them. A `schema.yaml` written before 6.9.0 has no `column_types:` map; from 6.9.2 that is a `[PASS]` whose detail ends `N column type(s) not recorded yet -- run python scripts/sync_schema.py once to record them (review schema.synced.yaml, replace schema.yaml), so later type changes are detected`. Do it once, so a later type change is detected. | A database cannot be read (its own connectivity check fails), `schema.yaml` does not load (`project_config/ loads` says why), or its layout cannot be edited line by line (a flow-style table or `columns: {...}`). |
 | `OpenAI-compatible model exists` | Asks `OPENAI_BASE_URL` for `/models` (5 second timeout, `OPENAI_API_KEY` as the bearer token) and looks for `OPENAI_MODEL` among the ids it lists. | `could not reach <base>: ...`: wrong URL or port, endpoint down, a proxy, or an endpoint with no `/models` route. Or `'<model>' not found among models <base> lists: [...]`: set `OPENAI_MODEL` to one of the listed ids. | Never. |
+| `Model endpoint answers each prompt itself` | Sends two tiny requests to the model through the same backend settings the server uses (`OPENAI_BASE_URL`, `LLM_EXTRA_BODY`, the seed, `temperature=0`; only `max_tokens` is cut to at most 128, 15 second timeout). Each asks for one fresh random token (`Reply with exactly this token and nothing else: <32 hex characters>`); the two prompts differ only in that token, so a semantic or prefix response cache collides on the second. `[PASS]` when each reply contains its own token (a model that adds words around it still passes); the detail gives the reply times, as `each test request was answered with its own token (replies in 412 ms and 398 ms)`, and never the reply. | `the second test request, which carried a different random token, was answered with the first request's token (...). A response cache in front of the model returned another prompt's answer. The same cache can serve the wrong SQL for a similar question ...`, or `the reply to the first/second test request did not contain its own random token`: a response cache in front of the model (a gateway with semantic or prefix caching) is answering a new prompt with the reply stored for a similar one. Disable response caching for this client at the gateway, or point `OPENAI_BASE_URL` at the model server directly; §20.10 says what to look for. A model that ignores the instruction fails the second form too: ask the model server directly to tell the two apart. | `LLM_PROVIDER=mock`; the endpoint is remote and `LLM_ALLOW_REMOTE` is off (nothing is sent to it); the endpoint did not answer (`OpenAI-compatible model exists` reports that); or a reasoning model used all its tokens before answering (turn reasoning off for the request with `LLM_EXTRA_BODY`). Not part of the admin panel's ordinary run: see below. |
 | `API key authentication` | Checks that at least one key is configured (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) so that the server would start, and, with `VERIFY_API_KEY` set, that this raw key authenticates. | `API key configuration is invalid: ...` (the server would refuse to start; §5); `AUTH_REQUIRED is true but there are no configured keys ...` (issue one, §1); every key revoked or disabled in the application database; or `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (a truncated paste, or the `key_sha256` pasted instead of the raw key). With `AUTH_REQUIRED=false` it passes and says so; do not use that in production. | Never. |
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
 | `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
@@ -695,7 +717,13 @@ It means `scripts/sync_schema.py` (or `scripts/assign_datasources.py`) was never
 moved over `schema.yaml`. The same findings are on the admin panel's schema-drift
 card (§16.8). `GET /admin/health/checks` runs these checks from the panel; it
 leaves out `Login is read-only`, `Query timeout`, `Tables are in their data
-source` and `Schema structure matches the databases` unless "deep checks" is pressed (§12).
+source`, `Schema structure matches the databases` and `Model endpoint answers each
+prompt itself` unless "deep checks" is pressed (§12). The last one is a deep check
+because it is the only check that spends model-server time: two real completions,
+a line in the gateway's own log and, behind a response cache, two junk entries in
+it each time it runs. It tests a property of the deployment that changes only when
+the gateway does, so it belongs where an operator asks for it, not on a page load
+or a timer; the command line always runs it.
 The five checks above that read `project_config/` run on the panel without it: they
 only read files.
 
@@ -1055,7 +1083,7 @@ sources.
 | Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`, one pool per data source; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
 | `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection (of each data source, when there are several) — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
-| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection and `check_schema_structure_matches_databases`'s three catalogue queries per source | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
+| Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection and `check_schema_structure_matches_databases`'s three catalogue queries per source (and, to the model endpoint rather than the warehouse, `check_model_answers_each_prompt`'s two tiny completions, §3.1) | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema, on each source a table lives in; plus, only with more than one source and only when some table is missing from its assigned source, one `INFORMATION_SCHEMA.TABLES` query per other source (the "found in ..." hint) | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, access requests, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
 | Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column, as one single-table statement on the source that column's table routes to (a table listed under several sources is read from one copy: the default source if the table is there, else the first in `datasources.yaml` order) | At start-up when `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (the default; set `false` for a start-up that must not touch the warehouse); afterwards lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
@@ -1635,10 +1663,11 @@ source when the table lives there, otherwise the first source listed in
 refreshed makes value resolution miss silently, which is why the card exists.
 
 **Deployment checks** (`GET /admin/health/checks`; `admin`). The same checks as
-§3, once per source. The panel leaves out three on its own (the rolled-back
-`CREATE TABLE`, the `WAITFOR` probe, and `Tables are in their data source`)
-unless an operator presses "deep checks" and confirms; the command line always
-runs all of them.
+§3, once per source. The panel leaves out five on its own (the rolled-back
+`CREATE TABLE`, the `WAITFOR` probe, `Tables are in their data source`,
+`Schema structure matches the databases` and `Model endpoint answers each prompt
+itself`) unless an operator presses "deep checks" and confirms; the command line
+always runs all of them.
 
 ### 16.9 Watch which source answers
 
@@ -3095,3 +3124,77 @@ guarantees:
 To see whether it helps on your own log: `python scripts/analyze_audit_log.py`
 prints the correction-round distribution; compare the share of requests with
 `corrections: 2` that end rejected before and after the upgrade.
+
+### 20.10 A response cache in front of the model
+
+**What it is.** A gateway or proxy between this application and the model
+server (an LLM gateway, an API management layer, a caching reverse proxy) that
+keeps a *response cache*: when a request looks like one it has answered before,
+it returns the stored reply and never reaches the model. Two kinds matter here.
+A *semantic* cache matches prompts that are similar in meaning or text; a
+*prefix* cache matches prompts that start the same way. A request this
+application sends is a long fixed prefix with a short question at the end, so
+two different questions are, to such a cache, almost the same prompt. This is
+not the model server's own prefix **KV** cache (§20.1 to §20.8), which only saves
+computing the prefix and always generates a fresh answer; a response cache
+skips the generation. Nothing in this application caches model replies on its
+own: the query-result cache (`GET /admin/cache`) keys on the question and the
+SQL, and the endpoint's `cached_tokens` in the audit `llm` block (§20.8) counts
+KV-cache reuse, not this.
+
+**The symptom.**
+
+- **Identical answers for different prompts.** The setup wizard writes one
+  alias list for most of the tables of a database (the list the model gave for
+  the first table), only the tables with long column lists, whose prompts differ
+  most, getting their own; run against a second database later, it writes that
+  same list again for a large share of its tables. The business rules read as
+  nonsense, such as `Value column: X. Volume column: X.` on a table where that
+  makes no sense.
+- **Replies in milliseconds.** A request answered in single-digit milliseconds
+  with the full completion length (`llm.total_ms` of 8 and `completion_tokens` of
+  512 in the audit log) was not generated: no model produces 512 tokens in 8 ms.
+- **Byte-identical SQL for different questions**, with very short `llm.total_ms`.
+  The audit record then carries `suspected_cached_response: true` and the server
+  logs one `WARNING` per streak (below).
+
+**The risk.** Beyond the wizard, the same endpoint serves SQL generation. A
+semantic cache can answer "count of active customers" with the SQL cached for
+"count of inactive customers". That SQL is valid, the guard accepts it, the
+query runs and returns rows: a silent wrong answer, with a clean audit record.
+It also corrupts accuracy measurement (§18): a run that replays questions
+through a caching gateway measures the cache, not the model.
+
+**How to confirm.**
+
+1. `python scripts/verify_deployment.py`, the check `Model endpoint answers each
+   prompt itself` (§3.1). It sends two prompts that differ only in a random token
+   and fails when the second is answered with the first's token. Run it from the
+   same host and with the same `.env` as the server. It tests the endpoint in
+   `OPENAI_BASE_URL`; with `LLM_ENDPOINTS` (§2) point it at each in turn.
+2. The setup wizard stopping with `Step 3 stopped` (§2.2) says the same about
+   `WIZARD_LLM_BASE_URL`, which defaults to `OPENAI_BASE_URL`.
+3. In the audit log, `suspected_cached_response: true` in an `llm` block, or the
+   `WARNING` named `Suspected response cache in front of the model`.
+
+**The fix.** Disable response caching for this client at the gateway (an
+exemption for the application's key or route; a semantic cache has no safe
+setting for SQL generation), or point `OPENAI_BASE_URL` (and
+`WIZARD_LLM_BASE_URL`) at the model server directly. Run the check again; it must
+say `PASS`. If you cannot change the gateway, do not use this endpoint for SQL
+generation.
+
+**The runtime early warning.** The server keeps, in memory and per process, the
+last 200 pairs of (question hash, SQL hash) per data source for the questions
+that reached the model on `POST /query` (a question answered from the query cache
+never does). When a *different* question comes back
+with byte-identical SQL within two minutes and the model's reply took less than
+`LLM_CACHE_SUSPECT_MS` (default `50`; `0` turns the warning off), it logs one
+`WARNING` per streak (a streak ends after two quiet minutes) and writes
+`suspected_cached_response: true` in that request's audit `llm` block and in the
+`llm` block of the response. It never blocks or changes a request: two questions
+can legitimately map to the same SQL, and the check is a hash and a dictionary
+lookup (no model call, no I/O). Only `POST /query` is watched (all three of
+its modes), not the multi-turn session engine, whose refinements can reuse a
+previous turn's SQL on purpose. No question text is logged or kept, only
+hashes in memory.

@@ -59,7 +59,8 @@ const CARDS = [
 /* Cards whose data comes from a real warehouse round trip beyond a
  * trivial read -- "health" (scripts.verify_deployment's checks: several
  * SELECT 1s, a catalogue scan, and -- only with the deep button below --
- * a rolled-back CREATE TABLE DDL attempt and a WAITFOR probe) and
+ * a rolled-back CREATE TABLE DDL attempt, a WAITFOR probe and two tiny
+ * model requests that look for a response cache) and
  * "schemaDrift" (a full get_table_names/get_columns reflection of every
  * table in every schema). 2026 warehouse-load audit, Required item 1:
  * these are excluded from the 30-second auto-refresh below -- they load
@@ -204,7 +205,9 @@ function wireTopbar() {
         "CREATE TABLE (که همیشه Rollback می‌شود) برای اطمینان از دسترسی " +
         "فقط‌خواندنی، یک پروب WAITFOR که چند ثانیه طول می‌کشد، و — اگر بیش از " +
         "یک منبع داده تنظیم شده باشد — خواندن فهرست جدول‌ها و ستون‌های هر منبع " +
-        "برای یافتن جدولی که در منبعِ دیگری است. ادامه می‌دهید؟",
+        "برای یافتن جدولی که در منبعِ دیگری است. همچنین دو درخواستِ کوچک به " +
+        "مدل زبانی فرستاده می‌شود تا معلوم شود پاسخ‌ها از یک کشِ پاسخ " +
+        "(response cache) نمی‌آیند. ادامه می‌دهید؟",
       );
       if (!proceed) return;
       refreshOne("health", { force: true, deep: true });

@@ -115,6 +115,7 @@ from observability.llm_status import (
     latency_fields_from_meta,
     truncated_output_message,
 )
+from observability.response_cache_watch import mark_suspected
 from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import prefix_version_for_config
@@ -382,6 +383,9 @@ def run_query(
                     system_prompt, audit_selection, static_prefix_tokens,
                 ),
             )
+            mark_suspected(
+                audit_llm, source=_chosen_source(audit_selection), question=question, sql=sql,
+            )
             return QueryResponse(
                 question=question,
                 sql=sql,
@@ -416,6 +420,9 @@ def run_query(
             static_prefix_tokens=_prefix_tokens_for(
                 system_prompt, audit_selection, static_prefix_tokens,
             ),
+        )
+        mark_suspected(
+            audit_llm, source=_chosen_source(audit_selection), question=question, sql=result.sql,
         )
 
         interpretation: str | None = None
@@ -545,6 +552,12 @@ def _selection_or_none(value: object) -> dict[str, Any] | None:
     is not a selection and is not written to the audit record.
     """
     return value if isinstance(value, dict) and value else None
+
+
+def _chosen_source(selection: dict[str, Any] | None) -> str | None:
+    """The data source a selection block names, ``None`` without one (a single source)."""
+    chosen = selection.get("chosen") if selection else None
+    return chosen if isinstance(chosen, str) else None
 
 
 def _prefix_tokens_for(
