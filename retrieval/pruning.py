@@ -68,7 +68,7 @@ def prune_selection(
     from knowledge.entities import ENTITIES
     from knowledge.retrieval_hints import FACT_PATTERNS
     from retrieval.join_paths import build_join_graph, connected_within
-    from retrieval.table_evidence import alias_hits
+    from retrieval.table_evidence import named_tables
     from schema_data.retriever import _FORCED_SCORE, column_evidence, rank_tables
 
     settings = cfg.settings
@@ -77,8 +77,8 @@ def prune_selection(
         return list(entities), list(facts)
 
     ranked = dict(rank_tables(question))
-    named = set(alias_hits(question, {n: i["aliases"] for n, i in ENTITIES.items()}))
-    named |= set(alias_hits(question, FACT_PATTERNS))
+    named = set(named_tables(question, {n: i["aliases"] for n, i in ENTITIES.items()}))
+    named |= set(named_tables(question, FACT_PATTERNS))
     columns = column_evidence(question)
 
     def tier(table: str) -> str:

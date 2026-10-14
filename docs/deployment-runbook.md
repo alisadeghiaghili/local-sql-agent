@@ -2272,6 +2272,15 @@ generation, and after any change to `schema.yaml`, `entities.yaml`,
 `retrieval_hints.yaml` or the `RETRIEVAL_*` settings. How the stage works, the
 settings and the measured numbers are in `docs/design/RETRIEVAL.md`.
 
+If the recall is far lower than the synthetic benchmark's, look first at how
+`entities.yaml`, `fact_tables`, `fact_patterns` and `always_include` spell the
+tables: since this release a bare name (`Customer`) is resolved to the
+`schema.yaml` key (`sales.Customer`), and a name that matches no key is kept as
+written and finds nothing. When a bare name matches tables in several schemas,
+the schemas the file's other names live in decide, then the data source whose
+`keywords:` the question contains, and otherwise every candidate is retrieved;
+qualify the name to pin it (`docs/design/RETRIEVAL.md` §8).
+
 ### 18.5 The `RETRIEVAL_*` settings
 
 Eleven settings (6.9.0) decide which tables the retrieval path puts in the

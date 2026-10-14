@@ -117,12 +117,49 @@ def _build_idf() -> _IdfDict:
     return _IdfDict.build(N, doc_freq)
 
 
+#: Calendar years a bare number may be: Solar Hijri 1300-1599, Gregorian 1900-2199.
+_YEAR_RANGES: tuple[tuple[int, int], ...] = ((1300, 1599), (1900, 2199))
+
+#: What a year-shaped number says about the question, in the words the
+#: ``always_include`` triggers and the descriptions use for it.
+_YEAR_WORDS: tuple[str, ...] = ("year", "\u0633\u0627\u0644")
+
+
+def is_year_literal(token: str) -> bool:
+    """Whether *token* is a four-digit calendar year (``1399``, ``2025``).
+
+    Examples
+    --------
+    >>> [is_year_literal(t) for t in ("1399", "2025", "0042", "15", "12345", "year")]
+    [True, True, False, False, False, False]
+    """
+    return (
+        len(token) == 4 and token.isdigit()
+        and any(low <= int(token) <= high for low, high in _YEAR_RANGES)
+    )
+
+
 def _expand(question: str) -> str:
+    """The question plus its configured synonyms, and ``year`` for a year literal.
+
+    A question that says "in 2023" is about a period although it never uses a
+    word for one; the words added here are what lets the date dimension's
+    ``always_include`` triggers and descriptions see it.
+
+    Examples
+    --------
+    >>> _expand("totals in 2025").split()[-2:]
+    ['year', '\u0633\u0627\u0644']
+    >>> _expand("totals in 15 days")
+    'totals in 15 days'
+    """
     tokens = _tokenize(question)
     extra: list[str] = []
     for token in tokens:
         if token in SYNONYMS:
             extra.extend(SYNONYMS[token])
+    if any(is_year_literal(t) for t in tokens):
+        extra.extend(_YEAR_WORDS)
     return question + (" " + " ".join(extra) if extra else "")
 
 
@@ -307,6 +344,8 @@ def forced_tables(question: str) -> list[str]:
 
 
 def _forced_tables(q_tokens: list[str]) -> set[str]:
+    from retrieval.table_keys import resolve_table_ref
+
     q_token_set = set(q_tokens)
     q_joined = " ".join(q_tokens)
     forced: set[str] = set()
@@ -315,7 +354,8 @@ def _forced_tables(q_tokens: list[str]) -> set[str]:
             if not sig:
                 continue
             if all(t in q_token_set for t in sig.split()) or sig in q_joined:
-                forced.add(table_name)
+                # the configuration may write a bare name for a qualified key
+                forced.update(resolve_table_ref(table_name, q_joined) or (table_name,))
                 break
     return forced
 

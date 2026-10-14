@@ -15,10 +15,19 @@ code base does (after :func:`core.persian.normalize_for_matching`).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from functools import lru_cache
 
 from core.persian import normalize_for_matching
 
-__all__ = ["alias_hits", "scored_extras"]
+__all__ = ["alias_hits", "named_tables", "scored_extras"]
+
+
+@lru_cache(maxsize=8192)
+def _alias_form(form: str) -> tuple[str, tuple[str, ...]]:
+    """An alias folded for matching, and its stemmed words (both empty for a blank alias)."""
+    from schema_data.retriever import _stem, _tokenize
+
+    return normalize_for_matching(form), tuple(_stem(t) for t in _tokenize(form))
 
 
 def alias_hits(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]:
@@ -28,7 +37,11 @@ def alias_hits(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]
     with :func:`core.persian.normalize_for_matching` (Arabic ``ي``/``ك``,
     digits, ZWNJ, case), so ``تأمین‌کننده`` typed without its half-space still
     hits. A substring match is kept on purpose: it is what lets the alias
-    ``مشتری`` find ``مشتریان``.
+    ``مشتری`` find ``مشتریان``. Beside it, whole words are compared after
+    plural stemming (:func:`schema_data.retriever._stem`), which finds the
+    inflections a substring cannot (``city`` in ``cities``). An alias of
+    several words also matches when all of them occur in the question in any
+    order (``gear tooth pitch`` in "pitch of each tooth on the gear"): a question seldom repeats a configured phrase word for word.
 
     Parameters
     ----------
@@ -50,16 +63,67 @@ def alias_hits(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]
     ['Broker']
     >>> alias_hits("x", {"A": [""], "B": ["x"]})
     ['B']
+
+    An inflected form of the alias word hits too (the substring test alone
+    misses ``-ies`` for ``-y``, and a plural alias for a singular question):
+
+    >>> alias_hits("How many cities?", {"Place": ["city"]})
+    ['Place']
+    >>> alias_hits("each supplier", {"Supplier": ["suppliers"]})
+    ['Supplier']
+
+    The words of a multi-word alias may be apart, and in another order:
+
+    >>> alias_hits("pitch of each tooth on the gear", {"Part": ["gear tooth pitch"]})
+    ['Part']
+    >>> alias_hits("gear pitch only", {"Part": ["gear tooth pitch"]})
+    []
     """
     text = normalize_for_matching(question)
+    from schema_data.retriever import _stem, _tokenize
+
+    q_stems = [_stem(t) for t in _tokenize(question)]
+    words = f" {' '.join(q_stems)} "
+    bag = set(q_stems)
     hits: list[str] = []
     for table, forms in aliases.items():
         for form in forms:
-            folded = normalize_for_matching(form)
-            if folded and folded in text:
+            folded, form_stems = _alias_form(form)
+            if not folded:
+                continue
+            stems = " ".join(form_stems)
+            if (
+                folded in text
+                or (stems and f" {stems} " in words)
+                or (len(form_stems) > 1 and bag.issuperset(form_stems))
+            ):
                 hits.append(table)
                 break
     return hits
+
+
+def named_tables(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]:
+    """Like :func:`alias_hits`, but as ``schema.yaml`` keys.
+
+    The configuration may name a table by a bare name where ``schema.yaml``
+    keys it ``schema.Name``; the tables returned here are the keys, so they
+    compare equal to what the ranking, the join graph and the prompt use
+    (:func:`retrieval.table_keys.resolve_table_ref`). A name that resolves to
+    no table is returned as written.
+
+    Examples
+    --------
+    >>> named_tables("Total sales per Customer?", {"Customer": ["customer"], "Ring": ["ring"]})
+    ['Customer']
+    """
+    from retrieval.table_keys import resolve_table_ref
+
+    keys: list[str] = []
+    for table in alias_hits(question, aliases):
+        for key in resolve_table_ref(table, question) or (table,):
+            if key not in keys:
+                keys.append(key)
+    return keys
 
 
 def scored_extras(
@@ -91,7 +155,7 @@ def scored_extras(
         Table names, best first; empty when ``retrieval_extra_tables`` is 0.
     """
     import config as cfg
-    from knowledge.retrieval_hints import FACT_TABLES
+    from retrieval.table_keys import configured_fact_tables
     from schema_data.retriever import _FORCED_SCORE, rank_tables
     from schema_data.tables import TABLE_DESCRIPTIONS
 
@@ -100,9 +164,10 @@ def scored_extras(
         return []
     ratio = cfg.settings.retrieval_extra_score_ratio
     taken = set(exclude)
+    fact_tables = configured_fact_tables()
     pool = [
         (name, score) for name, score in rank_tables(question)
-        if name in TABLE_DESCRIPTIONS and (name in FACT_TABLES) == fact
+        if name in TABLE_DESCRIPTIONS and (name in fact_tables) == fact
     ]
     forced = [name for name, score in pool if score >= _FORCED_SCORE and name not in taken]
     unforced = [(name, score) for name, score in pool if score < _FORCED_SCORE]

@@ -40,6 +40,24 @@ class TestAliasHits:
     def test_an_empty_alias_never_matches(self):
         assert alias_hits("anything", {"A": [""]}) == []
 
+    def test_an_inflected_word_matches_where_a_substring_cannot(self):
+        # "-ies" for "-y": "city" is not a substring of "cities"
+        assert alias_hits("How many cities were visited?", {"Place": ["city"]}) == ["Place"]
+        assert alias_hits("each category", {"Group": ["categories"]}) == ["Group"]
+        assert alias_hits("every branch", {"Site": ["branches"]}) == ["Site"]
+
+    def test_a_different_word_is_not_an_inflection(self):
+        assert alias_hits("an ordinary day", {"Order": ["order"]}) == []
+        assert alias_hits("citrus", {"Place": ["city"]}) == []
+
+    def test_the_words_of_a_multi_word_alias_match_in_any_order(self):
+        aliases = {"Part": ["gear tooth pitch"]}
+        assert alias_hits("pitch of each tooth on the gear", aliases) == ["Part"]
+        assert alias_hits("gear-pitch by tooth", aliases) == ["Part"]
+
+    def test_a_multi_word_alias_needs_all_its_words(self):
+        assert alias_hits("gear pitch only", {"Part": ["gear tooth pitch"]}) == []
+
 
 class TestScoredExtras:
     def test_zero_limit_restores_the_old_behaviour(self):
