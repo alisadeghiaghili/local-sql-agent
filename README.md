@@ -521,7 +521,7 @@ local-sql-agent/
 ├── webapp/                   # Flask web application (bilingual FA/EN)
 ├── exporters/                # Excel / CSV / JSON exporters
 ├── scripts/
-│   ├── verify_deployment.py  #   the preflight: 14 checks (database, read-only login, keys, model, config), once per data source
+│   ├── verify_deployment.py  #   the preflight: 19 checks (database, read-only login, keys, model, config), once per data source
 │   ├── issue_api_key.py      #   mint a new API key
 │   ├── sync_schema.py        #   bring schema.yaml's structure (datasource:, columns, types, tables) in step with the databases; propose relationships
 │   ├── assign_datasources.py #   the narrower tool: only write each schema.yaml table's datasource: from the databases

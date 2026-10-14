@@ -599,7 +599,8 @@ This must print `0 failed` before you go further. Every line is
 `[PASS] / [FAIL] / [SKIP]` with a reason — a `[FAIL]` tells you exactly
 what to fix (a placeholder still in `.env`, an unreachable database, a
 model name the endpoint doesn't actually serve, no API key configured, an
-unwritable log directory, a `project_config/` that fails to load, or a
+unwritable log directory, a `project_config/` that fails to load, a `project_config/` that is
+a raw draft from the schema inspector, a data source with no table, or a
 rate limit too tight for your expected number of analysts). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
@@ -612,7 +613,11 @@ leftover placeholders, `.env` lines python-dotenv cannot use),
 `OpenAI-compatible model exists`,
 `API key authentication`, `Audit log directory writable`,
 `Session store directory writable`, `project_config/ loads` (all ten
-required files) and `Rate limit sane for deployment`. With several data sources the four database
+required files), the five checks that tell a curated `project_config/` from a raw
+draft (`project_config/ is curated, not a raw draft`, `Aliases are curated`,
+`Every data source is described`, `No staging or change-capture tables` and
+`No live sample values in descriptions`: file reads only, no database call) and
+`Rate limit sane for deployment`. With several data sources the four database
 checks run once per source and each name carries the source, as
 `Database connectivity [sales]`; `Tables are in their data source` is skipped
 with one source. The last line is `N passed, N failed, N skipped`, and the
@@ -653,7 +658,9 @@ Do not proceed to step 4 with any `[FAIL]` outstanding.
 ### 3.1 What each check means, and what to do about a `[FAIL]`
 
 A line is `[PASS]`, `[FAIL]` or `[SKIP]` followed by the check's name and a
-reason; there is no warning status. `[FAIL]` is a problem to fix before going
+reason; there is no warning status. Advice is a `[PASS]` line whose reason
+starts with `advice:` (the admin panel shows it the same way, since it has no
+other status): it never changes the exit code. `[FAIL]` is a problem to fix before going
 on, and any `[FAIL]` makes the exit code 1. `[SKIP]` means the check could not
 run (nothing to test against, or deliberately switched off) and does not fail
 the run. In the order they run, with the name exactly as printed (with several
@@ -675,6 +682,11 @@ data sources, the four marked * print once per source, as
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
 | `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
 | `project_config/ loads` | Checks that all ten required files exist (`aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml`, `schema.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml`, `system_prompt.md`), then loads each under the current code's models. An empty `system_prompt.md` fails. | `N of 10 required files not found under '<dir>': <names>`, with every missing name at once (copy each from `project_config.example/`, §2.1), `<file> not found under '<dir>'`, or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
+| `project_config/ is curated, not a raw draft` | Reads the first lines of every `*.yaml` file in `project_config/` for the `# AUTO-GENERATED DRAFT` header that `database.schema_inspector_cli` writes, and counts the `schema.yaml` tables whose description is still the inspector's placeholder (`<schema.table> — auto-detected <kind> table (~N rows)`). It reads `schema.yaml` even when a repeated key (an inspector draft from before 6.9.3) keeps the application from loading it. No database call. | `N file(s) carry the AUTO-GENERATED DRAFT header: <files>` and/or `schema.yaml: N of M table descriptions (P%) are still the placeholder`: the files are a draft, not a curated configuration (a draft lists every table of one database, so a curated file that was replaced by it loses its descriptions, its aliases and, with two databases, one of them). Restore the curated files from your backup or version control, and bring new tables in with `python scripts/sync_schema.py --add-tables 'Schema.*'` (§2.3, §16.3), which keeps the curated text. A file you really did review passes once its header line is deleted. More than a quarter of the descriptions has to be the placeholder; a table added by `--add-tables` is described by its own name and does not count. | `schema.yaml` is missing or unreadable (`project_config/ loads` says which). |
+| `Aliases are curated` | Reads `aliases.yaml`. Counts the synonym keys that are not words (no run of two letters: timestamps, numbers) and the synonym lines that still end in the inspector's `# REVIEW` marker. It also reads an `aliases.yaml` that is not valid YAML (a draft from before 6.9.3 with a quote in a sample value), from its lines. | `N of M synonym keys are not words (timestamps or numbers)` or ``N of M synonym entries still end in the inspector's `# REVIEW` marker``, more than half of them: the synonyms are the inspector's seeds (sample values of string columns, not a vocabulary). Restore the curated `aliases.yaml`. An empty `ring_aliases` is **not** a failure: only `ValueRetriever.extract_ring` reads it, to set the `Ring` filter from a ring (hall) name in the question, so a warehouse without that dimension leaves it empty (the setup wizard writes it empty too when it finds no dimension table). It shows as `advice: ring_aliases is empty` in a `[PASS]` line while `schema.yaml` or `entities.yaml` exists; add the ring names if your questions do name one. | `aliases.yaml` is missing. |
+| `Every data source is described` | Reads `datasources.yaml` (one source named `default` without it) and `schema.yaml`: a table belongs to the source its `datasource:` line names (to each, for a list) and to the default source when it has none. | `N of M data source(s) have no table in schema.yaml: <sources>`: a whole database is missing from the configuration (a `schema.yaml` drafted from one of two databases is the usual cause). Restore the curated `schema.yaml`, or add the tables with `python scripts/sync_schema.py --add-tables 'Schema.*'`. `schema.yaml describes no table` when the file has none. A `datasources.yaml` listing a second source while `schema.yaml` has no `datasource:` line fails here too, naming the second source: run `scripts/sync_schema.py` (§16.3) to write the lines. | `schema.yaml` or `datasources.yaml` does not load (their own checks say why). |
+| `No staging or change-capture tables` | Counts the `schema.yaml` tables whose schema or name matches `STAGING_PATTERNS` (default `*_Stg,*stg*,*staging*,table:*_Inserts,table:*_Updates,table:*_Deletes`). Comma-separated `fnmatch` patterns, case-insensitive; a bare pattern is matched against the schema, a `table:` prefix against the table name; empty switches the check off. | Never fails. A `[PASS]` line starting `advice: N of M table(s) look like staging or change-capture tables (<schema>: N, ...)` lists the counts per schema (never a value). Those tables repeat the ones analysts ask about, so the model sees the same name several times and the prompt budget goes to them; take them out of `schema.yaml` unless analysts need them (the inspector's `--exclude-schemas` keeps them out of a draft). | `STAGING_PATTERNS` is empty, or `schema.yaml` does not load. |
+| `No live sample values in descriptions` | Looks at the text after each `e.g.` in a table description or column note (outside a parenthesis) for a run of 7 or more digits (phone-like; Persian digits too), exactly 10 digits (national-id-like) or a long segment of words with digits (address-like). Dates and plain words are left alone. | Never fails. A `[PASS]` line starting `advice: N note(s) in M table(s) seem to quote live sample values (phone-like: N, national-id-like: N, address-like: N); tables: <keys>` gives counts and table keys, never a value. The inspector's `schema.yaml` quotes up to three values of each text column; the notes go into the prompt sent to the model. Replace each `e.g.` list with a description of the column. | `schema.yaml` does not load. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
 
 The most common first-install `[FAIL]` with several data sources is
@@ -684,6 +696,8 @@ moved over `schema.yaml`. The same findings are on the admin panel's schema-drif
 card (§16.8). `GET /admin/health/checks` runs these checks from the panel; it
 leaves out `Login is read-only`, `Query timeout`, `Tables are in their data
 source` and `Schema structure matches the databases` unless "deep checks" is pressed (§12).
+The five checks above that read `project_config/` run on the panel without it: they
+only read files.
 
 ## 4. Start the server
 
@@ -1744,6 +1758,17 @@ Steps 19 and 20 come last on purpose.
      differs, a column or table the databases lost, a `datasource:` line to
      set), then with `N column type(s) to record` added to the counts. (It is
      skipped, not failed, when a database cannot be read.)
+   - *Unreleased, a raw draft in place of the curated files.* Copying the
+     output of `database.schema_inspector_cli` over `project_config/` loads and starts, and
+     answers worse: the drafts list every table of one database (staging and change-capture
+     tables included), describe each with a placeholder, quote live sample values and leave
+     `ring_aliases` empty. The preflight now fails `project_config/ is curated, not a raw
+     draft` (naming the files that carry the `# AUTO-GENERATED DRAFT` header and the share of
+     placeholder descriptions), `Aliases are curated` and `Every data source is described` (a
+     database whose tables are gone), and advises on staging tables and sample values in
+     descriptions. Restore the curated files, then add tables with
+     `python scripts/sync_schema.py --add-tables 'Schema.*'` (§16.3). `STAGING_PATTERNS` in
+     `.env` sets what counts as a staging table.
 4. **Check `schema.yaml`** (6.2.0). A generated query that names the wrong
    schema is now refused, and the model's retry corrects it, so nothing needs
    doing for unique table names. If the same table name exists in several

@@ -610,6 +610,23 @@ class Settings:
     a real warehouse would produce confidently wrong SQL, which is worse
     than refusing to start. The example directory is only ever reached by
     explicitly setting this variable."""
+    staging_patterns: str = field(
+        default_factory=lambda: os.getenv(
+            "STAGING_PATTERNS",
+            "*_Stg,*stg*,*staging*,table:*_Inserts,table:*_Updates,table:*_Deletes",
+        )
+    )
+    """Which ``schema.yaml`` tables ``scripts/verify_deployment.py``'s
+    ``No staging or change-capture tables`` check reports as probably not
+    meant for analysts. Comma-separated ``fnmatch`` patterns, matched
+    case-insensitively. A bare pattern is matched against the table's
+    schema name (``*_Stg`` matches ``Sales_Stg``); a ``table:`` prefix
+    matches the table's own name instead (``table:*_Inserts`` matches
+    ``Invoice_Inserts``, whatever its schema). The default covers staging
+    schemas and the ``_Inserts`` / ``_Updates`` / ``_Deletes`` tables a
+    change-capture process writes. An empty value turns the check off. The
+    check only advises (it never fails), and reads ``schema.yaml``, not the
+    database."""
     # ── query result cache ────────────────────────────────────────────────
     cache_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("CACHE_TTL_SECONDS", "300"))

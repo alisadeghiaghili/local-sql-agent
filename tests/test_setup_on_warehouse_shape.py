@@ -15,7 +15,8 @@ space and one with a dot) and this module runs on it:
 * ``scripts/sync_schema.py`` and ``scripts/assign_datasources.py``, on a curated
   ``project_config/`` of 34 tables;
 * ``scripts/prompt_budget.py``;
-* the ``scripts/verify_deployment.py`` checks that need no SQL Server;
+* the ``scripts/verify_deployment.py`` checks that need no SQL Server, among them
+  the five that tell a curated ``project_config/`` from a raw inspector draft;
 * the retrieval layer, through ``python -m eval.cli recall``.
 
 Each must finish without a traceback and give a correct result. A setup tool
@@ -32,6 +33,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 from collections import Counter
@@ -63,6 +66,7 @@ from tests._warehouse_shape import (
     Table,
     Warehouse,
     attached,
+    build_warehouse,
     curated_keys,
     shared_names,
     write_golden,
@@ -833,6 +837,194 @@ class TestVerifyDeployment:
 
         assert result.status == "FAIL"
         assert "metrics.yaml" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# 4b. The preflight tells a raw inspector draft from the curated config
+# ---------------------------------------------------------------------------
+
+#: The five checks that read ``project_config/`` and nothing else.
+CURATION_CHECKS = (
+    verify.check_project_config_is_curated,
+    verify.check_aliases_are_curated,
+    verify.check_every_data_source_is_described,
+    verify.check_no_staging_tables,
+    verify.check_no_sample_values_in_descriptions,
+)
+
+#: Invented contact data, in the shape a live table has: a phone number, a
+#: ten-digit national code and a street address. None of it is real.
+_CONTACT_ROWS = (
+    ("Sample Person One", "09120000001", "0012345001", "12 Example Street, Building 4, Floor 2, Sample City"),
+    ("Sample Person Two", "09120000002", "0012345002", "7 Test Avenue, Unit 9, Floor 1, Sample Town"),
+)
+
+
+def _run_curation_checks(directory: Path) -> dict[str, verify.CheckResult]:
+    """The five checks, as a deployment whose ``project_config/`` is *directory*, by name."""
+    with cfg.override_settings(project_config_dir=str(directory)):
+        results = [check() for check in CURATION_CHECKS]
+    return {r.name: r for r in results}
+
+
+@pytest.fixture(scope="module")
+def draft_project(tmp_path_factory):
+    """What an operator gets by copying the inspector's drafts over a curated ``project_config/``.
+
+    The drafts are the real ``database.schema_inspector_cli`` output over a
+    private copy of the large source (a table of invented contact data added to
+    it, since the fixture itself holds no phone numbers), next to the curated
+    ``datasources.yaml``, which the operator kept: it lists both sources, and
+    the draft describes one of them.
+    """
+    private = build_warehouse(tmp_path_factory.mktemp("draft_warehouse"))
+    connection = sqlite3.connect(private.sources[LARGE].schemas["Metadata"])
+    try:
+        connection.execute(
+            'CREATE TABLE "PersonDetail" ("ID" INTEGER PRIMARY KEY, "Name" VARCHAR(40), '
+            '"Phone" VARCHAR(20), "NationalCode" VARCHAR(20), "Address" VARCHAR(120))'
+        )
+        connection.executemany(
+            'INSERT INTO "PersonDetail" ("Name", "Phone", "NationalCode", "Address") VALUES (?, ?, ?, ?)',
+            _CONTACT_ROWS,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    directory = tmp_path_factory.mktemp("draft_project")
+    inspection = _inspect(private, directory, LARGE)
+    assert inspection.run.rc == 0, inspection.run.err
+    curated = write_project_config(tmp_path_factory.mktemp("curated_for_sources"), private)
+    shutil.copyfile(curated / "datasources.yaml", directory / "datasources.yaml")
+    return directory, private
+
+
+@pytest.fixture(scope="module")
+def draft_results(draft_project):
+    return _run_curation_checks(draft_project[0])
+
+
+@pytest.fixture(scope="module")
+def curated_results(warehouse_shape, tmp_path_factory):
+    directory = write_project_config(tmp_path_factory.mktemp("curated_project"), warehouse_shape)
+    return _run_curation_checks(directory)
+
+
+class TestPreflightOnAnInspectorDraft:
+    """The incident: drafts moved over the curated files, and nothing said so."""
+
+    def test_the_drafts_are_what_the_inspector_wrote(self, draft_project):
+        directory, private = draft_project
+        for name in ("schema.yaml", "entities.yaml", "aliases.yaml", "relationships.yaml"):
+            assert _read(directory / name).startswith("# AUTO-GENERATED DRAFT")
+        assert len(_tables(_read(directory / "schema.yaml"))) == len(private.sources[LARGE].tables) + 1
+
+    def test_the_curated_check_fails_naming_the_files_and_the_way_back(self, draft_results):
+        result = draft_results["project_config/ is curated, not a raw draft"]
+
+        assert result.status == "FAIL"
+        for name in ("aliases.yaml", "entities.yaml", "relationships.yaml", "schema.yaml"):
+            assert name in result.detail
+        assert "263 of 263 table descriptions (100%)" in result.detail
+        assert "sync_schema.py --add-tables" in result.detail
+        assert "docs/deployment-runbook.md" in result.detail
+
+    def test_the_aliases_check_fails_on_the_seeds(self, draft_results):
+        result = draft_results["Aliases are curated"]
+
+        assert result.status == "FAIL"
+        assert "# REVIEW" in result.detail
+        assert "ring_aliases is empty" in result.detail
+
+    def test_the_lost_data_source_is_named(self, draft_results):
+        result = draft_results["Every data source is described"]
+
+        assert result.status == "FAIL"
+        assert f"1 of 2 data source(s) have no table in schema.yaml: {SMALL}" in result.detail
+
+    def test_staging_and_change_capture_tables_are_counted_per_schema(self, draft_results, draft_project):
+        _, private = draft_project
+        expected: Counter[str] = Counter()
+        for table in private.sources[LARGE].tables:
+            lowered = table.schema.lower()
+            if "stg" in lowered or "staging" in lowered or table.name.lower().endswith(("_inserts", "_updates", "_deletes")):
+                expected[table.schema] += 1
+        result = draft_results["No staging or change-capture tables"]
+
+        assert result.status == "PASS" and result.detail.startswith("advice: ")
+        assert f"advice: {sum(expected.values())} of 263 table(s)" in result.detail
+        for schema, count in expected.items():
+            assert f"{schema}: {count}" in result.detail
+        assert {"sales_Stg", "orders_Stg", "Replay", "sales_Fact"} <= set(expected)
+
+    def test_sample_values_are_reported_as_counts_and_a_key_never_as_values(self, draft_results):
+        result = draft_results["No live sample values in descriptions"]
+
+        assert result.status == "PASS" and result.detail.startswith("advice: ")
+        assert "PersonDetail" in result.detail
+        assert "national-id-like: 1" in result.detail and "address-like: 1" in result.detail
+        assert "phone-like: 0" not in result.detail
+        for value in [v for row in _CONTACT_ROWS for v in row] + ["Example Street", "Sample City"]:
+            assert value not in result.detail
+
+    def test_no_message_quotes_the_draft(self, draft_results, draft_project):
+        directory, _ = draft_project
+        assert "09120000001" in _read(directory / "schema.yaml")      # the draft does quote it ...
+        for result in draft_results.values():                        # ... and no message does
+            assert "09120000001" not in result.detail and "0012345001" not in result.detail
+
+    def test_the_cli_would_exit_with_one(self, draft_project):
+        directory, _ = draft_project
+        out = io.StringIO()
+        with cfg.override_settings(project_config_dir=str(directory)), \
+                patch.object(verify, "build_checks", lambda: list(CURATION_CHECKS)), redirect_stdout(out):
+            code = verify.main()
+
+        assert code == 1
+        assert "[FAIL] project_config/ is curated, not a raw draft" in out.getvalue()
+        assert "3 failed" in out.getvalue()
+
+
+class TestPreflightOnTheCuratedConfig:
+    def test_every_check_passes(self, curated_results):
+        assert len(curated_results) == 5
+        for result in curated_results.values():
+            assert result.status == "PASS", (result.name, result.detail)
+
+    def test_the_two_sources_are_both_described(self, curated_results):
+        assert curated_results["Every data source is described"].detail.startswith("all 2 data source(s) have tables")
+
+    def test_there_is_no_advice_but_the_change_capture_table_the_author_kept(self, curated_results):
+        staging = curated_results["No staging or change-capture tables"]
+
+        assert staging.detail.startswith("advice: 1 of 34 table(s)")
+        assert "sales_Fact: 1" in staging.detail
+        for name, result in curated_results.items():
+            if name != "No staging or change-capture tables":
+                assert "advice" not in result.detail, (name, result.detail)
+
+    def test_the_cli_exit_code_stays_zero(self, warehouse_shape, tmp_path):
+        directory = write_project_config(tmp_path / "project_config", warehouse_shape)
+        out = io.StringIO()
+        with cfg.override_settings(project_config_dir=str(directory)), \
+                patch.object(verify, "build_checks", lambda: list(CURATION_CHECKS)), redirect_stdout(out):
+            code = verify.main()
+
+        assert code == 0
+        assert "5 passed, 0 failed, 0 skipped" in out.getvalue()
+
+    def test_tables_added_with_add_tables_do_not_make_it_a_draft(self, project, added_tables):
+        # sync_schema.py appends a table with its own name as the description,
+        # not the inspector's placeholder, so the file stays curated; the staging
+        # schemas it was told to add are advice.
+        _replace_schema_yaml(project, added_tables.second.synced)
+        results = _run_curation_checks(project)
+
+        assert results["project_config/ is curated, not a raw draft"].status == "PASS"
+        assert "0 of" in results["project_config/ is curated, not a raw draft"].detail
+        assert results["Every data source is described"].status == "PASS"
+        staging = results["No staging or change-capture tables"]
+        assert staging.detail.startswith("advice: ") and "sales_Stg:" in staging.detail and "ledger_Stg:" in staging.detail
 
 
 # ---------------------------------------------------------------------------
