@@ -37,10 +37,10 @@ def _record(case_id, passed, tags=("count",), cls=None, status=None):
     }
 
 
-def _bundle(path: Path, records, sha="g1", reference="live"):
+def _bundle(path: Path, records, sha="g1", reference="live", pipeline="production"):
     path.write_text(json.dumps({
         "format_version": FORMAT_VERSION, "cases": records, "golden": {"sha256": sha},
-        "run": {"reference": reference}, "app_version": "1", "model": "m", "prefix_version": "p",
+        "run": {"reference": reference, "pipeline": pipeline}, "app_version": "1", "model": "m", "prefix_version": "p",
     }, ensure_ascii=False), encoding="utf-8")
     return path
 
@@ -132,6 +132,49 @@ class TestCompareRuns:
         dup = _bundle(tmp_path / "dup.json", [_record("a", True), _record("a", False)])
         with pytest.raises(ValueError, match="appears twice"):
             load_run(dup)
+
+
+class TestPipelineGuard:
+    def _pair(self, tmp_path, old="single_shot", new="production"):
+        return (_bundle(tmp_path / "o.json", OLD, pipeline=old),
+                _bundle(tmp_path / "n.json", NEW, pipeline=new))
+
+    def test_different_pipelines_are_refused(self, tmp_path, capsys):
+        old, new = self._pair(tmp_path)
+        assert cli.main(["compare", str(old), str(new)]) == 2
+        err = capsys.readouterr().err
+        assert "'single_shot' pipeline" in err and "'production'" in err and "--allow-mixed" in err
+        assert "Traceback" not in err
+
+    def test_the_library_raises_a_typed_error(self, tmp_path):
+        from eval.rounds import PipelineMismatch
+
+        old, new = self._pair(tmp_path)
+        with pytest.raises(PipelineMismatch):
+            compare_runs(load_run(old), load_run(new))
+
+    def test_allow_mixed_compares_and_says_so(self, tmp_path, capsys):
+        old, new = self._pair(tmp_path)
+        assert cli.main(["compare", str(old), str(new), "--allow-mixed"]) == 0
+        assert "MIXED PIPELINES" in capsys.readouterr().out
+
+    def test_the_same_pipeline_and_unlabelled_rounds_compare_without_a_flag(self, tmp_path, capsys):
+        same = self._pair(tmp_path, "production", "production")
+        assert cli.main(["compare", str(same[0]), str(same[1])]) == 0
+        unlabelled = (_bundle(tmp_path / "u1.json", OLD, pipeline=None),
+                      _bundle(tmp_path / "u2.json", NEW, pipeline="production"))
+        assert cli.main(["compare", str(unlabelled[0]), str(unlabelled[1])]) == 0
+        assert "MIXED" not in capsys.readouterr().out
+
+    def test_reports_carry_the_pipeline_too(self, tmp_path):
+        def report(name, pipeline):
+            path = tmp_path / name
+            path.write_text(json.dumps({"mode": "live", "reference": "live", "pipeline": pipeline,
+                                        "results": []}), encoding="utf-8")
+            return path
+
+        assert cli.main(["compare", str(report("a.json", "production")),
+                         str(report("b.json", "single_shot"))]) == 2
 
 
 class TestSplitFilter:

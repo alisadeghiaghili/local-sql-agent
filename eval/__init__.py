@@ -44,6 +44,10 @@ verify
 store
     Atomic ``.jsonl`` read/write for the golden-set files (temp file +
     replace, ``.bak`` kept, owner-only), and ``load_golden_cases``.
+pipeline
+    The live generation path: the server's own ``SQLAgent`` loop (guard,
+    correction rounds, row cap) under the harness, which is the default for
+    ``run --live``; ``--single-shot`` keeps one model call.
 diagnosis
     *How* a generated result differs from the reference (a mismatch class,
     row and column counts, column names, an error bucket for one number),

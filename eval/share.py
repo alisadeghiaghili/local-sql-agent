@@ -11,13 +11,15 @@ nothing that identifies a person or exposes a stored value.
 What is in the bundle
 ---------------------
 * a header: ``format_version``, the application version, ``prefix_version``,
+  ``run.pipeline`` (``production``: the server's own correction loop, or
+  ``single_shot``),
   the model name, the golden file's *name* and hash, the
   ``PROMPT_RETRIEVAL_TOKEN_BUDGET``, the prompt path (static or retrieval)
   of each data source, the run's start and end, and a ``privacy`` block that
   states what is and is not inside;
 * per case: the id, tags, question, the reference and generated SQL, the
-  status, both data sources, the guard's rejection reasons, the correction
-  count, the latency and a mismatch diagnosis (:mod:`eval.diagnosis`: a
+  status, both data sources, the guard's rejections and run failures round by
+  round, the correction count, the latency and a mismatch diagnosis (:mod:`eval.diagnosis`: a
   class, row and column counts, column *names*, and for a single number a
   coarse error bucket);
 * a summary: execution accuracy overall, per tag and per data source, the
@@ -48,7 +50,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +98,7 @@ def golden_file_info(path: str | Path) -> dict[str, Any]:
     return {"file_name": p.name, "sha256": hashlib.sha256(text).hexdigest()}
 
 
-def privacy_block(*, redact_literals: bool) -> dict[str, Any]:
+def privacy_block(*, redact_literals: bool, detail_ids_only: bool = False) -> dict[str, Any]:
     """The ``privacy`` header: exactly what is, and is not, inside the bundle.
 
     Examples
@@ -105,8 +107,10 @@ def privacy_block(*, redact_literals: bool) -> dict[str, Any]:
     'verbatim'
     >>> privacy_block(redact_literals=True)["sql_literals"]
     'redacted'
+    >>> "detail" in privacy_block(redact_literals=False, detail_ids_only=True)
+    True
     """
-    return {
+    block = {
         "contains": [
             "case ids, tags and the question text exactly as written in the golden file",
             "the reference SQL and the generated SQL",
@@ -141,6 +145,13 @@ def privacy_block(*, redact_literals: bool) -> dict[str, Any]:
             "values into column names"
         ),
     }
+    if detail_ids_only:
+        block["detail"] = (
+            "written with --share-only-ids: only the listed case ids carry the question, "
+            "SQL, error text and diagnosis above; every other case carries only case_id, "
+            "tags, passed and mismatch_class, and the summary still counts all of them"
+        )
+    return block
 
 
 def check_share_path(
@@ -208,6 +219,18 @@ def _error_text(result: CaseResult, redact_literals: bool) -> str | None:
     return redact_error_text(result.error)
 
 
+def _rounds(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Per-round rejections or run failures: round, class, redacted message."""
+    return [
+        {
+            "round": int(entry.get("round", 1)),
+            "class": str(entry.get("class", "")),
+            "message": redact_error_text(entry.get("message", "")),
+        }
+        for entry in entries
+    ]
+
+
 def _case_record(
     result: CaseResult, expected_sql: str | None, redact_literals: bool
 ) -> dict[str, Any]:
@@ -234,13 +257,8 @@ def _case_record(
         "expected_datasource": result.expected_datasource,
         "selected_datasource": result.selected_datasource,
         "corrections": result.corrections,
-        "guard_rejections": [
-            {
-                "class": str(g.get("class", "")),
-                "message": redact_error_text(g.get("message", "")),
-            }
-            for g in result.guard_rejections
-        ],
+        "guard_rejections": _rounds(result.guard_rejections),
+        "execution_errors": _rounds(result.execution_errors),
         "error": _error_text(result, redact_literals),
         "latency_seconds": round(result.latency_seconds, 3),
         "diagnosis": diagnosis,
@@ -291,11 +309,26 @@ def _summary(report: EvalReport, records: Sequence[Mapping[str, Any]]) -> dict[s
             "cases_with_corrections": sum(1 for c in corrections if c > 0),
         },
         "guard_rejections": sum(len(r["guard_rejections"]) for r in records),
+        "execution_errors": sum(len(r["execution_errors"]) for r in records),
         "latency_seconds": {
             "p50": round(report.latency_p50, 3),
             "p95": round(report.latency_p95, 3),
         },
     }
+
+
+def _pipeline_notes(pipeline: str | None) -> list[str]:
+    if pipeline == "production":
+        return [
+            "pipeline production: the generated SQL came from the server's own SQLAgent "
+            "loop (guard, correction rounds with hints, row cap); corrections, "
+            "guard_rejections and execution_errors are per round and real",
+            "no principal policy was applied: the evaluation passes no denied_columns",
+        ]
+    return [
+        "pipeline single_shot: one model call per question, no correction rounds, so "
+        "corrections is 0 by construction; a model-only figure, below what users get",
+    ]
 
 
 def build_share_bundle(
@@ -307,6 +340,7 @@ def build_share_bundle(
     started_at: str,
     finished_at: str,
     redact_literals: bool = False,
+    detail_ids: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Build the share bundle of a finished ``--live --reference live`` run.
 
@@ -329,6 +363,11 @@ def build_share_bundle(
         ISO-8601 UTC timestamps of the run.
     redact_literals:
         Replace string and numeric literals in both SQL texts.
+    detail_ids:
+        When given (``--share-only-ids``), only these case ids carry the
+        full record. Every other case is reduced to ``case_id``, ``tags``,
+        ``passed`` and ``mismatch_class``: no question, SQL, error text or
+        counts. The summary is computed from all cases first.
 
     Returns
     -------
@@ -339,7 +378,8 @@ def build_share_bundle(
     ------
     ValueError
         If *report* is not a live run judged by ``--reference live``: the
-        diagnosis it carries only exists for that combination.
+        diagnosis it carries only exists for that combination. Also if it
+        does not say which pipeline generated the SQL.
 
     Examples
     --------
@@ -349,7 +389,7 @@ def build_share_bundle(
     >>> d = Path(tempfile.mkdtemp()); _ = (d / "g.jsonl").write_text("{}\\n", encoding="utf-8")
     >>> case = GoldenCase(id="a", question="how many?", expected_sql="SELECT 1")
     >>> rep = build_report([CaseResult("a", "how many?", ["t"], "pass", "SELECT 1", "f", None, 0.1)],
-    ...                    mode="live", reference="live")
+    ...                    mode="live", reference="live", pipeline="production")
     >>> info = {"app_version": "1", "prefix_version": "p", "model": "m",
     ...         "prompt_retrieval_token_budget": 6000, "sources": {}, "structured": False,
     ...         "float_tolerance": 1e-06}
@@ -363,11 +403,30 @@ def build_share_bundle(
             "a share bundle needs a --live run judged with --reference live "
             f"(this report is mode={report.mode!r}, reference={report.reference!r})"
         )
+    if report.pipeline not in ("production", "single_shot"):
+        raise ValueError(
+            "a share bundle must say which pipeline generated the SQL "
+            f"(this report has pipeline={report.pipeline!r})"
+        )
     expected_by_id = {c.id: c.expected_sql for c in cases}
     records = [
         _case_record(result, expected_by_id.get(result.case_id), redact_literals)
         for result in sorted(report.results, key=lambda r: r.case_id)
     ]
+    summary = _summary(report, records)
+    full_cases = len(records)
+    if detail_ids is not None:
+        keep = set(detail_ids)
+        full_cases = sum(1 for r in records if r["case_id"] in keep)
+        records = [
+            r if r["case_id"] in keep else {
+                "case_id": r["case_id"],
+                "tags": r["tags"],
+                "passed": r["passed"],
+                "mismatch_class": r["diagnosis"]["mismatch_class"],
+            }
+            for r in records
+        ]
     golden = golden_file_info(golden_path)
     golden["cases_in_file"] = len(cases)
     golden["cases_run"] = len(report.results)
@@ -388,19 +447,25 @@ def build_share_bundle(
         "run": {
             "mode": report.mode,
             "reference": report.reference,
+            "pipeline": report.pipeline,
             "structured": bool(run_info.get("structured", False)),
             "float_tolerance": run_info.get("float_tolerance"),
             "started_at": started_at,
             "finished_at": finished_at,
         },
-        "notes": [
-            "corrections counts the self-correction rounds a generator reported; the "
-            "evaluation harness generates once, so 0 is expected today",
+        "detail": {
+            "scope": "all" if detail_ids is None else "listed_ids",
+            "cases_with_detail": full_cases,
+            "cases_total": len(records),
+        },
+        "notes": _pipeline_notes(report.pipeline) + [
             "mismatch_class is computed on the server from the two result frames; "
             "no value leaves it",
         ],
-        "privacy": privacy_block(redact_literals=redact_literals),
-        "summary": _summary(report, records),
+        "privacy": privacy_block(
+            redact_literals=redact_literals, detail_ids_only=detail_ids is not None
+        ),
+        "summary": summary,
         "cases": records,
     }
 

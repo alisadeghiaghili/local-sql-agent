@@ -65,7 +65,7 @@ def fake_live(monkeypatch):
     }
     executed: list[str] = []
 
-    def build(structured=False, trace=None):
+    def build(structured=False, trace=None, single_shot=False):
         def generate(question):
             source, sql = answers[question]
             if trace is not None:
@@ -181,7 +181,7 @@ class TestRunReferenceLive:
         warehouse = {SQL_COUNT: pd.DataFrame({"n": [100.0]}),
                      SQL_COUNT_ALIASED: pd.DataFrame({"n": [100.4]})}
 
-        def build(structured=False, trace=None):
+        def build(structured=False, trace=None, single_shot=False):
             return (lambda q: SQL_COUNT_ALIASED), (lambda sql: warehouse[sql])
 
         monkeypatch.setattr(cli, "_build_live_callables", build)

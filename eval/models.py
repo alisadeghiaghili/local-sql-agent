@@ -468,15 +468,18 @@ class CaseResult:
         executing the generated SQL. ``None`` otherwise and in a report
         written before this field existed.
     corrections:
-        Self-correction rounds spent on this question. The evaluation
-        harness generates once (:func:`~eval.runner.make_live_generator`
-        has no correction loop), so this is ``0`` unless a generator
-        reports rounds on its :class:`~eval.runner.SourceTrace`.
+        Self-correction rounds spent on this question: the number of
+        generations after the first. The default ``--live`` pipeline runs
+        the server's own correction loop (:mod:`eval.pipeline`), so this is
+        real; ``--single-shot`` generates once and it is ``0``.
     guard_rejections:
-        The SQL guard's rejections of this question's SQL as
-        ``{"class": <exception class>, "message": <text>}``. Raw text: it
-        is redacted when it goes into a share bundle
-        (:mod:`eval.share`), not here.
+        The SQL guard's rejections of this question's SQL, one per round
+        that was rejected, as ``{"round": <1 = first try>, "class":
+        <exception class>, "message": <text>}``. Raw text: it is redacted
+        when it goes into a share bundle (:mod:`eval.share`), not here.
+    execution_errors:
+        The same for rounds whose SQL passed the guard and then failed to
+        run (the server corrects those too).
     """
 
     case_id: str
@@ -492,7 +495,8 @@ class CaseResult:
     reference_fingerprint: str | None = None
     diagnosis: MismatchDiagnosis | None = None
     corrections: int = 0
-    guard_rejections: list[dict[str, str]] = field(default_factory=list)
+    guard_rejections: list[dict[str, Any]] = field(default_factory=list)
+    execution_errors: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -517,6 +521,7 @@ class CaseResult:
             "diagnosis": None if self.diagnosis is None else self.diagnosis.to_dict(),
             "corrections": self.corrections,
             "guard_rejections": [dict(r) for r in self.guard_rejections],
+            "execution_errors": [dict(r) for r in self.execution_errors],
         }
 
 
@@ -567,6 +572,12 @@ class EvalReport:
         the cases that name a ``datasource`` and expect SQL; ``None`` for
         an offline run (where the "selection" replays the reference and is
         right by construction) and when no case names a source.
+    pipeline:
+        What generated the SQL in a live run: ``"production"`` (the server's
+        own ``SQLAgent`` loop: guard, correction rounds, row cap; the
+        default) or ``"single_shot"`` (one model call, no correction: the
+        model-only number). ``None`` for an offline run, and for a report
+        written before this field existed, which was always single-shot.
     """
 
     mode: Literal["offline", "live"]
@@ -584,11 +595,13 @@ class EvalReport:
     reference: Literal["stored", "live"] = "stored"
     source_accuracy: dict[str, tuple[int, int]] = field(default_factory=dict)
     source_selection: tuple[int, int] | None = None
+    pipeline: Literal["production", "single_shot"] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict (used by :mod:`eval.baseline`)."""
         return {
             "mode": self.mode,
+            "pipeline": self.pipeline,
             "total": self.total,
             "passed": self.passed,
             "accuracy_pct": self.accuracy_pct,

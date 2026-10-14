@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -107,6 +107,9 @@ class SourceTrace:
     def __init__(self) -> None:
         self.chosen: str | None = None
         self.corrections: int = 0
+        self.attempts: int = 0
+        self.guard_rejections: list[dict[str, Any]] = []
+        self.execution_errors: list[dict[str, Any]] = []
 
     def record(self, source: str | None) -> None:
         """Store *source* as the choice made for the current question."""
@@ -121,10 +124,62 @@ class SourceTrace:
         """
         self.corrections = max(0, int(rounds))
 
+    def begin_attempt(self) -> int:
+        """Count one more generation attempt; return its round (1 = first try).
+
+        ``corrections`` follows: the attempts after the first.
+        """
+        self.attempts += 1
+        self.corrections = self.attempts - 1
+        return self.attempts
+
+    def record_guard_rejection(self, exc_class: str, message: str) -> None:
+        """Remember that the current round's SQL was rejected by the guard."""
+        self.guard_rejections.append(
+            {"round": max(self.attempts, 1), "class": exc_class, "message": message}
+        )
+
+    def record_execution_error(self, exc_class: str, message: str) -> None:
+        """Remember that the current round's SQL passed the guard and failed to run."""
+        self.execution_errors.append(
+            {"round": max(self.attempts, 1), "class": exc_class, "message": message}
+        )
+
     def reset(self) -> None:
-        """Forget the previous question's choice."""
+        """Forget the previous question's choice and rounds."""
         self.chosen = None
         self.corrections = 0
+        self.attempts = 0
+        self.guard_rejections = []
+        self.execution_errors = []
+
+
+class PipelineFailure(Exception):
+    """A production-pipeline generator gave up after its correction rounds.
+
+    Raised by :mod:`eval.pipeline`'s generator so :func:`run_case` can report
+    *how* the question ended (``guard_rejected`` or ``execution_error``) and
+    the last SQL tried, instead of a generic ``generation_error``.
+
+    Parameters
+    ----------
+    kind:
+        ``"guard_rejected"`` or ``"execution_error"``.
+    message:
+        The final error text (raw; redacted when shared).
+    sql:
+        The last candidate SQL, when there was one.
+    """
+
+    def __init__(
+        self,
+        kind: Literal["guard_rejected", "execution_error"],
+        message: str,
+        sql: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.sql = sql
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +328,7 @@ def run_case(
         latency: float | None = None,
         reference_fingerprint: str | None = None,
         diagnosis: MismatchDiagnosis | None = None,
-        guard_rejections: list[dict[str, str]] | None = None,
+        guard_rejections: list[dict[str, Any]] | None = None,
     ) -> CaseResult:
         return CaseResult(
             case_id=case.id,
@@ -289,11 +344,19 @@ def run_case(
             reference_fingerprint=reference_fingerprint,
             diagnosis=diagnosis,
             corrections=source_trace.corrections if source_trace is not None else 0,
-            guard_rejections=list(guard_rejections or []),
+            guard_rejections=[
+                *(source_trace.guard_rejections if source_trace is not None else []),
+                *(guard_rejections or []),
+            ],
+            execution_errors=list(
+                source_trace.execution_errors if source_trace is not None else []
+            ),
         )
 
     try:
         raw_sql = generate_fn(case.question)
+    except PipelineFailure as exc:
+        return _finish(exc.kind, generated_sql=exc.sql, error=str(exc))
     except ValueError as exc:
         if str(exc) == _OUT_OF_SCOPE_SENTINEL:
             if case.is_out_of_scope:
@@ -320,7 +383,11 @@ def run_case(
             "guard_rejected",
             generated_sql=raw_sql,
             error=str(exc),
-            guard_rejections=[{"class": type(exc).__name__, "message": str(exc)}],
+            guard_rejections=[{
+                "round": max(source_trace.attempts, 1) if source_trace is not None else 1,
+                "class": type(exc).__name__,
+                "message": str(exc),
+            }],
         )
 
     try:

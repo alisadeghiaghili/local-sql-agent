@@ -151,7 +151,7 @@ RUN_INFO = {
 def fake_live(monkeypatch):
     execute = _sqlite_executor()
 
-    def build(structured=False, trace=None):
+    def build(structured=False, trace=None, single_shot=False):
         return _generate(trace), execute
 
     monkeypatch.setattr(cli, "_build_live_callables", build)
@@ -221,7 +221,7 @@ class TestBundleContent:
         assert set(case) == {
             "case_id", "tags", "question", "expected_sql", "generated_sql", "status", "passed",
             "expected_datasource", "selected_datasource", "corrections", "guard_rejections",
-            "error", "latency_seconds", "diagnosis",
+            "execution_errors", "error", "latency_seconds", "diagnosis",
         }
         assert case["question"] == "question subset?"
         assert case["expected_sql"] == SCENARIOS["subset"][0]
@@ -340,7 +340,7 @@ class TestNoValueLeaks:
     def test_a_model_name_that_is_a_url_is_cut_to_its_last_segment(self, tmp_path):
         golden = _golden(tmp_path)
         cases = load_golden_cases(golden)
-        report = build_report([], mode="live", reference="live")
+        report = build_report([], mode="live", reference="live", pipeline="production")
         info = dict(RUN_INFO, model="http://user:pw@host:8000/models/test-model")
         bundle = build_share_bundle(report, cases, golden_path=golden, run_info=info,
                                     started_at="a", finished_at="b")
@@ -395,7 +395,7 @@ class TestRedactLiterals:
 
         bad = CaseResult("case_match", "q", [], "guard_rejected", f"SELECT ( FROM '{SQL_LITERAL}'",
                          None, "x", 0.1)
-        report = build_report([bad], mode="live", reference="live")
+        report = build_report([bad], mode="live", reference="live", pipeline="production")
         bundle = build_share_bundle(report, cases, golden_path=golden, run_info=RUN_INFO,
                                     started_at="a", finished_at="b", redact_literals=True)
         assert SQL_LITERAL not in render_share_json(bundle)
@@ -410,12 +410,122 @@ class TestRedactLiterals:
         sql = f"SELECT ID FROM {T} WHERE ID > 12 AND Label = '{SQL_LITERAL}'"
         results = run_golden_set(cases, lambda q: sql, _sqlite_executor(), reference="live")
         assert results[0].status == "missed_out_of_scope"
-        report = build_report(results, mode="live", reference="live")
+        report = build_report(results, mode="live", reference="live", pipeline="production")
         kwargs = dict(golden_path=golden, run_info=RUN_INFO, started_at="a", finished_at="b")
         redacted = build_share_bundle(report, cases, redact_literals=True, **kwargs)
         assert redacted["cases"][0]["error"] == "expected OUT_OF_SCOPE but generator returned SQL"
         verbatim = build_share_bundle(report, cases, **kwargs)
         assert SQL_LITERAL not in verbatim["cases"][0]["error"]  # quoted text is masked anyway
+
+
+class TestShareOnlyIds:
+    LISTED = ["case_subset", "case_match"]
+
+    def _share(self, tmp_path, *extra):
+        ids = tmp_path / "dev_ids.txt"
+        ids.write_text("\n".join(self.LISTED) + "\n", encoding="utf-8")
+        code, share, _ = _run(tmp_path, "--share-only-ids", str(ids), *extra)
+        assert code == 0
+        return share
+
+    def test_listed_cases_keep_full_detail_and_the_others_four_keys(self, tmp_path, fake_live):
+        bundle = _bundle(self._share(tmp_path))
+        cases = _by_id(bundle)
+        assert len(cases) == 17
+        for case_id in self.LISTED:
+            assert "question" in cases[case_id] and cases[case_id]["generated_sql"]
+        others = [c for cid, c in cases.items() if cid not in self.LISTED]
+        assert len(others) == 15
+        for case in others:
+            assert set(case) == {"case_id", "tags", "passed", "mismatch_class"}
+        assert cases["case_values"]["mismatch_class"] == "values_differ_same_shape"
+        assert cases["case_oos"]["mismatch_class"] == "match" and cases["case_oos"]["passed"] is True
+
+    def test_no_question_sql_or_error_of_a_non_listed_case_is_in_the_file(self, tmp_path, fake_live):
+        text = self._share(tmp_path, "--share-redact-literals").read_text(encoding="utf-8")
+        for key in SCENARIOS:
+            if f"case_{key}" in self.LISTED:
+                continue
+            assert f"question {key}?" not in text
+        assert "question oos?" not in text and SQL_LITERAL not in text
+        assert "ID >= 4" not in text and "ID > 100" not in text  # generated SQL of non-listed cases
+        assert ERROR_VALUE not in text
+        assert "question subset?" in text
+
+    def test_the_verbatim_mode_does_not_leak_either(self, tmp_path, fake_live):
+        text = self._share(tmp_path).read_text(encoding="utf-8")
+        assert SQL_LITERAL not in text and "ID >= 4" not in text
+        assert "question values?" not in text
+
+    def test_the_summary_still_covers_every_case_and_the_header_says_how_much_detail(
+        self, tmp_path, fake_live
+    ):
+        bundle = _bundle(self._share(tmp_path))
+        assert bundle["summary"]["total"] == 17
+        assert sum(bundle["summary"]["mismatch_classes"].values()) == 17
+        assert bundle["summary"]["guard_rejections"] == 1
+        assert bundle["detail"] == {"scope": "listed_ids", "cases_with_detail": 2, "cases_total": 17}
+        assert "--share-only-ids" in bundle["privacy"]["detail"]
+
+    def test_without_the_option_every_case_has_detail(self, tmp_path, fake_live):
+        _, share, _ = _run(tmp_path)
+        bundle = _bundle(share)
+        assert bundle["detail"]["scope"] == "all" and "detail" not in bundle["privacy"]
+
+    def test_a_reduced_bundle_still_compares(self, tmp_path, fake_live, capsys):
+        share = self._share(tmp_path)
+        capsys.readouterr()  # the run's own report
+        assert cli.main(["compare", str(share), str(share), "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["accuracy"]["old"]["total"] == 17
+        assert data["mismatch_classes"]["actual_is_subset"]["old"] == 1
+
+    def test_unknown_ids_warn_and_a_bad_file_is_refused(self, tmp_path, fake_live, capsys):
+        golden = _golden(tmp_path)
+        ids = tmp_path / "ids.txt"
+        ids.write_text("case_match\nnot_a_case\n", encoding="utf-8")
+        args = ["run", "--golden", str(golden), "--live", "--reference", "live",
+                "--share", str(tmp_path / "o" / "s.json")]
+        assert cli.main([*args, "--share-only-ids", str(ids)]) == 0
+        assert "1 id(s) in ids.txt are not in the golden file" in capsys.readouterr().err
+        empty = tmp_path / "empty.txt"
+        empty.write_text("# nothing\n", encoding="utf-8")
+        assert cli.main([*args, "--share-only-ids", str(empty)]) == 2
+        assert cli.main([*args, "--share-only-ids", str(tmp_path / "missing.txt")]) == 2
+        assert "Traceback" not in capsys.readouterr().err
+
+    def test_it_needs_share(self, tmp_path, capsys):
+        golden = _golden(tmp_path)
+        assert cli.main(["run", "--golden", str(golden), "--share-only-ids", "x.txt"]) == 2
+        assert "--share-only-ids only applies together with --share" in capsys.readouterr().err
+
+
+class TestRoundsInTheFile:
+    def test_guard_rejections_carry_their_round_and_a_redacted_message(self):
+        from eval.models import CaseResult
+
+        rejected = CaseResult(
+            "r", "q", [], "guard_rejected", "SELECT 1", None, "x", 0.1, corrections=2,
+            guard_rejections=[
+                {"round": 1, "class": "CorrectableRejection", "message": "unknown table 'Secret'"},
+                {"round": 2, "class": "CorrectableRejection", "message": "unknown table 'Secret'"},
+            ],
+            execution_errors=[{"round": 3, "class": "RuntimeError", "message": "bad value 123456"}],
+        )
+        golden = Path(__file__)
+        bundle = build_share_bundle(
+            build_report([rejected], mode="live", reference="live", pipeline="production"),
+            [], golden_path=golden, run_info=RUN_INFO, started_at="a", finished_at="b")
+        case = bundle["cases"][0]
+        assert [g["round"] for g in case["guard_rejections"]] == [1, 2]
+        assert case["guard_rejections"][0] == {
+            "round": 1, "class": "CorrectableRejection", "message": "unknown table '…'"}
+        assert case["execution_errors"] == [
+            {"round": 3, "class": "RuntimeError", "message": "bad value #"}]
+        assert case["corrections"] == 2
+        assert bundle["summary"]["correction_rounds"] == {"total": 2, "cases_with_corrections": 1}
+        assert (bundle["summary"]["guard_rejections"], bundle["summary"]["execution_errors"]) == (2, 1)
+        assert "Secret" not in render_share_json(bundle)
 
 
 class TestHeaderCollector:
@@ -439,7 +549,7 @@ class TestHeaderCollector:
         monkeypatch.setattr(cli, "_collect_run_info", lambda args: order.append("info") or dict(RUN_INFO))
         monkeypatch.setattr(cli, "_print_prefix_cache_probe", lambda question: None)
 
-        def build(structured=False, trace=None):
+        def build(structured=False, trace=None, single_shot=False):
             order.append("build")
             return _generate(trace), _sqlite_executor()
 
@@ -545,7 +655,7 @@ class TestFile:
         results = run_golden_set(load_golden_cases(golden),
                                  lambda q: f"SELECT COUNT(*) AS n FROM {T}", execute,
                                  reference="live")
-        bundle = build_share_bundle(build_report(results, mode="live", reference="live"),
+        bundle = build_share_bundle(build_report(results, mode="live", reference="live", pipeline="production"),
                                     load_golden_cases(golden), golden_path=golden,
                                     run_info=RUN_INFO, started_at="a", finished_at="b")
         assert "تعداد مشتریان چند است؟" in render_share_json(bundle)

@@ -52,9 +52,13 @@ Usage::
     # Accuracy rounds with a reviewer (runbook 18.6). Split the golden set once
     # into a dev half the reviewer may study and a test half nobody tunes to:
     python -m eval.cli split --golden eval_data/golden.jsonl --out eval_data/split
-    # A run that also writes ONE share-safe file (needs --live --reference live):
+    # A run that also writes ONE share-safe file (needs --live --reference live);
+    # --share-only-ids keeps the test half's content on the server. --live
+    # generates through the server's own correction loop; --single-shot makes
+    # one model call instead (a model-only number):
     python -m eval.cli run --golden eval_data/golden.jsonl --live --reference live \\
-        --share eval_data/share/round-1.json --out eval_data/round-1.report.json
+        --share eval_data/share/round-1.json --share-only-ids eval_data/split/dev_ids.txt \\
+        --out eval_data/round-1.report.json
     # Compare two rounds; limit to the held-out half and fail on a regression:
     python -m eval.cli compare eval_data/share/round-1.json eval_data/share/round-2.json \\
         --split test --split-file eval_data/split/test_ids.txt --fail-on-regression
@@ -150,7 +154,9 @@ def _load_system_prompt(path: Path | None = None) -> str:
 
 
 def _build_live_callables(
-    structured: bool = False, trace: SourceTrace | None = None
+    structured: bool = False,
+    trace: SourceTrace | None = None,
+    single_shot: bool = False,
 ) -> tuple[GenerateFn, ExecuteFn]:
     """Lazily construct a real ``(generate_fn, execute_fn)`` pair for ``--live`` mode.
 
@@ -161,24 +167,40 @@ def _build_live_callables(
     Parameters
     ----------
     structured:
-        When ``True``, use :func:`~eval.runner.make_live_structured_generator`
+        With *single_shot*, use :func:`~eval.runner.make_live_structured_generator`
         (Phase 2 task 3's constrained-JSON path) instead of
         :func:`~eval.runner.make_live_generator` (free text + ``clean_sql``).
         This is what ``--structured`` compares against the default.
     trace:
         Optional :class:`~eval.runner.SourceTrace` the generator records
-        its data-source choice on, for source-selection accuracy.
+        its data-source choice, correction rounds and rejections on.
+    single_shot:
+        ``False`` (the default) builds the production pipeline
+        (:func:`eval.pipeline.make_production_pipeline`): the server's own
+        ``SQLAgent`` loop with the guard, correction rounds, row cap and
+        query timeout. ``True`` makes one model call per question and no
+        correction (``--single-shot``): the model-only number.
 
     Returns
     -------
     tuple[GenerateFn, ExecuteFn]
     """
     from database.executor import execute_sql
+
+    from eval.runner import SourceTrace as _SourceTrace
+
+    system_prompt = _load_system_prompt()
+    if not single_shot:
+        from eval.pipeline import make_production_pipeline
+
+        return make_production_pipeline(
+            system_prompt, trace if trace is not None else _SourceTrace(), execute_sql
+        )
+
     from llm.providers import OpenAIBackend
 
     from eval.runner import make_live_generator, make_live_structured_generator
 
-    system_prompt = _load_system_prompt()
     backend = OpenAIBackend.from_settings()
     generate_fn = (
         make_live_structured_generator(backend, system_prompt, trace)
@@ -382,6 +404,18 @@ def _print_floor_failures(messages: Sequence[str]) -> None:
         print(f"  - {message}")
 
 
+def _pipeline_refusal(args: argparse.Namespace) -> str | None:
+    """Why ``--single-shot`` / ``--structured`` cannot be honoured, or ``None``."""
+    if args.single_shot and not args.live:
+        return "--single-shot only applies with --live (offline replay has no model)"
+    if args.structured and args.live and not args.single_shot:
+        return (
+            "--structured needs --single-shot: the constrained-JSON generator makes one "
+            "call and has no correction loop, so it cannot be the production pipeline"
+        )
+    return None
+
+
 def _share_refusal(args: argparse.Namespace) -> str | None:
     """Why ``--share`` / ``--share-redact-literals`` cannot be honoured, or ``None``.
 
@@ -393,6 +427,8 @@ def _share_refusal(args: argparse.Namespace) -> str | None:
     """
     if args.share_redact_literals and not args.share:
         return "--share-redact-literals only applies together with --share PATH"
+    if args.share_only_ids and not args.share:
+        return "--share-only-ids only applies together with --share PATH"
     if not args.share:
         return None
     if not (args.live and args.reference == "live"):
@@ -408,6 +444,18 @@ def _share_refusal(args: argparse.Namespace) -> str | None:
     if problem is None and args.out and Path(args.out).resolve() == Path(args.share).resolve():
         problem = "--share and --out must be different files"
     return problem
+
+
+def _model_name(args: argparse.Namespace) -> str:
+    """The name of the model that generates SQL: the router's primary in the production pipeline."""
+    if not args.single_shot:
+        try:
+            from llm.router import LLMRouter, TaskType
+
+            return str(LLMRouter.from_settings()._chain_for(TaskType.SQL_GENERATION)[0].name)
+        except Exception:  # noqa: BLE001 - the header falls back to the plain setting
+            pass
+    return str(cfg.settings.openai_model)
 
 
 def _collect_run_info(args: argparse.Namespace) -> dict[str, object]:
@@ -426,7 +474,7 @@ def _collect_run_info(args: argparse.Namespace) -> dict[str, object]:
     return {
         "app_version": __version__,
         "prefix_version": prefix_version(system_prompt),
-        "model": cfg.settings.openai_model,
+        "model": _model_name(args),
         "prompt_retrieval_token_budget": cfg.settings.prompt_retrieval_token_budget,
         "sources": {
             name: "static" if should_use_static_prefix(system_prompt, name) else "retrieval"
@@ -437,6 +485,21 @@ def _collect_run_info(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _read_detail_ids(args: argparse.Namespace, cases: Sequence[GoldenCase]) -> set[str]:
+    """The ids of ``--share-only-ids FILE``; a typo costs a warning, not the run."""
+    from eval.rounds import read_case_ids
+
+    ids = set(read_case_ids(args.share_only_ids))
+    unknown = ids - {c.id for c in cases}
+    if unknown:
+        print(
+            f"warning: {len(unknown)} id(s) in {Path(args.share_only_ids).name} are not in "
+            "the golden file and are ignored",
+            file=sys.stderr,
+        )
+    return ids
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -445,7 +508,7 @@ def _run(args: argparse.Namespace) -> int:
     """Execute the ``run`` subcommand. Returns the process exit code."""
     from eval.runner import SourceTrace, run_golden_set
 
-    refusal = _share_refusal(args)
+    refusal = _pipeline_refusal(args) or _share_refusal(args)
     if refusal is not None:
         print(f"error: {refusal}", file=sys.stderr)
         return 2
@@ -462,11 +525,19 @@ def _run(args: argparse.Namespace) -> int:
 
     # Read before anything is built or run, so a configuration problem costs nothing.
     run_info = _collect_run_info(args) if args.share else {}
+    try:
+        detail_ids = _read_detail_ids(args, cases) if args.share_only_ids else None
+    except (OSError, ValueError) as exc:
+        print(f"error: --share-only-ids: {exc}", file=sys.stderr)
+        return 2
+    pipeline = ("single_shot" if args.single_shot else "production") if args.live else None
 
     trace: SourceTrace | None = None
     if args.live:
         trace = SourceTrace()
-        generate_fn, execute_fn = _build_live_callables(structured=args.structured, trace=trace)
+        generate_fn, execute_fn = _build_live_callables(
+            structured=args.structured, trace=trace, single_shot=args.single_shot
+        )
         mode = "live"
     else:
         generate_fn, execute_fn = _build_offline_callables(runnable)
@@ -482,7 +553,9 @@ def _run(args: argparse.Namespace) -> int:
         source_trace=trace,
     )
     finished_at = _now_iso()
-    report = build_report(results, mode=mode, reference=args.reference)
+    report = build_report(
+        results, mode=mode, reference=args.reference, pipeline=pipeline,
+    )
 
     print(render_text(report))
 
@@ -512,10 +585,19 @@ def _run(args: argparse.Namespace) -> int:
             started_at=started_at,
             finished_at=finished_at,
             redact_literals=args.share_redact_literals,
+            detail_ids=detail_ids,
         )
         write_share_bundle(bundle, args.share)
         literals = "redacted" if args.share_redact_literals else "verbatim"
-        print(f"Share file written to {args.share} (SQL literals {literals}; no result values)")
+        scope = (
+            "" if detail_ids is None
+            else f"; full detail for {bundle['detail']['cases_with_detail']} of "
+                 f"{bundle['detail']['cases_total']} cases"
+        )
+        print(
+            f"Share file written to {args.share} (pipeline {pipeline}; SQL literals "
+            f"{literals}{scope}; no result values)"
+        )
 
     if args.save_baseline:
         save_baseline(report, args.save_baseline)
@@ -693,7 +775,13 @@ def _compare(args: argparse.Namespace) -> int:
     """
     import json
 
-    from eval.rounds import compare_runs, load_run, read_case_ids, render_comparison
+    from eval.rounds import (
+        PipelineMismatch,
+        compare_runs,
+        load_run,
+        read_case_ids,
+        render_comparison,
+    )
 
     if bool(args.split) != bool(args.split_file):
         print("error: --split and --split-file go together", file=sys.stderr)
@@ -706,7 +794,13 @@ def _compare(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    comparison = compare_runs(old, new, only_ids=only_ids, split=args.split)
+    try:
+        comparison = compare_runs(
+            old, new, only_ids=only_ids, split=args.split, allow_mixed=args.allow_mixed
+        )
+    except PipelineMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(comparison.to_dict(), indent=2, ensure_ascii=False, sort_keys=True))
     else:
@@ -754,13 +848,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use a real OpenAI-compatible backend and database connection instead of offline replay.",
     )
     run_parser.add_argument(
+        "--single-shot",
+        action="store_true",
+        default=False,
+        dest="single_shot",
+        help=(
+            "With --live, make ONE model call per question and no correction (the old "
+            "behaviour): a model-only figure. Without it --live generates through the "
+            "server's own loop (SQLAgent: guard, correction rounds with hints, row cap, "
+            "query timeout), which is what an analyst gets. The mode is recorded in the "
+            "report (pipeline) and the share file (run.pipeline); a baseline or a "
+            "comparison across the two is refused. No principal policy "
+            "(denied columns) is applied in either mode. Requires --live."
+        ),
+    )
+    run_parser.add_argument(
         "--structured",
         action="store_true",
         default=False,
         help=(
-            "With --live, use Phase 2 task 3's constrained-JSON generation path "
-            "(llm.structured_schema.SQL_GENERATION_SCHEMA) instead of free text + "
-            "clean_sql. Ignored without --live."
+            "With --live --single-shot, use Phase 2 task 3's constrained-JSON generation "
+            "path (llm.structured_schema.SQL_GENERATION_SCHEMA) instead of free text + "
+            "clean_sql. Ignored without --live; refused with --live unless --single-shot."
         ),
     )
     run_parser.add_argument(
@@ -918,6 +1027,19 @@ def build_parser() -> argparse.ArgumentParser:
             "diagnosing a wrong filter needs the filter."
         ),
     )
+    run_parser.add_argument(
+        "--share-only-ids",
+        default=None,
+        metavar="FILE",
+        dest="share_only_ids",
+        help=(
+            "With --share: a file of case ids (dev_ids.txt from 'split': one id per "
+            "line, or a JSON list). Only those cases carry the question, SQL, error "
+            "text and diagnosis in the share file; every other case carries only "
+            "case_id, tags, passed and mismatch_class, and the summary still covers "
+            "all cases. Use it so the held-out half's content never leaves the server."
+        ),
+    )
     run_parser.set_defaults(func=_run)
 
     verify_parser = subparsers.add_parser(
@@ -1059,6 +1181,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Exit 1 when any compared case passed in OLD and fails in NEW. With "
             "--split test that is a regression in the held-out half."
+        ),
+    )
+    compare_parser.add_argument(
+        "--allow-mixed",
+        action="store_true",
+        default=False,
+        dest="allow_mixed",
+        help=(
+            "Compare rounds generated by different pipelines (production against "
+            "single_shot). Refused by default, because the production pipeline corrects "
+            "its own mistakes and the difference would be the pipeline, not a fix."
         ),
     )
     compare_parser.add_argument(

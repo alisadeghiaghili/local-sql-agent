@@ -2215,6 +2215,10 @@ baseline, or one recorded with the default `--reference stored`, is refused
 with a message saying how to re-record it. Without `--reference live`, `--live`
 still compares with each case's recorded `expected_fingerprint`, which goes
 stale as the data moves; keep that for a warehouse that does not change.
+A baseline also records which pipeline generated the SQL (`pipeline`, §18.6):
+`--live` runs the server's loop, `--live --single-shot` one model call. A
+baseline written before this field was single-shot, so a production run
+compared with it is refused like the cases above; re-record it.
 
 **Absolute floors (optional).** The thresholds above only say "no worse than
 the baseline": they cannot stop a release whose baseline was already poor, or
@@ -2405,8 +2409,35 @@ passed the guard, ran, and returned a result as `expect` says (§18.1); only
 
 ```bash
 python -m eval.cli run --live --reference live --golden eval_data/golden.jsonl \
-    --share eval_data/share/round-N.json --out eval_data/round-N.report.json
+    --share eval_data/share/round-N.json --share-only-ids eval_data/split/dev_ids.txt \
+    --out eval_data/round-N.report.json
 ```
+
+**`--live` measures what an analyst gets.** It generates through the server's
+own loop (`SQLAgent`): the SQL guard, correctable rejections, up to the
+configured correction rounds with the hints that name the columns or tables
+that exist, source routing, the row cap the server injects into a statement
+that has none (`DEFAULT_TOP_N`) and the executor's query timeout and
+`MAX_ROWS_RETURNED`. The reference SQL is run as written, so a question whose
+reference returns more rows than the cap is scored the way the analyst would
+see it, as a subset. **One difference, on purpose:** the run has no caller, so
+no per-key `denied_columns` policy is applied; a deployment whose keys deny
+columns is measured as if they did not. `--single-shot` makes one model call
+and no correction (the old behaviour): a model-only number, lower than the
+analyst's, useful to see what the correction loop is worth. The mode is printed
+in the report, written to `pipeline` in the `--out` report and to
+`run.pipeline` (`production` or `single_shot`) in the share file; **a baseline
+(§18.2) or a `compare` across the two modes is refused**, because the
+difference would be the pipeline and not a fix. Choose one for all the rounds.
+Offline `eval.cli run` (what CI does) is unchanged, and no CI job runs `--live`.
+
+**`--share-only-ids` keeps the held-out half's content on the server.** With
+`eval_data/split/dev_ids.txt` only the dev cases carry the question, the SQL,
+the error text and the diagnosis; every other case carries only `case_id`,
+`tags`, `passed` and `mismatch_class`, and the `summary` still counts all of
+them. The reviewer cannot tune to what the file does not hold, and `compare
+--split test` still works on it. Use it every round; without it the file holds
+both halves in full.
 
 `--share` is refused with one line and exit status 2 unless the run is
 `--live --reference live` (the diagnosis compares the generated result with
@@ -2428,8 +2459,8 @@ sees the shape of the query and not what it filters on, which diagnoses fewer
 failures; the header says which mode was used.
 
 **4. Look at it, then send that one file.** Open `eval_data/share/round-N.json`
-in an editor. The `privacy` block at the top says what is inside; the cases
-follow. Send **only** `eval_data/share/round-N.json`.
+in an editor. The `privacy` block at the top says what is inside, and `detail`
+how many cases carry it; the cases follow. Send **only** `eval_data/share/round-N.json`.
 
 Never send: `eval_data/round-N.report.json` (`--out`: it has each case's
 unredacted error text, fingerprints and the model's SQL), `golden.jsonl`,
@@ -2446,8 +2477,9 @@ and run the round again.
   each data source's prompt path (static prefix or retrieval), start and end
   time, the `privacy` block); for each case its id, tags, **question**,
   reference SQL, generated SQL, status, expected and selected data source, the
-  SQL guard's rejection reasons (class and message), the number of
-  self-correction rounds, the latency, the error text, and a **diagnosis**
+  SQL guard's rejection reasons and run failures **per correction round**
+  (round, class and redacted message, so a repeated rejection shows), the number
+  of self-correction rounds, the latency, the error text, and a **diagnosis**
   computed on the server from the two result frames: a class
   (`match`, `row_count_differs`, `column_count_differs`, `column_names_differ`,
   `same_rows_different_order`, `values_differ_same_shape`, `actual_is_subset`,
@@ -2456,9 +2488,11 @@ and run the round again.
   numeric cell, a bucket of the relative error (`<1%`, `<10%`, `>=10%`); and a
   summary (execution accuracy overall, per tag and per data source, the
   distribution of the classes, correction rounds, latency p50 and p95).
-- *Changed on the way out:* error text has every quoted string replaced by
-  `'…'` and every run of four or more digits (Persian digits too) by `#`, and
-  is cut at 600 characters; with `--share-redact-literals` so are the
+  With `--share-only-ids`, a case outside the list has only its id, tags,
+  `passed` and `mismatch_class`.
+- *Changed on the way out:* error text and the per-round messages have every
+  quoted string replaced by `'…'` and every run of four or more digits
+  (Persian digits too) by `#`, and are cut at 600 characters; with `--share-redact-literals` so are the
   literals in the two SQL texts.
 - *Never in it:* result rows or any cell value from either query, credentials,
   `.env` values, the endpoint URL or host, API keys, principal ids, a case's
@@ -2470,10 +2504,11 @@ and run the round again.
 - The golden file is identified by its base name and a SHA-256 of its text
   (line endings normalised), never by its directory.
 
-**The reviewer's rule.** The file holds both halves, so the discipline is the
-reviewer's: look at the failures of the **dev** ids, tune to those, and use the
-**test** half only as a number (the next sections). A fix that raises dev and
-lowers test is overfit, and `compare` shows it.
+**The reviewer's rule.** Look at the failures of the **dev** ids, tune to
+those, and use the **test** half only as a number (the next sections). With
+`--share-only-ids` the file cannot show the test half's content; without it the
+discipline is the reviewer's alone. A fix that raises dev and lowers test is
+overfit, and `compare` shows it.
 
 #### 18.6.1 How the fixes come back
 
@@ -2515,7 +2550,10 @@ file is `dev_ids.txt` or `test_ids.txt` from step 1 (a JSON list of ids, or an
 object with `dev` and `test` lists, also works). With `--fail-on-regression`
 the exit status is `1` when any compared case passed in the old round and
 fails in the new one, so `--split test --fail-on-regression` is a regression
-in the held-out half. Without the flag the status is `0`. A bundle written for
+in the held-out half. Without the flag the status is `0`. **Two rounds
+generated by different pipelines (`run.pipeline`: `production` against
+`single_shot`) are refused with status `2`**; `--allow-mixed` compares them
+anyway, with a note that the deltas include the pipeline. A bundle written for
 a different golden file, or judged with a different `--reference`, is
 compared with a note saying so.
 
@@ -2539,14 +2577,16 @@ discount its miss. A set below 150 active cases can reach 7.5 but not 8.
 
 #### 18.6.4 What the numbers do and do not say
 
-The evaluation generates once per question. It has no self-correction loop,
-which the server runs, so `corrections` is 0 in the file and a
-`guard_rejected` case may be one the server would have retried and answered;
-it does not apply the server's default row cap either. The figure is
-execution accuracy of the model with its prompt on the first try, which
-tracks what users get without being it. Use it to compare rounds with each
-other, which is what it is for. §18.3 describes how "the same answer" is
-decided.
+The default figure is execution accuracy of the pipeline an analyst uses, so
+`corrections` is real and a `guard_rejected` case is one that ran out of
+correction rounds. Read `guard_rejections` in the file round by round: the same
+message twice means the correction text did not help; a different message each
+round means the model is searching. What it does not cover: per-key
+`denied_columns`, the result cache, and the interpretation step. The row cap
+means a question that asks for everything is scored against the first
+`DEFAULT_TOP_N` rows, which is also what the analyst sees. `--single-shot` gives
+the model-only figure; never compare it with a production round. §18.3
+describes how "the same answer" is decided.
 
 ## 19. Sharing diagnostics safely
 
