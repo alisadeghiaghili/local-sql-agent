@@ -1,6 +1,6 @@
 # Table retrieval: how it is measured and what was changed
 
-Status: implemented (Unreleased). Scope: which tables go into the prompt on the
+Status: implemented (6.11.0). Scope: which tables go into the prompt on the
 retrieval path (the schema is larger than `PROMPT_RETRIEVAL_TOKEN_BUDGET`; with
 the static prefix every table is always there). Retrieval stays lexical:
 aliases, fact patterns, TF-IDF over descriptions, column names and the
