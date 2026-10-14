@@ -2421,8 +2421,9 @@ that has none (`DEFAULT_TOP_N`) and the executor's query timeout and
 `MAX_ROWS_RETURNED`. The reference SQL is run as written, so a question whose
 reference returns more rows than the cap is scored the way the analyst would
 see it: a result of exactly cap rows, every one of them a row of the reference,
-**passes** as `match_capped` (the analyst saw the right rows, cut short by
-policy), while any other subset stays `actual_is_subset` and fails. **One difference, on purpose:** the run has no caller, so
+**passes** as `match_capped` once a count confirms it (the analyst saw the
+right rows, cut short by policy), while any other subset stays
+`actual_is_subset` and fails. **One difference, on purpose:** the run has no caller, so
 no per-key `denied_columns` policy is applied; a deployment whose keys deny
 columns is measured as if they did not. `--single-shot` makes one model call
 and no correction (the old behaviour): a model-only number, lower than the
@@ -2486,8 +2487,9 @@ and run the round again.
   (`match`, `match_capped`, `row_count_differs`, `column_count_differs`,
   `column_names_differ`, `same_rows_different_order`,
   `values_differ_same_shape`, `actual_is_subset`, `actual_is_superset`,
-  `actual_empty`, `expected_empty` or `not_executed`), `capped` and the cap
-  value (a count) when the cap applied, the row counts, the **column names** of both results and, for a single
+  `actual_empty`, `expected_empty` or `not_executed`), `capped`, the cap
+  value and `uncapped_rows` (counts) when the cap applied, `capped_unverified`,
+  the row counts, the **column names** of both results and, for a single
   numeric cell, a bucket of the relative error (`<1%`, `<10%`, `>=10%`); and a
   summary (execution accuracy overall, per tag and per data source, the
   distribution of the classes, correction rounds, latency p50 and p95).
@@ -2591,11 +2593,25 @@ as it does for the analyst. A result with exactly as many rows as the cap (the
 `TOP n` the server injected, or `MAX_ROWS_RETURNED` if lower), fewer than the
 reference has, every row of it a row of the reference (the same matching rules
 as `compare`; for a reference with `ORDER BY ... TOP`, the first rows in that
-order), is `match_capped` and counts as passed. It is not excused when a row is
-not in the reference, nor when the result stops short of the cap: a missing
-filter that removes too many rows still looks like a subset, and its row count
-would not equal the cap. `--single-shot` has no cap, so `match_capped` never
-appears there. No row value is exported to say any of this. `--single-shot` gives
+order), qualifies for `match_capped`. It is not excused when a row is not in
+the reference, nor when the result stops short of the cap. **A qualifying result
+is then verified with one more read-only query:** `SELECT COUNT(*) FROM (<the
+model's SQL before the cap was injected>) AS q`, built from the syntax tree
+(an `ORDER BY` without `TOP`/`OFFSET`, a `WITH` clause and repeated or unnamed
+columns, which SQL Server rejects in a derived table, are removed, hoisted or
+named) and run through the same executor, so the query timeout and the
+rolled-back read-only transaction apply. The case passes as `match_capped` only
+if that count equals the reference's row count (`uncapped_rows` in the
+diagnosis records it). An over-filtered query that merely returns a cap's worth
+of valid rows has a smaller count and is `actual_is_subset`, a failure. If the
+count cannot be asked (the SQL does not parse into a derived table, the guard
+refuses it, a timeout) the case **fails** as `actual_is_subset` with
+`capped_unverified: true`; there is no silent pass. A reference that was itself
+cut at `MAX_ROWS_RETURNED` only needs the count to reach its length. If the
+model wrote its own `TOP` and only `MAX_ROWS_RETURNED` cut the result, the same
+check runs on its SQL as written. `--single-shot` has no cap, so
+`match_capped` never appears there. Only the counts are exported, never a row
+value. `--single-shot` gives
 the model-only figure; never compare it with a production round. §18.3
 describes how "the same answer" is decided.
 

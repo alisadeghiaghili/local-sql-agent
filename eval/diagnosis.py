@@ -220,6 +220,9 @@ def diagnose_results(
         the reference, is ``match_capped``: the analyst saw the right rows,
         cut short by policy. For a reference that orders its rows, *actual*
         must also be the reference's first *row_cap* rows in that order.
+        This class is **provisional**: :func:`eval.runner.run_case` confirms
+        it with one count of the uncapped SQL
+        (:func:`eval.capcheck.verify_capped_match`) before it counts as a pass.
 
     Returns
     -------

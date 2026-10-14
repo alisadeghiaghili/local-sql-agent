@@ -62,7 +62,10 @@ class ScriptedBackend(LLMBackend):
 class Warehouse:
     """SQLite behind a T-SQL front; records every statement it was asked to run."""
 
-    def __init__(self, fail_first: bool = False, label: str = "v") -> None:
+    def __init__(
+        self, fail_first: bool = False, label: str = "v", fail_counts: bool = False
+    ) -> None:
+        self.fail_counts = fail_counts
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.execute(f"CREATE TABLE {T} (ID INTEGER, Label TEXT)")
         self.conn.executemany(
@@ -73,6 +76,8 @@ class Warehouse:
 
     def __call__(self, sql: str) -> pd.DataFrame:
         self.calls.append(sql)
+        if self.fail_counts and sql.startswith("SELECT COUNT(*) FROM ("):
+            raise RuntimeError("Database error: query timeout")
         if self.fail_first and len(self.calls) == 1:
             self.fail_first = False
             raise RuntimeError("Database error: transient failure")
@@ -198,6 +203,51 @@ class TestRowCapAndExecution:
         diagnosis = result.diagnosis
         assert (diagnosis.mismatch_class, diagnosis.capped, diagnosis.row_cap) == ("match_capped", True, 3)
         assert (diagnosis.expected_rows, diagnosis.actual_rows) == (5, 3)
+        # confirmed by a count of the model's SQL without the cap: 5, as in the reference
+        assert diagnosis.uncapped_rows == 5 and diagnosis.capped_unverified is False
+        counts = [c for c in warehouse.calls if c.startswith("SELECT COUNT(*) FROM (")]
+        assert len(counts) == 1 and "TOP" not in counts[0]  # the model's SQL, not the capped one
+
+    def test_the_pre_cap_sql_is_what_the_model_wrote(self):
+        generate, execute, trace = _pipeline(ScriptedBackend(f"select id from {T} order by id"),
+                                             Warehouse())
+        generate("list?")
+        assert "TOP" not in trace.precap_sql and "ID" in trace.precap_sql.upper()
+        generate2, _, trace2 = _pipeline(ScriptedBackend(f"SELECT TOP 4 ID FROM {T}"), Warehouse())
+        generate2("list?")
+        assert trace2.precap_sql == f"SELECT TOP 4 ID FROM {T}"  # its own TOP is kept as written
+
+    def test_an_over_filtered_query_with_exactly_the_cap_rows_fails(self):
+        # every row it returns is in the reference, and it returns a cap's worth, but it
+        # drops one row the reference has: the cap must not hide that
+        backend = ScriptedBackend(f"SELECT ID FROM {T} WHERE ID <= 4 ORDER BY ID")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=3):
+            result, warehouse, _ = _run(backend, case=case)
+        assert result.status == "fingerprint_mismatch"
+        diagnosis = result.diagnosis
+        assert diagnosis.mismatch_class == "actual_is_subset"
+        assert (diagnosis.capped, diagnosis.uncapped_rows, diagnosis.capped_unverified) == (False, 4, False)
+        counts = [c for c in warehouse.calls if c.startswith("SELECT COUNT(*) FROM (")]
+        assert len(counts) == 1 and "ORDER BY" not in counts[0]  # stripped for the derived table
+
+    def test_a_count_that_cannot_be_asked_is_a_failure_not_a_pass(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T}")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=3):
+            result, _, _ = _run(backend, Warehouse(fail_counts=True), case)
+        assert result.status == "fingerprint_mismatch" and not result.passed
+        diagnosis = result.diagnosis
+        assert diagnosis.mismatch_class == "actual_is_subset"
+        assert diagnosis.capped_unverified is True and diagnosis.capped is False
+        assert diagnosis.uncapped_rows is None
+
+    def test_the_count_is_not_asked_when_the_result_did_not_qualify(self):
+        backend = ScriptedBackend(f"SELECT ID FROM {T} WHERE ID <= 2")
+        case = GoldenCase(id="rows", question="list?", expected_sql=f"SELECT ID FROM {T}")
+        with cfg.override_settings(default_top_n=3):
+            _, warehouse, _ = _run(backend, case=case)
+        assert not any(c.startswith("SELECT COUNT(*) FROM (") for c in warehouse.calls)
 
     def test_a_capped_result_with_a_wrong_row_fails(self):
         backend = ScriptedBackend(f"SELECT ID FROM {T} ORDER BY ID")  # rows 1 and 2
@@ -253,6 +303,8 @@ class TestRowCapAndExecution:
         assert (record["passed"], record["status"]) == (True, "pass")
         assert record["diagnosis"]["mismatch_class"] == "match_capped"
         assert (record["diagnosis"]["capped"], record["diagnosis"]["row_cap"]) == (True, 2)
+        assert record["diagnosis"]["uncapped_rows"] == 5
+        assert record["diagnosis"]["capped_unverified"] is False
         assert bundle["summary"]["mismatch_classes"]["match_capped"] == 1
         assert bundle["summary"]["passed"] == 1 and bundle["summary"]["execution_accuracy_pct"] == 100.0
 

@@ -304,9 +304,13 @@ class GoldenCase:
 #: ``match_capped``
 #:     Passed: the result has exactly as many rows as the row cap (the
 #:     ``TOP n`` the server injected, or ``MAX_ROWS_RETURNED`` if lower),
-#:     fewer than the reference, and every row is one the reference has. The
-#:     analyst saw the right rows, cut short by policy. Only the production
-#:     pipeline has a cap, so ``--single-shot`` never produces it.
+#:     fewer than the reference, every row is one the reference has, **and**
+#:     a count of the model's SQL without the cap equals the reference's row
+#:     count (:mod:`eval.capcheck`), so it is not an over-filtered query that
+#:     merely returns a cap's worth of valid rows. The analyst saw the right
+#:     rows, cut short by policy. Only the production pipeline has a cap, so
+#:     ``--single-shot`` never produces it. When the count disagrees, or
+#:     cannot be asked, the class is ``actual_is_subset`` and the case fails.
 #: ``not_executed``
 #:     The generated SQL, or the reference, never produced a result.
 #: ``column_count_differs``, ``actual_empty``, ``expected_empty``
@@ -376,6 +380,13 @@ class MismatchDiagnosis:
         ``capped`` is true for ``match_capped``; ``row_cap`` is the cap the
         server applied to that result (a count, never a value), and is also
         recorded for a capped-looking result that did not qualify.
+    uncapped_rows:
+        For a result that qualified for ``match_capped``: the number of rows
+        the model's SQL returns without the cap, from one extra count query.
+        A count, never a value; ``None`` otherwise.
+    capped_unverified:
+        True when that count query could not be run or built: the case then
+        fails as ``actual_is_subset`` rather than passing unverified.
 
     Examples
     --------
@@ -394,6 +405,8 @@ class MismatchDiagnosis:
     relative_error_bucket: str | None = None
     capped: bool = False
     row_cap: int | None = None
+    uncapped_rows: int | None = None
+    capped_unverified: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict."""
@@ -410,6 +423,8 @@ class MismatchDiagnosis:
             "relative_error_bucket": self.relative_error_bucket,
             "capped": self.capped,
             "row_cap": self.row_cap,
+            "uncapped_rows": self.uncapped_rows,
+            "capped_unverified": self.capped_unverified,
         }
 
     @classmethod
@@ -429,6 +444,8 @@ class MismatchDiagnosis:
             relative_error_bucket=data.get("relative_error_bucket"),
             capped=bool(data.get("capped", False)),
             row_cap=data.get("row_cap"),
+            uncapped_rows=data.get("uncapped_rows"),
+            capped_unverified=bool(data.get("capped_unverified", False)),
         )
 
 

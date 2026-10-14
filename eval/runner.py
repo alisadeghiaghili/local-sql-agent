@@ -57,6 +57,7 @@ import pandas as pd
 
 from eval.compare import ComparisonOptions, compare_to_reference
 from eval.fingerprint import fingerprint_dataframe
+from eval.capcheck import verify_capped_match
 from eval.diagnosis import diagnose_not_executed, diagnose_results
 from eval.models import CaseResult, CaseStatus, GoldenCase, MismatchDiagnosis
 from eval.store import load_golden_cases  # noqa: F401 - re-exported
@@ -109,6 +110,7 @@ class SourceTrace:
         self.corrections: int = 0
         self.attempts: int = 0
         self.row_cap: int | None = None
+        self.precap_sql: str | None = None
         self.guard_rejections: list[dict[str, Any]] = []
         self.execution_errors: list[dict[str, Any]] = []
 
@@ -128,6 +130,10 @@ class SourceTrace:
     def record_row_cap(self, cap: int | None) -> None:
         """Store the row cap the server applied to the current question's result."""
         self.row_cap = cap
+
+    def record_precap_sql(self, sql: str | None) -> None:
+        """Store the model's SQL as it was before the cap was injected (in memory only)."""
+        self.precap_sql = sql
 
     def begin_attempt(self) -> int:
         """Count one more generation attempt; return its round (1 = first try).
@@ -156,6 +162,7 @@ class SourceTrace:
         self.corrections = 0
         self.attempts = 0
         self.row_cap = None
+        self.precap_sql = None
         self.guard_rejections = []
         self.execution_errors = []
 
@@ -450,6 +457,15 @@ def run_case(
             )
         except Exception:  # noqa: BLE001 - a diagnosis is an extra; the verdict above stands
             diagnosis = None
+        if diagnosis is not None and diagnosis.mismatch_class == "match_capped":
+            # Right rows, cut by the cap -- or an over-filtered query that returns a cap's
+            # worth? One count of the uncapped SQL decides (eval.capcheck); a count that
+            # cannot be asked is a failure, never a pass.
+            diagnosis = verify_capped_match(
+                diagnosis,
+                source_trace.precap_sql if source_trace is not None else None,
+                execute_fn,
+            )
         capped_match = diagnosis is not None and diagnosis.mismatch_class == "match_capped"
         if comparison.equal or capped_match:
             return _finish(

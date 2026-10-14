@@ -52,6 +52,9 @@ diagnosis
     *How* a generated result differs from the reference (a mismatch class,
     row and column counts, column names, an error bucket for one number),
     computed from the two frames and never holding a value.
+capcheck
+    The count query that confirms a ``match_capped`` result against the
+    uncapped SQL, so an over-filtered query is not excused by the row cap.
 share
     The share-safe bundle of ``run --share`` (redacted error text, optional
     SQL-literal redaction, owner-only file, never inside the tracked tree).

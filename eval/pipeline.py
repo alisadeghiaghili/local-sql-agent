@@ -49,6 +49,7 @@ import config as cfg
 
 from eval.runner import ExecuteFn, GenerateFn, PipelineFailure, SourceTrace
 from llm.sql_agent import SQLAgent
+from security.sql_guard import clean_sql
 
 if TYPE_CHECKING:
     from llm.router import LLMRouter
@@ -74,7 +75,12 @@ class TracingSQLAgent(SQLAgent):
     def _clean_validate_cap(self, raw, *, denied_columns=None):  # type: ignore[override]
         self._trace.begin_attempt()
         try:
-            return super()._clean_validate_cap(raw, denied_columns=denied_columns)
+            result = super()._clean_validate_cap(raw, denied_columns=denied_columns)
+            # The model's statement before ensure_top injected the cap: what the
+            # capped-match check counts. clean_sql is pure, so this is the same text
+            # the parent cleaned.
+            self._trace.record_precap_sql(clean_sql(raw))
+            return result
         except ValueError as exc:
             self._trace.record_guard_rejection(type(exc).__name__, str(exc))
             raise
