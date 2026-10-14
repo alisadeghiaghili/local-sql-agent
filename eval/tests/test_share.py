@@ -280,7 +280,9 @@ class TestBundleContent:
     def test_golden_hash_is_newline_agnostic(self, tmp_path, fake_live):
         _, share, golden = _run(tmp_path)
         before = _bundle(share)["golden"]["sha256"]
-        golden.write_bytes(golden.read_bytes().replace(b"\n", b"\r\n"))
+        # Normalise first: on Windows the fixture is already written with CRLF.
+        lf = golden.read_bytes().replace(b"\r\n", b"\n")
+        golden.write_bytes(lf.replace(b"\n", b"\r\n"))
         share2 = tmp_path / "out" / "round-2.json"
         cli.main(["run", "--golden", str(golden), "--live", "--reference", "live",
                   "--share", str(share2)])
