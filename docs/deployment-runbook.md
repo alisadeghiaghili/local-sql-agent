@@ -466,7 +466,7 @@ It asks questions as it goes, unless told not to. Its options:
 | `--review interactive\|auto` | `auto` is the same as `--non-interactive`. |
 | `--non-interactive` | Accept every suggestion without asking; for scripts. |
 | `--include-schemas a,b` | Only these database schemas. |
-| `--exclude-schemas PATTERNS` | Comma-separated `fnmatch` patterns, matched case-insensitively against schema names (`'*_Stg,Replay'`); the tables of those schemas are left out. Wins over `--include-schemas`. |
+| `--exclude-schemas PATTERNS` | Comma-separated `fnmatch` patterns, matched case-insensitively against schema names (`'*_Stg,Replay'`); those schemas are not read at all. Wins over `--include-schemas`. |
 | `--include-staging` | Keep the staging and change-capture tables that `STAGING_PATTERNS` names (§3.1, the check `No staging or change-capture tables`). By default they are skipped. |
 | `--dry-run` | Print the files and write none, the setup log included; the validation step is skipped. |
 | `--resume` | Continue from the first step `.setup_log.json` does not record as completed (see below). |
@@ -478,7 +478,7 @@ under the key shown:
 | Key | Step | What happens |
 |---|---|---|
 | `step1_connection` | Database connection | Opens the URL and runs `SELECT 1`; on failure it prints the error and, interactively, offers a retry. |
-| `step2_schema` | Schema discovery | Reads tables, columns, foreign keys and up to five sample values per text column, and calls each table a fact or a dimension table. It then drops the schemas named by `--exclude-schemas` and the staging tables (below), before any model call. Interactively it shows the schemas with their table counts and asks which to leave out, then which single tables. |
+| `step2_schema` | Schema discovery | In two phases. First it lists schema and table names (names only: no column, no row), applies `--include-schemas` and `--exclude-schemas`, drops the staging tables (below) and, interactively, shows the schemas with the number of tables that would be read and asks which to leave out. Only then does it read the remaining schemas (tables, columns, foreign keys and up to five sample values per text column) and call each table a fact or a dimension table. Interactively it then asks which single tables to leave out. |
 | `step3_aliases` | Aliases | One model call per table for aliases and a one-line description (the model is told the schema-qualified name); interactively you accept, edit or clear each. |
 | `step4_rules` | Business rules | One model call per fact table for its value and volume columns and a rule text; the prompt carries the table's join hints (declared foreign keys, or relationships inferred from column names). |
 | `step5_examples` | Examples | One model call that asks for ten question-and-SQL pairs. |
@@ -530,8 +530,13 @@ Things to know before you run it:
   run did not cover stay as they are; an entry for a table of this run replaces
   the old one with the same key; examples are de-duplicated by question text
   (case and spacing ignored) and relationships by their two ends. Nothing is
-  removed, so a file never shrinks. A hand-set `label:` on an entity survives its
-  replacement. The comments of an old file are not kept (the file is written again
+  removed, so a file never shrinks. A table the model gave no answer for does not
+  wipe what is there: if the new aliases of an entity are empty, or the model gave
+  no rule for a fact table (the placeholder `Primary fact table: ...` the wizard writes
+  on a first run), the earlier entry is kept, counted as kept, and named in the
+  summary (`1 earlier entry kept because this run gave no answer for it: Customer`). To
+  clear an entry on purpose, edit the file. A hand-set `label:` on an entity survives
+  its replacement. The comments of an old file are not kept (the file is written again
   from the merged data), and `aliases.yaml`'s `synonyms` are united word by word.
   The summary prints `kept N, added N, replaced N` per file. An existing wizard
   file that cannot be read stops the run before any model call (exit status 2);
@@ -551,12 +556,18 @@ Things to know before you run it:
   `STAGING_PATTERNS` names (§3.1; by default `*_Stg`, `*stg*`, `*staging*` as schema
   patterns and `table:*_Inserts`, `table:*_Updates`, `table:*_Deletes`) are skipped
   unless `--include-staging` is given, and so are the schemas matching
-  `--exclude-schemas`. The summary says how many tables were skipped and why, e.g.
+  `--exclude-schemas` and those you pick interactively. **A schema that is left out
+  is never read**: the wizard lists names first and inspects (columns, sample values)
+  only the schemas that remain, so the question is asked, and `--exclude-schemas`
+  applied, before any table of those schemas is touched. A schema whose every table is
+  staging is not read; a staging table whose bare name no other listed table shares is
+  not read either; one whose name is shared (a staging copy of a fact table) is read and
+  then dropped, so that the same-named table of another schema is not lost. The summary
+  says how many tables were skipped and why, e.g.
   `Skipped 66 of 278 tables: 40 in excluded schemas, 26 staging or change-capture`.
-  Relationships to a skipped table are dropped. The tables are still read from the
-  database (the exclusion is applied to the result), so use
-  `database.schema_inspector_cli --exclude-schemas` when a schema must not be read at
-  all. Non-interactive mode never prompts.
+  Relationships to a skipped table are dropped. Single tables you name in the
+  interactive question after the inspection are dropped from its result. Non-interactive
+  mode never prompts.
 - **Relationships are inferred when the database declares few keys.** With
   fewer foreign keys than one per ten tables (a warehouse without keys declares
   none), `relationships.yaml` also gets the relationships that
