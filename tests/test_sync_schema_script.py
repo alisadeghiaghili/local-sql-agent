@@ -666,3 +666,94 @@ class TestSchemaTextInEffect:
                 assert "Region" in get_table_columns()["sales_dim.Broker"]
                 raise RuntimeError("inside")
         assert (dict(get_table_columns()), build_static_prefix(SYSTEM_PROMPT, "sales")) == before
+
+
+class TestExcludedSchemas:
+    """``--exclude-schemas``, ``EXCLUDE_SCHEMAS`` and a source's ``exclude_schemas:`` reach the sync."""
+
+    @staticmethod
+    def catalogues():
+        from tests._sync_fixtures import catalogue, tbl
+
+        sales = dict(CATALOGUES["sales"])
+        sales.update(catalogue(
+            tbl("cdc", "change_table", [("ID", "int")]),
+            tbl("Replay", "Trade_Inserts", [("ID", "int")]),
+            tbl("Staging_Load", "Batch", [("ID", "int")]),
+        ))
+        return {"sales": sales, "inventory": CATALOGUES["inventory"]}
+
+    def added(self, project, *argv: str) -> set[str]:
+        main(["--no-relationships", *argv], load_catalogue=loader(self.catalogues()))
+        text = (project / SYNCED).read_text(encoding="utf-8")
+        return set(validate_schema_yaml_text(text).tables) - set(validate_schema_yaml_text(SCHEMA).tables)
+
+    def test_the_system_schemas_are_never_added_and_the_report_counts_them(self, project, capsys):
+        added = self.added(project, "--add-tables", "*")
+
+        assert {"change_table"}.isdisjoint(added)
+        assert "Trade_Inserts" in added
+        assert "tables in excluded schemas, not listed or added" in capsys.readouterr().out
+
+    def test_the_option_leaves_the_matching_schemas_out_for_this_run(self, project, capsys):
+        added = self.added(project, "--add-tables", "*", "--exclude-schemas", "replay, Staging_*")
+
+        assert {"Trade_Inserts", "Batch"}.isdisjoint(added) and "Audit" in added
+        out = capsys.readouterr().out
+        assert "  Replay: 1" in out and "  Staging_Load: 1" in out and "  cdc: 1" in out
+
+    def test_the_option_is_repeatable(self, project):
+        added = self.added(
+            project, "--add-tables", "*", "--exclude-schemas", "replay", "--exclude-schemas", "Staging_Load",
+        )
+
+        assert {"Trade_Inserts", "Batch"}.isdisjoint(added)
+
+    def test_the_setting_applies_to_every_source(self, project):
+        with override_settings(project_config_dir=str(project), exclude_schemas="Replay"):
+            added = self.added(project, "--add-tables", "*")
+
+        assert "Trade_Inserts" not in added and "Batch" in added
+
+    def test_a_sources_own_exclude_schemas_applies_to_it(self, project):
+        (project / "datasources.yaml").write_text(
+            "default: sales\n"
+            "datasources:\n"
+            "  sales:\n    url_env: DB_URL_SALES\n    exclude_schemas: [Staging_Load]\n"
+            "  inventory:\n    url_env: DB_URL_INVENTORY\n",
+            encoding="utf-8",
+        )
+        reset_datasources_cache()
+
+        added = self.added(project, "--add-tables", "*")
+
+        assert "Batch" not in added and "Trade_Inserts" in added
+
+    def test_a_listed_table_in_an_excluded_schema_is_still_synced(self, project):
+        main(["--no-relationships", "--exclude-schemas", "sales_dim,sales_fact"], load_catalogue=loader())
+        excluded = (project / SYNCED).read_text(encoding="utf-8")
+        (project / SYNCED).unlink()
+
+        main(["--no-relationships"], load_catalogue=loader())
+
+        assert (project / SYNCED).read_text(encoding="utf-8") == excluded
+
+    def test_check_does_not_fail_on_an_excluded_table(self, project):
+        argv = ["--exclude-schemas", "Replay,cdc,Staging_Load"]
+        main([*argv], load_catalogue=loader(self.catalogues()))
+        (project / "schema.yaml").write_text((project / SYNCED).read_text(encoding="utf-8"), encoding="utf-8")
+
+        assert main(["--check", *argv], load_catalogue=loader(self.catalogues())) == EXIT_OK
+        # The same tables count as drift only when --add-tables asks for them.
+        assert main(["--check", "--add-tables", "Replay.*"], load_catalogue=loader(self.catalogues())) == EXIT_CHECK_FAILED
+
+    def test_an_invalid_datasources_yaml_is_an_error_not_a_traceback(self, project, capsys):
+        (project / "datasources.yaml").write_text(
+            "datasources:\n  sales:\n    url_env: X\n    exclude_schemas: 5\n", encoding="utf-8",
+        )
+        reset_datasources_cache()
+
+        code = main([], load_catalogue=loader())
+
+        assert code == EXIT_ERROR
+        assert "exclude_schemas" in capsys.readouterr().err

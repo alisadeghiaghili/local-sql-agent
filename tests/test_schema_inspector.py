@@ -36,6 +36,7 @@ from database.schema_inspector import (
     schema_is_excluded,
 )
 from schema_data.registry import validate_schema_yaml_text
+from tests._inspector_fixtures import attached, build_database
 
 
 def _table(name: str, schema: str | None, *cols: str) -> TableInfo:
@@ -336,71 +337,51 @@ class TestExcludeSchemasInDiscovery:
         assert found == ["sales.Trade"]
 
 
-class _FakeInspector:
-    """Stands in for ``SchemaInspector`` inside the CLI; records ``inspect``."""
-
-    instances: list["_FakeInspector"] = []
-    snapshot: SchemaSnapshot = SchemaSnapshot()
-
-    def __init__(self, db_url: str, sample_rows: int = 10) -> None:
-        self.inspect_kwargs: dict = {}
-        type(self).instances.append(self)
-
-    def inspect(self, **kwargs):
-        self.inspect_kwargs = kwargs
-        return type(self).snapshot
-
-    def close(self) -> None:
-        pass
-
-    def draft_entities_yaml(self, snapshot):
-        return "entities: {}\n"
-
-    draft_aliases_yaml = draft_relationships_yaml = draft_schema_yaml = draft_entities_yaml
+def _run_cli(tmp_path, capsys, layout, *extra: str):
+    """Run the CLI with ``--db-url`` on a database built from *layout*; ``(code, stderr, output dir)``."""
+    database = build_database(tmp_path, "db", layout)
+    out = tmp_path / "draft"
+    with attached(database):
+        code = schema_inspector_cli.main(["--db-url", database.url, "--output-dir", str(out), *extra])
+    return code, capsys.readouterr().err, out
 
 
-def _run_cli(tmp_path, capsys, tables: list[TableInfo], *extra: str):
-    _FakeInspector.instances = []
-    _FakeInspector.snapshot = SchemaSnapshot(tables=tables)
-    argv = ["--db-url", "sqlite://", "--output-dir", str(tmp_path / "draft"), *extra]
-    with patch("database.schema_inspector.SchemaInspector", _FakeInspector):
-        code = schema_inspector_cli.main(argv)
-    return code, capsys.readouterr().err, _FakeInspector.instances[0]
+def _tables_in(*schemas: str, count: int = 1) -> dict:
+    return {s: {f"T{i}": None for i in range(count)} for s in schemas}
 
 
 class TestCliExcludeSchemasOption:
-    def test_comma_separated_patterns_reach_the_inspector(self, tmp_path, capsys):
-        code, _, inspector = _run_cli(
-            tmp_path,
-            capsys,
-            [_table("T", "sales")],
-            "--exclude-schemas",
-            "*_Stg, Replay ,,Alerts",
-        )
+    def test_comma_separated_patterns_skip_schemas(self, tmp_path, capsys):
+        layout = {"sales": {"T": None}, "Sales_Stg": {"T": None}, "Replay": {"T": None}, "Alerts": {"H": None}}
+
+        code, err, out = _run_cli(tmp_path, capsys, layout, "--include-staging", "--exclude-schemas", "*_Stg, Replay ,,Alerts")
 
         assert code == 0
-        assert inspector.inspect_kwargs["exclude_schemas"] == ["*_Stg", "Replay", "Alerts"]
+        assert list(validate_schema_yaml_text((out / "schema.yaml").read_text(encoding="utf-8")).tables) == ["T"]
+        assert "--exclude-schemas: 3 table(s) in 3 schema(s)" in err
 
-    def test_absent_option_passes_none(self, tmp_path, capsys):
-        _, _, inspector = _run_cli(tmp_path, capsys, [_table("T", "sales")])
+    def test_absent_option_keeps_every_user_schema(self, tmp_path, capsys):
+        _, err, out = _run_cli(tmp_path, capsys, {"sales": {"T": None}, "ref": {"R": None}})
 
-        assert inspector.inspect_kwargs["exclude_schemas"] is None
+        assert sorted(validate_schema_yaml_text((out / "schema.yaml").read_text(encoding="utf-8")).tables) == ["R", "T"]
+        assert "--exclude-schemas" not in err
 
-    def test_help_shows_the_option_and_an_example(self, capsys):
+    def test_help_shows_the_options_and_an_example(self, capsys):
         with pytest.raises(SystemExit):
             schema_inspector_cli.main(["--help"])
 
         out = capsys.readouterr().out
-        assert "--exclude-schemas" in out
+        for flag in ("--exclude-schemas", "--datasource", "--include-staging", "--sample-values", "--db-url"):
+            assert flag in out
         assert '--exclude-schemas "*_Stg,Replay,Alerts"' in out
         assert "sync_schema.py --add-tables" in out
 
 
 class TestCliRunSummary:
     def test_prints_count_per_schema_and_total(self, tmp_path, capsys):
-        tables = [_table("A", "sales"), _table("B", "sales"), _table("C", "ref")]
+        layout = {"sales": {"A": None, "B": None}, "ref": {"C": None}}
 
-        _, err, _ = _run_cli(tmp_path, capsys, tables)
+        _, err, _ = _run_cli(tmp_path, capsys, layout)
 
         assert "Tables per schema:" in err
         assert "  ref: 1" in err
@@ -408,34 +389,28 @@ class TestCliRunSummary:
         assert "  Total: 3" in err
 
     def test_says_drafts_are_for_a_first_install(self, tmp_path, capsys):
-        _, err, _ = _run_cli(tmp_path, capsys, [_table("A", "sales")])
+        _, err, _ = _run_cli(tmp_path, capsys, {"sales": {"A": None}})
 
         assert "for a first install only" in err
         assert "python scripts/sync_schema.py --add-tables 'Schema.*'" in err
         assert "keeps the curated text" in err
 
     def test_no_warning_at_exactly_150_tables(self, tmp_path, capsys):
-        tables = [_table(f"T{i}", "sales") for i in range(150)]
-
-        _, err, _ = _run_cli(tmp_path, capsys, tables)
+        _, err, _ = _run_cli(tmp_path, capsys, _tables_in("sales", count=150), "--no-row-counts")
 
         assert "WARNING" not in err
 
     def test_warns_above_150_tables(self, tmp_path, capsys):
-        tables = [_table(f"T{i}", "sales") for i in range(151)]
-
-        _, err, _ = _run_cli(tmp_path, capsys, tables)
+        _, err, _ = _run_cli(tmp_path, capsys, _tables_in("sales", count=151), "--no-row-counts")
 
         assert "WARNING: 151 tables were written (more than 150)" in err
 
     def test_summary_goes_to_stderr_not_stdout(self, tmp_path, capsys):
-        _FakeInspector.snapshot = SchemaSnapshot(tables=[_table("A", "sales")])
-
-        with patch("database.schema_inspector.SchemaInspector", _FakeInspector):
-            schema_inspector_cli.main(
-                ["--db-url", "sqlite://", "--output-dir", str(tmp_path / "d"), "--dry-run"]
-            )
+        database = build_database(tmp_path, "db", {"sales": {"A": None}})
+        with attached(database):
+            schema_inspector_cli.main(["--db-url", database.url, "--output-dir", str(tmp_path / "d"), "--dry-run"])
 
         captured = capsys.readouterr()
         assert "Tables per schema" in captured.err
         assert "Tables per schema" not in captured.out
+        assert "tables:" in captured.out
