@@ -135,3 +135,104 @@ class TestEveryCallerUsesTheSharedRedactor:
     def test_schema_inspector_snapshot_records_no_password(self):
         # The snapshot's source_url is what gets written to disk / shown.
         assert SECRET not in SchemaInspector._redact_url(f"mssql+pyodbc://u:{SECRET}@h/d")
+
+
+class TestRedactErrorText:
+    """What may leave the server in a share bundle: no quoted value, no long digit run."""
+
+    def test_quoted_string_literals_become_an_ellipsis(self):
+        from core.redaction import redact_error_text
+
+        text = "Conversion failed when converting the varchar value 'Some Name' to data type int."
+        assert redact_error_text(text) == (
+            "Conversion failed when converting the varchar value '…' to data type int."
+        )
+
+    def test_escaped_quotes_stay_inside_one_literal(self):
+        from core.redaction import redact_error_text
+
+        assert redact_error_text("bad value 'it''s here' and 'x'") == "bad value '…' and '…'"
+
+    def test_an_unterminated_literal_is_masked_to_the_end(self):
+        from core.redaction import redact_error_text
+
+        assert redact_error_text("cut off at 'Some Nam") == "cut off at '…"
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("id 1234 and 123 and 12", "id # and 123 and 12"),
+            ("amount 1234567.89", "amount #.89"),
+            ("code ۱۲۳۴۵۶ done", "code # done"),
+            ("code ١٢٣٤٥٦ done", "code # done"),
+            ("version 6.11.0", "version 6.11.0"),
+        ],
+    )
+    def test_digit_runs_of_four_or_more_become_a_hash(self, text, expected):
+        from core.redaction import redact_error_text
+
+        assert redact_error_text(text) == expected
+
+    def test_persian_text_inside_quotes_is_masked(self):
+        from core.redaction import redact_error_text
+
+        assert redact_error_text("مقدار 'علی رضایی' نامعتبر") == "مقدار '…' نامعتبر"
+
+    def test_connection_credentials_are_masked_first(self):
+        from core.redaction import redact_error_text
+
+        out = redact_error_text(f"Login failed: UID=nlq;PWD={SECRET};Server=db1 via mssql://nlq:{SECRET}@db1/x")
+        assert SECRET not in out
+        assert MASK in out
+
+    def test_none_and_empty_are_empty_and_long_text_is_cut(self):
+        from core.redaction import redact_error_text
+
+        assert redact_error_text(None) == "" == redact_error_text("")
+        assert len(redact_error_text("x" * 5000)) <= 601
+
+    def test_sqlalchemy_style_statement_echo_loses_its_parameters(self):
+        from core.redaction import redact_error_text
+
+        out = redact_error_text("(pyodbc.Error) ('42000', '[42000] bad') [SQL: SELECT 1 WHERE n = 'Acme']")
+        assert "Acme" not in out and "42000" not in out
+
+
+class TestRedactSqlLiterals:
+    """Literals are found by parsing, never by pattern."""
+
+    def test_string_and_numeric_literals_become_placeholders(self):
+        from core.redaction import redact_sql_literals
+
+        out = redact_sql_literals(
+            "SELECT TOP 5 Name FROM T WHERE City = 'Oslo' AND Year = 2024 AND Rate > 0.5"
+        )
+        assert out == (
+            "SELECT TOP (:num) Name FROM T WHERE City = :str AND Year = :num AND Rate > :num"
+        )
+
+    def test_a_quote_inside_a_comment_or_bracketed_name_is_not_a_literal(self):
+        from core.redaction import redact_sql_literals
+
+        out = redact_sql_literals("SELECT [it's] FROM T -- 'not a string'\nWHERE a = 'x'")
+        assert "it's" in out and "not a string" not in out and ":str" in out
+
+    def test_national_hex_and_in_lists(self):
+        from core.redaction import redact_sql_literals
+
+        out = redact_sql_literals("SELECT N'علی', 0x1F FROM T WHERE c IN (1, 2, 'k')")
+        assert "علی" not in out and "0x1F" not in out and "'k'" not in out
+        assert out.count(":num") == 2
+
+    def test_order_by_and_group_by_positions_are_kept(self):
+        from core.redaction import redact_sql_literals
+
+        out = redact_sql_literals("SELECT a, COUNT(*) FROM T GROUP BY 1 ORDER BY 2 DESC")
+        assert "GROUP BY 1" in out and "ORDER BY 2" in out
+
+    def test_several_statements_and_unparseable_text(self):
+        from core.redaction import SQL_WITHHELD, redact_sql_literals
+
+        assert redact_sql_literals("SELECT 1; SELECT 'a'") == "SELECT :num; SELECT :str"
+        assert redact_sql_literals("SELECT ( FROM 'secret'") == SQL_WITHHELD
+        assert redact_sql_literals(None) == "" == redact_sql_literals("  ")

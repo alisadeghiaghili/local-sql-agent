@@ -49,17 +49,17 @@ parameter (``backend``, ``execute_fn``) by the function that needs it.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Literal
 
 import pandas as pd
 
 from eval.compare import ComparisonOptions, compare_to_reference
 from eval.fingerprint import fingerprint_dataframe
-from eval.models import CaseResult, CaseStatus, GoldenCase
+from eval.diagnosis import diagnose_not_executed, diagnose_results
+from eval.models import CaseResult, CaseStatus, GoldenCase, MismatchDiagnosis
+from eval.store import load_golden_cases  # noqa: F401 - re-exported
 from llm.base import LLMBackend
 from prompt_engine.builder import PromptBuilder
 from retrieval.context_retriever import ContextRetriever
@@ -106,14 +106,25 @@ class SourceTrace:
 
     def __init__(self) -> None:
         self.chosen: str | None = None
+        self.corrections: int = 0
 
     def record(self, source: str | None) -> None:
         """Store *source* as the choice made for the current question."""
         self.chosen = source
 
+    def record_corrections(self, rounds: int) -> None:
+        """Store how many self-correction rounds the current question took.
+
+        The live generators here generate once and never call this, so a
+        :class:`~eval.models.CaseResult` reports ``0``; a generator that
+        does correct itself reports its rounds through this method.
+        """
+        self.corrections = max(0, int(rounds))
+
     def reset(self) -> None:
         """Forget the previous question's choice."""
         self.chosen = None
+        self.corrections = 0
 
 
 # ---------------------------------------------------------------------------
@@ -121,63 +132,8 @@ class SourceTrace:
 # ---------------------------------------------------------------------------
 
 
-def load_golden_cases(path: str | Path) -> list[GoldenCase]:
-    """Load every case from a ``golden.jsonl`` file.
-
-    Each non-blank line must be one JSON object accepted by
-    :meth:`~eval.models.GoldenCase.from_dict`.
-
-    Parameters
-    ----------
-    path:
-        Path to a ``.jsonl`` file, one golden case per line.
-
-    Returns
-    -------
-    list[GoldenCase]
-
-    Raises
-    ------
-    ValueError
-        If a line is not valid JSON, if a line fails
-        :class:`~eval.models.GoldenCase` validation, or if the file
-        contains no cases at all.
-
-    Examples
-    --------
-    >>> import tempfile, os
-    >>> content = (
-    ...     '{"id": "a", "question": "how many?", "expected_sql": "SELECT 1"}\\n'
-    ...     '\\n'
-    ...     '{"id": "b", "question": "how many more?", "expected_sql": "SELECT 2"}\\n'
-    ... )
-    >>> fd, path = tempfile.mkstemp(suffix=".jsonl")
-    >>> _ = os.write(fd, content.encode("utf-8"))
-    >>> os.close(fd)
-    >>> cases = load_golden_cases(path)
-    >>> [c.id for c in cases]
-    ['a', 'b']
-    >>> os.remove(path)
-    """
-    golden_path = Path(path)
-    cases: list[GoldenCase] = []
-    with golden_path.open("r", encoding="utf-8") as fh:
-        for line_no, raw_line in enumerate(fh, start=1):
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            try:
-                data = json.loads(stripped)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{golden_path}:{line_no}: invalid JSON: {exc}") from exc
-            try:
-                cases.append(GoldenCase.from_dict(data))
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{golden_path}:{line_no}: {exc}") from exc
-
-    if not cases:
-        raise ValueError(f"{golden_path}: no golden cases found")
-    return cases
+# load_golden_cases lives in eval.store (a module that needs no project_config/);
+# re-exported here, where it has always been importable from.
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +272,8 @@ def run_case(
         error: str | None = None,
         latency: float | None = None,
         reference_fingerprint: str | None = None,
+        diagnosis: MismatchDiagnosis | None = None,
+        guard_rejections: list[dict[str, str]] | None = None,
     ) -> CaseResult:
         return CaseResult(
             case_id=case.id,
@@ -329,6 +287,9 @@ def run_case(
             expected_datasource=case.datasource,
             selected_datasource=_selected(generated_sql),
             reference_fingerprint=reference_fingerprint,
+            diagnosis=diagnosis,
+            corrections=source_trace.corrections if source_trace is not None else 0,
+            guard_rejections=list(guard_rejections or []),
         )
 
     try:
@@ -355,7 +316,12 @@ def run_case(
     try:
         validate_sql(raw_sql)
     except ValueError as exc:
-        return _finish("guard_rejected", generated_sql=raw_sql, error=str(exc))
+        return _finish(
+            "guard_rejected",
+            generated_sql=raw_sql,
+            error=str(exc),
+            guard_rejections=[{"class": type(exc).__name__, "message": str(exc)}],
+        )
 
     try:
         df = execute_fn(raw_sql)
@@ -384,6 +350,7 @@ def run_case(
                 actual_fingerprint=actual_fingerprint,
                 error=f"reference expected_sql rejected by the guard: {exc}",
                 latency=pipeline_latency,
+                diagnosis=diagnose_not_executed(actual=df),
             )
         try:
             reference_df = execute_fn(case.expected_sql)
@@ -394,6 +361,7 @@ def run_case(
                 actual_fingerprint=actual_fingerprint,
                 error=f"reference expected_sql failed: {type(exc).__name__}: {exc}",
                 latency=pipeline_latency,
+                diagnosis=diagnose_not_executed(actual=df),
             )
         try:
             reference_fingerprint: str | None = fingerprint_dataframe(reference_df)
@@ -402,6 +370,12 @@ def run_case(
         comparison = compare_to_reference(
             case.expected_sql, reference_df, df, options=options
         )
+        try:
+            diagnosis: MismatchDiagnosis | None = diagnose_results(
+                case.expected_sql, reference_df, df, options=options
+            )
+        except Exception:  # noqa: BLE001 - a diagnosis is an extra; the verdict above stands
+            diagnosis = None
         if comparison.equal:
             return _finish(
                 "pass",
@@ -409,6 +383,7 @@ def run_case(
                 actual_fingerprint=actual_fingerprint,
                 latency=pipeline_latency,
                 reference_fingerprint=reference_fingerprint,
+                diagnosis=diagnosis,
             )
         return _finish(
             "fingerprint_mismatch",
@@ -417,6 +392,7 @@ def run_case(
             error=f"result differs from the live reference: {comparison.reason}",
             latency=pipeline_latency,
             reference_fingerprint=reference_fingerprint,
+            diagnosis=diagnosis,
         )
 
     if case.expected_fingerprint is None or actual_fingerprint == case.expected_fingerprint:

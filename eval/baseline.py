@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import config as cfg
-from eval.models import CaseResult, EvalReport
+from eval.models import CaseResult, EvalReport, MismatchDiagnosis
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +326,11 @@ def load_baseline(path: str | Path) -> EvalReport:
                 expected_datasource=r.get("expected_datasource"),
                 selected_datasource=r.get("selected_datasource"),
                 reference_fingerprint=r.get("reference_fingerprint"),
+                diagnosis=(
+                    MismatchDiagnosis.from_dict(r["diagnosis"]) if r.get("diagnosis") else None
+                ),
+                corrections=int(r.get("corrections") or 0),
+                guard_rejections=[dict(g) for g in (r.get("guard_rejections") or [])],
             )
             for r in data["results"]
         ]

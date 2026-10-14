@@ -77,10 +77,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from eval.models import GoldenCase
-from eval.runner import GenerateFn
+
+if TYPE_CHECKING:  # the runner reads project_config/; this module needs none
+    from eval.runner import GenerateFn
 
 #: Fewer than this many repeats cannot measure determinism at all -- see
 #: :func:`probe_determinism`. An invariant (a statistical floor), not a
