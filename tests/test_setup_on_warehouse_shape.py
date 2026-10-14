@@ -33,6 +33,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -53,6 +54,8 @@ import schema_data.registry as registry
 from core.yaml_loading import safe_load_strict
 from database.catalogue import read_catalogue
 from database.datasources import reset_datasources_cache
+from database.schema_inspector import SchemaInspector
+from database.schema_draft import INFERRED_COMMENT, SAMPLE_REVIEW_FILENAME
 from database.schema_inspector_cli import main as inspect_main
 from prompt_engine.static_prefix import build_static_prefix
 from schema_data.registry import split_table_key, validate_schema_yaml_text
@@ -166,7 +169,8 @@ def _key(table: Table, shared: set[str]) -> str:
     """The key the project convention gives *table*: ``Schema.Table`` when its name is shared."""
     if table.name.lower() in shared:
         return f"{table.schema}.{table.name}"
-    return f"[{table.name}]" if "." in table.name else table.name
+    # The sync engine's spelling: a name that is not a plain identifier is bracketed.
+    return table.name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table.name) else f"[{table.name}]"
 
 
 def _shared_among(tables: list[Table]) -> set[str]:
@@ -312,20 +316,22 @@ def _inspect(warehouse: Warehouse, directory: Path, source: str, *extra: str) ->
 
 @pytest.fixture(scope="module")
 def inspected(warehouse_shape, tmp_path_factory) -> Inspection:
-    return _inspect(warehouse_shape, tmp_path_factory.mktemp("inspect_all"), LARGE)
+    # The staging and change-capture tables are skipped by default; this run keeps
+    # them so the draft covers the whole source (the shape the keys are checked on).
+    return _inspect(warehouse_shape, tmp_path_factory.mktemp("inspect_all"), LARGE, "--include-staging")
 
 
 @pytest.fixture(scope="module")
 def inspected_without_staging(warehouse_shape, tmp_path_factory) -> Inspection:
     return _inspect(
         warehouse_shape, tmp_path_factory.mktemp("inspect_excl"), LARGE,
-        "--exclude-schemas", "*_Stg,Replay,Alerts",
+        "--include-staging", "--exclude-schemas", "*_Stg,Replay,Alerts",
     )
 
 
 @pytest.fixture(scope="module")
 def inspected_small(warehouse_shape, tmp_path_factory) -> Inspection:
-    return _inspect(warehouse_shape, tmp_path_factory.mktemp("inspect_small"), SMALL)
+    return _inspect(warehouse_shape, tmp_path_factory.mktemp("inspect_small"), SMALL, "--include-staging")
 
 
 class TestSchemaInspector:
@@ -351,8 +357,9 @@ class TestSchemaInspector:
         keys = inspected.config().tables
         assert set(keys) == {_key(t, shared) for t in tables}
         for table in tables:
-            definition = keys[_key(table, shared)]
-            assert definition.db_schema == table.schema
+            key = _key(table, shared)
+            # A qualified key carries its schema; a bare one has db_schema.
+            assert _schema_of(key, keys[key]) == table.schema
         assert "sales_Fact.Invoice" in keys and "orders_Stg.INVOICE" in keys    # shared: qualified
         assert "Invoice" not in keys and "Shipment" not in keys                  # and never bare
         assert "sales_Fact.Shipment" in keys and "sales_Stg.Shipment" in keys
@@ -412,27 +419,52 @@ class TestSchemaInspector:
         tables = warehouse_shape.sources[SMALL].tables
         keys = inspected_small.config().tables
         assert set(keys) == {_key(t, _shared_among(list(tables))) for t in tables}
-        assert keys["Price List"].db_schema == "ref"          # a space is no reason to quote the key
+        assert keys["[Price List]"].db_schema == "ref"        # as sync_schema.py --add-tables spells it
         assert keys["Calendar"].db_schema == "common"         # unique in this source, so bare
         assert keys["AppSetting"].db_schema == "dbo"
-        # The fact table and its staging copy share the name, so they are qualified.
-        assert keys["ledger_Fact.Invoice"].db_schema == "ledger_Fact"
-        assert "ledger_Stg.Invoice" in keys
+        # The fact table and its staging copy share the name, so they are qualified
+        # (the key carries the schema, as sync_schema.py writes it).
+        assert "ledger_Fact.Invoice" in keys and "ledger_Stg.Invoice" in keys
+        assert keys["ledger_Fact.Invoice"].db_schema == ""
 
-    def test_a_database_without_foreign_keys_gives_loadable_empty_relationships(self, inspected):
-        assert inspected.parsed("relationships.yaml") == {"relationships": []}
-        assert inspected.config().relationships == []
+    def test_a_database_without_foreign_keys_still_gets_relationships_from_column_names(self, inspected):
+        # No foreign key is declared in the fixture: every relationship is inferred, and says so.
+        entries = inspected.parsed("relationships.yaml")["relationships"]
+        config = inspected.config()
 
-    def test_sample_values_with_quotes_and_persian_text_survive_in_the_drafts(self, inspected):
-        entities = inspected.parsed("entities.yaml")["entities"]
-        category = next(e for k, e in entities.items() if k.endswith("Category"))
-        name_column = next(c for c in category["columns"] if c["name"] == "Name")
-        assert 'Pipe 5" steel' in name_column["sample_values"]
-        assert "Path\\to" in name_column["sample_values"]
-        party = entities["common.Party"]
-        persian = next(c for c in party["columns"] if c["name"] == "Name")
-        assert any("شرکت" in v for v in persian["sample_values"])
-        assert 'pipe 5" steel' in inspected.parsed("aliases.yaml")["synonyms"]
+        assert entries and len(config.relationships) == len(entries)
+        text = inspected.text("relationships.yaml")
+        assert text.count(INFERRED_COMMENT) == len(entries)
+        assert inspected.text("schema.yaml").count(INFERRED_COMMENT) == len(config.relationships)
+        assert "Relationships: 0 declared" in inspected.run.err
+
+    def test_no_sample_value_is_read_or_written_by_default(self, inspected):
+        for name in ("schema.yaml", "entities.yaml", "aliases.yaml", "relationships.yaml"):
+            text = inspected.text(name)
+            assert "e.g." not in text and "sample_values" not in text
+            assert 'Pipe 5" steel' not in text and "شرکت" not in text
+        assert not (inspected.directory / SAMPLE_REVIEW_FILENAME).exists()
+        assert inspected.parsed("aliases.yaml")["synonyms"] == {}
+
+    def test_sample_values_go_to_the_review_file_only_with_quotes_and_persian_text_intact(
+        self, warehouse_shape, tmp_path,
+    ):
+        done = _inspect(warehouse_shape, tmp_path, LARGE, "--include-staging", "--sample-values")
+        review = done.parsed(SAMPLE_REVIEW_FILENAME)["sample_values"]
+
+        assert done.run.rc == 0
+        category = next(columns for key, columns in review.items() if key.endswith("Category"))
+        assert 'Pipe 5" steel' in category["Name"] and "Path\\to" in category["Name"]
+        assert any("شرکت" in v for v in review["common.Party"]["Name"])
+        assert all(key in done.config().tables for key in review)
+        for name in ("schema.yaml", "entities.yaml", "aliases.yaml", "relationships.yaml"):
+            assert 'Pipe 5" steel' not in done.text(name) and "شرکت" not in done.text(name)
+
+    @pytest.mark.skipif(os.name == "nt", reason="file modes are POSIX")
+    def test_the_review_file_is_owner_only(self, warehouse_shape, tmp_path):
+        _inspect(warehouse_shape, tmp_path, SMALL, "--sample-values", "--sample-rows", "2")
+
+        assert (tmp_path / SAMPLE_REVIEW_FILENAME).stat().st_mode & 0o777 == 0o600
 
     def test_naming_inferred_relationships_cope_with_the_misspelled_and_the_underscoreless_column(
         self, inspected,
@@ -871,11 +903,15 @@ def _run_curation_checks(directory: Path) -> dict[str, verify.CheckResult]:
 def draft_project(tmp_path_factory):
     """What an operator gets by copying the inspector's drafts over a curated ``project_config/``.
 
-    The drafts are the real ``database.schema_inspector_cli`` output over a
-    private copy of the large source (a table of invented contact data added to
-    it, since the fixture itself holds no phone numbers), next to the curated
-    ``datasources.yaml``, which the operator kept: it lists both sources, and
-    the draft describes one of them.
+    The drafts are what the single-database inspector
+    (:class:`database.schema_inspector.SchemaInspector`, which the setup wizard
+    still uses) writes over a private copy of the large source: placeholder
+    descriptions, live sample values in the notes and as synonym seeds. (A table
+    of invented contact data is added to the copy, since the fixture itself
+    holds no phone numbers.) They sit next to the curated ``datasources.yaml``,
+    which the operator kept: it lists both sources, and the draft describes one
+    of them. ``database.schema_inspector_cli`` no longer writes values, so the
+    values-free draft is checked in :class:`TestPreflightOnTheCliDraft`.
     """
     private = build_warehouse(tmp_path_factory.mktemp("draft_warehouse"))
     connection = sqlite3.connect(private.sources[LARGE].schemas["Metadata"])
@@ -892,8 +928,16 @@ def draft_project(tmp_path_factory):
     finally:
         connection.close()
     directory = tmp_path_factory.mktemp("draft_project")
-    inspection = _inspect(private, directory, LARGE)
-    assert inspection.run.rc == 0, inspection.run.err
+    with attached(private):
+        inspector = SchemaInspector(private.sources[LARGE].url, sample_rows=10)
+        try:
+            snapshot = inspector.inspect(fetch_row_counts=True)
+        finally:
+            inspector.close()
+    (directory / "schema.yaml").write_text(inspector.draft_schema_yaml(snapshot), encoding="utf-8")
+    (directory / "entities.yaml").write_text(inspector.draft_entities_yaml(snapshot), encoding="utf-8")
+    (directory / "aliases.yaml").write_text(inspector.draft_aliases_yaml(snapshot), encoding="utf-8")
+    (directory / "relationships.yaml").write_text(inspector.draft_relationships_yaml(snapshot), encoding="utf-8")
     curated = write_project_config(tmp_path_factory.mktemp("curated_for_sources"), private)
     shutil.copyfile(curated / "datasources.yaml", directory / "datasources.yaml")
     return directory, private
@@ -983,6 +1027,32 @@ class TestPreflightOnAnInspectorDraft:
         assert code == 1
         assert "[FAIL] project_config/ is curated, not a raw draft" in out.getvalue()
         assert "3 failed" in out.getvalue()
+
+
+class TestPreflightOnTheCliDraft:
+    """What the inspector CLI writes today: a draft still, but with no live value in it."""
+
+    @pytest.fixture(scope="class")
+    def results(self, inspected, warehouse_shape, tmp_path_factory):
+        directory = tmp_path_factory.mktemp("cli_draft")
+        for name in ("schema.yaml", "entities.yaml", "aliases.yaml", "relationships.yaml"):
+            shutil.copyfile(inspected.directory / name, directory / name)
+        curated = write_project_config(tmp_path_factory.mktemp("curated_for_cli_sources"), warehouse_shape)
+        shutil.copyfile(curated / "datasources.yaml", directory / "datasources.yaml")
+        return _run_curation_checks(directory)
+
+    def test_it_is_still_refused_as_a_draft_by_its_header(self, results):
+        result = results["project_config/ is curated, not a raw draft"]
+
+        assert result.status == "FAIL"
+        assert "4 file(s) carry the AUTO-GENERATED DRAFT header" in result.detail
+
+    def test_there_is_no_sample_value_to_advise_about_and_no_seed_in_the_aliases(self, results):
+        assert results["No live sample values in descriptions"].detail.startswith("no description quotes")
+        assert results["Aliases are curated"].status == "PASS"
+
+    def test_the_descriptions_are_not_the_old_placeholder(self, results):
+        assert "table descriptions" not in results["project_config/ is curated, not a raw draft"].detail
 
 
 class TestPreflightOnTheCuratedConfig:

@@ -36,13 +36,13 @@ Typical usage::
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import logging
 import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import create_engine, inspect as sa_inspect, text
@@ -50,8 +50,22 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
 from core.redaction import redact_db_url
+from database.schema_filter import exclusion_patterns, schema_is_excluded
 
 logger = logging.getLogger(__name__)
+
+# ``schema_is_excluded`` lives in :mod:`database.schema_filter` now; it stays
+# importable from here for the code (and tests) that imported it from this module.
+__all__ = [
+    "ColumnInfo",
+    "ForeignKeyInfo",
+    "RelationshipInfo",
+    "SchemaInspector",
+    "SchemaSnapshot",
+    "TableInfo",
+    "connect_url",
+    "schema_is_excluded",
+]
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -88,6 +102,7 @@ class TableInfo:
     foreign_keys: list[ForeignKeyInfo] = field(default_factory=list)
     row_count: int | None = None
     classification: str = "unknown"   # "fact" | "dim" | "staging" | "log" | "unknown"
+    datasources: tuple[str, ...] = ()  # data sources the table is in (several sources only)
 
     @property
     def full_name(self) -> str:
@@ -424,26 +439,41 @@ def _fetch_row_count(
         return None
 
 
-def schema_is_excluded(schema: str, patterns: list[str] | None) -> bool:
-    """Whether *schema* matches any ``fnmatch`` pattern in *patterns*.
+def connect_url(db_url: str) -> Engine:
+    """Open a small engine on *db_url* and prove it connects.
 
-    Matching is case-insensitive and does not depend on the operating system
-    (``fnmatch.fnmatchcase`` on lower-cased text), so ``*_Stg`` excludes
-    ``Sales_Stg`` and ``sales_stg`` alike on every platform.
+    One connection at most, never shared with the application's pools.
 
-    Examples
-    --------
-    >>> schema_is_excluded("Sales_Stg", ["*_stg"])
-    True
-    >>> schema_is_excluded("sales", ["*_stg", "Replay"])
-    False
-    >>> schema_is_excluded("replay", ["*_stg", "Replay"])
-    True
-    >>> schema_is_excluded("sales", None)
-    False
+    Parameters
+    ----------
+    db_url:
+        A SQLAlchemy connection string.
+
+    Returns
+    -------
+    sqlalchemy.engine.Engine
+        The caller disposes it.
+
+    Raises
+    ------
+    ConnectionError
+        If the database cannot be reached (carries the driver's message).
     """
-    name = schema.lower()
-    return any(fnmatch.fnmatchcase(name, p.lower()) for p in patterns or [])
+    engine = create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_size=1,
+        max_overflow=0,
+        echo=False,
+    )
+    try:
+        # Verify connectivity
+        with engine.connect():
+            pass
+    except OperationalError as exc:
+        engine.dispose()
+        raise ConnectionError(f"Cannot connect to database: {exc.orig or exc}") from exc
+    return engine
 
 
 # ---------------------------------------------------------------------------
@@ -475,22 +505,8 @@ class SchemaInspector:
     def _get_engine(self) -> Engine:
         if self._engine is None:
             logger.info("Connecting to database for schema inspection")
-            try:
-                self._engine = create_engine(
-                    self._db_url,
-                    pool_pre_ping=True,
-                    pool_size=1,
-                    max_overflow=0,
-                    echo=False,
-                )
-                # Verify connectivity
-                with self._engine.connect():
-                    pass
-                logger.info("Connection successful")
-            except OperationalError as exc:
-                raise ConnectionError(
-                    f"Cannot connect to database: {exc.orig or exc}"
-                ) from exc
+            self._engine = connect_url(self._db_url)
+            logger.info("Connection successful")
         return self._engine
 
     def close(self) -> None:
@@ -518,8 +534,10 @@ class SchemaInspector:
             If given, only tables in these schemas are processed.
         exclude_schemas:
             ``fnmatch`` patterns (case-insensitive, e.g. ``"*_Stg"``) for
-            schemas to skip. Applied after *include_schemas*, so a schema
-            matching both is skipped.
+            schemas to skip, on top of the system schemas and the
+            ``EXCLUDE_SCHEMAS`` setting (:mod:`database.schema_filter`).
+            Applied after *include_schemas*, so a schema matching both is
+            skipped.
         exclude_tables:
             Table names (without schema) to skip.
         fetch_row_counts:
@@ -532,13 +550,11 @@ class SchemaInspector:
         snapshot = SchemaSnapshot(source_url=self._redact_url(self._db_url))
 
         schema_list = include_schemas or inspector.get_schema_names()
-        # Filter out system/internal schemas
-        schema_list = [
-            s for s in schema_list
-            if s not in ("information_schema", "sys", "pg_catalog", "pg_toast")
-            and not s.startswith("pg_")
-            and not schema_is_excluded(s, exclude_schemas)
-        ]
+        # System schemas, the EXCLUDE_SCHEMAS setting and this call's patterns
+        # (database.schema_filter); the data source is unknown here, so a
+        # source's own exclude_schemas: does not apply.
+        patterns = exclusion_patterns(None, exclude_schemas or ())
+        schema_list = [s for s in schema_list if not schema_is_excluded(s, patterns)]
 
         total = 0
         for schema in schema_list:
@@ -652,8 +668,18 @@ class SchemaInspector:
     # YAML draft generators
     # ------------------------------------------------------------------
 
-    def draft_entities_yaml(self, snapshot: SchemaSnapshot) -> str:
-        """Return a draft ``entities.yaml`` string from *snapshot*."""
+    def draft_entities_yaml(
+        self,
+        snapshot: SchemaSnapshot,
+        keys: Mapping[tuple[str, str], str] | None = None,
+    ) -> str:
+        """Return a draft ``entities.yaml`` string from *snapshot*.
+
+        *keys* maps ``(schema, table)`` (lower-cased, ``""`` for no schema) to
+        the name an entity is written under, for a caller that already decided
+        the ``schema.yaml`` keys (:mod:`database.schema_draft`); by default the
+        names come from the snapshot (:class:`_TableNamer`).
+        """
         lines: list[str] = [
             "# AUTO-GENERATED DRAFT - review and edit before moving to project_config/",
             f"# Generated: {snapshot.generated_at} from {snapshot.source_url}",
@@ -670,10 +696,15 @@ class SchemaInspector:
             # several schemas becomes Schema.Table), quoted because a bracketed
             # name would otherwise read as a YAML flow sequence.
             entity_name = namer.key(table)
+            if keys is not None:
+                entity_name = keys.get(((table.schema or "").lower(), table.name.lower()), entity_name)
             lines.append(f"  {_yaml_str(entity_name)}:")
             lines.append(f"    table: {_yaml_str(table.name)}")
             if table.schema:
                 lines.append(f"    schema: {_yaml_str(table.schema)}")
+            if table.datasources:
+                names = ", ".join(_yaml_str(n) for n in table.datasources)
+                lines.append(f"    datasource: [{names}]")
             lines.append(f'    classification: "{table.classification}"  # auto-detected')
             if table.row_count is not None:
                 lines.append(f"    row_count: {table.row_count}")
@@ -715,8 +746,8 @@ class SchemaInspector:
             "",
             "# synonyms: surface word -> canonical tokens",
             "# Seeds below are generated from column names and sample values.",
-            "synonyms:",
         ]
+        seeds: list[str] = []
 
         seen: set[str] = set()
         for table in snapshot.tables:
@@ -734,10 +765,12 @@ class SchemaInspector:
                         col.name.lower().replace("_", " "),
                     })
                     tokens_yaml = ", ".join(_yaml_str(t) for t in tokens)
-                    lines.append(f"  # from {table.full_name}.{col.name}")
-                    lines.append(f"  {_yaml_str(key)}: [{tokens_yaml}]  # REVIEW")
+                    seeds.append(f"  # from {table.full_name}.{col.name}")
+                    seeds.append(f"  {_yaml_str(key)}: [{tokens_yaml}]  # REVIEW")
 
-        return "\n".join(lines)
+        # A bare `synonyms:` is YAML null, which AliasesConfig refuses.
+        lines.append("synonyms:" if seeds else "synonyms: {}")
+        return "\n".join([*lines, *seeds])
 
     def draft_schema_yaml(self, snapshot: SchemaSnapshot) -> str:
         """Return a draft ``schema.yaml`` string from *snapshot*.

@@ -985,3 +985,83 @@ class TestDescribeDrift:
         assert "1 column(s) and 0 table(s) to remove (--prune)" in detail
         assert "1 table(s) to add (--add-tables)" in detail
         assert "do not cover" not in detail
+
+
+# ---------------------------------------------------------------------------
+# Excluded schemas: discovery only
+# ---------------------------------------------------------------------------
+
+class TestExcludedSchemas:
+    """A table in an excluded schema is neither listed nor added; listed tables are untouched."""
+
+    @staticmethod
+    def catalogues():
+        sales = dict(SALES)
+        sales.update(catalogue(
+            tbl("cdc", "change_table", [("ID", "int")]),
+            tbl("INFORMATION_SCHEMA", "Views", [("ID", "int")]),
+            tbl("Replay", "Trade_Inserts", [("ID", "int")]),
+            tbl("Replay", "Trade_Updates", [("ID", "int")]),
+        ))
+        return {"sales": sales, "inventory": INVENTORY}
+
+    def test_system_schemas_are_always_left_out_of_the_report_and_the_additions(self):
+        result = run(catalogues=self.catalogues(), options=SyncOptions(add_tables=("*",)))
+        report = build_report(result)
+
+        assert "cdc" not in result.text and "INFORMATION_SCHEMA" not in result.text
+        assert "change_table" not in report
+        assert ("cdc", "change_table") in result.plan.excluded
+        assert "tables in excluded schemas, not listed or added" in report
+        assert "  cdc: 1" in report and "  INFORMATION_SCHEMA: 1" in report
+
+    def test_the_report_counts_the_skipped_tables_per_schema(self):
+        options = SyncOptions(exclude_schemas={"sales": ("replay",)})
+
+        report = build_report(run(catalogues=self.catalogues(), options=options))
+
+        assert "(EXCLUDE_SCHEMAS, exclude_schemas:, --exclude-schemas): 4 ==" in report
+        assert "  Replay: 2" in report
+
+    def test_a_pattern_given_to_add_tables_does_not_add_an_excluded_table(self):
+        options = SyncOptions(add_tables=("Replay.*", "sales_fact.*"), exclude_schemas={"sales": ("Replay",)})
+
+        result = run(catalogues=self.catalogues(), options=options)
+        tables = validate_schema_yaml_text(result.text).tables
+
+        assert "Trade_Inserts" not in tables and "Trade_Updates" not in tables
+        assert "Audit" in tables                                 # not excluded: still added
+        assert len(result.plan.excluded) == 4
+
+    def test_exclusion_is_per_source(self):
+        cats = self.catalogues()
+        cats["inventory"] = dict(INVENTORY)
+        cats["inventory"].update(catalogue(tbl("Replay", "Trade_Inserts", [("ID", "int")])))
+        options = SyncOptions(add_tables=("Replay.*",), exclude_schemas={"sales": ("Replay",)})
+
+        result = run(catalogues=cats, options=options)
+
+        # `inventory` does not exclude Replay, so the table is a candidate from there.
+        added = {t.name: t.sources for t in result.plan.new_tables}
+        assert added == {"Trade_Inserts": ("inventory",)}
+        assert ("Replay", "Trade_Updates") in result.plan.excluded
+        assert ("Replay", "Trade_Inserts") not in result.plan.excluded
+
+    def test_a_table_schema_yaml_already_lists_is_synced_as_before_even_in_an_excluded_schema(self):
+        options = SyncOptions(exclude_schemas={"sales": ("sales_dim", "sales_fact", "shared_dim"), "inventory": ("*",)})
+
+        with_exclusion = run(SCHEMA, options=options)
+        without = run(SCHEMA)
+
+        assert with_exclusion.text == without.text
+
+    def test_without_exclusions_nothing_is_reported_as_skipped(self):
+        assert "excluded schemas" not in build_report(run())
+
+    def test_a_synced_file_stays_in_sync_when_tables_were_left_out(self):
+        options = SyncOptions(add_tables=("*",), exclude_schemas={"sales": ("Replay",)})
+
+        first = run(catalogues=self.catalogues(), options=options)
+        again = sync_schema_text(first.text, list(SOURCES), "sales", self.catalogues(), options)
+
+        assert again.changed is False

@@ -104,6 +104,22 @@
 #     application_name    : (optional) overrides DB_APPLICATION_NAME for just
 #                           this source's connections, so a DBA can tell
 #                           which source's sessions are which.
+#     exclude_schemas     : (optional) a list of fnmatch patterns, matched
+#                           case-insensitively against schema names, for the
+#                           schemas of THIS source that the setup tools must
+#                           not scan: the first-install inspector,
+#                           scripts/sync_schema.py (its "in the database, not
+#                           in schema.yaml" report and --add-tables) and the
+#                           wizard. Added to the schemas that are always
+#                           skipped (sys, INFORMATION_SCHEMA, guest, cdc, the
+#                           fixed db_* role schemas, pg_*) and to the global
+#                           EXCLUDE_SCHEMAS setting in .env, which applies to
+#                           every source. It decides what a tool PROPOSES from
+#                           the database; a table schema.yaml already lists is
+#                           synced as before, and the preflight check "No
+#                           table in an excluded schema" reports one that sits
+#                           in an excluded schema. A list of non-empty strings;
+#                           anything else is refused at start-up.
 #     nolock              : (optional, true/false, default false) true makes
 #                           every query on this source read its tables
 #                           WITH (NOLOCK): the executor inserts the hint after
@@ -150,6 +166,7 @@ datasources:
     options:
       TrustServerCertificate: true        # rendered as TrustServerCertificate=yes
       # APP: local-sql-agent              # program_name in sys.dm_exec_sessions
+    # exclude_schemas: ["*_Stg", Replay]   # staging and change-capture schemas: never drafted
     # nolock: true                        # read every table WITH (NOLOCK): dirty reads
 
   # A second database on the same server: its own source, its own pool.

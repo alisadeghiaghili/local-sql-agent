@@ -52,13 +52,15 @@ it FAILs when a column, a recorded column type or a ``datasource:`` line of
 ``schema.yaml`` is out of step with the databases, and names the command that
 writes the proposed fix. It SKIPs when a database cannot be read.
 
-Five more checks tell a curated ``project_config/`` from a raw draft of
+Six more checks tell a curated ``project_config/`` from a raw draft of
 ``database.schema_inspector_cli`` (they read files only, no database, so the
 admin health card runs them too): ``check_project_config_is_curated`` (the
 ``AUTO-GENERATED DRAFT`` header, placeholder descriptions),
 ``check_aliases_are_curated`` (synonym seeds), ``check_every_data_source_is_described``
-(a source with no table: a lost database), and two that only advise,
-``check_no_staging_tables`` and ``check_no_sample_values_in_descriptions``.
+(a source with no table: a lost database), and three that only advise,
+``check_no_staging_tables``, ``check_no_sample_values_in_descriptions`` and
+``check_no_table_in_excluded_schema`` (a listed table whose schema the setup
+tools are told never to scan: ``EXCLUDE_SCHEMAS``, a source's ``exclude_schemas:``).
 There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
 the exit code, the summary line and the admin card need no new state. The file
 reading lives in :mod:`core.config_doctor`.
@@ -1121,6 +1123,50 @@ def check_no_sample_values_in_descriptions() -> CheckResult:
     )
 
 
+def check_no_table_in_excluded_schema() -> CheckResult:
+    """Advise when ``schema.yaml`` lists a table in a schema the setup tools do not scan.
+
+    The exclusion (:mod:`database.schema_filter`: the system schemas, the
+    ``EXCLUDE_SCHEMAS`` setting and a source's ``exclude_schemas:``) decides
+    which database tables the inspector drafts and ``sync_schema.py`` proposes;
+    it never removes a table ``schema.yaml`` already lists. A listed table whose
+    schema every one of its sources excludes is a contradiction: either the
+    exclusion was added after the table, or the table was copied in from a
+    draft. This never fails (the PASS detail starts with ``advice:``); it
+    counts the tables, lists the first keys and names the two fixes: remove the
+    table, or narrow the exclusion. SKIP when no exclusion is configured beyond
+    the system schemas and no table matches, or when ``schema.yaml`` or
+    ``datasources.yaml`` does not load. File reads only.
+    """
+    from core import config_doctor as doctor
+    from database.datasources import datasource_exclude_schemas, datasource_names, default_datasource_name
+    from database.schema_filter import exclusion_patterns
+
+    name = "No table in an excluded schema"
+    view = doctor.read_schema(_project_config_dir())
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    try:
+        sources = datasource_names()
+        default = default_datasource_name()
+        patterns = {source: exclusion_patterns(source) for source in sources}
+        configured = bool(cfg.settings.exclude_schemas.strip()) or any(datasource_exclude_schemas().values())
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(name, "SKIP", f"datasources.yaml did not load ({type(exc).__name__}) -- `Tables map to data sources` says why")
+    found = doctor.tables_in_excluded_schemas(view, patterns, default)
+    if not found:
+        if not configured:
+            return CheckResult(name, "SKIP", "no schema is excluded beyond the system schemas (EXCLUDE_SCHEMAS and exclude_schemas: are empty)")
+        return CheckResult(name, "PASS", f"none of the {len(view.tables)} table(s) is in an excluded schema")
+    return CheckResult(
+        name, "PASS",
+        f"advice: {len(found)} of {len(view.tables)} table(s) are in a schema the setup tools are told not to scan: "
+        f"{_listed([t.key for t in found])} -- remove them from schema.yaml, or narrow the exclusion "
+        "(EXCLUDE_SCHEMAS in .env, exclude_schemas: in datasources.yaml). "
+        "The exclusion only limits what the inspector and sync_schema.py propose; these tables are still synced",
+    )
+
+
 def check_rate_limit_sane_for_deployment() -> CheckResult:
     """The rate limit must not throttle legitimate use in THIS deployment's
     shape: one shared service key (or a small handful of them) fronting
@@ -1316,6 +1362,7 @@ _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_every_data_source_is_described,
     check_no_staging_tables,
     check_no_sample_values_in_descriptions,
+    check_no_table_in_excluded_schema,
     check_rate_limit_sane_for_deployment,
 ]
 

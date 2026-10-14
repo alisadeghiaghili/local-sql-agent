@@ -9,6 +9,7 @@ Usage (from the repo root, with the server's environment active)::
     python scripts/sync_schema.py --check               # CI / deploy gate
     python scripts/sync_schema.py --prune               # remove what the databases lack
     python scripts/sync_schema.py --add-tables 'sales.*' --add-tables 'ref.Ring'
+    python scripts/sync_schema.py --add-tables '*' --exclude-schemas '*_Stg,Replay'
 
 ``schema.yaml`` is curated by hand, and a real one drifts: columns are added
 to the databases, a few it lists were dropped, tables move between servers,
@@ -48,6 +49,14 @@ What it changes (see :mod:`schema_data.sync` for the exact rules)
   ``--add-tables PATTERN`` (a glob on ``schema.table``, repeatable) adds the
   matching ones. A table with no ``columns:`` key is described-only on purpose
   and is left alone.
+* A table in an *excluded* schema is neither reported nor added, whatever
+  ``--add-tables`` says: the report counts them per schema instead. The
+  excluded schemas are the system ones (``sys``, ``INFORMATION_SCHEMA``,
+  ``guest``, ``cdc``, the fixed ``db_*`` role schemas, ``pg_*``), the
+  ``EXCLUDE_SCHEMAS`` setting, the data source's ``exclude_schemas:`` in
+  ``datasources.yaml`` and ``--exclude-schemas`` for one run
+  (:mod:`database.schema_filter`). A table ``schema.yaml`` already lists is
+  synced exactly as before, in any schema.
 
 Nothing else changes: the script proves it by parsing its own output and
 comparing it with the original plus exactly the planned changes, and refuses
@@ -140,6 +149,7 @@ import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
 from core.yaml_loading import safe_load_strict  # noqa: E402
 from database.catalogue import read_catalogue  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
+from database.schema_filter import exclusion_patterns, parse_patterns  # noqa: E402
 from knowledge.config_loader import (  # noqa: E402
     ConfigNotFoundError,
     load_system_prompt,
@@ -269,6 +279,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Add database tables that schema.yaml lacks and whose schema.table matches "
             "this glob, e.g. 'sales.*' (repeatable; default: report them only)."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-schemas", action="append", default=[], metavar="PATTERNS",
+        help=(
+            "Comma-separated fnmatch patterns of schemas to leave out of the "
+            "'not in schema.yaml' report and of --add-tables for this run, on top of "
+            "the system schemas, EXCLUDE_SCHEMAS and each source's exclude_schemas: "
+            "(case-insensitive; repeatable). Tables schema.yaml already lists are synced as before."
         ),
     )
     parser.add_argument(
@@ -536,7 +555,7 @@ def main(
     """
     args = _build_parser().parse_args(argv)
     loader = load_catalogue or default_catalogue_loader
-    options = SyncOptions(prune=args.prune, add_tables=tuple(args.add_tables))
+    extra = tuple(p for raw in args.exclude_schemas for p in parse_patterns(raw))
 
     schema_path = schema_yaml_path()
     try:
@@ -550,6 +569,11 @@ def main(
         validate_schema_yaml_text(original)
         sources = datasource_names()
         default = default_datasource_name()
+        options = SyncOptions(
+            prune=args.prune,
+            add_tables=tuple(args.add_tables),
+            exclude_schemas={name: exclusion_patterns(name, extra) for name in sources},
+        )
     except (UnicodeDecodeError, ValueError) as exc:
         print(f"cannot use {schema_path}: {_describe(exc)}", file=sys.stderr)
         return EXIT_ERROR
