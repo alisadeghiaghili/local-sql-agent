@@ -35,7 +35,7 @@ merge_relationships(existing, new, rename) -> (list, MergeStats)
 from __future__ import annotations
 
 import shutil
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +45,7 @@ __all__ = [
     "EXAMPLE_DIR_NAME",
     "MergeStats",
     "back_up",
+    "hold_back_empty",
     "merge_examples",
     "merge_mapping",
     "merge_relationships",
@@ -197,12 +198,15 @@ class MergeStats:
         rekeyed: ``(old key, new key)`` for old entries whose key changed
             because a bare table name is now shared by several schemas. They
             count under *kept* or *replaced* as well.
+        held: Keys of old entries kept (they count under *kept*) because this
+            run had only an empty answer for them; see :func:`hold_back_empty`.
     """
 
     kept: int = 0
     added: int = 0
     replaced: int = 0
     rekeyed: tuple[tuple[str, str], ...] = ()
+    held: tuple[str, ...] = ()
 
     def __add__(self, other: "MergeStats") -> "MergeStats":
         """Counts added up, for a file that holds two merged sections.
@@ -216,6 +220,7 @@ class MergeStats:
             self.added + other.added,
             self.replaced + other.replaced,
             self.rekeyed + other.rekeyed,
+            self.held + other.held,
         )
 
     def describe(self) -> str:
@@ -235,6 +240,50 @@ class MergeStats:
 
 def _fold(key: str) -> str:
     return key.casefold()
+
+
+def hold_back_empty(
+    existing: Mapping[str, Any],
+    new: Mapping[str, Any],
+    is_empty: Callable[[Any], bool],
+    rename: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Drop the new entries that say nothing where the old file already says something.
+
+    A model that failed, or answered with nothing, for one table must not
+    erase what an earlier run or a person wrote for it. An entry of *new* is
+    dropped when *is_empty* is true for it and false for the old entry with
+    the same key (case-insensitive, after *rename*); the merge then keeps the
+    old one and counts it as kept.
+
+    Args:
+        existing: The old file's mapping.
+        new: This run's entries.
+        is_empty: Whether an entry carries no answer.
+        rename: The renames the merge will apply to *existing*.
+
+    Returns:
+        ``(entries to merge, keys held back)``.
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> kept, held = hold_back_empty({"A": ["x"], "B": []}, {"A": [], "B": [], "C": []}, lambda v: not v)
+        >>> kept, held
+        ({'B': [], 'C': []}, ('A',))
+    """
+    lowered = {_fold(k): v for k, v in (rename or {}).items()}
+    old = {_fold(lowered.get(_fold(k), k)): v for k, v in existing.items()}
+    kept: dict[str, Any] = {}
+    held: list[str] = []
+    for key, value in new.items():
+        before = old.get(_fold(key))
+        if before is not None and is_empty(value) and not is_empty(before):
+            held.append(key)
+        else:
+            kept[key] = value
+    return kept, tuple(held)
 
 
 def merge_mapping(

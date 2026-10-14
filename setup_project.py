@@ -95,17 +95,22 @@ Run once per database, the wizard merges into the files already in the output
 directory instead of replacing them. Entries are keyed like the schema
 inspector's (``Table`` when the name is unique, ``Schema.Table`` when several
 schemas share it); an entry for a table of this run replaces the old one with
-the same key, every other old entry stays, examples are de-duplicated by
-question and relationships by their endpoints. An old entry whose bare name
+the same key (unless the model gave nothing for it and the old entry has
+aliases or a rule: that one is kept), every other old entry stays, examples are
+de-duplicated by question and relationships by their endpoints. An old entry whose bare name
 must now be qualified is re-keyed and reported. The summary says how many
 entries were kept, added and replaced per file. ``--fresh`` skips the merge.
 
 Tables
 ------
-Staging and change-capture tables (``STAGING_PATTERNS``) and schemas left out
-(``--exclude-schemas``, or chosen in interactive mode after the schemas and
-their table counts are shown) are dropped before the first model call; the
-summary says how many were skipped and why. When the database declares few
+The wizard first lists schema and table names (nothing else is read), applies
+``--include-schemas``, ``--exclude-schemas`` and, in interactive mode, the
+schemas the operator picks after seeing them with their table counts, and only
+then inspects what remains: a schema that is left out is never scanned for
+columns or sample values. Staging and change-capture tables
+(``STAGING_PATTERNS``) are left out too (a staging table whose name no other
+table shares is not read; one whose name is shared is read and dropped), so
+none of them reaches the model; the summary says how many were skipped and why. When the database declares few
 foreign keys, relationships are inferred from column names
 (``schema_data.relationship_proposals``) and marked ``REVIEW`` in
 ``relationships.yaml``; the business-rules prompt sees them as join hints.
@@ -126,7 +131,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -164,6 +169,7 @@ from core.wizard_drafts import (
     DEFAULT_DRAFT_DIR,
     MergeStats,
     back_up,
+    hold_back_empty,
     merge_examples,
     merge_mapping,
     merge_relationships,
@@ -1538,6 +1544,157 @@ def _skip_tables(
     _drop_tables(snapshot, excluded | staging)
 
 
+# ---- what to read, decided from names alone ---------------------------------
+
+#: Schemas that are never described (the schema inspector skips the same ones).
+_SYSTEM_SCHEMAS = ("information_schema", "sys", "pg_catalog", "pg_toast")
+
+
+def _list_schema_tables(db_url: str) -> dict[str, list[str]]:
+    """``{schema: [table names]}`` from the catalogue: names only, no column, no row.
+
+    Uses SQLAlchemy's inspector with the schema inspector's own system-schema
+    filter. This is the first look at the database; what to read is decided
+    from it (see :func:`_plan_reading`).
+
+    Args:
+        db_url: The SQLAlchemy connection string.
+
+    Returns:
+        Schemas in the database's order, each with its table names.
+
+    Raises:
+        Exception: Whatever SQLAlchemy raises when the database cannot be
+            listed; the caller reports it with the credentials scrubbed.
+    """
+    from sqlalchemy import create_engine, inspect as sa_inspect
+
+    engine = create_engine(db_url, pool_pre_ping=True, pool_size=1, max_overflow=0)
+    try:
+        inspector = sa_inspect(engine)
+        listing: dict[str, list[str]] = {}
+        for schema in inspector.get_schema_names():
+            if schema in _SYSTEM_SCHEMAS or schema.startswith("pg_"):
+                continue
+            listing[schema] = list(inspector.get_table_names(schema=schema))
+        return listing
+    finally:
+        engine.dispose()
+
+
+@dataclass
+class _ReadPlan:
+    """What the inspection will read, and what was left out before it.
+
+    Attributes:
+        schemas: Schemas to inspect (their real spelling).
+        exclude_tables: Bare table names the inspection is told to skip: staging
+            tables whose name no other listed table shares.
+        report: The skip counts so far.
+        per_schema: ``{schema: tables to be read}`` for the interactive question.
+    """
+
+    schemas: list[str] = field(default_factory=list)
+    exclude_tables: list[str] = field(default_factory=list)
+    report: SkipReport = field(default_factory=SkipReport)
+    per_schema: dict[str, int] = field(default_factory=dict)
+
+
+def _plan_reading(
+    listing: Mapping[str, list[str]],
+    include_schemas: list[str] | None,
+    exclude_patterns: list[str],
+    staging_patterns,
+    chosen_patterns: list[str] | None = None,
+) -> _ReadPlan:
+    """Decide from table names alone which schemas and tables the inspection reads.
+
+    ``--include-schemas`` narrows the listing, then ``--exclude-schemas`` (and the
+    schemas the operator chose) remove schemas, so a schema matching both is not
+    read. A staging table is left out too: a schema whose every table is staging
+    (a bare ``STAGING_PATTERNS`` pattern matches the schema name) is not read at
+    all; a ``table:`` pattern match is passed as an excluded name when no other
+    listed table shares its bare name. One whose name is shared is read and
+    dropped afterwards (:func:`_skip_tables`), so a same-named table of another
+    schema is not lost; it is not counted here.
+
+    Args:
+        listing: ``{schema: [table names]}`` from :func:`_list_schema_tables`.
+        include_schemas: Schemas to read (case-insensitive), or ``None`` for all.
+        exclude_patterns: ``--exclude-schemas`` ``fnmatch`` patterns.
+        staging_patterns: Parsed ``STAGING_PATTERNS``; empty keeps staging tables.
+        chosen_patterns: Schema patterns the operator chose interactively.
+
+    Returns:
+        The plan. ``schemas`` is empty when nothing is left to read, in which
+        case the inspection must not run (an empty include list means "all").
+
+    Raises:
+        Nothing. This function never raises.
+
+    Examples:
+        >>> from core.config_doctor import parse_staging_patterns
+        >>> listing = {"sales": ["Trade", "Trade_Inserts"], "sales_Stg": ["Trade"], "ref": ["Region"]}
+        >>> plan = _plan_reading(listing, None, ["ref"], parse_staging_patterns("*_Stg,table:*_Inserts"))
+        >>> plan.schemas, plan.exclude_tables
+        (['sales'], ['Trade_Inserts'])
+        >>> plan.report.describe()
+        'Skipped 3 of 4 tables: 1 in excluded schemas, 2 staging or change-capture (STAGING_PATTERNS; --include-staging keeps them).'
+        >>> _plan_reading(listing, ["REF"], [], []).schemas
+        ['ref']
+        >>> _plan_reading(listing, ["ref"], ["r*"], []).schemas
+        []
+    """
+    from database.schema_inspector import schema_is_excluded
+
+    wanted = {i.casefold() for i in include_schemas} if include_schemas else None
+    selected = {
+        schema: list(names) for schema, names in listing.items()
+        if wanted is None or schema.casefold() in wanted
+    }
+    plan = _ReadPlan(report=SkipReport(found=sum(len(n) for n in selected.values())))
+
+    # Bare names across everything that could be read, to tell a unique name from a shared one.
+    remaining: dict[str, list[str]] = {}
+    for schema, names in selected.items():
+        if exclude_patterns and schema_is_excluded(schema, exclude_patterns):
+            plan.report.excluded_schemas += len(names)
+        elif chosen_patterns and schema_is_excluded(schema, chosen_patterns):
+            plan.report.chosen += len(names)
+        else:
+            remaining[schema] = names
+    name_count: dict[str, int] = {}
+    for names in remaining.values():
+        for name in names:
+            name_count[name.casefold()] = name_count.get(name.casefold(), 0) + 1
+
+    for schema, names in remaining.items():
+        staged = [
+            name for name in names
+            if staging_patterns and _is_staging(_Listed(schema, name), staging_patterns)
+        ]
+        if names and len(staged) == len(names):
+            plan.report.staging += len(names)      # the whole schema is staging: not read
+            continue
+        read = len(names)
+        for name in staged:
+            if name_count[name.casefold()] == 1:
+                plan.exclude_tables.append(name)
+                plan.report.staging += 1
+                read -= 1
+        plan.per_schema[schema] = read
+        plan.schemas.append(schema)
+    return plan
+
+
+class _Listed:
+    """A table known by name only: what :func:`_is_staging` needs."""
+
+    def __init__(self, schema: str, name: str) -> None:
+        self.schema = schema
+        self.name = name
+
+
 # ---- relationships ---------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -1902,7 +2059,25 @@ def step1_connection(args, log: dict) -> str:
 
 
 def step2_schema(args, db_url: str, log: dict):
-    """Run schema inspection and return a SchemaSnapshot."""
+    """Run schema inspection and return a SchemaSnapshot.
+
+    Two phases. First the table names are listed (nothing else is read), the
+    schemas to leave out are applied (``--include-schemas``,
+    ``--exclude-schemas``, staging tables, and in interactive mode the
+    operator's answer) and only the remaining schemas are inspected, so a
+    schema that is left out is never scanned for columns or sample values.
+
+    Args:
+        args: Parsed command line.
+        db_url: The connection string.
+        log: The setup log, updated in place.
+
+    Returns:
+        The snapshot of the tables that remain.
+
+    Raises:
+        SystemExit: When the database cannot be listed or inspected.
+    """
     console.rule("[bold blue]Step 2: Schema Discovery[/bold blue]" if _RICH else "Step 2: Schema Discovery")
 
     include_schemas = (
@@ -1911,56 +2086,82 @@ def step2_schema(args, db_url: str, log: dict):
         else None
     )
 
-    from database.schema_inspector import SchemaInspector
-    inspector = SchemaInspector(db_url, sample_rows=5)
-
-    with _spinner("Inspecting schema..."):
-        try:
-            snapshot = inspector.inspect(
-                include_schemas=include_schemas,
-                fetch_row_counts=False,
-            )
-        except ConnectionError as exc:
-            reason = _scrub_secrets(str(exc), db_url)
-            console.print(f"[red]Schema inspection failed: {reason}[/red]" if _RICH else reason)
-            sys.exit(1)
-        finally:
-            inspector.close()
-
-    console.print(
-        f"  Found [bold]{len(snapshot.tables)}[/bold] tables: "
-        f"[cyan]{len(snapshot.fact_tables)}[/cyan] fact, "
-        f"[green]{len(snapshot.dim_tables)}[/green] dim"
-        if _RICH else
-        f"  Found {len(snapshot.tables)} tables: {len(snapshot.fact_tables)} fact, {len(snapshot.dim_tables)} dim"
-    )
-
-    # Schemas left out and staging tables go now, before any model call.
     import config as cfg
     from core.config_doctor import parse_staging_patterns
 
-    report = SkipReport(found=len(snapshot.tables))
+    # Phase 1: names only. Which schemas are read is decided here, before any
+    # column or sample value is fetched, so a schema that is left out is
+    # never scanned.
+    try:
+        listing = _list_schema_tables(db_url)
+    except Exception as exc:  # noqa: BLE001 - any driver or connection error
+        reason = _scrub_secrets(str(exc), db_url)
+        console.print(f"[red]Schema listing failed: {reason}[/red]" if _RICH else f"Schema listing failed: {reason}")
+        sys.exit(1)
+
     staging_patterns = (
         [] if getattr(args, "include_staging", False)
         else parse_staging_patterns(cfg.settings.staging_patterns)
     )
-    _skip_tables(snapshot, _split_csv(getattr(args, "exclude_schemas", None)), staging_patterns, report)
-    if report.total:
-        console.print(f"  {report.describe()}", markup=False)
+    exclude_patterns = _split_csv(getattr(args, "exclude_schemas", None))
+    plan = _plan_reading(listing, include_schemas, exclude_patterns, staging_patterns)
+    console.print(
+        f"  The database has {sum(len(n) for n in listing.values())} tables in {len(listing)} schemas.",
+        markup=False,
+    )
+    if plan.report.total:
+        console.print(f"  {plan.report.describe()}", markup=False)
 
+    chosen_patterns: list[str] = []
     if not args.non_interactive:
-        counts = _schema_counts(snapshot)
-        console.print("  Schemas and their table counts:", markup=False)
-        for schema, count in counts.items():
+        console.print("  Schemas and the tables that would be read:", markup=False)
+        for schema, count in sorted(plan.per_schema.items(), key=lambda item: item[0].lower()):
             console.print(f"    {schema}: {count}", markup=False)
         answer = _ask(
             "Schemas to leave out (names or patterns such as *_Stg, comma-separated, blank=none)",
             default="",
         )
-        patterns = _split_csv(answer)
-        if patterns:
-            _skip_tables(snapshot, patterns, [], report, chosen=True)
-            console.print(f"  {report.describe()}", markup=False)
+        chosen_patterns = _split_csv(answer)
+        if chosen_patterns:
+            plan = _plan_reading(listing, include_schemas, exclude_patterns, staging_patterns, chosen_patterns)
+            console.print(f"  {plan.report.describe()}", markup=False)
+    report = plan.report
+
+    # Phase 2: read the schemas that remain. An empty include list would mean
+    # "every schema" to the inspector, so with nothing left it does not run.
+    if plan.schemas:
+        from database.schema_inspector import SchemaInspector
+        inspector = SchemaInspector(db_url, sample_rows=5)
+        with _spinner("Inspecting schema..."):
+            try:
+                snapshot = inspector.inspect(
+                    include_schemas=plan.schemas,
+                    exclude_schemas=[*exclude_patterns, *chosen_patterns] or None,
+                    exclude_tables=plan.exclude_tables or None,
+                    fetch_row_counts=False,
+                )
+            except ConnectionError as exc:
+                reason = _scrub_secrets(str(exc), db_url)
+                console.print(f"[red]Schema inspection failed: {reason}[/red]" if _RICH else reason)
+                sys.exit(1)
+            finally:
+                inspector.close()
+    else:
+        from database.schema_inspector import SchemaSnapshot
+        snapshot = SchemaSnapshot(source_url=_redact_db_url(db_url))
+
+    console.print(
+        f"  Read [bold]{len(snapshot.tables)}[/bold] tables: "
+        f"[cyan]{len(snapshot.fact_tables)}[/cyan] fact, "
+        f"[green]{len(snapshot.dim_tables)}[/green] dim"
+        if _RICH else
+        f"  Read {len(snapshot.tables)} tables: {len(snapshot.fact_tables)} fact, {len(snapshot.dim_tables)} dim"
+    )
+    # A staging table whose name another table shares was read; drop it now.
+    before = report.staging
+    _skip_tables(snapshot, [], staging_patterns, report)
+    if report.staging != before:
+        console.print(f"  {report.describe()}", markup=False)
 
     # Show table list in a table widget
     if _RICH:
@@ -2094,6 +2295,12 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
     return {"entities": entities, "ring_aliases": ring_aliases}
 
 
+#: Start of the placeholder rule written for a fact table the model gave no
+#: rule for. A merge treats it as "no answer" and never lets it replace an
+#: earlier rule.
+_FALLBACK_RULE_PREFIX = "Primary fact table: "
+
+
 def step4_business_rules(args, snapshot, llm, log: dict, namer=None, links=None) -> dict:
     """Generate business rules for fact tables.
 
@@ -2163,7 +2370,10 @@ def step4_business_rules(args, snapshot, llm, log: dict, namer=None, links=None)
         # The model's own answer (the fallback below is ours), table names taken out.
         model_answer = _normalize_rule_text(rule_text, [table.name, table.full_name, key, *dim_tables])
         if not rule_text:
-            rule_text = f"Primary fact table: {table.name}. Columns: {', '.join(c.name for c in table.columns[:8])}."
+            rule_text = (
+                f"{_FALLBACK_RULE_PREFIX}{table.name}. "
+                f"Columns: {', '.join(c.name for c in table.columns[:8])}."
+            )
 
         console.print("[green]done[/green]" if _RICH else "done")
         guard.observe(table.full_name, model_answer or None)
@@ -2332,7 +2542,12 @@ def step6_review_and_write(
                     if old_labels.get(k.casefold()) and not v.get("label") else v)
                 for k, v in state["entities_data"].items()
             }
-            merged, stats[filename] = merge_mapping(existing.entities, fresh, rename)
+            # No aliases from the model for a table that has some: keep what is there.
+            fresh, held = hold_back_empty(
+                existing.entities, fresh, lambda entry: not entry.get("aliases"), rename,
+            )
+            merged, merge_stats = merge_mapping(existing.entities, fresh, rename)
+            stats[filename] = replace(merge_stats, held=held)
             return _entities_yaml(merged, source_url, generated_at)
         if filename == "aliases.yaml":
             ring, ring_stats = merge_mapping(existing.ring_aliases, state["ring_aliases"], rename)
@@ -2340,7 +2555,13 @@ def step6_review_and_write(
             stats[filename] = ring_stats + synonym_stats
             return _aliases_yaml(ring, merged_synonyms, generated_at)
         if filename == "business_rules.yaml":
-            merged, stats[filename] = merge_mapping(existing.rules, state["rules"], rename)
+            # The placeholder written when the model gave no rule never replaces a rule.
+            fresh_rules, held = hold_back_empty(
+                existing.rules, state["rules"],
+                lambda text: not text or text.startswith(_FALLBACK_RULE_PREFIX), rename,
+            )
+            merged, merge_stats = merge_mapping(existing.rules, fresh_rules, rename)
+            stats[filename] = replace(merge_stats, held=held)
             return _business_rules_yaml(merged, generated_at)
         if filename == "examples.yaml":
             merged_examples, stats[filename] = merge_examples(existing.examples, state["examples"])
@@ -2406,10 +2627,11 @@ def step6_review_and_write(
         "files_written": written,
         "files_not_written": not_written,
         "merge": {
-            name: {"kept": st.kept, "added": st.added, "replaced": st.replaced}
+            name: {"kept": st.kept, "added": st.added, "replaced": st.replaced, "held": len(st.held)}
             for name, st in stats.items()
         },
         "rekeyed": {name: [list(pair) for pair in st.rekeyed] for name, st in stats.items() if st.rekeyed},
+        "held": {name: list(st.held) for name, st in stats.items() if st.held},
         "backups": [str(b) for b in made],
         "inferred_relationships": sum(1 for link in links if link.inferred),
     })
@@ -2582,11 +2804,20 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
         what = "no merge (--fresh)" if args.fresh else "merged into the files already there"
         console.print(f"  Entries ({what}; counts {verb} per file):", markup=False)
         for name, counts in merge.items():
+            held = counts.get("held", 0)
             console.print(
                 f"    {name}: kept {counts['kept']}, added {counts['added']}, "
-                f"replaced {counts['replaced']}",
+                f"replaced {counts['replaced']}"
+                + (f" ({held} of the kept have no new answer from the model)" if held else ""),
                 markup=False,
             )
+    for name, keys in done.get("held", {}).items():
+        shown = ", ".join(keys[:10])
+        console.print(
+            f"  {name}: {len(keys)} earlier entr{'y' if len(keys) == 1 else 'ies'} kept because this run "
+            f"gave no answer for {'it' if len(keys) == 1 else 'them'}: {shown}{' ...' if len(keys) > 10 else ''}",
+            markup=False,
+        )
     for name, pairs in done.get("rekeyed", {}).items():
         shown = ", ".join(f"{old} -> {new}" for old, new in pairs[:10])
         console.print(
