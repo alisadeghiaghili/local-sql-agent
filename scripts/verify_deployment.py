@@ -896,9 +896,11 @@ def check_every_data_source_is_described() -> CheckResult:
         return CheckResult(
             name, "FAIL",
             f"{len(missing)} of {len(sources)} data source(s) have no table in schema.yaml: "
-            f"{', '.join(missing)} -- a whole database is missing from the configuration. Restore the "
-            "curated schema.yaml, or add its tables with `python scripts/sync_schema.py "
-            f"--add-tables 'Schema.*'` ({_RUNBOOK_CURATION})",
+            f"{', '.join(missing)} -- either its tables are listed without a `datasource:` line "
+            "(they then count toward the default source, and queries never reach this one: run "
+            "`python scripts/sync_schema.py`, which sets the lines), or a whole database is missing "
+            "from the configuration (restore the curated schema.yaml, or add its tables with "
+            f"`python scripts/sync_schema.py --add-tables 'Schema.*'`) ({_RUNBOOK_CURATION})",
         )
     return CheckResult(
         name, "PASS",
