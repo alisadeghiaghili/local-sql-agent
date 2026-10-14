@@ -143,6 +143,7 @@ import pandas as pd
 
 import config as cfg
 from llm.base import LLMBackend, SQLGenerationResult
+from llm.correction_hints import correction_hint
 from llm.router import LLMRouter, PromptSegments, TaskType, build_prompt_segments
 from llm.source_routing import SourceRouting, generate_with_source_fallback
 from observability.timing import StageTimer
@@ -177,7 +178,7 @@ The SQL query you generated failed to execute.
 
 --- DATABASE ERROR ---
 {error}
-
+{hint}
 --- INSTRUCTIONS ---
 Fix ONLY the SQL error above. Do not change the intent of the query.
 Return only the corrected SQL statement with no explanation.
@@ -410,7 +411,9 @@ class SQLAgent:
         data sources are configured.
         """
         correction_prompts: list[str] = []
+        seen_hints: set[str] = set()
         last_error: str | None = None
+        last_exception: BaseException | None = None
         sql = ""
         raw = ""
         llm_meta: dict[str, Any] = {}
@@ -420,9 +423,24 @@ class SQLAgent:
         for correction_round in range(self._max_corrections + 1):
             segments = initial_segments
             if correction_round > 0:
+                # What exists, when the error is a name that does not
+                # (llm/correction_hints.py): a deterministic extra block in
+                # this round's correction text, which -- like the rest of
+                # it -- goes to the question segment only. A block the
+                # model has already been shown in an earlier round of this
+                # request is not repeated.
+                hint = correction_hint(
+                    last_exception, denied_columns=denied_columns,
+                    source=routing.current if routing is not None else None,
+                ) if last_exception is not None else ""
+                if hint in seen_hints:
+                    hint = ""
+                elif hint:
+                    seen_hints.add(hint)
                 correction_prompt = _CORRECTION_TEMPLATE.format(
                     sql=sql or raw,
                     error=last_error,
+                    hint=f"\n{hint}\n" if hint else "",
                 )
                 correction_prompts.append(correction_prompt)
                 # Every prior round's correction prompt, not just this one,
@@ -512,6 +530,7 @@ class SQLAgent:
                 raise
             except ValueError as exc:
                 last_error = str(exc)
+                last_exception = exc
                 logger.warning(
                     "SQL failed validation (attempt %d): %s",
                     attempt,
@@ -550,6 +569,7 @@ class SQLAgent:
 
             except RuntimeError as exc:
                 last_error = str(exc)
+                last_exception = None
                 logger.warning(
                     "Execution failed (attempt %d): %s",
                     attempt,

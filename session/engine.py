@@ -53,6 +53,7 @@ from llm.router import (
     TaskType,
     build_prompt_segments,
 )
+from llm.correction_hints import correction_hint
 from llm.interpret import interpret_rows
 from llm.source_routing import (
     SourceRouting,
@@ -111,12 +112,31 @@ The SQL query you generated failed:
 --- FAILED SQL ---
 {sql}
 --- ERROR ---
-{error}
+{error}{hint}
 --- INSTRUCTIONS ---
 Fix ONLY the error above. Return only the corrected SQL statement.
 
 SQL:
 """
+
+def _correction_hint_block(
+    exc: BaseException | None, seen: set[str], denied_columns: tuple[str, ...] | None,
+    source: str | None,
+) -> str:
+    """The text a correction round adds after the error, or ``""``.
+
+    The guard's rejection names a column or table that does not exist; the
+    block lists the real ones (:func:`llm.correction_hints.correction_hint`).
+    A block already shown earlier in the same turn is not repeated.
+    """
+    if exc is None:
+        return ""
+    block = correction_hint(exc, denied_columns=denied_columns, source=source)
+    if not block or block in seen:
+        return ""
+    seen.add(block)
+    return "\n" + block
+
 
 # Filter-enforcement check: a filter the turn presents as applied (from
 # the question, the vocabulary, or an override) must actually be referenced
@@ -968,6 +988,10 @@ class TurnEngine:
         # second, unbounded one, and never fires twice for one turn.
         pending_filter_correction: list[str] | None = None
         filter_correction_used = False
+        # The guard's rejection behind last_error, and the hint blocks the
+        # model has already been shown in this turn (llm/correction_hints.py).
+        last_exception: BaseException | None = None
+        seen_hints: set[str] = set()
 
         for correction_round in range(self._max_corrections + 1):
             gen_segments = segments
@@ -986,7 +1010,13 @@ class TurnEngine:
                     static_prefix=segments.static_prefix,
                     session_context=segments.session_context,
                     question=segments.question
-                    + _CORRECTION_SUFFIX_TEMPLATE.format(sql=last_sql or raw, error=last_error),
+                    + _CORRECTION_SUFFIX_TEMPLATE.format(
+                        sql=last_sql or raw, error=last_error,
+                        hint=_correction_hint_block(
+                            last_exception, seen_hints, denied_columns,
+                            routing.current if routing is not None else None,
+                        ),
+                    ),
                 )
 
             try:
@@ -1049,6 +1079,7 @@ class TurnEngine:
                         llm_status=llm_status, tier=None,
                     )
                 last_error = "LLM returned an empty response."
+                last_exception = None
                 if correction_round == self._max_corrections:
                     return _GenOutcome(
                         error=TurnErrorInfo(code="EMPTY_SQL_RESPONSE", message=last_error),
@@ -1111,6 +1142,7 @@ class TurnEngine:
                 )
             except ValueError as exc:
                 last_error = str(exc)
+                last_exception = exc
                 last_sql = None
                 if correction_round == self._max_corrections:
                     reason, subject = _guard_reason_subject(exc)
@@ -1166,6 +1198,7 @@ class TurnEngine:
                 # classify_database_error's sanitising (see the identical
                 # comment on the non-retry execute() failure above).
                 last_error = str(exc)
+                last_exception = None
                 if correction_round == self._max_corrections:
                     classification = classify_database_error(exc)
                     return _GenOutcome(

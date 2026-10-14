@@ -26,7 +26,7 @@ import pytest
 
 from llm.providers import _StreamAssembler
 from observability.llm_status import build_llm_status, server_cached_tokens
-from observability.quality import compute_metrics, render_quality_text
+from observability.quality import compute_metrics
 from scripts.analyze_audit_log import (
     cache_behaviour,
     latency_by_cache,

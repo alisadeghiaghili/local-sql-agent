@@ -2698,3 +2698,59 @@ whole source. A source whose whole-schema prompt is large and which meets this
 case often is a candidate for `PROMPT_RETRIEVAL_TOKEN_BUDGET` above its
 estimate (the static path, warmed and kept warm), if the model's context
 window fits it; `python scripts/prompt_budget.py` says whether it does.
+
+### 20.9 Corrections that name what exists
+
+A question whose SQL the guard rejects is re-prompted up to twice
+(`MAX_CORRECTION_ATTEMPTS`), so a question that needs both rounds is three
+model calls: `corrections` in the audit `llm` block counts the rounds, and
+`timings.llm_ms` includes all the calls while `llm.total_ms` describes only the
+last. In a log of real use, the requests that needed corrections were a large
+share of all model calls and nearly all of them ended refused: the guard's
+message ("Unknown column 'X' on table 'T'") says what is wrong and not what is
+right, and the model guessed again.
+
+The retry prompt now adds what is right, from `schema.yaml`, for two rejections
+and only those:
+
+```
+--- DATABASE ERROR ---
+Unknown column 'Bogus' on table 'Customer'
+
+--- COLUMNS THAT EXIST ON Customer ---
+ID, Name, NationalID, IsActive
+Use only these names for Customer; any other column does not exist there.
+
+--- INSTRUCTIONS ---
+```
+
+and, for an unknown table, the real tables whose names are closest to the one
+written, as the reference to write in `FROM`:
+
+```
+--- TABLES THAT EXIST, CLOSEST TO Custmer ---
+[sales].[Customer]
+Use one of these names exactly as written, or another table from the schema above.
+```
+
+(The names above are the synthetic `project_config.example`'s.) What it
+guarantees:
+
+- **Names only**, in `schema.yaml` order, no descriptions. A table with more
+  than 200 columns ends the list with `... and N more`. With several data
+  sources the table suggestions come from the source the question was routed to.
+- **Access policy.** A column the key's `denied_columns` fully denies is left
+  out of the list. A join-only column (`Source:schema.Table.Column` entries)
+  stays in the list marked `(join key only)`: the
+  guard allows exactly that use, and the first-attempt prompt already says so.
+  If the key's policy cannot be read, no hint is added.
+- **The cached prefix is untouched.** The hint is part of the retry text,
+  which is appended to the question segment, never to the static prefix, so it
+  cannot cost a prefill. A block the model has already been shown in the same
+  request is not repeated in the next round.
+- Any other error (syntax, execution, an ambiguous table that already says
+  "did you mean") gets exactly the correction text it got before.
+
+To see whether it helps on your own log: `python scripts/analyze_audit_log.py`
+prints the correction-round distribution; compare the share of requests with
+`corrections: 2` that end rejected before and after the upgrade.
