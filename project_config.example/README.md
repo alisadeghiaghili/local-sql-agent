@@ -21,8 +21,11 @@ by hand; both produce drafts to review, not files to deploy as they are:
   `relationships.yaml`). It never writes into `project_config/`.
 - `python setup_project.py` (the setup wizard) drafts `entities.yaml`,
   `aliases.yaml`, `business_rules.yaml`, `examples.yaml` and `relationships.yaml`
-  with the help of a model. It overwrites those files in the directory it writes
-  to, and does not write `schema.yaml` or assign `datasource:`.
+  with the help of a model, into `project_config_draft/` by default. It refuses to
+  write into `project_config/` unless `--overwrite-live` is given (each replaced
+  file is backed up first), merges a second run into the first, and does not write
+  `schema.yaml` or assign `datasource:`. Copy the drafts you accept into
+  `project_config/`.
 
 Both are described in `docs/deployment-runbook.md` §2.1 to §2.3, which also
 lists what each one sends where and which flags they take.
