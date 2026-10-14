@@ -588,12 +588,17 @@ function renderSummary(report) {
 
   // The keystone: when prefix reuse breaks, nothing errors and every
   // request pays full prefill. See admin.css's header.
-  const prefix = asPercent(cb.prefix_cache_hit_rate);
+  // server_hit_rate counts only calls whose server reported cached_tokens;
+  // prefix_cache_hit_rate is the older prompt-size estimate (runbook 20.8),
+  // used only when no call reported it.
+  const serverRate = asPercent(cb.server_hit_rate);
+  const prefix = serverRate !== null ? serverRate : asPercent(cb.prefix_cache_hit_rate);
   if (prefix !== null) {
+    const source = serverRate !== null ? " (گزارش سرور)" : " (برآورد از اندازهٔ پرامپت)";
     tiles.push(statTile({
       label: "بازاستفادهٔ prefix",
       value: prefix.toFixed(1), unit: "٪",
-      sub: prefix < 50 ? "پایین — هر درخواست prefill کامل می‌دهد" : "سالم",
+      sub: (prefix < 50 ? "پایین — هر درخواست prefill کامل می‌دهد" : "سالم") + source,
       cls: prefix < 50 ? "is-degraded" : "is-keystone",
     }));
   }

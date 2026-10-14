@@ -2635,17 +2635,25 @@ every time).
 
 ### 20.8 Reading `prefix_cache_hit`, and how large the prefix is
 
-**`prefix_cache_hit` in the audit `llm` block is not the model server's word
-for it.** It is derived: `prompt_tokens < 0.5 × the source's static-prefix
-estimate` (`docs/api-contract-v2.md` §6). That was a cache signal when the
-backend reported only the tokens it had to compute; an OpenAI-compatible
-server such as vLLM reports the whole prompt in `usage.prompt_tokens` whether
-or not most of it came from the cache. So today `true` means *the prompt was
-short* (a question that went through the retrieval path, or a small source),
-and `false` means *the prompt was about as large as the whole prefix*, which
-is a request that carried it, cached or not. A request can be `false` and
-return in under a second (the server had the prefix) or `false` and take a
-minute (it did not). To tell, look at the request's time against its size:
+**`prefix_cache_hit` is the model server's word when the server gives one.**
+The audit `llm` block has three fields for it:
+
+| Field | Meaning |
+|---|---|
+| `cached_tokens` | `usage.prompt_tokens_details.cached_tokens`: how many prompt tokens the server says it served from its prefix cache. `null` when the server does not report it (vLLM reports it only with `--enable-prompt-tokens-details`; add that flag to the launch command). `0` is a real answer: nothing was cached. |
+| `prefix_cache_hit_source` | `"server"` when `cached_tokens` decided the flag, `"estimate"` when it did not. |
+| `prefix_cache_hit` | With source `"server"`: true when `cached_tokens` covers at least half of the static prefix (of the whole prompt when that is shorter, or there is no prefix). With source `"estimate"`: the older rule `prompt_tokens < 0.5 × the source's static-prefix estimate` (`docs/api-contract-v2.md` §6). |
+
+Records written before these fields existed carry neither, and read as
+estimates. **Do not read an `"estimate"` as a cache result.** That rule was a
+cache signal when the backend reported only the tokens it had to compute; an
+OpenAI-compatible server such as vLLM reports the whole prompt in
+`usage.prompt_tokens` whether or not most of it came from the cache. So an
+estimate of `true` means *the prompt was short* (a question that went through
+the retrieval path, or a small source), and `false` means *the prompt was about
+as large as the whole prefix*, cached or not: such a request can return in under
+a second (the server had the prefix) or take a minute (it did not). Without
+`cached_tokens`, tell the two apart by the request's time against its size:
 
 | `prompt_tokens` | `llm.total_ms` | Reading |
 |---|---|---|
@@ -2653,9 +2661,17 @@ minute (it did not). To tell, look at the request's time against its size:
 | near the prefix size | a prefill's worth (tens of seconds) | cold: the prefix was computed |
 | small | long | not a prefill: the request waited behind other people's, or the model decoded for long (`ttft_ms` and `reasoning_tokens`, §20.4, say which) |
 
-The server's own count of cached tokens is `usage.prompt_tokens_details.cached_tokens`
-(vLLM: `--enable-prompt-tokens-details`); the warm-up and keep-warm entries
-report it as `cached_tokens` when the server sends it.
+**Latency by the real answer.** `python scripts/analyze_audit_log.py` prints
+a "real hit rate (server)" line under "Cache behaviour", counted only over the
+calls whose server reported `cached_tokens` (it says `n/a` when none did), and
+a section "LLM stage by real cache hit" with the `llm` stage's time for `hit`,
+`miss` and `unreported` calls. `unreported` is every call whose flag is only an
+estimate; such a call is never put in `hit` or `miss`. The `--json` report has
+the same as `latency_by_cache` (with `call_ms`, `prompt_tokens` and
+`cached_tokens` per group) and `cache_behaviour.server_hit_rate`; the quality
+card's JSON has `latency.llm_by_cache`. The admin panel's prefix-reuse tile uses the server rate
+when there is one and says so. The warm-up and keep-warm entries report
+`cached_tokens` too, when the server sends it.
 
 **Prefix size.** The prefix is most of a cold question's cost, so its size is
 latency. `PROMPT_RETRIEVAL_TOKEN_BUDGET=... python scripts/prompt_budget.py

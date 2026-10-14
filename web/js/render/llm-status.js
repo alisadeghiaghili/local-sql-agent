@@ -148,7 +148,14 @@ export function renderLlmStatus(llm) {
   if (llm.prompt_tokens > 0) {
     const cacheBadge = document.createElement("span");
     cacheBadge.className = `cache-badge ${llm.prefix_cache_hit ? "hit" : "miss"}`;
-    cacheBadge.textContent = llm.prefix_cache_hit ? "prefix cache HIT" : "prefix cache MISS";
+    // "server": the model server reported cached_tokens. Otherwise the
+    // value is an estimate from the prompt's size, and says so.
+    const fromServer = llm.prefix_cache_hit_source === "server";
+    cacheBadge.textContent = (llm.prefix_cache_hit ? "prefix cache HIT" : "prefix cache MISS")
+      + (fromServer ? "" : " (est.)");
+    if (fromServer && Number.isFinite(llm.cached_tokens)) {
+      cacheBadge.title = `${llm.cached_tokens} of ${llm.prompt_tokens} prompt tokens cached`;
+    }
     head.appendChild(cacheBadge);
   }
 
