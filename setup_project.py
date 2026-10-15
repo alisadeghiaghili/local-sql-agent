@@ -6,8 +6,12 @@ Usage
 -----
 ::
 
+    # every data source of project_config/datasources.yaml, through the
+    # application's own login
     python setup_project.py
+    python setup_project.py --datasource sales --datasource reports
 
+    # a first install: one database, by URL
     python setup_project.py \\
         --db-url  "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\
         --llm-provider openai \\
@@ -18,6 +22,13 @@ Usage
 
 Flags
 -----
+--db-url URL        One database, read with the login in the URL (a first
+                    install). Without it, and with a ``datasources.yaml``,
+                    every data source in that file is read; with neither, the
+                    wizard uses ``DB_CONNECTION_URL``, then ``DATABASE_URL``,
+                    else it asks.
+--datasource NAME   Read only this data source of ``datasources.yaml``
+                    (repeatable; default: all). Not with ``--db-url``.
 --output DIR        Where the draft files are written. Default:
                     ``project_config_draft/`` (ignored by version control).
                     The wizard refuses to write into the live configuration
@@ -34,7 +45,9 @@ Flags
                     output directory instead of merging into them.
 --include-schemas   Comma-separated schemas to read (default: all).
 --exclude-schemas   Comma-separated ``fnmatch`` patterns (case-insensitive) of
-                    schemas to leave out; wins over ``--include-schemas``.
+                    schemas to leave out in this run, on top of the system
+                    schemas, ``EXCLUDE_SCHEMAS`` and each source's
+                    ``exclude_schemas:``; wins over ``--include-schemas``.
 --include-staging   Keep the staging and change-capture tables that
                     ``STAGING_PATTERNS`` names; by default they are skipped.
 --non-interactive   Accept all LLM suggestions without prompting (CI mode).
@@ -100,6 +113,23 @@ aliases or a rule: that one is kept), every other old entry stays, examples are
 de-duplicated by question and relationships by their endpoints. An old entry whose bare name
 must now be qualified is re-keyed and reported. The summary says how many
 entries were kept, added and replaced per file. ``--fresh`` skips the merge.
+
+Data sources
+------------
+With a ``datasources.yaml`` and no ``--db-url`` each source is opened with
+``database.connection.get_engine`` (the engine the server uses, so the wizard
+sees what the application's login can query) and all of them are listed,
+planned, inspected and keyed together: a bare table name shared by several
+schemas or sources becomes ``Schema.Table``, a ``schema.table`` found in two
+sources is one entity, and with several sources configured each entity carries
+``datasource: [a, b]`` (``database.schema_draft.listed_datasources``). Per
+source the schemas left out are, in order: the system schemas,
+``EXCLUDE_SCHEMAS``, the source's ``exclude_schemas:``, ``--exclude-schemas``,
+the operator's answer; the summary counts them per rule as the inspector does.
+Schemas left out interactively can be recorded: as that source's
+``exclude_schemas:`` in ``datasources.yaml`` (default No; a comment-preserving
+edit after a backup, validated before the file is replaced), or, without the
+file, as an ``EXCLUDE_SCHEMAS=`` line printed for ``.env``.
 
 Tables
 ------
@@ -1879,6 +1909,7 @@ def _plan_reading(
         if wanted is None or schema.casefold() in wanted
     }
     plan = _ReadPlan(report=SkipReport(found=sum(len(n) for n in selected.values())))
+    plan.report.sources[source] = Skipped()   # a source that skipped nothing is still one of the run
 
     # Bare names across everything that could be read, to tell a unique name from a shared one.
     remaining: dict[str, list[str]] = {}

@@ -167,6 +167,11 @@ def configured_sources(
             source = get_datasource(name)
         except ValueError as exc:  # DataSourceConfigError: a variable that is not set
             raise SourceSelectionError(f"data source {name!r} cannot be used: {first_line(exc)}") from exc
+        if not source.url:
+            raise SourceSelectionError(
+                f"data source {name!r} cannot be used: the environment variable "
+                f"{source.url_env or 'DB_CONNECTION_URL'} that holds its connection string is not set"
+            )
         chosen.append(ConfiguredSource(
             name=name,
             label=f"{name} ({source.redacted_url})",
