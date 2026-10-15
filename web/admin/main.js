@@ -83,7 +83,8 @@ const EXPENSIVE_CARDS = new Set(["health", "schemaDrift"]);
  * page-level "this key is not an admin key" banner.
  *
  * The panel's sections do not share one capability: `require_admin`
- * serves four of them and `require_operations_or_security` the other six,
+ * serves four of them, `require_operations_or_security` seven, and keys and
+ * access requests need `operations` and `security` respectively,
  * so a key holding only some of the three legitimately sees a 403 on the
  * rest. Before phase 7 that produced a banner claiming the key was not an
  * admin key at all -- which is false, and points at the wrong fix.

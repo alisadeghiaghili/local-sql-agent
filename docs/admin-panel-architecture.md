@@ -1,6 +1,6 @@
 # Admin panel — architecture
 
-Status: **implemented** (phases 1 to 7; the panel has twelve sections and
+Status: **implemented** (phases 1 to 7; the panel has thirteen sections and
 `/admin/*` routes behind four capability dependencies). This is the design
 contract, in the spirit of `api-contract-v2.md`: decisions with their reasons,
 so the implementation can be checked against intent. Sections written before
