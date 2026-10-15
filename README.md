@@ -183,8 +183,9 @@ its KV cache instead of re-reading the schema on every question.
 
 The steps below are the short form. The full, ordered first install, with the
 command and a "done when" check for every step, is "First install, in order" at
-the top of [`docs/deployment-runbook.md`](docs/deployment-runbook.md) (Persian:
-[`docs/fa/getting-started.md`](docs/fa/getting-started.md)).
+the top of [`docs/deployment-runbook.md`](docs/deployment-runbook.md) (as a
+step-by-step guide: [`docs/en/getting-started.md`](docs/en/getting-started.md),
+Persian: [`docs/fa/getting-started.md`](docs/fa/getting-started.md)).
 
 ```bash
 # 1. Clone and install
@@ -263,7 +264,7 @@ python -m api
 ```
 
 **→ Step-by-step guide to running the CLI and the web UI:**  
-**[راهنمای راه‌اندازی — فارسی](docs/fa/getting-started.md)**
+**[English](docs/en/getting-started.md) · [راهنمای راه‌اندازی — فارسی](docs/fa/getting-started.md)**
 
 **→ Full tutorial (installation · first query · extending the domain · writing tests · diagnosing misses):**  
 **[English](docs/en/tutorial.md) · [فارسی](docs/fa/tutorial.md)**
@@ -545,6 +546,7 @@ local-sql-agent/
 │   ├── db-hardening.md       #   server-side hardening for the DBA
 │   ├── dba/                  #   read-only diagnostic kit for the DBA
 │   ├── design/               #   decision records: DATASOURCES.md, TABLE-NAMES.md, RETRIEVAL.md, UI design
+│   ├── en/getting-started.md #   English setup guide, kept in step with the Persian one (tests/test_setup_guide_parity.py)
 │   ├── en/tutorial.md        #   full English tutorial
 │   ├── fa/getting-started.md #   Persian setup guide — راهنمای راه‌اندازی
 │   └── fa/tutorial.md        #   full Persian tutorial — آموزش کامل فارسی
