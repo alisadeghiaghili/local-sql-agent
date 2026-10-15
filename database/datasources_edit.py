@@ -147,7 +147,9 @@ def _flow_end(rest: str) -> tuple[int, int]:
         raise DatasourcesEditError(
             f"`{_KEY}:` is a flow list that does not end on its own line, so it cannot be edited"
         ) from exc
-    raise DatasourcesEditError(f"`{_KEY}:` is not a list that can be edited line by line")
+    raise DatasourcesEditError(
+        f"`{_KEY}:` is a flow list that does not end on its own line, so it cannot be edited"
+    )
 
 
 def _extend_flow(rest: str, items: Sequence[str]) -> str:
