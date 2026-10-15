@@ -497,6 +497,47 @@ class SchemaInspector:
         self._db_url     = db_url
         self._sample_rows = sample_rows
         self._engine: Engine | None = None
+        self._borrowed   = False
+        self._label      = ""
+
+    @classmethod
+    def for_engine(cls, engine: Engine, sample_rows: int = 10, label: str = "") -> "SchemaInspector":
+        """An inspector that reads through an engine somebody else owns.
+
+        The setup wizard reads each configured data source through the engine
+        the application itself uses for it (:func:`database.connection.get_engine`),
+        so it sees exactly what the application's login can query. That engine
+        is shared with the process: :meth:`close` leaves it open.
+
+        Parameters
+        ----------
+        engine:
+            An engine to read through; no connection is made until
+            :meth:`inspect` is called.
+        sample_rows:
+            See the class.
+        label:
+            What :attr:`SchemaSnapshot.source_url` says the snapshot was read
+            from (a redacted URL or a source name); never the engine's URL.
+
+        Returns
+        -------
+        SchemaInspector
+
+        Examples
+        --------
+        >>> engine = create_engine("sqlite://")
+        >>> inspector = SchemaInspector.for_engine(engine, label="sales")
+        >>> inspector.inspect(fetch_row_counts=False).source_url
+        'sales'
+        >>> inspector.close()
+        >>> engine.connect().close()  # still usable: it was not ours to dispose
+        """
+        inspector = cls("", sample_rows)
+        inspector._engine = engine
+        inspector._borrowed = True
+        inspector._label = label
+        return inspector
 
     # ------------------------------------------------------------------
     # Connection
@@ -510,8 +551,11 @@ class SchemaInspector:
         return self._engine
 
     def close(self) -> None:
-        """Dispose the inspection engine (does not affect the main app engine)."""
-        if self._engine is not None:
+        """Dispose the inspection engine (does not affect the main app engine).
+
+        An engine handed in with :meth:`for_engine` is not ours and stays open.
+        """
+        if self._engine is not None and not self._borrowed:
             self._engine.dispose()
             self._engine = None
 
@@ -547,7 +591,7 @@ class SchemaInspector:
         inspector = sa_inspect(engine)
         exclude   = set(exclude_tables or [])
 
-        snapshot = SchemaSnapshot(source_url=self._redact_url(self._db_url))
+        snapshot = SchemaSnapshot(source_url=self._label or self._redact_url(self._db_url))
 
         schema_list = include_schemas or inspector.get_schema_names()
         # System schemas, the EXCLUDE_SCHEMAS setting and this call's patterns

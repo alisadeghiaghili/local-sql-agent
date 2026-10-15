@@ -78,6 +78,8 @@ from pathlib import Path
 from sqlalchemy.engine import Engine
 
 from core.console import use_utf8_console
+from database.setup_sources import SourceSelectionError, configured_sources
+from database.setup_sources import first_line as _first_line
 
 # Directory names this tool will never write to, regardless of --output-dir:
 # the live, git-ignored config an app instance actually runs on, and the
@@ -306,10 +308,6 @@ def _write_or_print(path: Path, content: str, dry_run: bool) -> None:
         print(f"  Written: {path}", file=sys.stderr)
 
 
-def _first_line(exc: BaseException) -> str:
-    return (str(exc).strip().splitlines() or [""])[0][:160]
-
-
 def _resolve_sources(
     args: argparse.Namespace, parser: argparse.ArgumentParser,
 ) -> tuple[list[_Opener], list[str], str]:
@@ -318,48 +316,31 @@ def _resolve_sources(
     With ``--db-url`` the single source is named as the default source and its
     engine is opened from the URL; otherwise each selected source of
     ``datasources.yaml`` (or the implicit ``default``) is read through
-    :func:`database.connection.get_engine`, the engine the server uses.
+    :func:`database.connection.get_engine`, the engine the server uses
+    (:func:`database.setup_sources.configured_sources`, shared with the setup
+    wizard).
     """
-    from database.datasources import datasource_names, default_datasource_name, get_datasource
-
-    try:
-        names = list(datasource_names())
-        default = default_datasource_name()
-    except ValueError as exc:
-        print(f"ERROR: datasources.yaml cannot be used: {_first_line(exc)}", file=sys.stderr)
-        raise SystemExit(2) from exc
-
     if args.db_url:
         if args.datasource:
             parser.error("--datasource cannot be combined with --db-url")
+        from database.datasources import default_datasource_name
         from database.schema_inspector import SchemaInspector, connect_url
 
+        try:
+            default = default_datasource_name()
+        except ValueError as exc:
+            print(f"ERROR: datasources.yaml cannot be used: {_first_line(exc)}", file=sys.stderr)
+            raise SystemExit(2) from exc
         url = args.db_url
         label = f"{default} ({SchemaInspector._redact_url(url)})"
         return [(default, label, lambda: connect_url(url))], [default], default
 
-    selected = names
-    if args.datasource:
-        unknown = [n for n in args.datasource if n not in names]
-        if unknown:
-            print(
-                f"ERROR: unknown data source {', '.join(unknown)}; configured: {', '.join(names)}",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
-        selected = [n for n in names if n in args.datasource]
-
-    from database.connection import get_engine
-
-    chosen: list[_Opener] = []
-    for name in selected:
-        try:
-            label = f"{name} ({get_datasource(name).redacted_url})"
-        except ValueError as exc:  # DataSourceConfigError: a variable that is not set
-            print(f"ERROR: data source {name!r} cannot be used: {_first_line(exc)}", file=sys.stderr)
-            raise SystemExit(2) from exc
-        chosen.append((name, label, lambda n=name: get_engine(n)))
-    return chosen, names, default
+    try:
+        sources, names, default = configured_sources(args.datasource)
+    except SourceSelectionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    return [(s.name, s.label, s.open_engine) for s in sources], names, default
 
 
 def main(argv: Sequence[str] | None = None) -> int:

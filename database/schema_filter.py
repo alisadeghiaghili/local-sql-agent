@@ -53,6 +53,7 @@ __all__ = [
     "RULE_SYSTEM",
     "SYSTEM_SCHEMAS",
     "SchemaExclusion",
+    "exclude_schemas_env_line",
     "exclusion_patterns",
     "is_system_schema",
     "make_schema_filter",
@@ -293,3 +294,45 @@ def make_schema_filter(
     """
     patterns = exclusion_patterns(source, extra, settings)
     return lambda schema: schema_is_excluded(schema, patterns)
+
+
+def exclude_schemas_env_line(
+    extra: Sequence[str],
+    settings: "Settings | None" = None,
+) -> str:
+    """The ``.env`` line that records *extra* next to the current ``EXCLUDE_SCHEMAS``.
+
+    A deployment without ``datasources.yaml`` keeps its schema exclusion in one
+    variable. A tool that learns of more schemas to leave out (the setup
+    wizard, after an operator names them) prints this line instead of editing
+    ``.env``: the patterns already set come first, then *extra*, without
+    repeats (compared in lower case).
+
+    Parameters
+    ----------
+    extra:
+        Patterns to add.
+    settings:
+        The settings to read ``EXCLUDE_SCHEMAS`` from; the process-wide ones
+        when ``None``.
+
+    Returns
+    -------
+    str
+        ``EXCLUDE_SCHEMAS=a,b,c``, ready to paste.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(exclude_schemas="Scratch*"):
+    ...     exclude_schemas_env_line(["*_Tmp", "scratch*"])
+    'EXCLUDE_SCHEMAS=Scratch*,*_Tmp'
+    >>> with cfg.override_settings(exclude_schemas=""):
+    ...     exclude_schemas_env_line(["Replay"])
+    'EXCLUDE_SCHEMAS=Replay'
+    """
+    import config as cfg
+
+    active = cfg.settings if settings is None else settings
+    patterns = _distinct([*parse_patterns(active.exclude_schemas), *extra])
+    return "EXCLUDE_SCHEMAS=" + ",".join(patterns)

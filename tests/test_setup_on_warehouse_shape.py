@@ -740,6 +740,38 @@ class TestAssignDatasources:
         assert "schema.yaml" in _files(project)
 
 
+class TestSetupWizardOverBothSources:
+    """``setup_project.py`` without ``--db-url``: both sources of ``datasources.yaml``, through the application's engines."""
+
+    @pytest.fixture()
+    def wizard(self, project, tmp_path):
+        import setup_project as sp
+        from tests.test_setup_wizard_drafts import RecordingLLM
+
+        llm = RecordingLLM()
+        out = tmp_path / "draft"
+        with patch.object(sp, "setup_wizard_llm", return_value=llm):
+            code = sp.main([
+                "--language", "en", "--non-interactive", "--output", str(out), "--allow-repeated-answers",
+            ])
+        return code, llm, safe_load_strict(_read(out / "entities.yaml"))["entities"]
+
+    def test_it_runs_and_every_entity_names_its_sources(self, wizard):
+        code, _, entities = wizard
+        assert code == 0
+        assert entities and all(entry.get("datasource") for entry in entities.values())
+
+    def test_the_calendar_both_sources_hold_is_one_entity(self, wizard):
+        _, _, entities = wizard
+        (calendar,) = [entry for entry in entities.values() if entry["table"] == "Calendar"]
+        assert calendar["datasource"] == [LARGE, SMALL]
+
+    def test_staging_never_reaches_the_model(self, wizard):
+        _, llm, entities = wizard
+        assert not llm.asked_about("_Stg.")
+        assert not [key for key in entities if key.endswith(("_Inserts", "_Updates", "_Deletes"))]
+
+
 # ---------------------------------------------------------------------------
 # 3. scripts/prompt_budget.py
 # ---------------------------------------------------------------------------

@@ -6,8 +6,12 @@ Usage
 -----
 ::
 
+    # every data source of project_config/datasources.yaml, through the
+    # application's own login
     python setup_project.py
+    python setup_project.py --datasource sales --datasource reports
 
+    # a first install: one database, by URL
     python setup_project.py \\
         --db-url  "mssql+pyodbc://server/db?driver=ODBC+Driver+17+for+SQL+Server" \\
         --llm-provider openai \\
@@ -18,6 +22,13 @@ Usage
 
 Flags
 -----
+--db-url URL        One database, read with the login in the URL (a first
+                    install). Without it, and with a ``datasources.yaml``,
+                    every data source in that file is read; with neither, the
+                    wizard uses ``DB_CONNECTION_URL``, then ``DATABASE_URL``,
+                    else it asks.
+--datasource NAME   Read only this data source of ``datasources.yaml``
+                    (repeatable; default: all). Not with ``--db-url``.
 --output DIR        Where the draft files are written. Default:
                     ``project_config_draft/`` (ignored by version control).
                     The wizard refuses to write into the live configuration
@@ -34,7 +45,9 @@ Flags
                     output directory instead of merging into them.
 --include-schemas   Comma-separated schemas to read (default: all).
 --exclude-schemas   Comma-separated ``fnmatch`` patterns (case-insensitive) of
-                    schemas to leave out; wins over ``--include-schemas``.
+                    schemas to leave out in this run, on top of the system
+                    schemas, ``EXCLUDE_SCHEMAS`` and each source's
+                    ``exclude_schemas:``; wins over ``--include-schemas``.
 --include-staging   Keep the staging and change-capture tables that
                     ``STAGING_PATTERNS`` names; by default they are skipped.
 --non-interactive   Accept all LLM suggestions without prompting (CI mode).
@@ -101,6 +114,23 @@ de-duplicated by question and relationships by their endpoints. An old entry who
 must now be qualified is re-keyed and reported. The summary says how many
 entries were kept, added and replaced per file. ``--fresh`` skips the merge.
 
+Data sources
+------------
+With a ``datasources.yaml`` and no ``--db-url`` each source is opened with
+``database.connection.get_engine`` (the engine the server uses, so the wizard
+sees what the application's login can query) and all of them are listed,
+planned, inspected and keyed together: a bare table name shared by several
+schemas or sources becomes ``Schema.Table``, a ``schema.table`` found in two
+sources is one entity, and with several sources configured each entity carries
+``datasource: [a, b]`` (``database.schema_draft.listed_datasources``). Per
+source the schemas left out are, in order: the system schemas,
+``EXCLUDE_SCHEMAS``, the source's ``exclude_schemas:``, ``--exclude-schemas``,
+the operator's answer; the summary counts them per rule as the inspector does.
+Schemas left out interactively can be recorded: as that source's
+``exclude_schemas:`` in ``datasources.yaml`` (default No; a comment-preserving
+edit after a backup, validated before the file is replaced), or, without the
+file, as an ``EXCLUDE_SCHEMAS=`` line printed for ``.env``.
+
 Tables
 ------
 The wizard first lists schema and table names (nothing else is read), applies
@@ -131,6 +161,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -178,6 +209,19 @@ from core.wizard_drafts import (
     refusal_message,
 )
 from core.yaml_loading import safe_load_strict
+from database.schema_draft import (
+    RULE_CHOSEN,
+    RULE_STAGING,
+    Skipped,
+    describe_skipped,
+    listed_datasources,
+)
+from database.schema_filter import (
+    RULE_CLI,
+    RULE_CONFIGURED,
+    RULE_SYSTEM,
+    SchemaExclusion,
+)
 
 # Credential redaction lives in core/redaction.py (shared with the schema
 # inspector and the application-database messages). The wizard keeps its
@@ -351,7 +395,7 @@ def _step_done(log: dict, step: str) -> bool:
     return isinstance(entry, dict) and bool(entry.get("completed_at"))
 
 
-def _schema_fingerprint(snapshot, namer=None) -> str:
+def _schema_fingerprint(snapshot, namer=None, sources=()) -> str:
     """Return a digest of the tables and columns in *snapshot*.
 
     Stored with step 2 so that a resumed run can tell whether the aliases,
@@ -365,6 +409,9 @@ def _schema_fingerprint(snapshot, namer=None) -> str:
         namer: When given, each table's key is part of the digest, so a run
             whose keys differ (a name that became shared) does not reuse
             results keyed the old way.
+        sources: The names of the data sources the run read; part of the
+            digest together with the sources each table was found in, so a run
+            over other sources does not reuse results made for these.
 
     Returns:
         A hex SHA-256 digest, independent of table and column order.
@@ -384,14 +431,19 @@ def _schema_fingerprint(snapshot, namer=None) -> str:
         ...     key = staticmethod(lambda table: "A")
         >>> _schema_fingerprint(NS(tables=[t])) == _schema_fingerprint(NS(tables=[t]), Keys())
         False
+        >>> _schema_fingerprint(NS(tables=[t])) == _schema_fingerprint(NS(tables=[t]), sources=("sales",))
+        False
     """
     import hashlib
 
     lines = sorted(
         f"{t.full_name}{'@' + namer.key(t) if namer is not None else ''}"
+        f"{'#' + ','.join(getattr(t, 'datasources', ())) if getattr(t, 'datasources', ()) else ''}"
         f":{','.join(sorted(c.name for c in t.columns))}"
         for t in snapshot.tables
     )
+    if sources:
+        lines.append("sources:" + ",".join(sources))
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
@@ -443,6 +495,47 @@ def _stored_result(log: dict, step: str, *, language: str | None = None) -> Any:
 # YAML helpers — produce strings that pass config_loader validators
 # ===========================================================================
 
+class _FlowList(list):
+    """A list written on one line (``[sales, reports]``), as ``schema.yaml`` writes ``datasource:``."""
+
+
+yaml.add_representer(
+    _FlowList,
+    lambda dumper, data: dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=True),
+)
+
+
+def _source_names(value: Any) -> list[str]:
+    """The data source names of an entity's ``datasource:`` value, however it was written.
+
+    Examples:
+        >>> _source_names("sales"), _source_names(["sales", "reports"]), _source_names(None)
+        (['sales'], ['sales', 'reports'], [])
+    """
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v]
+    return []
+
+
+def _union_sources(old: list[str], new: list[str], order: Iterable[str] = ()) -> list[str]:
+    """*old* and *new* source names together, in the order of *order* (unknown names last).
+
+    A run over one source must not make an earlier run's entry forget the
+    other source its table is in.
+
+    Examples:
+        >>> _union_sources(["reports"], ["sales"], ["sales", "reports"])
+        ['sales', 'reports']
+        >>> _union_sources(["a"], ["a", "x"])
+        ['a', 'x']
+    """
+    names = list(dict.fromkeys([*old, *new]))
+    ranking = list(order)
+    return sorted(names, key=lambda n: ranking.index(n) if n in ranking else len(ranking))
+
+
 def _entities_yaml(
     entities: dict[str, dict],
     source_url: str = "",
@@ -452,7 +545,8 @@ def _entities_yaml(
 
     Expected structure per entity::
 
-        {"table": str, "schema": str|None, "aliases": list[str]}
+        {"table": str, "schema": str|None, "aliases": list[str],
+         "datasource": list[str] (optional: only with several data sources)}
     """
     header = (
         "# AUTO-GENERATED by setup_project.py — review before use\n"
@@ -467,6 +561,8 @@ def _entities_yaml(
         }
         if info.get("schema"):
             entry["schema_name"] = info["schema"]
+        if info.get("datasource"):
+            entry["datasource"] = _FlowList(_source_names(info["datasource"]))
         if info.get("label"):
             entry["label"] = info["label"]
         data["entities"][name] = entry
@@ -1398,37 +1494,107 @@ def _is_staging(table, patterns) -> bool:
 
 @dataclass
 class SkipReport:
-    """Tables the wizard left out before any model call, and why.
+    """Tables the wizard left out before any model call, and which rule left them out.
+
+    The rules are the inspector's (``database.schema_draft``): ``system``
+    schemas, ``configured`` exclusion (``EXCLUDE_SCHEMAS`` and a source's
+    ``exclude_schemas:``), ``cli`` (``--exclude-schemas``), ``staging``, plus
+    the wizard's own ``chosen`` (schemas and tables the operator left out when
+    asked). Tables are counted per data source.
 
     Attributes:
-        found: Tables the inspection returned.
-        excluded_schemas: Tables in schemas named by ``--exclude-schemas``.
-        staging: Staging and change-capture tables (``STAGING_PATTERNS``).
-        chosen: Tables in schemas or tables the operator left out interactively.
+        found: Tables the listing returned (within ``--include-schemas``).
+        sources: ``{data source: Skipped}``, the tables and schemas each rule
+            skipped.
     """
 
     found: int = 0
-    excluded_schemas: int = 0
-    staging: int = 0
-    chosen: int = 0
+    sources: dict[str, Skipped] = field(default_factory=dict)
+
+    def add(self, source: str, rule: str, schema: str, tables: int = 1) -> None:
+        """Count *tables* tables of *schema* in *source* as skipped by *rule*."""
+        self.sources.setdefault(source, Skipped()).add(rule, schema, tables)
+
+    def _count(self, rule: str) -> int:
+        return sum(skipped.tables.get(rule, 0) for skipped in self.sources.values())
+
+    @property
+    def system(self) -> int:
+        """Tables in system schemas (``cdc``, ``guest``, the fixed ``db_*`` roles, ...)."""
+        return self._count(RULE_SYSTEM)
+
+    @property
+    def configured(self) -> int:
+        """Tables in schemas ``EXCLUDE_SCHEMAS`` or a source's ``exclude_schemas:`` names."""
+        return self._count(RULE_CONFIGURED)
+
+    @property
+    def excluded_schemas(self) -> int:
+        """Tables in schemas ``--exclude-schemas`` names."""
+        return self._count(RULE_CLI)
+
+    @property
+    def staging(self) -> int:
+        """Staging and change-capture tables (``STAGING_PATTERNS``)."""
+        return self._count(RULE_STAGING)
+
+    @property
+    def chosen(self) -> int:
+        """Tables in schemas, or single tables, the operator left out interactively."""
+        return self._count(RULE_CHOSEN)
 
     @property
     def total(self) -> int:
         """All skipped tables."""
-        return self.excluded_schemas + self.staging + self.chosen
+        return self.system + self.configured + self.excluded_schemas + self.chosen + self.staging
+
+    @classmethod
+    def merged(cls, reports: Iterable["SkipReport"]) -> "SkipReport":
+        """One report for several, e.g. the per-source plans of a run.
+
+        Examples:
+            >>> a, b = SkipReport(found=3), SkipReport(found=4)
+            >>> a.add("sales", "staging", "x_Stg", 2); b.add("reports", "staging", "y_Stg")
+            >>> total = SkipReport.merged([a, b])
+            >>> total.found, total.staging, sorted(total.sources)
+            (7, 3, ['reports', 'sales'])
+        """
+        total = cls()
+        for report in reports:
+            total.found += report.found
+            for name, skipped in report.sources.items():
+                target = total.sources.setdefault(name, Skipped())
+                for rule, count in skipped.tables.items():
+                    target.tables[rule] = target.tables.get(rule, 0) + count
+                for rule, names in skipped.schemas.items():
+                    target.schemas.setdefault(rule, set()).update(names)
+        return total
 
     def describe(self) -> str:
         """One sentence: how many tables were skipped and for which reason.
 
         Examples:
-            >>> SkipReport(278, 40, 26, 0).describe()
+            >>> report = SkipReport(found=278)
+            >>> report.add("", "cli", "ref", 40); report.add("", "staging", "x_Stg", 26)
+            >>> report.describe()
             'Skipped 66 of 278 tables: 40 in excluded schemas, 26 staging or change-capture (STAGING_PATTERNS; --include-staging keeps them).'
             >>> SkipReport(5).describe()
             'Skipped none of 5 tables.'
+            >>> report = SkipReport(found=10)
+            >>> report.add("", "system", "cdc", 2); report.add("", "configured", "Scratch", 1)
+            >>> report.describe()
+            'Skipped 3 of 10 tables: 2 in system schemas, 1 in schemas excluded by configuration (EXCLUDE_SCHEMAS or exclude_schemas:).'
         """
         if not self.total:
             return f"Skipped none of {self.found} tables."
         parts = []
+        if self.system:
+            parts.append(f"{self.system} in system schemas")
+        if self.configured:
+            parts.append(
+                f"{self.configured} in schemas excluded by configuration "
+                "(EXCLUDE_SCHEMAS or exclude_schemas:)"
+            )
         if self.excluded_schemas:
             parts.append(f"{self.excluded_schemas} in excluded schemas")
         if self.chosen:
@@ -1439,6 +1605,53 @@ class SkipReport:
                 "(STAGING_PATTERNS; --include-staging keeps them)"
             )
         return f"Skipped {self.total} of {self.found} tables: {', '.join(parts)}."
+
+    def detail_lines(self) -> list[str]:
+        """The inspector's lines: per rule, the tables and schemas skipped (per source with several).
+
+        Examples:
+            >>> report = SkipReport(found=4)
+            >>> report.add("", "configured", "Scratch", 2)
+            >>> report.detail_lines()
+            ['  configured exclusion (EXCLUDE_SCHEMAS / exclude_schemas:): 2 table(s) in 1 schema(s)']
+        """
+        return describe_skipped(self.sources)
+
+    def to_log(self) -> dict[str, Any]:
+        """The record kept in ``.setup_log.json``: the totals, then the detail per source."""
+        return {
+            "found": self.found,
+            "system": self.system,
+            "configured": self.configured,
+            "excluded_schemas": self.excluded_schemas,
+            "staging": self.staging,
+            "chosen": self.chosen,
+            "by_source": {
+                name: {
+                    "tables": dict(skipped.tables),
+                    "schemas": {rule: sorted(names) for rule, names in skipped.schemas.items()},
+                }
+                for name, skipped in self.sources.items()
+            },
+        }
+
+    @classmethod
+    def from_log(cls, data: Mapping[str, Any]) -> "SkipReport":
+        """The report :meth:`to_log` recorded.
+
+        Examples:
+            >>> report = SkipReport(found=3)
+            >>> report.add("sales", "staging", "x_Stg", 2)
+            >>> SkipReport.from_log(report.to_log()).describe() == report.describe()
+            True
+        """
+        report = cls(found=int(data.get("found", 0)))
+        for name, entry in (data.get("by_source") or {}).items():
+            report.sources[name] = Skipped(
+                tables={rule: int(n) for rule, n in (entry.get("tables") or {}).items()},
+                schemas={rule: set(names) for rule, names in (entry.get("schemas") or {}).items()},
+            )
+        return report
 
 
 def _drop_tables(snapshot, drop: set[tuple[str, str]]) -> None:
@@ -1501,6 +1714,7 @@ def _skip_tables(
     report: SkipReport,
     *,
     chosen: bool = False,
+    source: str = "",
 ) -> None:
     """Drop the tables in schemas matching *exclude_patterns* or matching a staging pattern.
 
@@ -1508,8 +1722,10 @@ def _skip_tables(
         snapshot: The schema snapshot, changed in place.
         exclude_patterns: ``fnmatch`` patterns for schema names (case-insensitive).
         staging_patterns: Parsed ``STAGING_PATTERNS``; empty to keep staging tables.
-        report: Counts are added to it (``chosen`` when *chosen* is true).
+        report: Counts are added to it, under *source* (``chosen`` when *chosen*
+            is true, else ``--exclude-schemas``).
         chosen: Whether the patterns come from the operator's interactive answer.
+        source: The data source *snapshot* was read from.
 
     Returns:
         None.
@@ -1529,33 +1745,67 @@ def _skip_tables(
     """
     from database.schema_inspector import schema_is_excluded
 
-    excluded: set[tuple[str, str]] = set()
-    staging: set[tuple[str, str]] = set()
+    rule = RULE_CHOSEN if chosen else RULE_CLI
+    dropped: set[tuple[str, str]] = set()
     for table in snapshot.tables:
         if exclude_patterns and schema_is_excluded(table.schema or "", exclude_patterns):
-            excluded.add(_identity(table.schema, table.name))
+            report.add(source, rule, table.schema or "")
         elif staging_patterns and _is_staging(table, staging_patterns):
-            staging.add(_identity(table.schema, table.name))
-    if chosen:
-        report.chosen += len(excluded)
-    else:
-        report.excluded_schemas += len(excluded)
-    report.staging += len(staging)
-    _drop_tables(snapshot, excluded | staging)
+            report.add(source, RULE_STAGING, table.schema or "")
+        else:
+            continue
+        dropped.add(_identity(table.schema, table.name))
+    _drop_tables(snapshot, dropped)
 
 
 # ---- what to read, decided from names alone ---------------------------------
 
-#: Schemas that are never described (the schema inspector skips the same ones).
+#: Catalogue schemas the listing never shows: they hold the database's own
+#: views, not tables to describe. The rest of the system schemas (``cdc``,
+#: ``guest``, the fixed ``db_*`` roles) are listed and counted as skipped by the
+#: ``system`` rule (:mod:`database.schema_filter`), so the summary says so.
 _SYSTEM_SCHEMAS = ("information_schema", "sys", "pg_catalog", "pg_toast")
 
 
-def _list_schema_tables(db_url: str) -> dict[str, list[str]]:
-    """``{schema: [table names]}`` from the catalogue: names only, no column, no row.
+def _list_engine_tables(engine) -> dict[str, list[str]]:
+    """``{schema: [table names]}`` read through *engine*: names only, no column, no row.
 
-    Uses SQLAlchemy's inspector with the schema inspector's own system-schema
-    filter. This is the first look at the database; what to read is decided
-    from it (see :func:`_plan_reading`).
+    Uses SQLAlchemy's inspector. This is the first look at a database; what to
+    read is decided from it (see :func:`_plan_reading`).
+
+    Args:
+        engine: A SQLAlchemy engine (the application's, for a configured
+            source); it is left open.
+
+    Returns:
+        Schemas in the database's order, each with its table names; the
+        catalogue schemas (``sys``, ``INFORMATION_SCHEMA``, ``pg_*``) are not listed.
+
+    Raises:
+        Exception: Whatever SQLAlchemy raises when the database cannot be
+            listed; the caller reports it with the credentials scrubbed.
+
+    Examples:
+        >>> from sqlalchemy import create_engine, text
+        >>> engine = create_engine("sqlite://")
+        >>> with engine.begin() as conn:
+        ...     _ = conn.execute(text("CREATE TABLE Widget (ID INTEGER)"))
+        >>> _list_engine_tables(engine)
+        {'main': ['Widget']}
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    inspector = sa_inspect(engine)
+    listing: dict[str, list[str]] = {}
+    for schema in inspector.get_schema_names():
+        if schema.lower() in _SYSTEM_SCHEMAS or schema.lower().startswith("pg_"):
+            continue
+        listing[schema] = list(inspector.get_table_names(schema=schema))
+    return listing
+
+
+def _list_schema_tables(db_url: str) -> dict[str, list[str]]:
+    """``{schema: [table names]}`` from the database at *db_url* (see :func:`_list_engine_tables`).
 
     Args:
         db_url: The SQLAlchemy connection string.
@@ -1567,24 +1817,18 @@ def _list_schema_tables(db_url: str) -> dict[str, list[str]]:
         Exception: Whatever SQLAlchemy raises when the database cannot be
             listed; the caller reports it with the credentials scrubbed.
     """
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
 
     engine = create_engine(db_url, pool_pre_ping=True, pool_size=1, max_overflow=0)
     try:
-        inspector = sa_inspect(engine)
-        listing: dict[str, list[str]] = {}
-        for schema in inspector.get_schema_names():
-            if schema in _SYSTEM_SCHEMAS or schema.startswith("pg_"):
-                continue
-            listing[schema] = list(inspector.get_table_names(schema=schema))
-        return listing
+        return _list_engine_tables(engine)
     finally:
         engine.dispose()
 
 
 @dataclass
 class _ReadPlan:
-    """What the inspection will read, and what was left out before it.
+    """What the inspection of one source will read, and what was left out before it.
 
     Attributes:
         schemas: Schemas to inspect (their real spelling).
@@ -1603,27 +1847,32 @@ class _ReadPlan:
 def _plan_reading(
     listing: Mapping[str, list[str]],
     include_schemas: list[str] | None,
-    exclude_patterns: list[str],
+    exclusion: SchemaExclusion,
     staging_patterns,
     chosen_patterns: list[str] | None = None,
+    *,
+    source: str = "",
 ) -> _ReadPlan:
     """Decide from table names alone which schemas and tables the inspection reads.
 
-    ``--include-schemas`` narrows the listing, then ``--exclude-schemas`` (and the
-    schemas the operator chose) remove schemas, so a schema matching both is not
-    read. A staging table is left out too: a schema whose every table is staging
-    (a bare ``STAGING_PATTERNS`` pattern matches the schema name) is not read at
-    all; a ``table:`` pattern match is passed as an excluded name when no other
-    listed table shares its bare name. One whose name is shared is read and
-    dropped afterwards (:func:`_skip_tables`), so a same-named table of another
-    schema is not lost; it is not counted here.
+    ``--include-schemas`` narrows the listing, then the *exclusion* (system
+    schemas, ``EXCLUDE_SCHEMAS``, the source's ``exclude_schemas:`` and
+    ``--exclude-schemas``) and the schemas the operator chose remove schemas,
+    so a schema matching both is not read. Each skipped table is counted under
+    the first rule that skips it. A staging table is left out too: a schema
+    whose every table is staging (a bare ``STAGING_PATTERNS`` pattern matches
+    the schema name) is not read at all; a ``table:`` pattern match is passed
+    as an excluded name when no other listed table shares its bare name. One
+    whose name is shared is read and dropped afterwards (:func:`_skip_tables`),
+    so a same-named table of another schema is not lost; it is not counted here.
 
     Args:
-        listing: ``{schema: [table names]}`` from :func:`_list_schema_tables`.
+        listing: ``{schema: [table names]}`` from :func:`_list_engine_tables`.
         include_schemas: Schemas to read (case-insensitive), or ``None`` for all.
-        exclude_patterns: ``--exclude-schemas`` ``fnmatch`` patterns.
+        exclusion: The source's rule (``database.schema_filter.schema_exclusion``).
         staging_patterns: Parsed ``STAGING_PATTERNS``; empty keeps staging tables.
         chosen_patterns: Schema patterns the operator chose interactively.
+        source: The data source the listing belongs to, for the report.
 
     Returns:
         The plan. ``schemas`` is empty when nothing is left to read, in which
@@ -1634,16 +1883,23 @@ def _plan_reading(
 
     Examples:
         >>> from core.config_doctor import parse_staging_patterns
+        >>> from database.schema_filter import SchemaExclusion
         >>> listing = {"sales": ["Trade", "Trade_Inserts"], "sales_Stg": ["Trade"], "ref": ["Region"]}
-        >>> plan = _plan_reading(listing, None, ["ref"], parse_staging_patterns("*_Stg,table:*_Inserts"))
+        >>> plan = _plan_reading(
+        ...     listing, None, SchemaExclusion(cli=("ref",)), parse_staging_patterns("*_Stg,table:*_Inserts"),
+        ... )
         >>> plan.schemas, plan.exclude_tables
         (['sales'], ['Trade_Inserts'])
         >>> plan.report.describe()
         'Skipped 3 of 4 tables: 1 in excluded schemas, 2 staging or change-capture (STAGING_PATTERNS; --include-staging keeps them).'
-        >>> _plan_reading(listing, ["REF"], [], []).schemas
+        >>> _plan_reading(listing, ["REF"], SchemaExclusion(), []).schemas
         ['ref']
-        >>> _plan_reading(listing, ["ref"], ["r*"], []).schemas
+        >>> _plan_reading(listing, ["ref"], SchemaExclusion(cli=("r*",)), []).schemas
         []
+        >>> plan = _plan_reading({"cdc": ["T"], "Scratch": ["T"], "ref": ["R"]}, None,
+        ...                      SchemaExclusion(configured=("scratch",)), [])
+        >>> plan.schemas, plan.report.system, plan.report.configured
+        (['ref'], 1, 1)
     """
     from database.schema_inspector import schema_is_excluded
 
@@ -1653,16 +1909,18 @@ def _plan_reading(
         if wanted is None or schema.casefold() in wanted
     }
     plan = _ReadPlan(report=SkipReport(found=sum(len(n) for n in selected.values())))
+    plan.report.sources[source] = Skipped()   # a source that skipped nothing is still one of the run
 
     # Bare names across everything that could be read, to tell a unique name from a shared one.
     remaining: dict[str, list[str]] = {}
     for schema, names in selected.items():
-        if exclude_patterns and schema_is_excluded(schema, exclude_patterns):
-            plan.report.excluded_schemas += len(names)
-        elif chosen_patterns and schema_is_excluded(schema, chosen_patterns):
-            plan.report.chosen += len(names)
-        else:
+        rule = exclusion.reason(schema)
+        if rule is None and chosen_patterns and schema_is_excluded(schema, chosen_patterns):
+            rule = RULE_CHOSEN
+        if rule is None:
             remaining[schema] = names
+        else:
+            plan.report.add(source, rule, schema, len(names))
     name_count: dict[str, int] = {}
     for names in remaining.values():
         for name in names:
@@ -1674,13 +1932,13 @@ def _plan_reading(
             if staging_patterns and _is_staging(_Listed(schema, name), staging_patterns)
         ]
         if names and len(staged) == len(names):
-            plan.report.staging += len(names)      # the whole schema is staging: not read
+            plan.report.add(source, RULE_STAGING, schema, len(names))   # the whole schema is staging: not read
             continue
         read = len(names)
         for name in staged:
             if name_count[name.casefold()] == 1:
                 plan.exclude_tables.append(name)
-                plan.report.staging += 1
+                plan.report.add(source, RULE_STAGING, schema)
                 read -= 1
         plan.per_schema[schema] = read
         plan.schemas.append(schema)
@@ -1939,6 +2197,7 @@ def _parse_existing(filename: str, text: str, into: _ExistingDraft) -> None:
                 "table": str(entry["table"]),
                 "schema": entry.get("schema_name"),
                 "aliases": list(entry.get("aliases") or []),
+                "datasource": _source_names(entry.get("datasource")),
                 "label": entry.get("label"),
             }
     elif filename == "aliases.yaml":
@@ -2058,27 +2317,301 @@ def step1_connection(args, log: dict) -> str:
     return db_url
 
 
-def step2_schema(args, db_url: str, log: dict):
-    """Run schema inspection and return a SchemaSnapshot.
+@dataclass(frozen=True)
+class _Source:
+    """One database the wizard reads.
 
-    Two phases. First the table names are listed (nothing else is read), the
-    schemas to leave out are applied (``--include-schemas``,
-    ``--exclude-schemas``, staging tables, and in interactive mode the
-    operator's answer) and only the remaining schemas are inspected, so a
-    schema that is left out is never scanned for columns or sample values.
+    Attributes:
+        name: The data source name (``default`` for a bare URL).
+        label: How it is shown: the name and the redacted URL.
+        secret_url: The connection string with its password, only to scrub driver messages.
+        configured: True for a data source of ``datasources.yaml``, read through the
+            application's own engine; False for a URL the wizard opens itself.
+        db_url: The URL, when *configured* is false.
+        open_engine: The application's engine for the source, when *configured* is true.
+    """
+
+    name: str
+    label: str
+    secret_url: str
+    configured: bool = False
+    db_url: str = ""
+    open_engine: Callable[[], Any] | None = None
+
+
+@dataclass(frozen=True)
+class _Sources:
+    """What step 1 settled: the databases to read.
+
+    Attributes:
+        items: The sources to read, default first.
+        names: Every source the deployment configures (a run narrowed with
+            ``--datasource`` reads fewer); decides whether ``datasource:`` lines are written.
+        from_file: Whether they come from ``datasources.yaml``.
+    """
+
+    items: tuple[_Source, ...]
+    names: tuple[str, ...]
+    from_file: bool = False
+
+    @property
+    def selected(self) -> tuple[str, ...]:
+        """The names of the sources to read."""
+        return tuple(item.name for item in self.items)
+
+    @property
+    def label(self) -> str:
+        """The sources, for the ``# Source:`` header of ``entities.yaml``."""
+        return ", ".join(item.label for item in self.items)
+
+
+def _url_sources(db_url: str) -> _Sources:
+    """The single source of a bare connection string (``--db-url``, ``DB_CONNECTION_URL``)."""
+    from database.datasources import DEFAULT_DATASOURCE
+
+    item = _Source(DEFAULT_DATASOURCE, _redact_db_url(db_url), db_url, False, db_url)
+    return _Sources((item,), (DEFAULT_DATASOURCE,), False)
+
+
+def _source_listing(source: _Source) -> dict[str, list[str]]:
+    """The names-only listing of *source* (see :func:`_list_engine_tables`)."""
+    if source.configured:
+        return _list_engine_tables(source.open_engine())
+    return _list_schema_tables(source.db_url)
+
+
+def _source_inspector(source: _Source):
+    """The ``SchemaInspector`` that reads *source*.
+
+    A configured source is read through the application's engine
+    (``SchemaInspector.for_engine``, which leaves the engine open); a bare URL
+    gets an inspector of its own, as before.
+    """
+    from database.schema_inspector import SchemaInspector
+
+    if source.configured:
+        return SchemaInspector.for_engine(source.open_engine(), sample_rows=5, label=source.label)
+    return SchemaInspector(source.db_url, sample_rows=5)
+
+
+def _combine_snapshots(parts, names: tuple[str, ...]):
+    """One snapshot from the snapshots of several sources.
+
+    A table present with the same ``schema.table`` in several sources is one
+    table (the first source's columns and sample values), and carries the
+    sources it was found in as ``datasources``, written the way the inspector's
+    drafts write them (:func:`database.schema_draft.listed_datasources`).
+
+    Args:
+        parts: ``[(source name, snapshot)]``, default source first.
+        names: Every configured source name.
+
+    Returns:
+        A ``SchemaSnapshot`` of the distinct tables and relationships.
+
+    Raises:
+        Nothing for well-formed snapshots.
+
+    Examples:
+        >>> from types import SimpleNamespace as NS
+        >>> from database.schema_inspector import SchemaSnapshot, TableInfo
+        >>> a = SchemaSnapshot(tables=[TableInfo("T", "s"), TableInfo("U", "s")])
+        >>> b = SchemaSnapshot(tables=[TableInfo("t", "S")])
+        >>> merged = _combine_snapshots([("a", a), ("b", b)], ("a", "b"))
+        >>> [(t.name, t.datasources) for t in merged.tables]
+        [('T', ('a', 'b')), ('U', ('a',))]
+    """
+    from database.schema_inspector import SchemaSnapshot
+
+    found: dict[tuple[str, str], Any] = {}
+    where: dict[tuple[str, str], list[str]] = {}
+    relationships: dict[tuple, Any] = {}
+    for name, snapshot in parts:
+        for table in snapshot.tables:
+            identity = _identity(table.schema, table.name)
+            found.setdefault(identity, table)
+            if name not in where.setdefault(identity, []):
+                where[identity].append(name)
+        for rel in snapshot.relationships:
+            from_schema = getattr(rel, "from_schema", None)
+            ends = (
+                _identity(from_schema, rel.from_table), rel.from_column.casefold(),
+                _identity(getattr(rel, "to_schema", None) or from_schema, rel.to_table),
+                rel.to_column.casefold(),
+            )
+            relationships.setdefault(ends, rel)
+    tables = []
+    for identity, table in found.items():
+        table.datasources = listed_datasources(names, where[identity])
+        tables.append(table)
+    return SchemaSnapshot(
+        tables=tables, relationships=list(relationships.values()),
+        source_url=", ".join(name for name, _ in parts),
+    )
+
+
+def step1_sources(args, log: dict, configured) -> _Sources:
+    """Open the configured data sources and prove each connects.
+
+    The sources are read through the application's own engines
+    (``database.connection.get_engine``), so the wizard sees exactly what the
+    application's login can query.
 
     Args:
         args: Parsed command line.
-        db_url: The connection string.
+        log: The setup log, updated in place.
+        configured: ``database.setup_sources.configured_sources``'s result.
+
+    Returns:
+        The sources to read.
+
+    Raises:
+        SystemExit: When a source cannot be reached.
+    """
+    chosen, everything, _default = configured
+    console.rule("[bold blue]Step 1: Database Connection[/bold blue]" if _RICH else "Step 1: Database Connection")
+    console.print(
+        "  Data sources of datasources.yaml, read through the application's own login "
+        f"(it sees what the application can query): {', '.join(c.name for c in chosen)}",
+        markup=False,
+    )
+    from sqlalchemy import text
+
+    items = []
+    for source in chosen:
+        console.print(f"  Testing connection to {source.name}...", end=" ")
+        try:
+            with source.open_engine().connect() as conn:
+                conn.execute(text("SELECT 1"))
+        except Exception as exc:  # noqa: BLE001
+            console.print("[red]FAILED[/red]" if _RICH else "FAILED")
+            console.print(f"  Error: {_scrub_secrets(str(exc), source.secret_url)}", markup=False)
+            sys.exit(1)
+        console.print("[green]OK[/green]" if _RICH else "OK")
+        items.append(_Source(
+            source.name, source.label, source.secret_url, True, "", source.open_engine,
+        ))
+    _mark_done(log, "step1_connection", {
+        "datasources": {c.name: _redact_db_url(c.secret_url) for c in chosen},
+    })
+    return _Sources(tuple(items), tuple(everything), True)
+
+
+def _record_choice(args, sources: _Sources, plans, chosen_patterns: list[str]) -> dict[str, Any] | None:
+    """Offer to keep the schemas the operator just left out, so no later run asks again.
+
+    With ``datasources.yaml`` the patterns that matched a schema of a source are
+    offered as that source's ``exclude_schemas:`` (default answer No), written
+    with a comment-preserving text edit after a backup
+    (:func:`database.datasources_edit.record_exclude_schemas`). Anything that
+    goes wrong leaves the file as it was and prints the lines to add by hand.
+    Without it, the ``EXCLUDE_SCHEMAS=`` line for ``.env`` is printed; ``.env``
+    is never edited. With ``--dry-run`` nothing is written either way.
+
+    Args:
+        args: Parsed command line.
+        sources: The sources of the run.
+        plans: ``{source: _ReadPlan}`` made before the answer, whose
+            ``per_schema`` is what the operator was shown.
+        chosen_patterns: The operator's answer.
+
+    Returns:
+        A record for the setup log, or ``None`` when nothing matched.
+
+    Raises:
+        Nothing. A failed edit is reported.
+    """
+    from database.datasources import datasources_path
+    from database.datasources_edit import DatasourcesEditError, exclude_schemas_snippet, record_exclude_schemas
+    from database.schema_filter import exclude_schemas_env_line, schema_is_excluded
+
+    additions: dict[str, list[str]] = {}
+    for item in sources.items:
+        shown = plans[item.name].per_schema
+        matching = [
+            pattern for pattern in chosen_patterns
+            if any(schema_is_excluded(schema, [pattern]) for schema in shown)
+        ]
+        if matching:
+            additions[item.name] = matching
+    if not additions:
+        return None
+
+    console.print("  You left these schemas out:", markup=False)
+    for name, patterns in additions.items():
+        console.print(f"    {name}: {', '.join(patterns)}" if sources.from_file else f"    {', '.join(patterns)}", markup=False)
+
+    if not sources.from_file:
+        everything = [p for patterns in additions.values() for p in patterns]
+        console.print(
+            "  To leave them out of every later run, set this line in .env (the wizard does not edit .env):",
+            markup=False,
+        )
+        console.print(f"    {exclude_schemas_env_line(everything)}", markup=False)
+        return {"env_line": exclude_schemas_env_line(everything)}
+
+    path = datasources_path()
+    snippet = exclude_schemas_snippet(additions)
+    if args.dry_run:
+        console.print(
+            f"  Dry run: {path.name} is not changed. To leave them out of every later run, add:",
+            markup=False,
+        )
+        console.print(textwrap.indent(snippet, "    "), markup=False)
+        return {"recorded": False}
+    if not _yn(
+        f"Record them as exclude_schemas in {path.name}? (a backup is made first; the comments stay)",
+        default=False, non_interactive=args.non_interactive,
+    ):
+        console.print(f"  Not recorded. To leave them out of every later run, add to {path.name}:", markup=False)
+        console.print(textwrap.indent(snippet, "    "), markup=False)
+        return {"recorded": False}
+    try:
+        done = record_exclude_schemas(path, additions, stamp=datetime.now().strftime("%Y%m%d-%H%M%S"))
+    except DatasourcesEditError as exc:
+        console.print(f"  Not recorded: {exc}", markup=False)
+        console.print(f"  {path} was not changed. Add this by hand:", markup=False)
+        console.print(textwrap.indent(snippet, "    "), markup=False)
+        return {"recorded": False, "error": str(exc).splitlines()[0]}
+    if done.backup is not None:
+        console.print(f"  Backed up: {path.name} -> {done.backup.name}", markup=False)
+    console.print(f"  Recorded exclude_schemas in {path}.", markup=False)
+    return {
+        "recorded": True,
+        "backup": str(done.backup) if done.backup else None,
+        "added": {name: list(patterns) for name, patterns in done.added.items()},
+    }
+
+
+def step2_schema(args, source, log: dict):
+    """Run schema inspection over every selected source and return one SchemaSnapshot.
+
+    Two phases. First the table names of each source are listed (nothing else
+    is read), the schemas to leave out are applied (the system schemas,
+    ``EXCLUDE_SCHEMAS``, the source's own ``exclude_schemas:``,
+    ``--include-schemas``, ``--exclude-schemas``, staging tables, and in
+    interactive mode the operator's answer) and only the remaining schemas are
+    inspected, so a schema that is left out is never scanned for columns or
+    sample values. The sources are listed, planned and inspected together; the
+    tables are then merged into one snapshot (a ``schema.table`` found in
+    several sources is one table).
+
+    Args:
+        args: Parsed command line.
+        source: The sources from :func:`step1_sources`, or a connection string
+            (one source, read with the login in it).
         log: The setup log, updated in place.
 
     Returns:
         The snapshot of the tables that remain.
 
     Raises:
-        SystemExit: When the database cannot be listed or inspected.
+        SystemExit: When a database cannot be listed or inspected.
     """
+    from database.schema_filter import schema_exclusion
+
     console.rule("[bold blue]Step 2: Schema Discovery[/bold blue]" if _RICH else "Step 2: Schema Discovery")
+    sources = source if isinstance(source, _Sources) else _url_sources(source)
 
     include_schemas = (
         [s.strip() for s in args.include_schemas.split(",") if s.strip()]
@@ -2089,66 +2622,109 @@ def step2_schema(args, db_url: str, log: dict):
     import config as cfg
     from core.config_doctor import parse_staging_patterns
 
+    cli_patterns = _split_csv(getattr(args, "exclude_schemas", None))
+    # A bare URL is not one of the configured sources, so no source's own
+    # exclude_schemas: is assumed for it; the system schemas, EXCLUDE_SCHEMAS
+    # and --exclude-schemas apply to it as they always did.
+    rules = {
+        item.name: schema_exclusion(item.name if sources.from_file else None, cli_patterns)
+        for item in sources.items
+    }
+
     # Phase 1: names only. Which schemas are read is decided here, before any
     # column or sample value is fetched, so a schema that is left out is
     # never scanned.
-    try:
-        listing = _list_schema_tables(db_url)
-    except Exception as exc:  # noqa: BLE001 - any driver or connection error
-        reason = _scrub_secrets(str(exc), db_url)
-        console.print(f"[red]Schema listing failed: {reason}[/red]" if _RICH else f"Schema listing failed: {reason}")
-        sys.exit(1)
+    listings: dict[str, dict[str, list[str]]] = {}
+    for item in sources.items:
+        try:
+            listings[item.name] = _source_listing(item)
+        except Exception as exc:  # noqa: BLE001 - any driver or connection error
+            reason = _scrub_secrets(str(exc), item.secret_url)
+            where = f" for data source {item.name}" if sources.from_file else ""
+            console.print(
+                f"[red]Schema listing failed{where}: {reason}[/red]" if _RICH
+                else f"Schema listing failed{where}: {reason}"
+            )
+            sys.exit(1)
 
     staging_patterns = (
         [] if getattr(args, "include_staging", False)
         else parse_staging_patterns(cfg.settings.staging_patterns)
     )
-    exclude_patterns = _split_csv(getattr(args, "exclude_schemas", None))
-    plan = _plan_reading(listing, include_schemas, exclude_patterns, staging_patterns)
-    console.print(
-        f"  The database has {sum(len(n) for n in listing.values())} tables in {len(listing)} schemas.",
-        markup=False,
-    )
-    if plan.report.total:
-        console.print(f"  {plan.report.describe()}", markup=False)
+
+    def plan_all(chosen: list[str] | None = None) -> dict[str, _ReadPlan]:
+        return {
+            item.name: _plan_reading(
+                listings[item.name], include_schemas, rules[item.name], staging_patterns, chosen,
+                source=item.name,
+            )
+            for item in sources.items
+        }
+
+    plans = plan_all()
+    for item in sources.items:
+        listing = listings[item.name]
+        count = f"{sum(len(n) for n in listing.values())} tables in {len(listing)} schemas"
+        console.print(
+            f"  Data source {item.name}: {count}." if sources.from_file else f"  The database has {count}.",
+            markup=False,
+        )
+    report = SkipReport.merged(plan.report for plan in plans.values())
+    if report.total:
+        console.print(f"  {report.describe()}", markup=False)
 
     chosen_patterns: list[str] = []
+    recorded: dict[str, Any] | None = None
     if not args.non_interactive:
         console.print("  Schemas and the tables that would be read:", markup=False)
-        for schema, count in sorted(plan.per_schema.items(), key=lambda item: item[0].lower()):
-            console.print(f"    {schema}: {count}", markup=False)
+        for item in sources.items:
+            if sources.from_file:
+                console.print(f"  Data source {item.name}:", markup=False)
+            for schema, count in sorted(plans[item.name].per_schema.items(), key=lambda entry: entry[0].lower()):
+                console.print(f"    {schema}: {count}", markup=False)
         answer = _ask(
             "Schemas to leave out (names or patterns such as *_Stg, comma-separated, blank=none)",
             default="",
         )
         chosen_patterns = _split_csv(answer)
         if chosen_patterns:
-            plan = _plan_reading(listing, include_schemas, exclude_patterns, staging_patterns, chosen_patterns)
-            console.print(f"  {plan.report.describe()}", markup=False)
-    report = plan.report
+            before_answer = plans
+            plans = plan_all(chosen_patterns)
+            report = SkipReport.merged(plan.report for plan in plans.values())
+            console.print(f"  {report.describe()}", markup=False)
+            recorded = _record_choice(args, sources, before_answer, chosen_patterns)
 
     # Phase 2: read the schemas that remain. An empty include list would mean
     # "every schema" to the inspector, so with nothing left it does not run.
-    if plan.schemas:
-        from database.schema_inspector import SchemaInspector
-        inspector = SchemaInspector(db_url, sample_rows=5)
-        with _spinner("Inspecting schema..."):
+    staging_before = report.staging
+    parts = []
+    for item in sources.items:
+        plan = plans[item.name]
+        if not plan.schemas:
+            continue
+        inspector = _source_inspector(item)
+        configured_patterns = list(rules[item.name].configured) if sources.from_file else []
+        with _spinner(f"Inspecting {item.name}..."):
             try:
-                snapshot = inspector.inspect(
+                found = inspector.inspect(
                     include_schemas=plan.schemas,
-                    exclude_schemas=[*exclude_patterns, *chosen_patterns] or None,
+                    exclude_schemas=[*configured_patterns, *cli_patterns, *chosen_patterns] or None,
                     exclude_tables=plan.exclude_tables or None,
                     fetch_row_counts=False,
                 )
             except ConnectionError as exc:
-                reason = _scrub_secrets(str(exc), db_url)
+                reason = _scrub_secrets(str(exc), item.secret_url)
                 console.print(f"[red]Schema inspection failed: {reason}[/red]" if _RICH else reason)
                 sys.exit(1)
             finally:
                 inspector.close()
-    else:
-        from database.schema_inspector import SchemaSnapshot
-        snapshot = SchemaSnapshot(source_url=_redact_db_url(db_url))
+        # A staging table whose name another table shares was read; drop it now.
+        _skip_tables(found, [], staging_patterns, plan.report, source=item.name)
+        parts.append((item.name, found))
+    report = SkipReport.merged(plan.report for plan in plans.values())
+    snapshot = _combine_snapshots(parts, sources.names)
+    if not parts:
+        snapshot.source_url = _redact_db_url(sources.items[0].secret_url) if not sources.from_file else sources.label
 
     console.print(
         f"  Read [bold]{len(snapshot.tables)}[/bold] tables: "
@@ -2157,10 +2733,7 @@ def step2_schema(args, db_url: str, log: dict):
         if _RICH else
         f"  Read {len(snapshot.tables)} tables: {len(snapshot.fact_tables)} fact, {len(snapshot.dim_tables)} dim"
     )
-    # A staging table whose name another table shares was read; drop it now.
-    before = report.staging
-    _skip_tables(snapshot, [], staging_patterns, report)
-    if report.staging != before:
+    if report.staging != staging_before:
         console.print(f"  {report.describe()}", markup=False)
 
     # Show table list in a table widget
@@ -2168,15 +2741,21 @@ def step2_schema(args, db_url: str, log: dict):
         tbl = Table(title="Discovered Tables", show_lines=False)
         tbl.add_column("Table", style="cyan")
         tbl.add_column("Schema")
+        if sources.from_file:
+            tbl.add_column("Source")
         tbl.add_column("Class", style="yellow")
         tbl.add_column("Cols", justify="right")
         tbl.add_column("FKs", justify="right")
         for t in snapshot.tables:
-            tbl.add_row(t.name, t.schema or "", t.classification, str(len(t.columns)), str(len(t.foreign_keys)))
+            cells = [t.name, t.schema or ""]
+            if sources.from_file:
+                cells.append(", ".join(t.datasources))
+            tbl.add_row(*cells, t.classification, str(len(t.columns)), str(len(t.foreign_keys)))
         console.print(tbl)
     else:
         for t in snapshot.tables:
-            print(f"  {t.full_name:40s} {t.classification:10s} cols={len(t.columns)} fks={len(t.foreign_keys)}")
+            where = f" [{', '.join(t.datasources)}]" if t.datasources else ""
+            print(f"  {t.full_name:40s} {t.classification:10s} cols={len(t.columns)} fks={len(t.foreign_keys)}{where}")
 
     # Ask to exclude single tables (a bare name or Schema.Table)
     if not args.non_interactive:
@@ -2187,18 +2766,17 @@ def step2_schema(args, db_url: str, log: dict):
                 _identity(t.schema, t.name) for t in snapshot.tables
                 if {t.name.casefold(), t.full_name.casefold()} & wanted
             }
+            for t in snapshot.tables:
+                if _identity(t.schema, t.name) in drop:
+                    report.add((t.datasources or sources.selected)[0], RULE_CHOSEN, t.schema or "")
             _drop_tables(snapshot, drop)
-            report.chosen += len(drop)
             console.print(f"  Excluded {len(drop)} table(s).")
 
     _mark_done(log, "step2_schema", {
-        "schema_fingerprint": _schema_fingerprint(snapshot),
-        "skipped": {
-            "found": report.found,
-            "excluded_schemas": report.excluded_schemas,
-            "staging": report.staging,
-            "chosen": report.chosen,
-        },
+        "schema_fingerprint": _schema_fingerprint(snapshot, sources=sources.selected),
+        "sources": list(sources.selected),
+        "skipped": report.to_log(),
+        "exclusion_recorded": recorded,
         "table_count": len(snapshot.tables),
         "fact_count": len(snapshot.fact_tables),
         "dim_count": len(snapshot.dim_tables),
@@ -2282,6 +2860,8 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
             "schema":  table.schema,
             "aliases": aliases,
         }
+        if getattr(table, "datasources", ()):
+            entities[key]["datasource"] = list(table.datasources)
         if aliases:
             ring_aliases[key] = aliases
 
@@ -2454,6 +3034,7 @@ def step6_review_and_write(
     rename: Mapping[str, str] | None = None,
     backup_stamp: str | None = None,
     backups: list[Path] | None = None,
+    source_order: Iterable[str] = (),
 ) -> None:
     """Review generated files and write to disk.
 
@@ -2494,6 +3075,8 @@ def step6_review_and_write(
         backup_stamp: When set, each existing file is copied to
             ``<name>.bak-<stamp>`` just before it is replaced.
         backups: Receives the backup files made.
+        source_order: The configured data sources in order; the ``datasource:``
+            of a merged entity lists the earlier and the new sources in it.
 
     Returns:
         None. Marks ``step6_write`` in *log* with the files written, the files
@@ -2539,14 +3122,26 @@ def step6_review_and_write(
             }
             fresh = {
                 k: ({**v, "label": old_labels[k.casefold()]}
-                    if old_labels.get(k.casefold()) and not v.get("label") else v)
+                    if old_labels.get(k.casefold()) and not v.get("label") else dict(v))
                 for k, v in state["entities_data"].items()
             }
+            # A table already known keeps the data sources of the earlier run and gains this run's.
+            earlier = {k: dict(v) for k, v in existing.entities.items()}
+            earlier_key = {rename.get(k, k).casefold(): k for k in earlier}
+            for key, entry in fresh.items():
+                old = earlier.get(earlier_key.get(key.casefold(), ""))
+                if old is None or _identity(old.get("schema"), old["table"]) != _identity(
+                    entry.get("schema"), entry["table"],
+                ):
+                    continue
+                names = _union_sources(old.get("datasource") or [], entry.get("datasource") or [], source_order)
+                if names:
+                    entry["datasource"] = old["datasource"] = names
             # No aliases from the model for a table that has some: keep what is there.
             fresh, held = hold_back_empty(
-                existing.entities, fresh, lambda entry: not entry.get("aliases"), rename,
+                earlier, fresh, lambda entry: not entry.get("aliases"), rename,
             )
-            merged, merge_stats = merge_mapping(existing.entities, fresh, rename)
+            merged, merge_stats = merge_mapping(earlier, fresh, rename)
             stats[filename] = replace(merge_stats, held=held)
             return _entities_yaml(merged, source_url, generated_at)
         if filename == "aliases.yaml":
@@ -2794,9 +3389,18 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
         Nothing. Missing log entries are left out.
     """
     console.rule("[bold blue]Summary[/bold blue]" if _RICH else "Summary")
+    read = log.get("step2_schema", {}).get("sources")
+    if isinstance(read, list) and log.get("step1_connection", {}).get("datasources"):
+        console.print(f"  Data sources read: {', '.join(read)}.", markup=False)
     skipped = log.get("step2_schema", {}).get("skipped")
     if isinstance(skipped, dict):
-        console.print(f"  {SkipReport(**skipped).describe()}", markup=False)
+        report = SkipReport.from_log(skipped)
+        console.print(f"  {report.describe()}", markup=False)
+        detail = report.detail_lines()
+        if detail:
+            console.print("  Skipped, by rule:", markup=False)
+            for line in detail:
+                console.print(line, markup=False)
     done = log.get("step6_write", {})
     verb = "would be" if args.dry_run else "are"
     merge = done.get("merge", {})
@@ -2861,7 +3465,14 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python setup_project.py",
         description="One-time project setup wizard for local-sql-agent.",
     )
-    p.add_argument("--db-url",       metavar="URL",  default=None)
+    p.add_argument("--db-url",       metavar="URL",  default=None,
+                   help="Connection string of one database, for a first install. Without it "
+                        "the wizard reads every data source of datasources.yaml through the "
+                        "application's own login; with no datasources.yaml, DB_CONNECTION_URL, "
+                        "then DATABASE_URL, else it asks.")
+    p.add_argument("--datasource",   metavar="NAME", action="append", default=None,
+                   help="Read only this data source of datasources.yaml (repeatable; default: "
+                        "all). Cannot be combined with --db-url.")
     p.add_argument("--llm-provider", metavar="NAME", default=None,
                    choices=["openai", "mock"],
                    help="openai (any OpenAI-compatible endpoint) or mock. "
@@ -3088,6 +3699,25 @@ def main(argv: list[str] | None = None) -> int:
     stored_fingerprint = log.get("step2_schema", {}).get("schema_fingerprint") if args.resume else None
     everything_stored = None not in (stored_aliases, stored_rules, stored_examples)
 
+    # ---- Which databases: the data sources of datasources.yaml, or one URL ----
+    configured = None
+    if args.db_url and args.datasource:
+        parser.error("--datasource cannot be combined with --db-url")
+    if not args.db_url:
+        from database.setup_sources import SourceSelectionError, configured_sources, datasources_file_in_use
+
+        try:
+            if datasources_file_in_use():
+                configured = configured_sources(args.datasource)
+            elif args.datasource:
+                raise SourceSelectionError(
+                    "--datasource names a data source of datasources.yaml, and there is none in "
+                    f"{_live_config_dir()}"
+                )
+        except SourceSelectionError as exc:
+            console.print(f"ERROR: {exc}", markup=False)
+            return 2
+
     # ---- LLM: resolved and vetted before any step touches the database ----
     llm = None
     if not everything_stored:
@@ -3098,11 +3728,22 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     # ---- Step 1: Connection ----
-    db_url = step1_connection(args, log)
+    if configured is not None:
+        sources = step1_sources(args, log, configured)
+        read_from: Any = sources
+        source_url = sources.label
+        selected = sources.selected
+        source_order = sources.names
+    else:
+        db_url = step1_connection(args, log)
+        read_from = db_url
+        source_url = _redact_db_url(db_url)
+        selected = ()
+        source_order = ()
     save()
 
     # ---- Step 2: Schema ----
-    snapshot = step2_schema(args, db_url, log)
+    snapshot = step2_schema(args, read_from, log)
     save()
 
     # Keys: the inspector's rule, over this run's tables and those of the
@@ -3112,7 +3753,7 @@ def main(argv: list[str] | None = None) -> int:
     links, links_problem = _collect_links(snapshot, namer)
     if links_problem:
         console.print(f"  {links_problem}", markup=False)
-    fingerprint = _schema_fingerprint(snapshot, namer)
+    fingerprint = _schema_fingerprint(snapshot, namer, selected)
     log.setdefault("step2_schema", {})["schema_fingerprint"] = fingerprint
     save()
 
@@ -3170,7 +3811,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # ---- Step 6: Review & write ----
-    source_url = _redact_db_url(db_url)
     step6_review_and_write(
         args=args,
         output_dir=output_dir,
@@ -3190,6 +3830,7 @@ def main(argv: list[str] | None = None) -> int:
         rename=rename,
         backup_stamp=backup_stamp,
         backups=backups,
+        source_order=source_order,
     )
     save()
 

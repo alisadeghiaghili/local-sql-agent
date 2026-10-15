@@ -33,6 +33,8 @@ order, and counted under the first that applies (:class:`Skipped`):
     ``EXCLUDE_SCHEMAS`` and the source's ``exclude_schemas:``.
 ``cli``
     ``--exclude-schemas`` of this run.
+``chosen``
+    Only the setup wizard uses it: schemas an operator left out when it asked.
 ``not-included``
     The schema is not in ``--include-schemas``.
 ``exclude-tables``
@@ -90,6 +92,7 @@ from schema_data.sync import SyncResult, draft_schema_text
 __all__ = [
     "DRAFT_HEADER_LINE",
     "INFERRED_COMMENT",
+    "RULE_CHOSEN",
     "RULE_EXCLUDE_TABLES",
     "RULE_NOT_INCLUDED",
     "RULE_STAGING",
@@ -99,11 +102,14 @@ __all__ = [
     "Skipped",
     "build_drafts",
     "describe_skipped",
+    "listed_datasources",
     "read_selected",
     "select_tables",
 ]
 
 #: Rules beyond the schema exclusion of :mod:`database.schema_filter`.
+#: ``chosen`` is the setup wizard's own: schemas an operator left out when asked.
+RULE_CHOSEN = "chosen"
 RULE_NOT_INCLUDED = "not-included"
 RULE_EXCLUDE_TABLES = "exclude-tables"
 RULE_STAGING = "staging"
@@ -119,17 +125,50 @@ INFERRED_COMMENT = "# INFERRED from column names (not a declared foreign key) --
 SAMPLE_REVIEW_FILENAME = "sample_values.review.yaml"
 
 _RULE_ORDER = (
-    RULE_SYSTEM, RULE_CONFIGURED, RULE_CLI, RULE_NOT_INCLUDED, RULE_EXCLUDE_TABLES, RULE_STAGING,
+    RULE_SYSTEM, RULE_CONFIGURED, RULE_CLI, RULE_CHOSEN, RULE_NOT_INCLUDED, RULE_EXCLUDE_TABLES,
+    RULE_STAGING,
 )
 
 _RULE_LABELS = {
     RULE_SYSTEM: "system schemas",
     RULE_CONFIGURED: "configured exclusion (EXCLUDE_SCHEMAS / exclude_schemas:)",
     RULE_CLI: "--exclude-schemas",
+    RULE_CHOSEN: "left out interactively",
     RULE_NOT_INCLUDED: "outside --include-schemas",
     RULE_EXCLUDE_TABLES: "--exclude-tables",
     RULE_STAGING: "staging (STAGING_PATTERNS; --include-staging keeps them)",
 }
+
+
+def listed_datasources(sources: Sequence[str], found_in: Sequence[str]) -> tuple[str, ...]:
+    """The ``datasource:`` names a table is written with.
+
+    The rule of ``schema.yaml``'s sync and of every draft: a deployment with a
+    single data source has no ``datasource:`` lines, one with several lists, for
+    each table, the sources it was found in. *sources* is every configured
+    source, not only those a run read, so a run narrowed with ``--datasource``
+    still writes the lines.
+
+    Parameters
+    ----------
+    sources:
+        Every configured source.
+    found_in:
+        The sources the table was found in (and kept).
+
+    Returns
+    -------
+    tuple[str, ...]
+        *found_in* with several configured sources, else ``()``.
+
+    Examples
+    --------
+    >>> listed_datasources(["sales", "reports"], ["reports"])
+    ('reports',)
+    >>> listed_datasources(["sales"], ["sales"])
+    ()
+    """
+    return tuple(found_in) if len(sources) > 1 else ()
 
 
 @dataclass
@@ -149,14 +188,16 @@ class Skipped:
     >>> skipped.add("system", "cdc"); skipped.add("system", "CDC"); skipped.add("staging", "Sales_Stg")
     >>> skipped.tables["system"], len(skipped.schemas["system"]), skipped.total
     (2, 1, 3)
+    >>> skipped.add("cli", "Replay", 4); skipped.tables["cli"]
+    4
     """
 
     tables: dict[str, int] = field(default_factory=dict)
     schemas: dict[str, set[str]] = field(default_factory=dict)
 
-    def add(self, rule: str, schema: str) -> None:
-        """Count one table in *schema* as skipped by *rule*."""
-        self.tables[rule] = self.tables.get(rule, 0) + 1
+    def add(self, rule: str, schema: str, tables: int = 1) -> None:
+        """Count *tables* tables (one by default) in *schema* as skipped by *rule*."""
+        self.tables[rule] = self.tables.get(rule, 0) + tables
         self.schemas.setdefault(rule, set()).add(schema.lower())
 
     @property
@@ -462,10 +503,9 @@ def build_drafts(
             first.setdefault(location, (source, info))
             where.setdefault(location, []).append(source.name)
     names = {loc: info.name for loc, (_, info) in first.items()}
-    multi = len(sources) > 1
 
     tables = [
-        _legacy_table(info, tuple(where[loc]) if multi else (), source.engine, row_counts, names)
+        _legacy_table(info, listed_datasources(sources, where[loc]), source.engine, row_counts, names)
         for loc, (source, info) in first.items()
     ]
     snapshot = SchemaSnapshot(tables=tables, source_url=label, generated_at=generated)
