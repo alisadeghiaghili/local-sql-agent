@@ -22,6 +22,9 @@ logs/*.jsonl.*
 *.db-shm
 *.db-journal
 .venv/
+venv/
+env/
+ENV/
 dist/
 build/
 *.egg-info/
