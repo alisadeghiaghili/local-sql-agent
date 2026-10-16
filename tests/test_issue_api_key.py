@@ -107,8 +107,9 @@ class TestBuildEntry:
 
 class TestCapabilityWarnings:
     """The shape that surprises operators is not the missing flag but the
-    partial one: the admin panel's ten sections split across
-    ``require_admin`` (four) and ``require_operations_or_security`` (six),
+    partial one: the admin panel's thirteen sections split across
+    ``require_admin`` (four), ``require_operations_or_security`` (seven)
+    and one each for ``require_operations`` and ``require_security``,
     so either half alone renders a panel that is more than a third 403 --
     which reads as a broken deployment rather than a decision someone made
     at issue time."""

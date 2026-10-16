@@ -50,9 +50,10 @@ exists to keep operators out of.
 
 The three are not a ladder, and :func:`_capability_warnings` exists
 because the shape that surprises people is not the missing flag but the
-*partial* one. The admin panel's ten sections span three requirements:
+*partial* one. The admin panel's thirteen sections span four requirements:
 ``require_admin`` serves four of them, ``require_operations_or_security``
-the other six. A key holding only ``admin`` therefore loads a panel where
+seven, ``require_operations`` one (keys) and ``require_security`` one
+(access requests). A key holding only ``admin`` therefore loads a panel where
 more than half the sections show 403 — which reads as a broken deployment,
 not as a permissions decision someone made at issue time. ``--full-admin``
 is the one-flag answer for a single-operator deployment; the individual
@@ -168,9 +169,9 @@ def _capability_warnings(admin: bool, operations: bool, security: bool) -> list[
         warnings.append(
             "This key has 'admin' but neither 'operations' nor 'security'. It "
             "can load the admin panel's audit, deployment-checks, cache and "
-            "domain-config sections -- and will get 403 on the other six "
-            "(maintenance, feedback, schema drift, vocabulary, per-analyst "
-            "usage, auth failures). Add --operations and/or --security, or "
+            "domain-config sections -- and will get 403 on the other nine "
+            "(maintenance, feedback, schema drift, vocabulary, quality, "
+            "per-analyst usage, auth failures, keys, access requests). Add --operations and/or --security, or "
             "use --full-admin, unless a read-only key is what you meant."
         )
     if (operations or security) and not admin:

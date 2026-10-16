@@ -221,7 +221,7 @@ web/
 │   │                           #   with the admin capabilities). Started
 │   │                           #   read-only in phase 1; phases 4, 6 and 7
 │   │                           #   added narrow, closed-set writes.
-│   ├── index.html               # dashboard shell: twelve sections
+│   ├── index.html               # dashboard shell: thirteen sections
 │   ├── admin.css                 # admin-only layout, reuses styles/style.css's tokens
 │   ├── admin.js                   # /admin/* request layer, one _request chokepoint
 │   └── main.js                     # DOM wiring / rendering for each card
