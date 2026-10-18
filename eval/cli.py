@@ -63,6 +63,13 @@ Usage::
     python -m eval.cli compare eval_data/share/round-1.json eval_data/share/round-2.json \\
         --split test --split-file eval_data/split/test_ids.txt --fail-on-regression
 
+    # Benchmark track (runbook 18.7): a public text-to-SQL benchmark (BIRD mini-dev) loaded
+    # into your own SQL Server, run through the production pipeline. It does NOT replace the
+    # private golden set and is never this deployment's accuracy.
+    python -m eval.cli bench-import bird --source DIR --target-url "$ADMIN_URL" --out DIR \\
+        --datasource bench [--dbs a,b] [--descriptions] [--with-evidence] [--replace]
+    python -m eval.cli bench-run bird --bench DIR --mode per-db [--evidence]
+
 By default the harness runs in **offline** mode: no database connection,
 no LLM call — see :func:`eval.runner.make_offline_generator` and
 :func:`eval.runner.make_offline_executor`. Passing ``--live`` switches to
@@ -734,6 +741,129 @@ def _verify(
     return 1 if result.problems else 0
 
 
+def _bench_import(args: argparse.Namespace) -> int:
+    """Execute ``bench-import bird``. Returns the process exit code.
+
+    ``0`` when everything was loaded, checked and written; ``2`` for a refusal
+    or an unusable input (a non-empty schema without ``--replace``, a missing
+    package, a bad ``--dbs``); ``1`` when a row count differs from the source or
+    the inspector could not draft a configuration.
+    """
+    from eval.benchmarks.bird_config import inspector_runner
+    from eval.benchmarks.bird_import import (
+        ImportOptions,
+        LoadMismatch,
+        render_import_report,
+        run_import,
+    )
+    from eval.benchmarks.sqlite_load import SchemaNotEmpty, create_target_engine
+
+    if not args.target_url and not args.datasource:
+        print("error: give --target-url (an administrator login) or --datasource", file=sys.stderr)
+        return 2
+    options = ImportOptions(
+        source=Path(args.source),
+        out=Path(args.out),
+        dbs=tuple(d.strip() for d in args.dbs.split(",") if d.strip()) if args.dbs else None,
+        replace=args.replace,
+        skip_load=args.skip_load,
+        descriptions=args.descriptions,
+        with_evidence=args.with_evidence,
+        keep_unverified=args.keep_unverified,
+        skip_config=args.skip_config,
+        base_config=Path(args.base_config) if args.base_config else None,
+        max_rows=args.max_rows if args.max_rows is not None else cfg.settings.max_rows_returned,
+        query_timeout=args.query_timeout,
+        chunk_size=args.chunk_size,
+    )
+    owns_engine = bool(args.target_url)
+    if args.target_url:
+        engine = create_target_engine(args.target_url, fast_executemany=not args.no_fast_executemany)
+    else:
+        print(
+            "warning: --datasource without --target-url loads through the application's own login; "
+            "that login needs DDL rights, which the application's read-only login must not have "
+            "(runbook 18.7). Use --target-url with an administrator login.",
+            file=sys.stderr,
+        )
+        from database.connection import get_engine
+
+        engine = get_engine(args.datasource)
+    try:
+        report = run_import(
+            options, engine,
+            inspect=None if args.skip_config else inspector_runner(args.datasource),
+            progress=lambda message: print(message, file=sys.stderr),
+        )
+    except LoadMismatch as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (SchemaNotEmpty, FileNotFoundError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if owns_engine:
+            engine.dispose()
+    print(render_import_report(report))
+    broken = [n for n, c in report.configs.items() if c.get("inspector_exit") != 0]
+    if broken:
+        print(f"error: the schema inspector failed for: {', '.join(sorted(broken))}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _bench_run(args: argparse.Namespace) -> int:
+    """Execute ``bench-run bird``. Returns the process exit code.
+
+    Runs ``run --live --reference stored`` once per database (or once, for
+    ``--mode combined``) with ``PROJECT_CONFIG_DIR`` set to that configuration,
+    then merges the reports. ``0`` when a merged report was written, ``1`` when
+    a run produced no report, ``2`` for unusable input.
+    """
+    from eval.benchmarks.bird_run import (
+        merge_reports,
+        plan_runs,
+        read_import_report,
+        run_plans,
+        run_subprocess,
+        write_merged,
+    )
+    from eval.report import render_text
+
+    mode = "combined" if args.mode == "combined" else "per_db"
+    dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] if args.dbs else None
+    bench = Path(args.bench)
+    try:
+        plans = plan_runs(bench, mode=mode, evidence=args.evidence, dbs=dbs)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    run_args = [a for a in args.run_args if a != "--"]
+    if not args.merge_only:
+        failed = run_plans(
+            plans, lambda plan: run_subprocess(plan, run_args),
+            progress=lambda message: print(message, file=sys.stderr),
+        )
+        if failed:
+            print(
+                "error: no report for: " + ", ".join(p.label for p in failed)
+                + " (merging only what exists)",
+                file=sys.stderr,
+            )
+    existing = [p.report for p in plans if p.report.is_file()]
+    try:
+        merged = merge_reports(
+            existing, mode=mode, evidence=args.evidence, import_report=read_import_report(bench)
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    json_path, text_path = write_merged(merged, plans[0].report.parent)
+    print(render_text(merged))
+    print(f"\nMerged report: {json_path} (text: {text_path})")
+    return 1 if len(existing) < len(plans) else 0
+
+
 def _recall(args: argparse.Namespace) -> int:
     """Execute the ``recall`` subcommand. Returns the process exit code.
 
@@ -1192,6 +1322,110 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     recall_parser.set_defaults(func=_recall)
+
+    bench_import = subparsers.add_parser(
+        "bench-import",
+        help=(
+            "Benchmark track: load a public text-to-SQL benchmark into your own SQL Server and "
+            "write its golden files and per-database configurations. Not the deployment's accuracy."
+        ),
+    )
+    bench_import_kinds = bench_import.add_subparsers(dest="benchmark", required=True)
+    bird = bench_import_kinds.add_parser("bird", help="BIRD mini-dev (500 questions, 11 databases).")
+    bird.add_argument("--source", required=True, help="The unpacked BIRD mini-dev package.")
+    bird.add_argument("--out", required=True, help="Output directory (golden files, configurations, report).")
+    bird.add_argument(
+        "--target-url", default=None, metavar="URL", dest="target_url",
+        help=(
+            "SQLAlchemy URL of the benchmark database, with an administrator login that may "
+            "create schemas and tables. NOT the application's read-only login."
+        ),
+    )
+    bird.add_argument(
+        "--datasource", default=None, metavar="NAME",
+        help=(
+            "A data source of datasources.yaml: the application's login through which each "
+            "configuration is drafted (the inspector). Without --target-url it is also the load "
+            "target, which needs DDL rights and is not recommended."
+        ),
+    )
+    bird.add_argument("--dbs", default=None, metavar="a,b", help="Only these db_ids (default: all).")
+    bird.add_argument(
+        "--descriptions", action="store_true", default=False,
+        help="Add the dataset's column descriptions to schema.yaml (a curated configuration).",
+    )
+    bird.add_argument(
+        "--with-evidence", action="store_true", default=False, dest="with_evidence",
+        help="Also write golden.with_evidence.jsonl: the annotators' hint appended to each question.",
+    )
+    bird.add_argument(
+        "--replace", action="store_true", default=False,
+        help="Drop the tables of a schema that already holds some, then load again.",
+    )
+    bird.add_argument(
+        "--skip-load", action="store_true", default=False, dest="skip_load",
+        help="The schemas are already loaded: compare their row counts with the source and go on.",
+    )
+    bird.add_argument(
+        "--keep-unverified", action="store_true", default=False, dest="keep_unverified",
+        help=(
+            "Score questions whose load fidelity could not be checked (the reference could not be "
+            "transpiled or failed on the copy); by default they are excluded."
+        ),
+    )
+    bird.add_argument(
+        "--skip-config", action="store_true", default=False, dest="skip_config",
+        help="Do not draft any project_config/.",
+    )
+    bird.add_argument(
+        "--base-config", default=None, metavar="DIR", dest="base_config",
+        help="Where system_prompt.md and the policies are copied from (default: project_config.example).",
+    )
+    bird.add_argument(
+        "--max-rows", type=int, default=None, dest="max_rows",
+        help="Row cap: a reference with this many rows is excluded (default: MAX_ROWS_RETURNED).",
+    )
+    bird.add_argument(
+        "--query-timeout", type=float, default=60.0, dest="query_timeout",
+        help="Seconds a reference query may run, on SQLite and on the copy (default %(default)g).",
+    )
+    bird.add_argument(
+        "--chunk-size", type=int, default=5000, dest="chunk_size", help="Rows per insert batch (default %(default)d).",
+    )
+    bird.add_argument(
+        "--no-fast-executemany", action="store_true", default=False, dest="no_fast_executemany",
+        help="Do not set pyodbc's fast_executemany on the target engine.",
+    )
+    bird.set_defaults(func=_bench_import)
+
+    bench_run = subparsers.add_parser(
+        "bench-run",
+        help="Benchmark track: run an imported benchmark through the production pipeline and merge the reports.",
+    )
+    bench_run_kinds = bench_run.add_subparsers(dest="benchmark", required=True)
+    bird_run = bench_run_kinds.add_parser("bird", help="BIRD mini-dev.")
+    bird_run.add_argument("--bench", required=True, help="The --out directory of bench-import.")
+    bird_run.add_argument(
+        "--mode", choices=("per-db", "combined"), default="per-db",
+        help=(
+            "per-db: one configuration per database, merged (default). combined: one configuration "
+            "over every schema, a separate and harder measurement."
+        ),
+    )
+    bird_run.add_argument(
+        "--evidence", action="store_true", default=False,
+        help="Use golden.with_evidence.jsonl (the ablation).",
+    )
+    bird_run.add_argument("--dbs", default=None, metavar="a,b", help="Only these databases (per-db mode).")
+    bird_run.add_argument(
+        "--merge-only", action="store_true", default=False, dest="merge_only",
+        help="Do not run anything; merge the per-database reports that exist.",
+    )
+    bird_run.add_argument(
+        "run_args", nargs=argparse.REMAINDER,
+        help="After --: extra arguments for each 'run' (for example --single-shot).",
+    )
+    bird_run.set_defaults(func=_bench_run)
 
     split_parser = subparsers.add_parser(
         "split",

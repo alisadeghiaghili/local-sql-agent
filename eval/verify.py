@@ -29,15 +29,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time
-from decimal import Decimal
-from typing import Any
 
 import pandas as pd
 
 import config as cfg
 from eval.fingerprint import fingerprint_dataframe
 from eval.models import GoldenCase
+from eval.rows import frame_to_rows  # noqa: F401 - re-exported
 from eval.runner import ExecuteFn
 from security.sql_guard import validate_sql
 
@@ -111,71 +109,6 @@ class VerifyResult:
     def problems(self) -> list[VerifyOutcome]:
         """The outcomes that found a problem."""
         return [o for o in self.outcomes if o.problem is not None]
-
-
-def _jsonable(value: Any) -> Any:
-    """One cell as a JSON value that replays to the same fingerprint.
-
-    Mirrors :func:`eval.fingerprint._normalise_scalar` (so a frame rebuilt
-    from the stored rows fingerprints like the live one) but keeps floats
-    unrounded.
-
-    Examples
-    --------
-    >>> _jsonable(Decimal("2.50")), _jsonable(None), _jsonable(float("nan"))
-    (2.5, None, None)
-    >>> _jsonable(datetime(2024, 1, 2, 3, 4)), _jsonable(date(2024, 1, 2))
-    ('2024-01-02T03:04:00', '2024-01-02')
-    >>> import numpy as np
-    >>> _jsonable(np.int64(4)), type(_jsonable(np.int64(4))).__name__
-    (4, 'int')
-    """
-    try:
-        if bool(pd.isna(value)):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if hasattr(value, "item") and type(value).__module__ == "numpy":
-        value = value.item()
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value
-    if isinstance(value, (float, Decimal)):
-        return float(value)
-    if isinstance(value, (datetime, date, time)):
-        return value.isoformat()
-    if isinstance(value, str):
-        return value
-    return str(value)
-
-
-def frame_to_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
-    """The rows of *df* as ``[{column: value}]`` suitable for ``expected_rows``.
-
-    Parameters
-    ----------
-    df:
-        A result set.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        JSON-safe rows; replaying them with ``pd.DataFrame(rows)`` yields a
-        frame with the same fingerprint as *df* (for results without
-        duplicate column names).
-
-    Examples
-    --------
-    >>> df = pd.DataFrame({"n": [1, 2], "d": [Decimal("1.5"), None]})
-    >>> frame_to_rows(df)
-    [{'n': 1, 'd': 1.5}, {'n': 2, 'd': None}]
-    """
-    columns = [str(c) for c in df.columns]
-    return [
-        {name: _jsonable(value) for name, value in zip(columns, row)}
-        for row in df.astype(object).itertuples(index=False, name=None)
-    ]
 
 
 def _verify_one(
