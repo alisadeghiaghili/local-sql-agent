@@ -66,7 +66,41 @@ CaseExpectation = Literal["success", "empty", "out_of_scope", "error"]
 #:     (``scripts/golden_sheet.py import``) but ``python -m eval.cli verify``
 #:     has not yet run it against the database. Skipped by the runner;
 #:     ``verify --accept`` moves it to ``"active"``.
-GoldenCaseStatus = Literal["active", "pending_expected", "pending_review", "reviewed"]
+#: ``"excluded"``
+#:     A case a tool built but has put out of scoring on purpose, with a
+#:     recorded reason (:attr:`GoldenCase.exclusion_reason`): the public
+#:     benchmark importer excludes a question whose reference fails, returns
+#:     nothing, or differs after the data was loaded into SQL Server. Skipped
+#:     by the runner exactly like the pending statuses, but kept in the file
+#:     so the exclusion is listed and countable, never a silent drop. Nothing
+#:     moves it back automatically.
+GoldenCaseStatus = Literal[
+    "active", "pending_expected", "pending_review", "reviewed", "excluded"
+]
+
+#: Tag of a benchmark case whose transpiled reference returned another result on
+#: the SQL Server copy although every table it reads is identical (a dialect
+#: semantics difference). The case is scored; reports give the accuracy with and
+#: without these cases.
+SEMANTIC_DIFFERENCE_TAG = "fidelity:semantic_difference"
+
+#: Tag of a benchmark case whose reference could not be checked on the copy (it
+#: could not be transpiled, or failed there). Information only.
+UNVERIFIED_TAG = "fidelity:unverified"
+
+#: How a *stored* reference is compared with the executed result.
+#:
+#: ``"fingerprint"``
+#:     The long-standing rule: equal :func:`eval.fingerprint.fingerprint_dataframe`
+#:     hashes, which include the column names.
+#: ``"execution"``
+#:     Execution accuracy as BIRD and Spider define it
+#:     (:func:`eval.compare.compare_frames`): the case's ``expected_rows`` are
+#:     compared with the result as a multiset of rows, column names ignored,
+#:     with the numeric tolerance. Needed when the reference result comes from
+#:     another engine than the one under test, where column names and float
+#:     noise differ although the answer is the same.
+StoredMatch = Literal["fingerprint", "execution"]
 
 #: The statuses whose cases never reach the generator or the executor.
 #: Everything except ``"active"``.
@@ -139,6 +173,14 @@ class GoldenCase:
         what every case written before this field existed has) means "not
         stated": the case still counts toward overall accuracy but not
         toward the per-source figures.
+    exclusion_reason:
+        Why an ``"excluded"`` case is out of scoring (a short code such as
+        ``"load_fidelity"``); required for that status and forbidden for any
+        other. ``None`` for every case written before this field existed.
+    match:
+        See :data:`StoredMatch`. ``"fingerprint"`` (the default, and what every
+        case written before this field existed means) or ``"execution"``,
+        which needs recorded ``expected_rows``.
 
     Examples
     --------
@@ -181,6 +223,13 @@ class GoldenCase:
     Traceback (most recent call last):
         ...
     ValueError: GoldenCase 'cand_2': a 'pending_review' case cannot carry expected_rows or expected_fingerprint (nothing has been verified yet)
+
+    An ``"excluded"`` case says why, and is never run:
+
+    >>> excluded = GoldenCase(id="ex_1", question="q", expected_sql="SELECT 1",
+    ...                       status="excluded", exclusion_reason="load_fidelity")
+    >>> excluded.is_runnable
+    False
     """
 
     id: str
@@ -193,6 +242,8 @@ class GoldenCase:
     notes: str = ""
     status: GoldenCaseStatus = "active"
     datasource: str | None = None
+    exclusion_reason: str | None = None
+    match: StoredMatch = "fingerprint"
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
@@ -209,6 +260,21 @@ class GoldenCase:
         ):
             raise ValueError(
                 f"GoldenCase {self.id!r}: datasource must be a non-empty string or None"
+            )
+        if self.match not in get_args(StoredMatch):
+            raise ValueError(
+                f"GoldenCase {self.id!r}: unknown match {self.match!r} "
+                f"(expected one of {list(get_args(StoredMatch))})"
+            )
+        if self.status == "excluded":
+            if not self.exclusion_reason or not self.exclusion_reason.strip():
+                raise ValueError(
+                    f"GoldenCase {self.id!r}: an 'excluded' case needs an exclusion_reason"
+                )
+            return  # nothing of it is run, so no expectation is required
+        if self.exclusion_reason is not None:
+            raise ValueError(
+                f"GoldenCase {self.id!r}: exclusion_reason only applies to an 'excluded' case"
             )
         if self.status == "pending_review":
             if self.expected_rows is not None or self.expected_fingerprint is not None:
@@ -234,6 +300,11 @@ class GoldenCase:
             raise ValueError(
                 f"GoldenCase {self.id!r}: expected_sql must be None when "
                 f"expect='out_of_scope'"
+            )
+        if self.match == "execution" and not self.expected_rows:
+            raise ValueError(
+                f"GoldenCase {self.id!r}: match='execution' compares with the recorded "
+                "expected_rows, which must be a non-empty list"
             )
 
     @property
@@ -294,6 +365,8 @@ class GoldenCase:
             "notes": self.notes,
             "status": self.status,
             "datasource": self.datasource,
+            "exclusion_reason": self.exclusion_reason,
+            "match": self.match,
         }
 
 
@@ -620,6 +693,14 @@ class EvalReport:
         default) or ``"single_shot"`` (one model call, no correction: the
         model-only number). ``None`` for an offline run, and for a report
         written before this field existed, which was always single-shot.
+    benchmark:
+        Set when the cases are a public benchmark loaded into the operator's
+        own database (every case carries the same ``bench:<name>`` tag; see
+        :func:`eval.report.benchmark_from_results`): ``{"name": ...}`` plus,
+        in a merged benchmark report, the run mode and the exclusions. Its
+        presence puts a "not this deployment's accuracy" header on the text
+        report. ``None`` for a golden set of the deployment's own questions
+        and in a report written before this field existed.
     """
 
     mode: Literal["offline", "live"]
@@ -638,6 +719,60 @@ class EvalReport:
     source_accuracy: dict[str, tuple[int, int]] = field(default_factory=dict)
     source_selection: tuple[int, int] | None = None
     pipeline: Literal["production", "single_shot"] | None = None
+    benchmark: dict[str, Any] | None = None
+
+    def intervals(self) -> dict[str, Any]:
+        """Wilson 95% intervals of the overall accuracy and of every stratum.
+
+        A stratum is a tag (language, category, ``db:*``, ``difficulty:*``, ...)
+        or a data source. Each carries its ``n``, and ``interpretable`` is false
+        below :data:`eval.stats.MIN_STRATUM_N` cases. Derived from the counts,
+        so it is not read back when a report is loaded.
+
+        Examples
+        --------
+        >>> r = EvalReport("live", 4, 3, 75.0, {"t": (3, 4)}, {}, 0, 0.0, 0.0, 0.0, [], "x")
+        >>> r.intervals()["overall"]["n"], r.intervals()["per_tag"]["t"]["interpretable"]
+        (4, False)
+        """
+        from eval.stats import stratum_summary
+
+        return {
+            "overall": stratum_summary(self.passed, self.total),
+            "per_tag": {
+                tag: stratum_summary(p, t) for tag, (p, t) in self.tag_accuracy.items()
+            },
+            "per_source": {
+                source: stratum_summary(p, t) for source, (p, t) in self.source_accuracy.items()
+            },
+        }
+
+    def fidelity_split(self) -> dict[str, Any]:
+        """The accuracy on all scored cases and without the semantic-difference cases.
+
+        A benchmark case flagged :data:`SEMANTIC_DIFFERENCE_TAG` is scored, but a
+        correct T-SQL answer may be unable to match its SQLite reference (integer
+        division, string comparison, a column SQLite stores as mixed types), so
+        both figures are given.
+
+        Examples
+        --------
+        >>> from eval.models import CaseResult
+        >>> rs = [CaseResult("a", "q", [], "pass", None, None, None, 0.0),
+        ...       CaseResult("b", "q", [SEMANTIC_DIFFERENCE_TAG], "fingerprint_mismatch", None, None, None, 0.0)]
+        >>> split = EvalReport("live", 2, 1, 50.0, {}, {}, 0, 0.0, 0.0, 0.0, rs, "x").fidelity_split()
+        >>> split["semantic_difference_cases"], split["all"]["pct"], split["without_semantic_difference"]["pct"]
+        (1, 50.0, 100.0)
+        """
+        from eval.stats import stratum_summary
+
+        kept = [r for r in self.results if SEMANTIC_DIFFERENCE_TAG not in r.tags]
+        return {
+            "semantic_difference_cases": len(self.results) - len(kept),
+            "unverified_cases": sum(1 for r in self.results if UNVERIFIED_TAG in r.tags),
+            "all": stratum_summary(self.passed, self.total),
+            "without_semantic_difference": stratum_summary(sum(1 for r in kept if r.passed), len(kept)),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict (used by :mod:`eval.baseline`)."""
@@ -667,5 +802,12 @@ class EvalReport:
                 if self.source_selection is None
                 else {"correct": self.source_selection[0], "total": self.source_selection[1]}
             ),
+            "benchmark": self.benchmark,
+            "fidelity": (
+                self.fidelity_split()
+                if self.benchmark or any(SEMANTIC_DIFFERENCE_TAG in r.tags for r in self.results)
+                else None
+            ),
+            "intervals": self.intervals(),
             "results": [r.to_dict() for r in self.results],
         }

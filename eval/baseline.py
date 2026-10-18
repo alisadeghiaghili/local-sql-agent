@@ -369,6 +369,7 @@ def load_baseline(path: str | Path) -> EvalReport:
                 None if not selection else (selection["correct"], selection["total"])
             ),
             pipeline=pipeline,
+            benchmark=dict(data["benchmark"]) if data.get("benchmark") else None,
         )
     except KeyError as exc:
         raise ValueError(f"{baseline_path}: missing expected key {exc}") from exc

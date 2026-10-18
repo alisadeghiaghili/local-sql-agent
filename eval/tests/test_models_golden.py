@@ -20,7 +20,9 @@ from eval.runner import load_golden_cases
 
 class TestStatuses:
     def test_non_runnable_statuses_are_everything_but_active(self):
-        assert set(NON_RUNNABLE_STATUSES) == {"pending_expected", "pending_review", "reviewed"}
+        assert set(NON_RUNNABLE_STATUSES) == {
+            "pending_expected", "pending_review", "reviewed", "excluded",
+        }
 
     @pytest.mark.parametrize("status", ["pending_expected", "pending_review", "reviewed"])
     def test_only_active_is_runnable(self, status):

@@ -73,16 +73,22 @@ from __future__ import annotations
 
 import difflib
 import json
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from eval.models import GoldenCase
+from eval.stats import repeat_consistency, repeat_mean_accuracy
 
 if TYPE_CHECKING:  # the runner reads project_config/; this module needs none
-    from eval.runner import GenerateFn
+    from eval.compare import ComparisonOptions
+    from eval.runner import ExecuteFn, GenerateFn, ReferenceMode
+
+#: ``judge(case, variant)`` -> whether that repeat's answer (SQL text, or
+#: :data:`OUT_OF_SCOPE_VARIANT`) was right. See :func:`make_judge`.
+JudgeFn = Callable[[GoldenCase, str], bool]
 
 #: Fewer than this many repeats cannot measure determinism at all -- see
 #: :func:`probe_determinism`. An invariant (a statistical floor), not a
@@ -174,6 +180,10 @@ class QuestionDeterminism:
         Every *distinct* generated-SQL string observed, in first-seen
         order. Length 1 means every repeat produced the same text; length
         greater than 1 means it varied.
+    outcomes:
+        Whether each repeat's answer was right, in repeat order, when the
+        probe was given a judge (see :func:`probe_determinism`); ``None``
+        otherwise, and in a report written before this field existed.
 
     Examples
     --------
@@ -194,6 +204,7 @@ class QuestionDeterminism:
     question: str
     runs: int
     variants: list[str]
+    outcomes: list[bool] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.runs < 1:
@@ -219,7 +230,7 @@ class QuestionDeterminism:
         >>> QuestionDeterminism("a", "q", runs=2, variants=["SELECT 1"]).to_dict()["is_deterministic"]
         True
         """
-        return {
+        data: dict[str, Any] = {
             "case_id": self.case_id,
             "question": self.question,
             "runs": self.runs,
@@ -227,6 +238,9 @@ class QuestionDeterminism:
             "variant_count": len(self.variants),
             "variants": list(self.variants),
         }
+        if self.outcomes is not None:  # additive: only a judged probe has them
+            data["outcomes"] = list(self.outcomes)
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +269,15 @@ class DeterminismReport:
         input cases.
     generated_at:
         ISO-8601 UTC timestamp of when the report was built.
+    consistency_pct:
+        With a judge: the share of questions whose outcome (right or wrong)
+        was the same on every repeat. Weaker than ``determinism_rate_pct`` in
+        one way (two different queries can both be right) and stronger in
+        another (the same text can never be judged differently, but a stable
+        wrong answer still counts as consistent). ``None`` without a judge.
+    mean_accuracy_pct:
+        With a judge: the accuracy averaged over the repeats. ``None``
+        without one.
 
     Examples
     --------
@@ -277,6 +300,8 @@ class DeterminismReport:
     determinism_rate_pct: float
     results: list[QuestionDeterminism]
     generated_at: str
+    consistency_pct: float | None = None
+    mean_accuracy_pct: float | None = None
 
     @property
     def varied(self) -> list[QuestionDeterminism]:
@@ -297,7 +322,7 @@ class DeterminismReport:
         >>> report.to_dict()["endpoint"]
         'openai:gpt-oss-20b'
         """
-        return {
+        data: dict[str, Any] = {
             "endpoint": self.endpoint,
             "repeats": self.repeats,
             "total": self.total,
@@ -306,6 +331,54 @@ class DeterminismReport:
             "generated_at": self.generated_at,
             "results": [r.to_dict() for r in self.results],
         }
+        if self.consistency_pct is not None:  # additive: only a judged probe has them
+            data["consistency_pct"] = self.consistency_pct
+            data["mean_accuracy_pct"] = self.mean_accuracy_pct
+        return data
+
+
+def make_judge(
+    execute_fn: ExecuteFn,
+    *,
+    reference: ReferenceMode = "stored",
+    options: ComparisonOptions | None = None,
+) -> JudgeFn:
+    """Build the judge that grades each repeat of :func:`probe_determinism`.
+
+    The judge feeds one repeat's SQL (already generated) through
+    :func:`eval.runner.run_case` -- guard, execution, comparison with the
+    case's reference -- so a repeat is "right" by exactly the rule a run uses.
+    Imported lazily: the runner reads ``project_config/``.
+
+    Parameters
+    ----------
+    execute_fn:
+        See :data:`eval.runner.ExecuteFn`.
+    reference, options:
+        See :func:`eval.runner.run_case`.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> case = GoldenCase(id="a", question="q", expected_sql="SELECT COUNT(*) AS n FROM Customer",
+    ...                   expected_rows=[{"n": 3}], match="execution")
+    >>> judge = make_judge(lambda sql: pd.DataFrame({"n": [3]}))
+    >>> judge(case, "SELECT COUNT(*) AS n FROM Customer")
+    True
+    >>> judge(case, OUT_OF_SCOPE_VARIANT)
+    False
+    """
+    from eval.runner import run_case
+
+    def _judge(case: GoldenCase, variant: str) -> bool:
+        def _replay(_question: str) -> str:
+            if variant == OUT_OF_SCOPE_VARIANT:
+                raise ValueError(OUT_OF_SCOPE_VARIANT)
+            return variant
+
+        return run_case(case, _replay, execute_fn, reference=reference, options=options).passed
+
+    return _judge
 
 
 def probe_determinism(
@@ -314,6 +387,7 @@ def probe_determinism(
     *,
     endpoint: str,
     repeats: int = DEFAULT_REPEATS,
+    judge: JudgeFn | None = None,
 ) -> DeterminismReport:
     """Run every case in *cases* through *generate_fn* ``repeats`` times and compare.
 
@@ -347,6 +421,10 @@ def probe_determinism(
         least :data:`MIN_REPEATS` (2) -- a single draw has no second sample
         to compare against and would report 100% by construction, the same
         vacuous-by-construction shape this module exists to avoid.
+    judge:
+        Optional :data:`JudgeFn` (see :func:`make_judge`). With it every repeat
+        is also graded, and the report carries the outcome consistency and the
+        mean accuracy over the repeats. Without it nothing is executed.
 
     Returns
     -------
@@ -390,6 +468,15 @@ def probe_determinism(
     Traceback (most recent call last):
         ...
     ValueError: probe_determinism requires repeats >= 2 to measure anything (got repeats=1)
+
+    With a judge, the report also says how consistent the outcomes were and
+    the accuracy averaged over the repeats:
+
+    >>> answers = iter(["SELECT 1", "SELECT 2", "SELECT 1"])
+    >>> report = probe_determinism(lambda q: next(answers), cases, endpoint="stub:v1",
+    ...                            repeats=3, judge=lambda case, sql: sql == "SELECT 1")
+    >>> report.results[0].outcomes, report.consistency_pct, round(report.mean_accuracy_pct, 1)
+    ([True, False, True], 0.0, 66.7)
     """
     if repeats < MIN_REPEATS:
         raise ValueError(
@@ -404,19 +491,29 @@ def probe_determinism(
     results: list[QuestionDeterminism] = []
     for case in cases:
         variants: list[str] = []
+        outcomes: list[bool] = []
         for _ in range(repeats):
             variant = _generate_variant(generate_fn, case.question)
             if variant not in variants:
                 variants.append(variant)
+            if judge is not None:
+                outcomes.append(bool(judge(case, variant)))
         results.append(
             QuestionDeterminism(
                 case_id=case.id, question=case.question, runs=repeats, variants=variants,
+                outcomes=outcomes if judge is not None else None,
             )
         )
 
     total = len(results)
     deterministic = sum(1 for r in results if r.is_deterministic)
     determinism_rate_pct = (100.0 * deterministic / total) if total else 0.0
+    consistency_pct: float | None = None
+    mean_accuracy_pct: float | None = None
+    if judge is not None:
+        graded = {r.case_id: r.outcomes or [] for r in results}
+        consistency_pct = 100.0 * repeat_consistency(graded)
+        mean_accuracy_pct = 100.0 * repeat_mean_accuracy(graded)
 
     return DeterminismReport(
         endpoint=endpoint,
@@ -426,6 +523,8 @@ def probe_determinism(
         determinism_rate_pct=determinism_rate_pct,
         results=results,
         generated_at=datetime.now(timezone.utc).isoformat(),
+        consistency_pct=consistency_pct,
+        mean_accuracy_pct=mean_accuracy_pct,
     )
 
 
@@ -494,6 +593,12 @@ def render_determinism_text(report: DeterminismReport) -> str:
         f"Determinism rate: {report.determinism_rate_pct:.2f}% "
         f"({report.deterministic}/{report.total} questions stable across {report.repeats} runs)"
     )
+    if report.consistency_pct is not None and report.mean_accuracy_pct is not None:
+        lines.append(
+            f"Outcome consistency: {report.consistency_pct:.2f}% of questions were right on "
+            f"every repeat or wrong on every repeat; mean accuracy over the "
+            f"{report.repeats} repeats: {report.mean_accuracy_pct:.2f}%"
+        )
     lines.append("")
 
     varied = report.varied

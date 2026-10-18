@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from eval.models import CaseResult, CaseStatus, EvalReport
+from eval.stats import MIN_STRATUM_N, wilson_interval
 
 #: Every possible :class:`~eval.models.CaseStatus` value, in the order
 #: declared on the type. Extracted with :func:`typing.get_args` (rather
@@ -117,11 +118,75 @@ def _source_stats(
     return source_accuracy, selection
 
 
+#: The tag prefix of a public benchmark's cases (``bench:bird``).
+BENCHMARK_TAG_PREFIX = "bench:"
+
+#: Printed at the top of a benchmark report. The figure is real, but it is the
+#: model's score on someone else's questions and schemas, loaded into this
+#: deployment's database; it is not how the deployment answers its own users.
+BENCHMARK_NOTICE = (
+    "BENCHMARK RUN ({name}): public questions over public databases that were loaded "
+    "into your own SQL Server. This is NOT this deployment's accuracy. It does not "
+    "replace the private golden set, which measures the deployment's own questions "
+    "and schemas."
+)
+
+
+def _scope_lines(report: EvalReport) -> list[str]:
+    """What was scored, what was excluded and why, and what was flagged, for a benchmark header."""
+    assert report.benchmark is not None
+    split = report.fidelity_split()
+    excluded = report.benchmark.get("excluded") or {}
+    parts = [f"scored {report.total}"]
+    if excluded:
+        parts.append(
+            f"excluded {sum(excluded.values())} ("
+            + ", ".join(f"{reason} {n}" for reason, n in sorted(excluded.items())) + ")"
+        )
+    else:
+        parts.append("excluded 0")
+    parts.append(f"semantic-difference cases kept in {split['semantic_difference_cases']}")
+    parts.append(f"fidelity unverified (kept in) {split['unverified_cases']}")
+    return ["Cases: " + "; ".join(parts) + "."]
+
+
+def benchmark_from_results(results: Sequence[CaseResult]) -> dict[str, str] | None:
+    """The benchmark a set of results belongs to, from the ``bench:<name>`` tag.
+
+    Returns ``{"name": <name>}`` when every result carries the same
+    ``bench:<name>`` tag, ``None`` for any other set (a deployment's own golden
+    set, an empty run, or a mixture, which is not a benchmark figure).
+
+    Examples
+    --------
+    >>> from eval.models import CaseResult
+    >>> def r(*tags): return CaseResult("a", "q", list(tags), "pass", None, None, None, 0.0)
+    >>> benchmark_from_results([r("bench:bird", "db:x"), r("bench:bird")])
+    {'name': 'bird'}
+    >>> benchmark_from_results([r("bench:bird"), r("count")]) is None
+    True
+    >>> benchmark_from_results([]) is None
+    True
+    """
+    names: set[str] | None = None
+    for result in results:
+        own = {t[len(BENCHMARK_TAG_PREFIX):] for t in result.tags if t.startswith(BENCHMARK_TAG_PREFIX)}
+        if len(own) != 1:
+            return None
+        names = own if names is None else names & own
+        if not names:
+            return None
+    if not names:
+        return None
+    return {"name": next(iter(names))}
+
+
 def build_report(
     results: Sequence[CaseResult],
     mode: Literal["offline", "live"],
     reference: Literal["stored", "live"] = "stored",
     pipeline: Literal["production", "single_shot"] | None = None,
+    benchmark: dict[str, object] | None = None,
 ) -> EvalReport:
     """Aggregate *results* into an :class:`~eval.models.EvalReport`.
 
@@ -142,6 +207,9 @@ def build_report(
     pipeline:
         For a live run, what generated the SQL: ``"production"`` or
         ``"single_shot"`` (see :attr:`~eval.models.EvalReport.pipeline`).
+    benchmark:
+        The benchmark description to record; derived from the results' own
+        ``bench:<name>`` tags (:func:`benchmark_from_results`) when omitted.
 
     Returns
     -------
@@ -211,7 +279,25 @@ def build_report(
         source_accuracy=source_accuracy,
         source_selection=source_selection,
         pipeline=pipeline,
+        benchmark=dict(benchmark) if benchmark is not None else benchmark_from_results(results),
     )
+
+
+def _interval_text(passed: int, total: int) -> str:
+    """``95% CI`` of a stratum, and the "not interpretable" flag below the minimum n.
+
+    Examples
+    --------
+    >>> _interval_text(39, 52)
+    '[61.8, 84.8]'
+    >>> _interval_text(3, 4)
+    '[30.1, 95.4]  n<20: not interpretable'
+    """
+    lo, hi = wilson_interval(passed, total)
+    text = f"[{100.0 * lo:.1f}, {100.0 * hi:.1f}]"
+    if total < MIN_STRATUM_N:
+        text += f"  n<{MIN_STRATUM_N}: not interpretable"
+    return text
 
 
 def render_text(report: EvalReport) -> str:
@@ -241,10 +327,31 @@ def render_text(report: EvalReport) -> str:
     True
     """
     lines: list[str] = []
+    if report.benchmark:
+        lines.append(BENCHMARK_NOTICE.format(name=report.benchmark.get("name", "?")))
+        warning = report.benchmark.get("collation_warning")
+        if warning:
+            lines.append(f"WARNING: {warning}")
+        mode_line = report.benchmark.get("mode_description")
+        if mode_line:
+            lines.append(str(mode_line))
+        lines.extend(_scope_lines(report))
+        lines.append("")
     lines.append(f"Evaluation report ({report.mode} mode) — generated {report.generated_at}")
     lines.append(
         f"Execution accuracy: {report.accuracy_pct:.2f}% ({report.passed}/{report.total})"
     )
+    lines.append(
+        f"  95% interval (Wilson) {_interval_text(report.passed, report.total)}, n={report.total}"
+    )
+    split = report.fidelity_split()
+    if report.benchmark or split["semantic_difference_cases"]:
+        without = split["without_semantic_difference"]
+        lines.append(
+            f"Without the {split['semantic_difference_cases']} semantic-difference case(s): "
+            f"{without['pct']:.2f}% ({without['passed']}/{without['n']}); "
+            f"95% interval (Wilson) {_interval_text(without['passed'], without['n'])}, n={without['n']}"
+        )
     if report.mode == "offline":
         # Without this line the 100% is read as an engine-quality number.
         # Offline mode replays the golden set's own expected_sql, so the
@@ -281,7 +388,10 @@ def render_text(report: EvalReport) -> str:
     if report.tag_accuracy:
         for tag, (tag_passed, tag_total) in report.tag_accuracy.items():
             pct = (100.0 * tag_passed / tag_total) if tag_total else 0.0
-            lines.append(f"  {tag:<24s} {tag_passed:>3d}/{tag_total:<3d} ({pct:5.1f}%)")
+            lines.append(
+                f"  {tag:<24s} {tag_passed:>3d}/{tag_total:<3d} ({pct:5.1f}%)  "
+                f"{_interval_text(tag_passed, tag_total)}"
+            )
     else:
         lines.append("  (no tagged cases)")
     lines.append("")
@@ -290,7 +400,10 @@ def render_text(report: EvalReport) -> str:
         lines.append("Per-source execution accuracy:")
         for source, (src_passed, src_total) in report.source_accuracy.items():
             pct = (100.0 * src_passed / src_total) if src_total else 0.0
-            lines.append(f"  {source:<24s} {src_passed:>3d}/{src_total:<3d} ({pct:5.1f}%)")
+            lines.append(
+                f"  {source:<24s} {src_passed:>3d}/{src_total:<3d} ({pct:5.1f}%)  "
+                f"{_interval_text(src_passed, src_total)}"
+            )
         if report.source_selection is not None:
             sel_ok, sel_total = report.source_selection
             sel_pct = (100.0 * sel_ok / sel_total) if sel_total else 0.0

@@ -232,7 +232,10 @@ def run_case(
         it.
     reference:
         ``"stored"`` (default) compares the result's fingerprint with
-        ``case.expected_fingerprint``. ``"live"`` validates and executes
+        ``case.expected_fingerprint`` -- or, for a case with
+        ``match="execution"``, compares the result with the case's recorded
+        ``expected_rows`` by execution accuracy, as ``"live"`` does but without
+        running any reference query. ``"live"`` validates and executes
         ``case.expected_sql`` through *execute_fn* right after the
         generated SQL and compares the two results with
         :func:`eval.compare.compare_to_reference` (execution accuracy:
@@ -416,33 +419,41 @@ def run_case(
         # reference comparison is positional and does not need it.
         actual_fingerprint = None
 
-    if reference == "live":
+    # What the result is compared with: the case's own reference query run now
+    # (reference="live"), or -- for a case whose stored reference is judged by
+    # execution accuracy -- its recorded rows. A fingerprint-matched stored
+    # reference skips this block.
+    stored_execution = reference == "stored" and case.match == "execution"
+    if reference == "live" or stored_execution:
         # The pipeline's own work ends here; the reference run below is
         # harness overhead and must not inflate the latency percentiles.
         pipeline_latency = time.perf_counter() - start
         assert case.expected_sql is not None  # guaranteed for a runnable, non-out-of-scope case
-        try:
-            validate_sql(case.expected_sql)
-        except ValueError as exc:
-            return _finish(
-                "reference_error",
-                generated_sql=raw_sql,
-                actual_fingerprint=actual_fingerprint,
-                error=f"reference expected_sql rejected by the guard: {exc}",
-                latency=pipeline_latency,
-                diagnosis=diagnose_not_executed(actual=df),
-            )
-        try:
-            reference_df = execute_fn(case.expected_sql)
-        except Exception as exc:  # noqa: BLE001 - a broken reference is a harness result, not a crash
-            return _finish(
-                "reference_error",
-                generated_sql=raw_sql,
-                actual_fingerprint=actual_fingerprint,
-                error=f"reference expected_sql failed: {type(exc).__name__}: {exc}",
-                latency=pipeline_latency,
-                diagnosis=diagnose_not_executed(actual=df),
-            )
+        if stored_execution:
+            reference_df = pd.DataFrame(case.expected_rows)
+        else:
+            try:
+                validate_sql(case.expected_sql)
+            except ValueError as exc:
+                return _finish(
+                    "reference_error",
+                    generated_sql=raw_sql,
+                    actual_fingerprint=actual_fingerprint,
+                    error=f"reference expected_sql rejected by the guard: {exc}",
+                    latency=pipeline_latency,
+                    diagnosis=diagnose_not_executed(actual=df),
+                )
+            try:
+                reference_df = execute_fn(case.expected_sql)
+            except Exception as exc:  # noqa: BLE001 - a broken reference is a harness result, not a crash
+                return _finish(
+                    "reference_error",
+                    generated_sql=raw_sql,
+                    actual_fingerprint=actual_fingerprint,
+                    error=f"reference expected_sql failed: {type(exc).__name__}: {exc}",
+                    latency=pipeline_latency,
+                    diagnosis=diagnose_not_executed(actual=df),
+                )
         try:
             reference_fingerprint: str | None = fingerprint_dataframe(reference_df)
         except Exception:  # noqa: BLE001 - diagnostic only; the verdict does not depend on it
@@ -477,11 +488,12 @@ def run_case(
                 reference_fingerprint=reference_fingerprint,
                 diagnosis=diagnosis,
             )
+        which = "the recorded reference rows" if stored_execution else "the live reference"
         return _finish(
             "fingerprint_mismatch",
             generated_sql=raw_sql,
             actual_fingerprint=actual_fingerprint,
-            error=f"result differs from the live reference: {comparison.reason}",
+            error=f"result differs from {which}: {comparison.reason}",
             latency=pipeline_latency,
             reference_fingerprint=reference_fingerprint,
             diagnosis=diagnosis,

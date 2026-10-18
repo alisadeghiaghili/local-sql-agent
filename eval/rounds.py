@@ -32,6 +32,12 @@ from typing import Any
 from eval.diagnosis import mismatch_class_for
 from eval.models import MISMATCH_CLASSES
 from eval.share import FORMAT_VERSION
+from eval.stats import (
+    MIN_STRATUM_N,
+    mcnemar_exact_p,
+    newcombe_paired_interval,
+    wilson_interval,
+)
 
 __all__ = [
     "Comparison",
@@ -261,6 +267,43 @@ class Comparison:
         """New minus old accuracy on the cases present in both rounds."""
         return _pct(*self.new_common) - _pct(*self.old_common)
 
+    @property
+    def paired(self) -> dict[str, Any]:
+        """The paired comparison on the cases both rounds scored.
+
+        ``both`` / ``regressed`` / ``fixed`` / ``neither`` are the cells of the
+        paired table (``unchanged`` is ``both + neither``); ``mcnemar_p`` is the
+        exact two-sided McNemar p-value on the ``fixed`` / ``regressed`` pairs;
+        ``diff_ci95_points`` is Newcombe's 95% interval of the accuracy
+        difference (new minus old) in percentage points. Only the cases present
+        in both rounds take part: a case added or removed has no pair.
+
+        Examples
+        --------
+        >>> c = Comparison("o", "n", fixed=["a"] * 5, regressed=["b"], still_failing=[],
+        ...                still_passing=0, added=[], added_passed=[], removed=[],
+        ...                old_overall=(1, 6), new_overall=(5, 6), old_common=(1, 6),
+        ...                new_common=(5, 6), per_tag={}, classes={})
+        >>> c.paired["mcnemar_p"], c.paired["fixed"], c.paired["regressed"]
+        (0.21875, 5, 1)
+        """
+        fixed, regressed = len(self.fixed), len(self.regressed)
+        both, neither = self.still_passing, len(self.still_failing)
+        n = both + neither + fixed + regressed
+        low, high = newcombe_paired_interval(both, regressed, fixed, neither)
+        return {
+            "n": n,
+            "both_pass": both,
+            "regressed": regressed,
+            "fixed": fixed,
+            "both_fail": neither,
+            "unchanged": both + neither,
+            "mcnemar_p": mcnemar_exact_p(regressed, fixed),
+            "diff_points": round(self.common_delta, 2),
+            "diff_ci95_points": [round(100.0 * low, 2), round(100.0 * high, 2)],
+            "interpretable": n >= MIN_STRATUM_N,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         """A JSON-friendly form (ids, counts and percentages only)."""
         return {
@@ -285,6 +328,7 @@ class Comparison:
                     "total": self.old_common[1], "delta_points": round(self.common_delta, 2),
                 },
             },
+            "paired": self.paired,
             "per_tag": {
                 tag: {
                     "old": {"passed": v["old"][0], "total": v["old"][1]},
@@ -431,6 +475,36 @@ def _ids_line(label: str, ids: list[str], limit: int = 40) -> str:
     return f"{label} ({len(ids)}): {shown}{more}" if ids else f"{label} (0)"
 
 
+def _interval(passed: int, total: int) -> str:
+    low, high = wilson_interval(passed, total)
+    return f"[{100.0 * low:.1f}, {100.0 * high:.1f}]"
+
+
+def _paired_lines(c: Comparison) -> list[str]:
+    """The paired statistics of *c* as report lines (counts, a p-value, an interval)."""
+    paired = c.paired
+    low, high = paired["diff_ci95_points"]
+    lines = [
+        "",
+        f"Paired comparison on the {paired['n']} cases both rounds scored:",
+        f"  fixed {paired['fixed']}, regressed {paired['regressed']}, "
+        f"unchanged {paired['unchanged']} "
+        f"({paired['both_pass']} pass in both, {paired['both_fail']} fail in both)",
+        f"  McNemar exact two-sided p = {paired['mcnemar_p']:.4g}"
+        + ("" if paired["fixed"] + paired["regressed"] else "  (no case changed)"),
+        f"  accuracy difference {paired['diff_points']:+.2f} points, "
+        f"95% interval (Newcombe, paired) [{low:+.2f}, {high:+.2f}]",
+        f"  95% interval (Wilson) of the old accuracy "
+        f"{_interval(*c.old_common)}, of the new {_interval(*c.new_common)}",
+    ]
+    if not paired["interpretable"]:
+        lines.append(
+            f"  n<{MIN_STRATUM_N}: not interpretable -- too few cases for the interval or "
+            "the p-value to say anything"
+        )
+    return lines
+
+
 def render_comparison(c: Comparison) -> str:
     """Render *c* as text: ids, tags and counts only.
 
@@ -457,6 +531,7 @@ def render_comparison(c: Comparison) -> str:
         f"On the {cp_total} cases in both: {_pct(cp_old, cp_total):.2f}% -> "
         f"{_pct(cp_new, cp_total):.2f}%  [{c.common_delta:+.2f} points]"
     )
+    lines.extend(_paired_lines(c))
     lines.append("")
     lines.append(_ids_line("Fixed", c.fixed))
     lines.append(_ids_line("Regressed", c.regressed))

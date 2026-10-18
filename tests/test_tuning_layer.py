@@ -128,6 +128,37 @@ _ALLOWED_MODULE_CONSTANTS = {
         "precision; env-tunable would silently desync a deployment from "
         "its own golden set's pinned hashes"
     ),
+    "eval/stats.py::Z_95": (
+        "mathematical constant -- the 97.5th percentile of the normal distribution, "
+        "the multiplier of a two-sided 95% interval; not a setting"
+    ),
+    "eval/stats.py::MIN_STRATUM_N": (
+        "reporting invariant -- below this many cases a stratum's 95% interval spans "
+        "tens of points and is reported as not interpretable; if it moved per "
+        "deployment, two reports of the same data would disagree on what to trust"
+    ),
+    "eval/benchmarks/bird.py::DEFAULT_QUERY_TIMEOUT": (
+        "default of the bench-import --query-timeout flag; the operator sets it on "
+        "the command line, so an environment default would add a second hidden place "
+        "to change how long the import waits (same reasoning as DEFAULT_REPEATS)"
+    ),
+    "eval/benchmarks/sqlite_load.py::DEFAULT_CHUNK": (
+        "implementation detail -- rows per insert batch of the benchmark loader, the "
+        "default of --chunk-size; it changes no result"
+    ),
+    "eval/benchmarks/sqlite_load.py::FLOAT_SIGNIFICANT_DIGITS": (
+        "definition of 'the same data' -- floats are compared after being written with "
+        "12 significant digits, documented in the runbook; a knob would let two imports "
+        "of one benchmark disagree on whether the copy is faithful"
+    ),
+    "eval/benchmarks/sqlite_load.py::_MODULUS": (
+        "implementation detail -- the table digest is a sum of 128-bit row hashes, "
+        "modulo 2**128"
+    ),
+    "eval/benchmarks/sqlite_load.py::_PK_MAX_CHARS": (
+        "platform invariant -- SQL Server's index key limit is 900 bytes, 450 NVARCHAR "
+        "characters; a longer primary key cannot be created, so this is not a knob"
+    ),
     "core/fileperms.py::_FILE_MODE": (
         "security invariant -- 0o600 is the whole content of finding 18 "
         "(the Flask session-signing key, the audit trail, the session "
