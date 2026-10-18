@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alisadeghiaghili/local-sql-agent/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen)](setup.cfg)
-[![Tests](https://img.shields.io/badge/tests-5%2C470-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-8%2C035-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://python.org)
 [![Release](https://img.shields.io/github/v/release/alisadeghiaghili/local-sql-agent)](https://github.com/alisadeghiaghili/local-sql-agent/releases)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)  
