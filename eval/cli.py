@@ -298,6 +298,9 @@ def _print_determinism_probe(
     structured: bool,
     repeats: int,
     out: str | None,
+    reference: str = "stored",
+    float_tolerance: float | None = None,
+    execute_fn: ExecuteFn | None = None,
 ) -> None:
     """Print the live-only determinism probe for ``--live --determinism`` runs.
 
@@ -324,10 +327,21 @@ def _print_determinism_probe(
         :data:`eval.determinism.MIN_REPEATS`.
     out:
         Optional path to also save the determinism report as JSON.
+    reference, float_tolerance:
+        How a repeat is judged, as for ``run`` (only used with *execute_fn*).
+    execute_fn:
+        When given, each repeat's SQL is also executed and judged against the
+        case's reference, and the report adds the outcome consistency and the
+        mean accuracy over the repeats. Reads only, like ``run``.
     """
     from llm.providers import OpenAIBackend
 
-    from eval.determinism import probe_determinism, render_determinism_text, save_determinism_json
+    from eval.determinism import (
+        make_judge,
+        probe_determinism,
+        render_determinism_text,
+        save_determinism_json,
+    )
     from eval.runner import make_live_generator, make_live_structured_generator
 
     system_prompt = _load_system_prompt()
@@ -339,7 +353,18 @@ def _print_determinism_probe(
     )
 
     print("\nDeterminism probe (live only -- see eval.determinism):")
-    report = probe_determinism(generate_fn, cases, endpoint=backend.name, repeats=repeats)
+    judge = (
+        make_judge(
+            execute_fn,
+            reference="live" if reference == "live" else "stored",
+            options=ComparisonOptions(tolerance=float_tolerance)
+            if float_tolerance is not None else None,
+        )
+        if execute_fn is not None else None
+    )
+    report = probe_determinism(
+        generate_fn, cases, endpoint=backend.name, repeats=repeats, judge=judge
+    )
     print(render_determinism_text(report))
 
     if out:
@@ -500,6 +525,42 @@ def _read_detail_ids(args: argparse.Namespace, cases: Sequence[GoldenCase]) -> s
     return ids
 
 
+def describe_not_scored(cases: Sequence[GoldenCase]) -> str | None:
+    """One line saying how many cases of the file were not scored, and why.
+
+    A case that is not ``active`` is skipped by the runner; the line keeps that
+    from being silent. An ``excluded`` case is broken down by its reason.
+
+    Examples
+    --------
+    >>> cases = [
+    ...     GoldenCase(id="a", question="q", expected_sql="SELECT 1"),
+    ...     GoldenCase(id="b", question="q", status="excluded", exclusion_reason="load_fidelity"),
+    ...     GoldenCase(id="c", question="q", status="excluded", exclusion_reason="load_fidelity"),
+    ...     GoldenCase(id="d", question="q", status="pending_expected"),
+    ... ]
+    >>> describe_not_scored(cases)
+    'Not scored: 3 of 4 case(s) -- excluded 2 (load_fidelity: 2), pending_expected 1'
+    >>> describe_not_scored(cases[:1]) is None
+    True
+    """
+    skipped = [c for c in cases if not c.is_runnable]
+    if not skipped:
+        return None
+    parts: list[str] = []
+    for status in sorted({c.status for c in skipped}):
+        group = [c for c in skipped if c.status == status]
+        if status == "excluded":
+            reasons: dict[str, int] = {}
+            for case in group:
+                reasons[case.exclusion_reason or "?"] = reasons.get(case.exclusion_reason or "?", 0) + 1
+            detail = ", ".join(f"{r}: {n}" for r, n in sorted(reasons.items()))
+            parts.append(f"excluded {len(group)} ({detail})")
+        else:
+            parts.append(f"{status} {len(group)}")
+    return f"Not scored: {len(skipped)} of {len(cases)} case(s) -- " + ", ".join(parts)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -558,6 +619,9 @@ def _run(args: argparse.Namespace) -> int:
     )
 
     print(render_text(report))
+    not_scored = describe_not_scored(cases)
+    if not_scored:
+        print(not_scored)
 
     if args.live and runnable:
         _print_prefix_cache_probe(runnable[0].question)
@@ -568,6 +632,9 @@ def _run(args: argparse.Namespace) -> int:
             structured=args.structured,
             repeats=args.determinism_repeats,
             out=args.determinism_out,
+            reference=args.reference,
+            float_tolerance=args.float_tolerance,
+            execute_fn=execute_fn,
         )
 
     if args.out:
