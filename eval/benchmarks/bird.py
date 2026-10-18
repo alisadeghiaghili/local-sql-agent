@@ -415,8 +415,9 @@ def run_reference(
     >>> conn = sqlite3.connect(":memory:")
     >>> _ = conn.execute("CREATE TABLE t (a, b)")
     >>> _ = conn.execute("INSERT INTO t VALUES (1, 'x'), (2, NULL)")
-    >>> run_reference(conn, "SELECT a, b FROM t ORDER BY a", max_rows=10).frame.values.tolist()
-    [[1, 'x'], [2, None]]
+    >>> from eval.rows import frame_to_rows
+    >>> frame_to_rows(run_reference(conn, "SELECT a, b FROM t ORDER BY a", max_rows=10).frame)
+    [{'a': 1, 'b': 'x'}, {'a': 2, 'b': None}]
     >>> run_reference(conn, "SELECT a FROM t WHERE a > 5", max_rows=10).outcome
     'empty'
     >>> run_reference(conn, "SELECT MAX(a) FROM t WHERE a > 5", max_rows=10).outcome
