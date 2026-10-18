@@ -25,7 +25,7 @@ verified, running server, with the command for each step and how to tell it
 worked. The numbered sections hold the detail it links to. A deployment that
 queries more than one database also follows §16, in the order it gives. An
 installation already running any 6.x release (6.7.0 included) that is moving to
-6.13.0 follows §17, which sequences the upgrade notes of every release in between
+6.14.0 follows §17, which sequences the upgrade notes of every release in between
 into one checklist.
 Before sending logs or configuration to anyone for help, read §19.
 
@@ -85,7 +85,7 @@ is the sign you can move on: do not continue past a step that did not show it.
    `Tables are in their data source` (several databases), and with
    `Schema structure matches the databases` as soon as the databases differ from
    the file. A file that only lacks the recorded column types passes that check
-   with a note (step 14 of "Upgrading from 6.0 to 6.13.0", §17).
+   with a note (step 14 of "Upgrading from 6.0 to 6.14.0", §17).
    *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
    (§16.3).
 7. **Review the proposal, replace `schema.yaml`, check**: read
@@ -1940,10 +1940,10 @@ raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
 with `password_env`; restart and run `python scripts/verify_deployment.py`.
 Remove the old `DB_URL_*` variable afterwards.
 
-## 17. Upgrading from 6.0 to 6.13.0
+## 17. Upgrading from 6.0 to 6.14.0
 
 One checklist for an installation that is running any 6.x release and is moving
-to 6.13.0. It puts the **Upgrading** notes of 6.0.1 to 6.13.0 in the order to do
+to 6.14.0. It puts the **Upgrading** notes of 6.0.1 to 6.14.0 in the order to do
 them, and adds what 6.7.0 and 6.9.0 bring that you will want to use (6.6.1 and
 6.7.0 have no **Upgrading** notes of their own); `CHANGELOG.md` has each
 release's full text. From 5.x, do the 6.0.0
@@ -1953,22 +1953,23 @@ refuses to start without it), and check a relative `PROJECT_CONFIG_DIR`,
 which is now resolved against the repository root.
 
 Every step names the release it comes from, so skip the ones for releases you
-already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 21, then
-the parts of step 22 that are new in 6.9.0, and step 23 if it contributes code;
-one on 6.8.0 does steps 1 to 3 and 11 to 21; one on 6.9.0 does steps 1 to 3 and
-15 to 21; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
+already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 22, then
+the parts of step 23 that are new in 6.9.0, and step 24 if it contributes code;
+one on 6.8.0 does steps 1 to 3 and 11 to 22; one on 6.9.0 does steps 1 to 3 and
+15 to 22; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
 `scripts/sync_schema.py` (which also records the column types the 6.9.2 note
 of step 3 is about), step 15 if a console-encoding workaround is still in place,
-and steps 16 to 20; one on 6.9.2 or 6.9.3 does steps 1 to 3, steps 16 to 19
-and the restart in step 20 (6.9.3 changes no configuration format); one on
-6.10.0 does steps 1 to 3, steps 17 to 19 and the restart in step 20; one on
-6.11.0 does steps 1 to 3, steps 18 and 19 and the restart in step 20; one on
-6.12.0 does steps 1 to 3, step 19 and the restart in step 20. Steps 1 to 4, 14
-and 16 to 21 apply to every installation. Steps 5 to
+and steps 16 to 21; one on 6.9.2 or 6.9.3 does steps 1 to 3, steps 16 to 20
+and the restart in step 21 (6.9.3 changes no configuration format); one on
+6.10.0 does steps 1 to 3, steps 17 to 20 and the restart in step 21; one on
+6.11.0 does steps 1 to 3, steps 18 to 20 and the restart in step 21; one on
+6.12.0 does steps 1 to 3, steps 19 and 20 and the restart in step 21; one on
+6.13.0 does steps 1 to 3, step 20 and the restart in step 21. Steps 1 to 4, 14
+and 16 to 22 apply to every installation. Steps 5 to
 8 are each optional: do the ones that fit (a password move, a key file, a UI on
 another origin, several databases). Steps 9 to 13 and 15 each say what to check or decide, and
 need no action on an installation that does not use the thing they change.
-Steps 22 and 23 come last on purpose.
+Steps 23 and 24 come last on purpose.
 
 1. **Back up** `.env` and `project_config/`. Both are outside the repository.
    If you already have a golden set (6.7.0 or later), record its baseline now,
@@ -1979,7 +1980,7 @@ Steps 22 and 23 come last on purpose.
    `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
    `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
    python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
-   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.13.0
+   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.14.0
    change no pin in `requirements.lock`, but run the command anyway.
 3. **Run the preflight before restarting**, in its own process:
    `python scripts/verify_deployment.py` (§3). Several releases made the
@@ -2217,7 +2218,7 @@ Steps 22 and 23 come last on purpose.
       confirmed answer becomes a reviewed golden case (tag `origin:confirmed`),
       and `python -m eval.cli verify --accept` checks that its SQL runs, not
       that the SQL is right, so a wrong confirmation would end up in the
-      accuracy gate of step 22. Check the `origin:confirmed` rows of
+      accuracy gate of step 23. Check the `origin:confirmed` rows of
       `scripts/golden_sheet.py export` before accepting them, or harvest with
       `--no-confirmations` until you trust the confirmations you see.
     - *Optional: `LLM_STREAM_TIMINGS=true`.* Set it in `.env` if the admin
@@ -2356,14 +2357,57 @@ Steps 22 and 23 come last on purpose.
       may see less). Drafts hold no sample value and no staging table any
       more: `--sample-values` writes `sample_values.review.yaml`, and
       `--include-staging` keeps the staging tables.
-20. **Restart** (every change above, including `datasources.yaml` and
+20. **Intervals and paired comparison in every report, and an optional benchmark
+    track (6.14.0).** No setting is renamed, no file format changes and
+    `requirements.lock` has no new pin (`git diff v6.13.0 -- requirements.lock`
+    is empty); no setting is new. The change is in the accuracy harness
+    (`python -m eval.cli`), so the answers the server gives, the audit log and
+    the admin panel do not change. Four things to read or decide before the
+    restart:
+    - *Read the reports with their intervals (§18.3, §18.6.2).* The text report
+      now prints a Wilson 95% interval and the number of cases under the overall
+      accuracy and at the end of every per-tag and per-source line, and marks a
+      stratum of fewer than 20 cases `n<20: not interpretable`; `compare` adds
+      the paired statistics (fixed, regressed, an exact McNemar p-value, a 95%
+      interval of the difference). All of it is additive: a baseline, `--out`
+      report or share file from 6.13.0 or earlier still loads, `--baseline`
+      still gates against it and `compare` takes it as either side, so no
+      baseline has to be recorded again for this release. A script that reads
+      the per-tag or per-source lines of the text report by column must allow
+      for the interval at the end; read the JSON instead.
+    - *Check your golden set and the scripts that run it (§18.1).* The golden
+      file has a new optional status, `excluded`, and a new optional field,
+      `match`; a set built from your own questions uses neither, and an existing
+      `golden.jsonl` needs no edit. `run` now prints a `Not scored: N of M
+      case(s) -- ...` line under the report whenever the file holds a case that
+      is not `active` (a pending one included, which was skipped silently
+      before), and a golden file the tools rewrite carries
+      `"exclusion_reason": null` and `"match": "fingerprint"` on every line,
+      which 6.13.0 also reads.
+    - *Plan for the extra queries of the determinism probe (§18.3).*
+      `run --live --determinism` now also executes and judges each repeat,
+      through the guard and the read-only executor like `run`, so one probe
+      sends up to cases times repeats (3 by default) extra queries to the data
+      sources. Run it on a large golden set when the warehouse is quiet.
+    - *Decide on the benchmark track (optional, §18.7).* Nothing runs it unless
+      you call `bench-import` or `bench-run`. If you use it: download BIRD
+      mini-dev yourself; the load needs its own administrator login
+      (`--target-url`, or `env:NAME` to keep the password off the command line)
+      on a database of its own, while the application keeps its read-only
+      login and must never get the right to create anything; the database must
+      be case- and accent-sensitive (`COLLATE Latin1_General_100_CS_AS_SC_UTF8`),
+      and the import refuses any other before it writes anything, unless
+      `--allow-ci-collation` is given, in which case every report says so; and
+      its figure is not the deployment's accuracy, as the first line of its
+      report states. It does not replace the golden set.
+21. **Restart** (every change above, including `datasources.yaml` and
     `schema.yaml`, takes effect at a restart). Then run the preflight once more
     with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
     start-up log (§5): the provenance banner, `CORS allowed origins`, and with
     several sources one `Prompt path for data source` line each. Since 6.9.0
     each static-prefix source also logs an `LLM prefix warm-up` line a little
     later (§20.2).
-21. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
+22. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
     `audit_log.jsonl` that does not know `datasource_selection` (6.5.0), or the
     `llm` block's `ttft_ms`, `generation_ms`, `reasoning_tokens` and
     `reasoning_tokens_estimated` (6.9.0; the first two are filled only with
@@ -2373,7 +2417,7 @@ Steps 22 and 23 come last on purpose.
     analysts will ask: the SQL shown in a conversation is laid out in a fixed
     style (6.5.0; display only, the statement that ran is unchanged), and a refused
     statement can be opened with the same layout.
-22. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
+23. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
     adds the tools that turn real usage into an evaluation set and a release
     gate: `python scripts/harvest_golden.py` (candidates from the audit log),
     `python scripts/golden_sheet.py export` and `import` (the analysts' review
@@ -2391,7 +2435,7 @@ Steps 22 and 23 come last on purpose.
     off unless set (§18.2), and `python -m eval.cli recall`, which measures table
     selection with no model and no database (§18.4). Nothing else in 6.7.0 changes
     how the server runs.
-23. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
+24. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
     to an exact version, and CI now has a `lint` job that fails on
     `ruff check .`. Run `pip install -r requirements.txt -r requirements-dev.txt`
     and `ruff check .` before pushing. A deployment that does not change this
