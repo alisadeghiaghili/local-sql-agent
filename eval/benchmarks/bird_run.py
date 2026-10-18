@@ -82,7 +82,12 @@ class RunPlan:
 
 
 def plan_runs(
-    bench_dir: Path, *, mode: Mode, evidence: bool = False, dbs: Sequence[str] | None = None
+    bench_dir: Path,
+    *,
+    mode: Mode,
+    evidence: bool = False,
+    dbs: Sequence[str] | None = None,
+    label: str | None = None,
 ) -> list[RunPlan]:
     """The runs of *mode* over an import directory.
 
@@ -96,6 +101,10 @@ def plan_runs(
         Use ``golden.with_evidence.jsonl`` (the ablation).
     dbs:
         Limit a per-database run to these databases.
+    label:
+        Name of the folder under ``runs/`` the reports go to (default: the mode,
+        with ``-evidence`` for the ablation). Give each model or setting you
+        compare its own, or the second run replaces the first.
 
     Raises
     ------
@@ -113,13 +122,17 @@ def plan_runs(
     ...     _ = (d / sub / "golden.jsonl").write_text("{}", encoding="utf-8")
     >>> [(p.label, p.report.name) for p in plan_runs(d, mode="per_db")]
     [('a', 'a.report.json'), ('b', 'b.report.json')]
+    >>> plan_runs(d, mode="per_db", label="model-b")[0].report.parent.name
+    'model-b'
     >>> plan_runs(d, mode="per_db", dbs=["zzz"])
     Traceback (most recent call last):
         ...
     ValueError: not imported: zzz
     """
     name = "golden.with_evidence.jsonl" if evidence else "golden.jsonl"
-    runs_dir = bench_dir / "runs" / f"{mode}{'-evidence' if evidence else ''}"
+    if label is not None and (not label.strip() or any(c in label for c in "/\\") or label.startswith(".")):
+        raise ValueError(f"unusable run label: {label!r}")
+    runs_dir = bench_dir / "runs" / (label or f"{mode}{'-evidence' if evidence else ''}")
     if mode == "combined":
         plans = [RunPlan("_combined", bench_dir / name, bench_dir / "_combined" / "project_config",
                          runs_dir / "_combined.report.json")]

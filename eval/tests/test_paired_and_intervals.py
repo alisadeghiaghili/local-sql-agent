@@ -63,6 +63,27 @@ class TestReportIntervals:
         assert data["intervals"]["per_source"]["sales"]["interpretable"] is False
 
 
+class TestShareSummaryIntervals:
+    def test_the_summary_carries_the_intervals_and_keeps_its_old_keys(self, tmp_path):
+        from eval.models import GoldenCase
+        from eval.share import build_share_bundle
+
+        golden = tmp_path / "g.jsonl"
+        golden.write_text("{}\n", encoding="utf-8")
+        results = [_result(i, i % 4 != 0, ("db:x",)) for i in range(52)]
+        report = build_report(results, mode="live", reference="live", pipeline="production")
+        cases = [GoldenCase(id=r.case_id, question="q", expected_sql="SELECT 1") for r in results]
+        info = {"app_version": "1", "prefix_version": "p", "model": "m",
+                "prompt_retrieval_token_budget": 6000, "sources": {}, "structured": False,
+                "float_tolerance": 1e-06}
+        summary = build_share_bundle(
+            report, cases, golden_path=golden, run_info=info, started_at="t0", finished_at="t1",
+        )["summary"]
+        assert summary["per_tag"]["db:x"] == {"passed": 39, "total": 52, "accuracy_pct": 75.0}
+        assert summary["intervals"]["per_tag"]["db:x"]["wilson95_low_pct"] == 61.79
+        assert summary["intervals"]["overall"]["n"] == 52
+
+
 class TestBenchmarkHeader:
     def test_cases_tagged_bench_get_the_not_this_deployment_header(self):
         results = [_result(i, True, ("bench:bird", "db:x")) for i in range(3)]

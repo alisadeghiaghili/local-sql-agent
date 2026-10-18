@@ -319,6 +319,8 @@ def _summary(report: EvalReport, records: Sequence[Mapping[str, Any]]) -> dict[s
             "p50": round(report.latency_p50, 3),
             "p95": round(report.latency_p95, 3),
         },
+        # Additive: the Wilson 95% interval and n of the overall figure and of every stratum.
+        "intervals": report.intervals(),
     }
 
 

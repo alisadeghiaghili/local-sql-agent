@@ -2408,7 +2408,9 @@ its own.
 Until a deployment has a golden set built from its own questions, it has no
 measured accuracy: the committed `eval_data.example/` is made-up data and
 says nothing about your warehouse. This section builds the real set from the
-audit log and turns it into the check you run before every upgrade.
+audit log and turns it into the check you run before every upgrade. A public
+benchmark can be run beside it for development decisions (§18.7); it is a second
+instrument and never replaces this set.
 
 **The set lives only on the server.** `eval_data/` is git-ignored and holds
 real questions, the SQL that answers them and, after step 4, real result
@@ -2619,6 +2621,15 @@ an offline run is 100% by construction and passes any floor.
   limit: when a `TOP n` cuts through rows tied on the sort key, a correct
   answer can differ from the reference; give such a reference a tie-breaking
   second sort key.
+- **How precise a percentage is.** Under the overall accuracy, and on every
+  per-tag and per-source line, the report prints the 95% Wilson interval of the
+  proportion and the number of cases behind it (`eval/stats.py`): 33 of 40 is
+  82.5%, and the data are compatible with anything from 68% to 91%. A stratum
+  (a tag such as a language, a category, `db:*` or `difficulty:*`, or a data
+  source) with **fewer than 20 cases is marked `n<20: not interpretable`**: its
+  interval spans tens of points, so a difference between two such strata is
+  noise. The same intervals are in the `--out` report under `intervals` (a field
+  added to the report; older reports load as before).
 - **Per-tag accuracy** breaks the figure down by the case's tags (the harvest
   adds `lang:`, `source:` and `outcome:` tags). **Per-source execution
   accuracy** and **source-selection accuracy** appear when cases name a
@@ -2637,6 +2648,14 @@ an offline run is 100% by construction and passes any floor.
   the guard or failed to run today (a table was renamed, say): it counts as
   a failure so it is seen, but the fix is the case, not the model. Re-run
   `eval.cli verify` to find such cases.
+- **Repeats.** `run --live --determinism` generates every question several times
+  (`--determinism-repeats`) and reports how often the SQL text came back
+  identical. It also executes each repeat and judges it with the same rule as the
+  run, and adds the **outcome consistency** (the share of cases that were right on
+  every repeat or wrong on every repeat) and the **mean accuracy over the
+  repeats**. A case that is right on some repeats and wrong on others is what
+  inconsistency means; a single run's percentage hides it. The probe uses the
+  single-call generator, so read it as a model-only figure.
 - **Offline mode** (`eval.cli run` without `--live`, what CI does) replays
   each case's recorded rows, so its 100% is true by construction and only
   proves the harness, the guard and the fingerprinting work. It is not a
@@ -2909,6 +2928,19 @@ retrieval should move `actual_is_subset` and `column_count_differs` before it
 moves anything else). It needs no model, no database and no `project_config/`,
 so the reviewer can run it too.
 
+**The paired statistics.** Both rounds answered the same cases, so the cases both
+scored are a paired sample, and `compare` prints (and `--json` carries under
+`paired`) the counts that matter for it: **fixed**, **regressed** and **unchanged**
+(passing in both or failing in both); the **exact two-sided McNemar p-value** on the
+fixed and regressed cases (the chance of a split at least as lopsided if the two
+rounds were equally accurate; no approximation, so it holds for small counts); and a
+**95% interval of the accuracy difference** (Newcombe's method for paired proportions,
+which is narrower than comparing two intervals because the rounds fail on mostly the
+same cases). Read them before you read the delta: 12 cases fixed and 4 regressed out of
+150 is +5.3 points with p = 0.077, a difference the data cannot yet separate from
+chance; 12 fixed and 1 regressed is p = 0.003. A comparison of fewer than 20 cases is
+marked `n<20: not interpretable`. An older report compares exactly as before.
+
 `--split dev|test` with `--split-file` limits the comparison to one half; the
 file is `dev_ids.txt` or `test_ids.txt` from step 1 (a JSON list of ids, or an
 object with `dev` and `test` lists, also works). With `--fail-on-regression`
@@ -2978,6 +3010,212 @@ check runs on its SQL as written. `--single-shot` has no cap, so
 value. `--single-shot` gives
 the model-only figure; never compare it with a production round. §18.3
 describes how "the same answer" is decided.
+
+### 18.7 The benchmark track: a public benchmark on your own SQL Server
+
+The golden set of §18.1 is the number that matters: your questions, your schema,
+your analysts' verdicts. It is also small (150 cases is a good set), private (it
+never leaves the server) and thin per tag, so it is a poor tool for the question
+a developer asks every week: *did this change to the prompt, the retrieval or the
+model help?* The **benchmark track** adds a second, separate instrument for that
+question: a public text-to-SQL benchmark, loaded into a database of your own and
+run through the same production pipeline with the same model. It gives a large,
+fully visible sample, and because the data is public, the full report (questions,
+generated SQL, errors) can be shared as it is.
+
+**Its number is not your accuracy.** The questions are English and about
+someone else's domain, the schemas are small and sometimes dirty, the "evidence"
+hint that comes with each question does not exist in your analysts' work, and the
+data was copied from SQLite. It does not replace the golden set and must never
+be quoted as the deployment's accuracy. The report says so in its first line
+(`BENCHMARK RUN (bird) ... This is NOT this deployment's accuracy`), every case
+is tagged `bench:bird`, and a golden set is only a benchmark report when *all* of
+its cases carry that tag, so the two cannot be mixed by accident.
+
+#### The benchmark: BIRD mini-dev
+
+[BIRD](https://github.com/AlibabaResearch/DAMO-ConvAI/tree/main/bird) is a text-to-SQL benchmark over
+real-looking databases; its **mini-dev** release has **500 questions over 11
+databases** (about 30% simple, 50% moderate, 20% challenging). It is published as
+SQLite, MySQL and PostgreSQL, and there is no T-SQL version: that is what the
+importer is for.
+
+- **Licence.** The dataset is released under **CC BY-SA 4.0**
+  (<https://creativecommons.org/licenses/by-sa/4.0/>): the `bird-bench/mini_dev`
+  repository carries the licence badge, and the BIRD repository says "Due to large
+  volume of requests, now we change the license to `CC BY-SA 4.0`". Some third-party
+  papers cite BIRD as CC BY-NC 4.0; the repositories state CC BY-SA 4.0. Read
+  the licence on the page you download from before you rely on either. The databases
+  are collected by the BIRD authors from public sources (their paper names Kaggle and
+  Relational.vit among them) and are distributed inside the same package under the
+  same statement; no separate per-database licence is published, and the upstream
+  sources may have terms of their own. Using the data to evaluate your own system is
+  what the benchmark is for. If you **share** anything derived from it (the golden
+  files, the reports with questions and SQL, a loaded copy), keep the attribution and
+  the same licence; the import writes `NOTICE.txt` with the text. This is not legal
+  advice.
+- **Download.** Hugging Face `birdsql/bird_mini_dev`
+  (<https://huggingface.co/datasets/birdsql/bird_mini_dev>) is the canonical copy;
+  the `bird-bench/mini_dev` repository (<https://github.com/bird-bench/mini_dev>) also
+  links `minidev.zip` and a Google Drive package. Unpack it **outside** the
+  repository: nothing of the benchmark is ever committed.
+- **Layout.**
+
+  ```text
+  mini_dev_sqlite.json                          question_id, db_id, question, evidence, SQL, difficulty
+  dev_databases/<db_id>/<db_id>.sqlite
+  dev_databases/<db_id>/database_description/<table>.csv
+  ```
+
+  The importer needs `db_id`, `question` and `SQL` of each question and tolerates a
+  missing `evidence`, `question_id` or `difficulty`; it finds the JSON under
+  whatever folder the package unpacked into.
+
+#### Load it with an administrator login, read it with the application's
+
+The load creates schemas and tables, which the application's login must never be
+allowed to do. Use **two logins** on a **separate database** (never your
+warehouse):
+
+```sql
+CREATE DATABASE BirdBench;
+CREATE LOGIN bench_loader WITH PASSWORD = '...';   -- DDL rights: used by bench-import only
+CREATE LOGIN bench_reader WITH PASSWORD = '...';   -- read only: what the application uses
+USE BirdBench;
+CREATE USER bench_loader FOR LOGIN bench_loader;  ALTER ROLE db_owner ADD MEMBER bench_loader;
+CREATE USER bench_reader FOR LOGIN bench_reader;  ALTER ROLE db_datareader ADD MEMBER bench_reader;
+```
+
+Each BIRD database becomes **one schema of that one database, named after its
+`db_id`**, so a combined configuration exercises the multi-schema handling and the
+schema exclusion of §2.3 and §16. Table and column names are kept and quoted.
+Types are mapped conservatively from what the data holds, not from what SQLite
+declared (SQLite does not enforce declared types): integers only `BIGINT`, numbers
+`FLOAT(53)` (an IEEE double, so every value round-trips), anything with a text value
+`NVARCHAR(n)` (dates stay the text they were, so a date is never silently
+reinterpreted), blobs `VARBINARY(MAX)`. Rows are inserted in chunks (pyodbc
+`fast_executemany` unless `--no-fast-executemany`); primary and foreign keys are
+added **after** the data, and one SQL Server refuses (its default collation ignores
+case, SQLite's does not) is a warning, not a failure. After the load every table's row
+count on SQL Server is compared with the SQLite file, and the import stops if one
+differs.
+
+Run everything from a shell of its own, so the production `.env` is not touched
+(a variable exported in the shell wins over `.env`):
+
+```bash
+export PROJECT_CONFIG_DIR=project_config.example           # only so the tools start; each run sets its own
+export DB_CONNECTION_URL="mssql+pyodbc://bench_reader@server:1433/BirdBench?driver=ODBC+Driver+18+for+SQL+Server"
+export DB_PASSWORD='...'                                    # bench_reader's raw password
+export BIRD_ADMIN_URL="mssql+pyodbc://bench_loader:<percent-encoded password>@server:1433/BirdBench?driver=ODBC+Driver+18+for+SQL+Server"
+
+python -m eval.cli bench-import bird --source /data/bird/MINIDEV --target-url env:BIRD_ADMIN_URL \
+    --out /data/bird/out --descriptions --with-evidence
+```
+
+`--target-url` is the administrator login (`env:NAME` reads it from an environment
+variable, so the password is not in the command line or the shell history). The
+configurations are drafted with the **application's** login: the inspector of §2.3
+runs as `bench_reader` through `DB_CONNECTION_URL` (or `--datasource NAME` for a
+source of `datasources.yaml`), so a draft lists exactly what the application can
+query. `--dbs a,b` imports only those databases. The import refuses a schema that
+already holds tables (exit `2`, nothing written): add `--replace` to drop and reload
+it, or `--skip-load` to keep what is there and only check its row counts against the
+SQLite files again.
+
+#### What the import writes
+
+```text
+/data/bird/out/
+  golden.jsonl  golden.with_evidence.jsonl   all databases (the second only with --with-evidence)
+  <db_id>/golden.jsonl  .../golden.with_evidence.jsonl  .../project_config/
+  _combined/project_config/                  one configuration over every schema
+  import_report.json  import_report.txt  NOTICE.txt
+```
+
+- **The reference result comes from the original.** Each question's expected result is
+  produced by running the dataset's own SQL on the dataset's own `.sqlite` file (opened
+  read-only) and is stored in the case (`expected_rows`, `match: "execution"`). A run
+  with `--reference stored` compares the answer with those rows by execution accuracy
+  (§18.3: column names ignored, the order of rows only where the reference sorts with
+  `TOP`). No reference is translated, so a translation error cannot make a question
+  wrong. Cases have the tags `bench:bird`, `db:<db_id>` and `difficulty:<x>`.
+- **The load-fidelity check.** Because the model writes T-SQL against the copy, the copy
+  must answer like the original. The importer therefore transpiles each reference to
+  T-SQL (sqlglot), runs it on SQL Server and compares it with the SQLite result. A
+  question where they differ (a case-sensitive comparison, an integer division, a date
+  that was text) has `status: "excluded"` and `exclusion_reason: "load_fidelity"`: it
+  measures the load, not the model. The transpilation is kept as `expected_sql` for
+  reading, ordering and `eval.cli recall`; a stored run never executes it.
+- **Excluded cases are listed, never dropped.** `reference_failed` (the SQLite
+  reference errors or runs over `--query-timeout`), `reference_empty` (no row, or only
+  NULLs), `reference_too_large` (as many rows as `MAX_ROWS_RETURNED`, which the server
+  would cut), `load_fidelity`, and `fidelity_unverified` (the reference could not be
+  transpiled, or failed on SQL Server, so the copy could not be checked; `--keep-unverified`
+  scores these anyway). They stay in `golden.jsonl`, are skipped by `run` (which prints
+  `Not scored: N of M case(s) -- excluded ...`) and are listed one by one with their
+  reason in `import_report.txt`. Expect `fidelity_unverified` to be common on a real
+  SQL Server, since sqlglot does not translate every SQLite function; read the list
+  before you trust the denominator.
+- **Evidence.** Each question comes with an expert's `evidence` hint. Your analysts
+  give none, so the default golden file has none. `--with-evidence` also writes
+  `golden.with_evidence.jsonl`, the same cases with the hint appended under a marker, for
+  the ablation below.
+- **Configurations.** `<db_id>/project_config/` is the inspector's draft restricted to
+  that schema (`--include-schemas <db_id>`), completed so it can be a `PROJECT_CONFIG_DIR`:
+  `system_prompt.md` and the two policy files come from `--base-config` (default
+  `project_config.example/`; pass your live `project_config/` to run with your own
+  prompt), and `business_rules.yaml`, `examples.yaml`, `metrics.yaml` and
+  `retrieval_hints.yaml` are **empty**, so the benchmark gets none of your hand-written
+  help. Without `--descriptions` the configuration is the raw draft an operator has on
+  the first day; with it the dataset's `database_description/*.csv` text is added to each
+  column's description in `schema.yaml`, which models a curated configuration. Compare
+  like with like.
+
+#### Run it
+
+```bash
+python -m eval.cli bench-run bird --bench /data/bird/out --label model-a                 # per database, merged
+python -m eval.cli bench-run bird --bench /data/bird/out --label model-a-combined --mode combined
+python -m eval.cli bench-run bird --bench /data/bird/out --label model-a-hint --evidence
+```
+
+`bench-run` starts `python -m eval.cli run --golden <db>/golden.jsonl --live --reference stored`
+once per database, each in its own process with `PROJECT_CONFIG_DIR` set to that
+database's configuration (the pipeline reads its configuration when it starts, so one
+process measures one configuration), then merges the reports into
+`runs/<label>/report.json` and `report.txt`. The merged figure pools all scored cases;
+it is not a mean of per-database means. Arguments after `--` go to every `run`
+(`bench-run bird --bench ... -- --single-shot`). `--merge-only` merges reports already
+there; the exit status is `1` if a database produced none. Give each model or setting
+its own `--label`, or the next run replaces the last.
+
+- **Per-database mode** (the default): one configuration per database, so retrieval
+  chooses among that database's tables only. Use it to compare models, prompts and
+  settings.
+- **Combined mode** (`--mode combined`): one configuration over all 11 schemas, so the
+  pipeline must also find the right database; it is the 6.13 multi-schema case at its
+  hardest. It is a **separate measurement**: the report says `Mode: COMBINED ... do not
+  compare it with the per-database figure`, and the two are never merged.
+- **Evidence ablation.** Run once without and once with `--evidence`, then
+  `python -m eval.cli compare runs/model-a/report.json runs/model-a-hint/report.json`:
+  the paired block (§18.3) says whether the hint moved accuracy by more than noise.
+
+#### Reading and sending the report
+
+The text report starts with the benchmark notice and says the mode, whether the hint was
+given and whether descriptions were added. The overall figure and every stratum (`db:*`,
+`difficulty:*`) carry a Wilson 95% interval and their `n`; a stratum under 20
+cases is marked **not interpretable** (§18.3): with 30 questions in a database a single
+case moves its accuracy by three points. To compare two models or two settings use
+`compare` on the two merged `report.json`, not the two percentages.
+
+The data is public, so **the full report is shareable**: send `runs/<label>/report.json`
+(or `report.txt`) and `import_report.txt` as they are. They hold the questions, the
+generated SQL and the error text, and no result row. Skim the `error` fields for a host
+or database name your driver may echo, and send nothing else from your server (not
+`.env`, not the configuration you ran the model with). Anything you share carries the
+attribution of `NOTICE.txt`.
 
 ## 19. Sharing diagnostics safely
 

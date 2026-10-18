@@ -91,6 +91,7 @@ exit with status 2, as ``scripts/prompt_budget.py`` does.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -761,6 +762,13 @@ def _bench_import(args: argparse.Namespace) -> int:
     if not args.target_url and not args.datasource:
         print("error: give --target-url (an administrator login) or --datasource", file=sys.stderr)
         return 2
+    target_url = args.target_url
+    if target_url and target_url.startswith("env:"):
+        # env:NAME keeps the administrator password out of the command line and the shell history.
+        target_url = os.environ.get(target_url[4:], "")
+        if not target_url:
+            print(f"error: --target-url {args.target_url} names an empty or unset variable", file=sys.stderr)
+            return 2
     options = ImportOptions(
         source=Path(args.source),
         out=Path(args.out),
@@ -776,9 +784,9 @@ def _bench_import(args: argparse.Namespace) -> int:
         query_timeout=args.query_timeout,
         chunk_size=args.chunk_size,
     )
-    owns_engine = bool(args.target_url)
-    if args.target_url:
-        engine = create_target_engine(args.target_url, fast_executemany=not args.no_fast_executemany)
+    owns_engine = bool(target_url)
+    if target_url:
+        engine = create_target_engine(target_url, fast_executemany=not args.no_fast_executemany)
     else:
         print(
             "warning: --datasource without --target-url loads through the application's own login; "
@@ -834,7 +842,7 @@ def _bench_run(args: argparse.Namespace) -> int:
     dbs = [d.strip() for d in args.dbs.split(",") if d.strip()] if args.dbs else None
     bench = Path(args.bench)
     try:
-        plans = plan_runs(bench, mode=mode, evidence=args.evidence, dbs=dbs)
+        plans = plan_runs(bench, mode=mode, evidence=args.evidence, dbs=dbs, label=args.label)
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -1338,7 +1346,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--target-url", default=None, metavar="URL", dest="target_url",
         help=(
             "SQLAlchemy URL of the benchmark database, with an administrator login that may "
-            "create schemas and tables. NOT the application's read-only login."
+            "create schemas and tables. NOT the application's read-only login. 'env:NAME' reads "
+            "the URL from that environment variable, keeping the password off the command line."
         ),
     )
     bird.add_argument(
@@ -1417,6 +1426,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use golden.with_evidence.jsonl (the ablation).",
     )
     bird_run.add_argument("--dbs", default=None, metavar="a,b", help="Only these databases (per-db mode).")
+    bird_run.add_argument(
+        "--label", default=None, metavar="NAME",
+        help=(
+            "Folder under runs/ for this run's reports (default: per_db, per_db-evidence, combined). "
+            "Give each model or setting you compare its own, or the next run replaces this one."
+        ),
+    )
     bird_run.add_argument(
         "--merge-only", action="store_true", default=False, dest="merge_only",
         help="Do not run anything; merge the per-database reports that exist.",

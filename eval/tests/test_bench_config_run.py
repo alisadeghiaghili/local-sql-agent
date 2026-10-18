@@ -187,6 +187,15 @@ class TestRunPlanAndMerge:
         assert plan.golden == tmp_path / "golden.jsonl"
         assert plan.report.parts[-2] == "combined"
 
+    def test_a_label_gives_each_model_its_own_reports(self, tmp_path):
+        bench = self._bench(tmp_path)
+        a = plan_runs(bench, mode="per_db", label="model-a")
+        b = plan_runs(bench, mode="per_db", label="model-b")
+        assert a[0].report.parent.name == "model-a" and b[0].report.parent.name == "model-b"
+        for bad in ("", "../x", "a/b", ".hidden"):
+            with pytest.raises(ValueError, match="unusable run label"):
+                plan_runs(bench, mode="per_db", label=bad)
+
     def test_a_missing_import_is_reported(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             plan_runs(tmp_path, mode="per_db")
@@ -287,6 +296,17 @@ class TestCommands:
         assert "--replace" in capsys.readouterr().err
         assert not (tmp_path / "b" / "golden.jsonl").exists()
         assert cli.main([*args, "--out", str(tmp_path / "c"), "--replace"]) == 0
+
+    def test_the_target_url_can_come_from_an_environment_variable(self, world, tmp_path, monkeypatch, capsys):
+        package, _, database = world
+        monkeypatch.setenv("BIRD_TEST_ADMIN_URL", database.url)
+        args = ["bench-import", "bird", "--source", str(package), "--skip-config", "--max-rows", "100",
+                "--out", str(tmp_path / "o")]
+        assert cli.main([*args, "--target-url", "env:BIRD_TEST_ADMIN_URL"]) == 0
+        capsys.readouterr()
+        monkeypatch.delenv("BIRD_TEST_ADMIN_URL")
+        assert cli.main([*args, "--target-url", "env:BIRD_TEST_ADMIN_URL"]) == 2
+        assert "unset variable" in capsys.readouterr().err
 
     def test_a_target_is_required(self, world, tmp_path, capsys):
         package, _, _ = world
