@@ -132,6 +132,24 @@ BENCHMARK_NOTICE = (
 )
 
 
+def _scope_lines(report: EvalReport) -> list[str]:
+    """What was scored, what was excluded and why, and what was flagged, for a benchmark header."""
+    assert report.benchmark is not None
+    split = report.fidelity_split()
+    excluded = report.benchmark.get("excluded") or {}
+    parts = [f"scored {report.total}"]
+    if excluded:
+        parts.append(
+            f"excluded {sum(excluded.values())} ("
+            + ", ".join(f"{reason} {n}" for reason, n in sorted(excluded.items())) + ")"
+        )
+    else:
+        parts.append("excluded 0")
+    parts.append(f"semantic-difference cases kept in {split['semantic_difference_cases']}")
+    parts.append(f"fidelity unverified (kept in) {split['unverified_cases']}")
+    return ["Cases: " + "; ".join(parts) + "."]
+
+
 def benchmark_from_results(results: Sequence[CaseResult]) -> dict[str, str] | None:
     """The benchmark a set of results belongs to, from the ``bench:<name>`` tag.
 
@@ -311,9 +329,13 @@ def render_text(report: EvalReport) -> str:
     lines: list[str] = []
     if report.benchmark:
         lines.append(BENCHMARK_NOTICE.format(name=report.benchmark.get("name", "?")))
+        warning = report.benchmark.get("collation_warning")
+        if warning:
+            lines.append(f"WARNING: {warning}")
         mode_line = report.benchmark.get("mode_description")
         if mode_line:
             lines.append(str(mode_line))
+        lines.extend(_scope_lines(report))
         lines.append("")
     lines.append(f"Evaluation report ({report.mode} mode) — generated {report.generated_at}")
     lines.append(
@@ -322,6 +344,14 @@ def render_text(report: EvalReport) -> str:
     lines.append(
         f"  95% interval (Wilson) {_interval_text(report.passed, report.total)}, n={report.total}"
     )
+    split = report.fidelity_split()
+    if report.benchmark or split["semantic_difference_cases"]:
+        without = split["without_semantic_difference"]
+        lines.append(
+            f"Without the {split['semantic_difference_cases']} semantic-difference case(s): "
+            f"{without['pct']:.2f}% ({without['passed']}/{without['n']}); "
+            f"95% interval (Wilson) {_interval_text(without['passed'], without['n'])}, n={without['n']}"
+        )
     if report.mode == "offline":
         # Without this line the 100% is read as an engine-quality number.
         # Offline mode replays the golden set's own expected_sql, so the

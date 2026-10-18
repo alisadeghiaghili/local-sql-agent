@@ -252,6 +252,14 @@ def merge_reports(
         ),
     }
     benchmark["mode_description"] = f"{MODE_DESCRIPTIONS[mode]}\n{benchmark['setup']}"
+    collation = (import_report or {}).get("collation") or {}
+    if collation.get("problem"):
+        benchmark["collation_warning"] = (
+            f"the benchmark database's collation {collation.get('name')} {collation['problem']}: "
+            "text comparisons differ from SQLite's, so some correct answers cannot match their "
+            "reference. Treat the accuracy as a lower bound and prefer a case-sensitive, "
+            "accent-sensitive database (runbook 18.7)."
+        )
     return build_report(
         results, mode=next(iter(modes)), reference=next(iter(references)),
         pipeline=next(iter(pipelines)), benchmark=benchmark,

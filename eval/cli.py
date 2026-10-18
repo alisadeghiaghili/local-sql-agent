@@ -777,7 +777,8 @@ def _bench_import(args: argparse.Namespace) -> int:
         skip_load=args.skip_load,
         descriptions=args.descriptions,
         with_evidence=args.with_evidence,
-        keep_unverified=args.keep_unverified,
+        exclude_semantic_difference=args.exclude_semantic_difference,
+        allow_ci_collation=args.allow_ci_collation,
         skip_config=args.skip_config,
         base_config=Path(args.base_config) if args.base_config else None,
         max_rows=args.max_rows if args.max_rows is not None else cfg.settings.max_rows_returned,
@@ -1376,10 +1377,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="The schemas are already loaded: compare their row counts with the source and go on.",
     )
     bird.add_argument(
-        "--keep-unverified", action="store_true", default=False, dest="keep_unverified",
+        "--exclude-semantic-difference", action="store_true", default=False,
+        dest="exclude_semantic_difference",
         help=(
-            "Score questions whose load fidelity could not be checked (the reference could not be "
-            "transpiled or failed on the copy); by default they are excluded."
+            "Remove the questions whose transpiled reference returned another result on the copy "
+            "although every table it reads is identical (a dialect-semantics difference). By default "
+            "they stay in, flagged and listed; the report gives the accuracy with and without them."
+        ),
+    )
+    bird.add_argument(
+        "--allow-ci-collation", action="store_true", default=False, dest="allow_ci_collation",
+        help=(
+            "Import into a database whose collation is not case- and accent-sensitive. Refused by "
+            "default: SQLite compares text case-sensitively, so such a database makes some correct "
+            "answers differ from the reference. The report flags it prominently."
         ),
     )
     bird.add_argument(

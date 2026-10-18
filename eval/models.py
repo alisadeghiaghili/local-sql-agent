@@ -78,6 +78,16 @@ GoldenCaseStatus = Literal[
     "active", "pending_expected", "pending_review", "reviewed", "excluded"
 ]
 
+#: Tag of a benchmark case whose transpiled reference returned another result on
+#: the SQL Server copy although every table it reads is identical (a dialect
+#: semantics difference). The case is scored; reports give the accuracy with and
+#: without these cases.
+SEMANTIC_DIFFERENCE_TAG = "fidelity:semantic_difference"
+
+#: Tag of a benchmark case whose reference could not be checked on the copy (it
+#: could not be transpiled, or failed there). Information only.
+UNVERIFIED_TAG = "fidelity:unverified"
+
 #: How a *stored* reference is compared with the executed result.
 #:
 #: ``"fingerprint"``
@@ -737,6 +747,33 @@ class EvalReport:
             },
         }
 
+    def fidelity_split(self) -> dict[str, Any]:
+        """The accuracy on all scored cases and without the semantic-difference cases.
+
+        A benchmark case flagged :data:`SEMANTIC_DIFFERENCE_TAG` is scored, but a
+        correct T-SQL answer may be unable to match its SQLite reference (integer
+        division, string comparison, a column SQLite stores as mixed types), so
+        both figures are given.
+
+        Examples
+        --------
+        >>> from eval.models import CaseResult
+        >>> rs = [CaseResult("a", "q", [], "pass", None, None, None, 0.0),
+        ...       CaseResult("b", "q", [SEMANTIC_DIFFERENCE_TAG], "fingerprint_mismatch", None, None, None, 0.0)]
+        >>> split = EvalReport("live", 2, 1, 50.0, {}, {}, 0, 0.0, 0.0, 0.0, rs, "x").fidelity_split()
+        >>> split["semantic_difference_cases"], split["all"]["pct"], split["without_semantic_difference"]["pct"]
+        (1, 50.0, 100.0)
+        """
+        from eval.stats import stratum_summary
+
+        kept = [r for r in self.results if SEMANTIC_DIFFERENCE_TAG not in r.tags]
+        return {
+            "semantic_difference_cases": len(self.results) - len(kept),
+            "unverified_cases": sum(1 for r in self.results if UNVERIFIED_TAG in r.tags),
+            "all": stratum_summary(self.passed, self.total),
+            "without_semantic_difference": stratum_summary(sum(1 for r in kept if r.passed), len(kept)),
+        }
+
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict (used by :mod:`eval.baseline`)."""
         return {
@@ -766,6 +803,11 @@ class EvalReport:
                 else {"correct": self.source_selection[0], "total": self.source_selection[1]}
             ),
             "benchmark": self.benchmark,
+            "fidelity": (
+                self.fidelity_split()
+                if self.benchmark or any(SEMANTIC_DIFFERENCE_TAG in r.tags for r in self.results)
+                else None
+            ),
             "intervals": self.intervals(),
             "results": [r.to_dict() for r in self.results],
         }

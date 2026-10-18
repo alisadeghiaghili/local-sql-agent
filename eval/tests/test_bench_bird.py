@@ -242,17 +242,16 @@ class TestImport:
         report = _import(package, tmp_path / "out", engine)
         cases = {c.id: c for c in load_golden_cases(tmp_path / "out" / "golden.jsonl")}
         assert len(cases) == 9
-        assert {i: c.status for i, c in cases.items() if c.status == "excluded"} == {
-            "bird_3": "excluded", "bird_4": "excluded", "bird_5": "excluded",
-        }
+        assert {i for i, c in cases.items() if c.status == "excluded"} == {"bird_3", "bird_4"}
         assert cases["bird_3"].exclusion_reason == "reference_failed"
         assert cases["bird_4"].exclusion_reason == "reference_empty"
-        assert cases["bird_5"].exclusion_reason == "load_fidelity"
-        assert all(c.is_runnable for i, c in cases.items() if i not in ("bird_3", "bird_4", "bird_5"))
-        assert report.scored == 6 and report.excluded == 3
-        assert report.excluded_by_reason() == {
-            "load_fidelity": 1, "reference_empty": 1, "reference_failed": 1,
-        }
+        assert all(c.is_runnable for i, c in cases.items() if i not in ("bird_3", "bird_4"))
+        assert report.scored == 7 and report.excluded == 2
+        assert report.excluded_by_reason() == {"reference_empty": 1, "reference_failed": 1}
+        # bird_5 reads a column SQLite stores as mixed types: the data are faithful, the
+        # semantics differ, so it stays in the count, flagged
+        assert "fidelity:semantic_difference" in cases["bird_5"].tags
+        assert report.flagged_by_kind() == {"semantic_difference": 1}
 
     def test_the_golden_format(self, package, target, tmp_path):
         engine, _ = target
@@ -280,10 +279,11 @@ class TestImport:
     def test_the_reference_result_comes_from_sqlite_not_from_the_copy(self, package, target, tmp_path):
         engine, _ = target
         _import(package, tmp_path / "out", engine)
-        excluded = next(c for c in load_golden_cases(tmp_path / "out" / "golden.jsonl") if c.id == "bird_5")
+        flagged = next(c for c in load_golden_cases(tmp_path / "out" / "golden.jsonl") if c.id == "bird_5")
         # the original holds 5 and 3 as integers; the copy holds them as text, so it would say 0
         with engine.connect() as conn:
-            assert conn.exec_driver_sql(excluded.expected_sql).scalar() == 0
+            assert conn.exec_driver_sql(flagged.expected_sql).scalar() == 0
+        assert flagged.expected_rows == [{"COUNT(*)": 2}]  # the stored reference is SQLite's
         scored = next(c for c in load_golden_cases(tmp_path / "out" / "golden.jsonl") if c.id == "bird_2")
         assert scored.expected_rows == [{"SUM(Total)": 21.75}]
 
@@ -309,12 +309,12 @@ class TestImport:
         with pytest.raises(SchemaNotEmpty, match="--replace"):
             _import(package, tmp_path / "out", engine)
         assert (tmp_path / "out" / "golden.jsonl").read_bytes() == before
-        assert _import(package, tmp_path / "out", engine, replace=True).scored == 6
+        assert _import(package, tmp_path / "out", engine, replace=True).scored == 7
 
     def test_skip_load_reuses_the_loaded_schemas_and_checks_their_counts(self, package, target, tmp_path):
         engine, _ = target
         _import(package, tmp_path / "out", engine)
-        assert _import(package, tmp_path / "again", engine, skip_load=True).scored == 6
+        assert _import(package, tmp_path / "again", engine, skip_load=True).scored == 7
         with engine.begin() as conn:
             conn.exec_driver_sql('DELETE FROM "shop"."Customer" WHERE "ID" = 3')
         with pytest.raises(LoadMismatch, match="shop.Customer"):
@@ -329,38 +329,29 @@ class TestImport:
         with pytest.raises(ValueError, match="no question is about: nope"):
             _import(package, tmp_path / "x", engine, dbs=("nope",), replace=True)
 
-    def test_unverified_questions_are_excluded_unless_kept(self, package, target, tmp_path, monkeypatch):
-        engine, _ = target
-        import eval.benchmarks.bird as bird
-
-        def broken(sql, schema, dialect):
-            raise ValueError("cannot be written")
-
-        monkeypatch.setattr(bird, "transpile_reference", broken)
-        report = _import(package, tmp_path / "out", engine)
-        assert report.excluded_by_reason()["fidelity_unverified"] == 7  # all that ran on SQLite
-        kept = _import(package, tmp_path / "kept", engine, replace=True, keep_unverified=True)
-        assert kept.scored == 7 and "fidelity_unverified" not in kept.excluded_by_reason()
-
     def test_the_import_report_lists_every_excluded_case(self, package, target, tmp_path):
         engine, _ = target
         _import(package, tmp_path / "out", engine)
         data = json.loads((tmp_path / "out" / "import_report.json").read_text(encoding="utf-8"))
-        assert data["totals"]["excluded_by_reason"] == {
-            "load_fidelity": 1, "reference_empty": 1, "reference_failed": 1,
-        }
+        assert data["totals"]["excluded_by_reason"] == {"reference_empty": 1, "reference_failed": 1}
+        assert data["totals"]["flagged"] == {"semantic_difference": 1}
         listed = {
             item["case_id"]: reason
             for db in data["databases"].values()
             for reason, items in db["excluded"].items() for item in items
         }
-        assert listed == {"bird_3": "reference_failed", "bird_4": "reference_empty", "bird_5": "load_fidelity"}
+        assert listed == {"bird_3": "reference_failed", "bird_4": "reference_empty"}
+        assert data["databases"]["shop"]["flagged"]["semantic_difference"][0]["case_id"] == "bird_5"
+        assert data["databases"]["shop"]["content"] == {
+            "schema": "shop", "faithful": True, "tables_compared": 3, "unfaithful": {},
+        }
         assert data["databases"]["shop"]["load"]["tables"]["Customer"] == {
             "source_rows": 3, "target_rows": 3, "columns": 4, "match": True,
         }
         text = (tmp_path / "out" / "import_report.txt").read_text(encoding="utf-8")
         assert "NOT this deployment's accuracy" in text and "CC BY-SA 4.0" in text
-        assert "bird_5" in text and "load_fidelity" in text
+        assert "bird_3" in text and "reference_failed" in text
+        assert "Semantic differences" in text and "bird_5" in text
         assert "CC BY-SA" in (tmp_path / "out" / "NOTICE.txt").read_text(encoding="utf-8")
 
     def test_nothing_of_the_benchmark_is_written_inside_the_package(self, package, target, tmp_path):
@@ -388,7 +379,7 @@ class TestStoredReference:
         assert mismatch.status == "fingerprint_mismatch" and "recorded reference rows" in mismatch.error
 
     def test_an_excluded_case_is_not_run(self, package, target, tmp_path):
-        case = self._case(package, target, tmp_path, "bird_5")
+        case = self._case(package, target, tmp_path, "bird_4")
         assert case.status == "excluded" and not case.is_runnable
 
     def test_the_ordering_of_the_reference_is_kept(self, package, target, tmp_path):

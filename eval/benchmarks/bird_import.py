@@ -5,12 +5,16 @@
 One import does, in order:
 
 1. locate the downloaded package and read the questions;
-2. refuse before writing anything if a target schema already holds tables
+2. refuse before writing anything if the target database is not case-sensitive
+   (unless ``--allow-ci-collation``) or a target schema already holds tables
    (unless ``--replace``), then copy each selected SQLite database into one
    schema of the target SQL Server database, named after the ``db_id``, and
-   check that every table has the same row count as the source;
-3. run every question's SQLite reference on the original file, transpile it,
-   run it on the copy and decide whether the case is scored
+   check that every table has the same row count **and the same content** as the
+   source (a table that differs is reported, and only the questions that read it
+   are excluded);
+3. run every question's SQLite reference on the original file and decide
+   whether the case is scored; the reference is also transpiled and run on the
+   copy as a per-query diagnostic that flags a case but never removes it
    (:mod:`eval.benchmarks.bird`);
 4. write ``golden.jsonl`` (and, with ``--with-evidence``,
    ``golden.with_evidence.jsonl``), overall and per database;
@@ -54,8 +58,12 @@ from eval.benchmarks.bird import (
 from eval.benchmarks.bird_config import InspectFn, default_base_config, draft_config
 from eval.benchmarks.sqlite_load import (
     DEFAULT_CHUNK,
+    ContentReport,
     LoadReport,
     SchemaNotEmpty,
+    collation_problem,
+    compare_contents,
+    database_collation,
     load_sqlite_schema,
     schema_is_empty,
     verify_loaded,
@@ -65,6 +73,7 @@ from eval.store import write_golden_cases, write_text_atomic
 
 __all__ = [
     "ATTRIBUTION",
+    "CollationError",
     "ImportOptions",
     "ImportReport",
     "LoadMismatch",
@@ -92,6 +101,21 @@ class LoadMismatch(ValueError):
     """A table on the target does not hold as many rows as its source."""
 
 
+class CollationError(ValueError):
+    """The target database is not case- and accent-sensitive, and ``--allow-ci-collation`` was not given."""
+
+
+#: The advice printed with a collation refusal and in the report.
+COLLATION_ADVICE = (
+    "SQLite compares text case- and accent-sensitively; a database that does not makes "
+    "WHERE name = 'abc' match 'ABC', and a correct T-SQL answer can then differ from the SQLite "
+    "reference through no fault of the model. Create the benchmark database with a "
+    "case-sensitive, accent-sensitive collation, for example "
+    "CREATE DATABASE BirdBench COLLATE Latin1_General_100_CS_AS_SC_UTF8 (SQL Server 2019 and "
+    "later; Latin1_General_100_CS_AS_SC or Latin1_General_BIN2 on older versions)."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ImportOptions:
     """What ``bench-import bird`` was asked to do.
@@ -111,8 +135,13 @@ class ImportOptions:
         Add the dataset's column descriptions to each ``schema.yaml``.
     with_evidence:
         Also write the evidence-hint variant of the golden files.
-    keep_unverified:
-        Score questions whose load fidelity could not be checked.
+    exclude_semantic_difference:
+        Remove the questions whose transpiled reference returned another result on
+        the copy although every table it reads is identical (reason
+        ``semantic_difference``). By default they stay in, flagged and listed.
+    allow_ci_collation:
+        Import into a case-insensitive database anyway; the report then says so
+        prominently.
     skip_config:
         Do not draft any ``project_config/``.
     base_config:
@@ -132,7 +161,8 @@ class ImportOptions:
     skip_load: bool = False
     descriptions: bool = False
     with_evidence: bool = False
-    keep_unverified: bool = False
+    exclude_semantic_difference: bool = False
+    allow_ci_collation: bool = False
     skip_config: bool = False
     base_config: Path | None = None
     max_rows: int = 1000
@@ -146,6 +176,8 @@ class ImportReport:
 
     options: dict[str, Any]
     loads: dict[str, LoadReport] = field(default_factory=dict)
+    contents: dict[str, ContentReport] = field(default_factory=dict)
+    collation: dict[str, Any] | None = None
     tallies: dict[str, Tally] = field(default_factory=dict)
     configs: dict[str, dict[str, object]] = field(default_factory=dict)
     generated_at: str = ""
@@ -157,6 +189,13 @@ class ImportReport:
     @property
     def excluded(self) -> int:
         return sum(t.total - t.scored for t in self.tallies.values())
+
+    def flagged_by_kind(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for tally in self.tallies.values():
+            for kind, items in tally.flagged.items():
+                counts[kind] = counts.get(kind, 0) + len(items)
+        return dict(sorted(counts.items()))
 
     def excluded_by_reason(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -177,11 +216,14 @@ class ImportReport:
                 "scored": self.scored,
                 "excluded": self.excluded,
                 "excluded_by_reason": self.excluded_by_reason(),
+                "flagged": self.flagged_by_kind(),
             },
+            "collation": self.collation,
             "databases": {
                 db: {
                     **tally.to_dict(),
                     "load": self.loads[db].to_dict() if db in self.loads else None,
+                    "content": self.contents[db].to_dict() if db in self.contents else None,
                 }
                 for db, tally in sorted(self.tallies.items())
             },
@@ -219,6 +261,7 @@ def run_import(
     *,
     inspect: InspectFn | None = None,
     progress: Callable[[str], None] = print,
+    collation: Callable[[Engine], str | None] = database_collation,
 ) -> ImportReport:
     """Run one import (see the module docstring).
 
@@ -234,6 +277,9 @@ def run_import(
         required unless ``options.skip_config``.
     progress:
         Receives progress lines.
+    collation:
+        Reads the default collation of the target database (``None`` when it
+        cannot be asked, as off SQL Server); a stub in tests.
 
     Returns
     -------
@@ -243,6 +289,9 @@ def run_import(
     ------
     FileNotFoundError, ValueError
         For an unusable package, an unknown ``--dbs`` entry or a bad limit.
+    CollationError
+        If the target database is case- or accent-insensitive and
+        ``allow_ci_collation`` is not set. Raised before anything is written.
     SchemaNotEmpty
         If a target schema holds tables and neither ``replace`` nor
         ``skip_load`` was given. Raised before anything is written.
@@ -260,11 +309,27 @@ def run_import(
         options={
             "dbs": dbs, "replace": options.replace, "skip_load": options.skip_load,
             "descriptions": options.descriptions, "with_evidence": options.with_evidence,
-            "keep_unverified": options.keep_unverified, "max_rows": options.max_rows,
+            "exclude_semantic_difference": options.exclude_semantic_difference,
+            "allow_ci_collation": options.allow_ci_collation, "max_rows": options.max_rows,
             "query_timeout_seconds": options.query_timeout,
         },
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
+
+    # 0. The collation decides whether a text comparison can match SQLite's.
+    name = collation(engine)
+    problem = collation_problem(name) if name else None
+    report.collation = {
+        "name": name, "checked": name is not None, "problem": problem,
+        "allowed": bool(problem and options.allow_ci_collation),
+    }
+    if problem:
+        if not options.allow_ci_collation:
+            raise CollationError(
+                f"the target database's collation {name} {problem}. {COLLATION_ADVICE} "
+                "Pass --allow-ci-collation to import anyway (the report will say so)."
+            )
+        progress(f"warning: collation {name} {problem}; imported anyway (--allow-ci-collation)")
 
     # 1. Refuse before anything is written.
     if not options.skip_load and not options.replace:
@@ -301,14 +366,24 @@ def run_import(
         for warning in load.warnings:
             progress(f"  warning: {warning}")
 
+    # 2b. Content: every table, not only the counts.
+    for db in dbs:
+        progress(f"comparing the content of schema {db} with the SQLite file")
+        report.contents[db] = compare_contents(
+            source.sqlite_path(db), engine, db, chunk_size=options.chunk_size
+        )
+        for table, detail in report.contents[db].unfaithful.items():
+            progress(f"  warning: {db}.{table} differs from the source ({detail})")
+
     # 3. One decision per question.
-    progress(f"checking {len(questions)} reference queries (SQLite, then the copy)")
+    progress(f"checking {len(questions)} reference queries (SQLite, then the copy as a diagnostic)")
     connections = open_connections(source, dbs)
     try:
         plain, hinted, report.tallies = build_cases(
             questions, connections, engine, max_rows=options.max_rows,
-            keep_unverified=options.keep_unverified, timeout=options.query_timeout,
-            progress=progress,
+            contents=report.contents,
+            exclude_semantic_difference=options.exclude_semantic_difference,
+            timeout=options.query_timeout, progress=progress,
         )
     finally:
         for conn in connections.values():
@@ -374,6 +449,16 @@ def render_import_report(report: ImportReport) -> str:
     lines = [
         f"BENCHMARK IMPORT ({BENCH_NAME}) -- {NOT_THE_DEPLOYMENT}",
         f"Generated {report.generated_at}",
+    ]
+    if report.collation and report.collation.get("problem"):
+        lines.append(
+            f"*** WARNING: the target database's collation {report.collation['name']} "
+            f"{report.collation['problem']} (imported with --allow-ci-collation). "
+            f"{COLLATION_ADVICE} ***"
+        )
+    elif report.collation and report.collation.get("name"):
+        lines.append(f"Target collation: {report.collation['name']} (case- and accent-sensitive).")
+    lines += [
         "",
         f"Questions: {report.scored + report.excluded}; scored {report.scored}; "
         f"excluded {report.excluded}",
@@ -382,6 +467,15 @@ def render_import_report(report: ImportReport) -> str:
     for reason in EXCLUSION_REASONS:
         if reason in by_reason:
             lines.append(f"  excluded, {reason}: {by_reason[reason]}")
+    flagged = report.flagged_by_kind()
+    lines.append(
+        f"  scored, flagged semantic_difference: {flagged.get('semantic_difference', 0)} "
+        "(kept in; reports give the accuracy with and without them)"
+    )
+    lines.append(
+        f"  scored, flagged fidelity_unverified: {flagged.get('fidelity_unverified', 0)} "
+        "(information only; the data were compared table by table)"
+    )
     lines.append("")
     lines.append("Per database:")
     for db, tally in sorted(report.tallies.items()):
@@ -396,6 +490,25 @@ def render_import_report(report: ImportReport) -> str:
                      + ("" if load.ok else "  MISMATCH"))
         for warning in load.warnings:
             lines.append(f"    warning: {warning}")
+    lines.append("")
+    lines.append("Table content compared with the SQLite source (every row, case and trailing spaces included):")
+    for db, content in sorted(report.contents.items()):
+        bad = content.unfaithful
+        lines.append(
+            f"  {db:<28s} {len(content.tables):>3d} tables, "
+            + ("all identical" if not bad else f"{len(bad)} DIFFER")
+        )
+        for table, detail in bad.items():
+            lines.append(f"    {table}: {detail} -- the questions that read it are excluded (load_fidelity)")
+    lines.append("")
+    lines.append("Semantic differences (scored; the transpiled reference gave another result on a faithful copy):")
+    any_flag = False
+    for db, tally in sorted(report.tallies.items()):
+        for case_id, detail in tally.flagged.get("semantic_difference", []):
+            any_flag = True
+            lines.append(f"  {case_id:<14s} {db:<24s} {detail}")
+    if not any_flag:
+        lines.append("  (none)")
     lines.append("")
     lines.append("Excluded cases (never scored; listed, not dropped):")
     any_excluded = False

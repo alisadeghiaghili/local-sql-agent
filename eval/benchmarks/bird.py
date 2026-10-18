@@ -20,17 +20,38 @@ The expected result of every question is produced by running the dataset's own
 ``SQL`` on the dataset's own ``.sqlite`` file, opened read-only. There is no
 translated reference, so a translation error cannot make a question wrong.
 
-The model is asked for T-SQL against a SQL Server copy of the data, so one more
-thing could go wrong: the copy might not answer the question the way the
-original does (case-sensitive text comparison, integer division, a date held as
-text...). The **load-fidelity check** catches that. The reference SQL is
-transpiled to T-SQL with ``sqlglot``, run on the SQL Server copy, and its
-result compared with the SQLite result by execution accuracy
-(:func:`eval.compare.compare_to_reference`). A question whose results differ is
-excluded from scoring with the reason ``load_fidelity``: it measures the load,
-not the model. The transpilation is used for this check and kept as the case's
-``expected_sql`` (for ordering, table retrieval and reading); in a stored run
-it is never executed.
+How the SQL Server copy is shown to be faithful
+-----------------------------------------------
+The model writes T-SQL against a copy of the data, so the copy must hold the
+same data as the original. That is checked on the **data**, not query by query:
+after the load every table is compared with its SQLite source by content
+(:func:`eval.benchmarks.sqlite_load.compare_contents`: an order-independent
+digest of the canonicalised rows, case and trailing spaces included). If every
+table matches, the data are faithful and no question is excluded for a doubt
+about the load. If a table differs, it is reported, and only the questions whose
+reference SQL reads that table are excluded, with the reason ``load_fidelity``.
+A text comparison needs more than equal data: SQLite is case-sensitive, so the
+target database must be too (:func:`eval.benchmarks.sqlite_load.collation_problem`).
+
+A second, per-query check is kept as a **diagnostic**. The reference is
+transpiled to T-SQL with ``sqlglot`` (the result is the case's ``expected_sql``,
+used for ordering, table retrieval and reading; a stored run never executes it),
+run on the copy, and compared with the SQLite result by execution accuracy. Its
+outcome is recorded on the case as a tag and never removes a question by itself:
+
+``fidelity:semantic_difference``
+    The transpiled reference returned another result although every table it
+    reads is identical. That is a dialect-semantics trap (integer division,
+    string comparison, NULL ordering, a column that SQLite stores as mixed
+    types), not a load problem. The question stays in: the model is asked to
+    answer the question correctly in T-SQL, so the SQLite answer is still the
+    right answer. These cases are counted and listed, and the report gives the
+    accuracy with and without them. ``exclude_semantic_difference`` removes them
+    (reason ``semantic_difference``).
+``fidelity:unverified``
+    The reference could not be transpiled, or failed on the copy (``julianday``,
+    a SQLite double-quoted string...). Information only: the data were already
+    shown faithful, so this never excludes a question.
 
 Cases that are not scored
 -------------------------
@@ -45,11 +66,9 @@ stays in the file, so the import report can list it:
     It returned as many rows as the server's row cap, so the model's capped
     result could never equal it.
 ``load_fidelity``
-    The transpiled reference ran on the SQL Server copy and returned another result.
-``fidelity_unverified``
-    The reference could not be transpiled, or the transpilation failed on the
-    SQL Server copy, so the copy could not be checked for this question.
-    ``keep_unverified`` scores these anyway.
+    The reference reads a table whose content differs between SQLite and the copy.
+``semantic_difference``
+    Only with ``exclude_semantic_difference``.
 """
 
 from __future__ import annotations
@@ -68,10 +87,10 @@ import sqlglot
 from sqlalchemy.engine import Engine
 from sqlglot import exp
 
-from eval.benchmarks.sqlite_load import open_sqlite_readonly
+from eval.benchmarks.sqlite_load import ContentReport, open_sqlite_readonly
 from eval.compare import ComparisonOptions, compare_to_reference
 from eval.fingerprint import fingerprint_dataframe
-from eval.models import GoldenCase
+from eval.models import SEMANTIC_DIFFERENCE_TAG, UNVERIFIED_TAG, GoldenCase
 from eval.rows import frame_to_rows
 
 __all__ = [
@@ -95,6 +114,7 @@ __all__ = [
     "read_descriptions",
     "run_reference",
     "target_dialect",
+    "tables_referenced",
     "transpile_reference",
     "unique_columns",
 ]
@@ -111,7 +131,7 @@ EXCLUSION_REASONS: tuple[str, ...] = (
     "reference_empty",
     "reference_too_large",
     "load_fidelity",
-    "fidelity_unverified",
+    "semantic_difference",
 )
 
 #: A reference that runs longer than this on SQLite is excluded (seconds).
@@ -511,6 +531,36 @@ def check_fidelity(
 # ---------------------------------------------------------------------------
 
 
+def tables_referenced(sql: str, known: Sequence[str]) -> list[str]:
+    """The tables of *known* that the SQLite *sql* reads (names compared without regard to case).
+
+    A name defined by a ``WITH`` clause is not a table. A query that cannot be
+    parsed is taken to read **every** table, so a doubt about the data can only
+    ever exclude more, never less.
+
+    Examples
+    --------
+    >>> tables_referenced("SELECT a FROM Orders AS o JOIN customer c ON o.k = c.k", ["Customer", "Orders", "Item"])
+    ['Customer', 'Orders']
+    >>> tables_referenced("WITH item AS (SELECT 1) SELECT * FROM item", ["Item"])
+    []
+    >>> tables_referenced("not sql at all (", ["A", "B"])
+    ['A', 'B']
+    """
+    try:
+        tree = sqlglot.parse_one(sql, read="sqlite")
+    except Exception:  # noqa: BLE001 - sqlglot raises several error types
+        return list(known)
+    ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+    by_lower = {name.lower(): name for name in known}
+    found = {
+        by_lower[table.name.lower()]
+        for table in tree.find_all(exp.Table)
+        if table.name and table.name.lower() not in ctes and table.name.lower() in by_lower
+    }
+    return sorted(found)
+
+
 @dataclass(frozen=True, slots=True)
 class Decision:
     """What the importer decided about one question.
@@ -520,17 +570,21 @@ class Decision:
     reason:
         ``None`` when the case is scored, else one of :data:`EXCLUSION_REASONS`.
     detail:
-        A short, value-free explanation of the reason.
+        A short, value-free explanation of the reason (or of the flag).
     expected_sql:
         The transpiled reference (or the SQLite SQL when it could not be transpiled).
     frame:
         The SQLite result, when there is one.
+    flag:
+        For a scored case, the outcome of the per-query diagnostic when it was
+        not clean: ``"semantic_difference"`` or ``"fidelity_unverified"``.
     """
 
     reason: str | None
     detail: str
     expected_sql: str
     frame: pd.DataFrame | None = None
+    flag: str | None = None
 
 
 def decide(
@@ -539,12 +593,20 @@ def decide(
     engine: Engine | None,
     *,
     max_rows: int,
-    keep_unverified: bool = False,
+    content: ContentReport | None = None,
+    exclude_semantic_difference: bool = False,
     options: ComparisonOptions | None = None,
     timeout: float = DEFAULT_QUERY_TIMEOUT,
     dialect: str | None = None,
 ) -> Decision:
-    """Run the reference, transpile it, check the load, and decide whether the case is scored.
+    """Run the reference, look at the data it reads, run the diagnostic, and decide.
+
+    In order: a reference that fails, returns nothing or hits the row cap
+    excludes the case; a reference that reads a table whose content differs on
+    the copy excludes it as ``load_fidelity``; otherwise the case is scored, and
+    the transpiled reference is run on the copy as a diagnostic that can only
+    *flag* it (``semantic_difference``, ``fidelity_unverified``) -- or exclude it
+    as ``semantic_difference`` when *exclude_semantic_difference* is set.
 
     Parameters
     ----------
@@ -553,13 +615,15 @@ def decide(
     source_conn:
         Read-only connection to the original SQLite database.
     engine:
-        The SQL Server copy (admin login). ``None`` skips the load-fidelity
-        check, and every question is then ``fidelity_unverified`` unless
-        *keep_unverified*.
+        The SQL Server copy (admin login). ``None`` skips the diagnostic.
     max_rows:
         The row cap of the server.
-    keep_unverified:
-        Score a case whose load fidelity could not be checked.
+    content:
+        The content comparison of this question's database
+        (:func:`~eval.benchmarks.sqlite_load.compare_contents`); ``None`` means
+        it was not made and every table is taken as faithful.
+    exclude_semantic_difference:
+        Remove the cases flagged ``semantic_difference`` instead of keeping them.
     options, timeout, dialect:
         Comparison tolerance; seconds a query may run; the target's sqlglot
         dialect (derived from *engine* when omitted).
@@ -572,12 +636,14 @@ def decide(
     >>> _ = conn.execute("INSERT INTO t VALUES (1)")
     >>> q = BirdQuestion("1", "ca", "Which?", "", "SELECT a FROM t")
     >>> d = decide(q, conn, None, max_rows=100, dialect="tsql")
-    >>> d.reason, d.expected_sql
-    ('fidelity_unverified', 'SELECT [a] FROM [ca].[t]')
-    >>> decide(q, conn, None, max_rows=100, dialect="tsql", keep_unverified=True).reason is None
-    True
+    >>> d.reason, d.flag, d.expected_sql
+    (None, 'fidelity_unverified', 'SELECT [a] FROM [ca].[t]')
     >>> decide(BirdQuestion("2", "ca", "q", "", "SELECT x FROM t"), conn, None, max_rows=100).reason
     'reference_failed'
+    >>> from eval.benchmarks.sqlite_load import TableContent
+    >>> bad = ContentReport("ca", [TableContent("t", 1, 1, False, ("a",))])
+    >>> decide(q, conn, None, max_rows=100, content=bad).reason
+    'load_fidelity'
     """
     reference = run_reference(source_conn, question.sql, max_rows=max_rows, timeout=timeout)
     if reference.outcome != "ok":
@@ -594,13 +660,23 @@ def decide(
     try:
         expected_sql = transpile_reference(question.sql, question.db_id, target)
     except Exception as exc:  # noqa: BLE001 - sqlglot raises several error types
-        detail = f"could not be transpiled ({type(exc).__name__})"
-        return Decision(None if keep_unverified else "fidelity_unverified", detail, question.sql, frame)
+        expected_sql = question.sql
+        transpile_error: str | None = f"could not be transpiled ({type(exc).__name__})"
+    else:
+        transpile_error = None
 
+    if content is not None:
+        unfaithful = content.unfaithful
+        touched = [t for t in tables_referenced(question.sql, content.table_names) if t in unfaithful]
+        if touched:
+            detail = "; ".join(f"{t}: {unfaithful[t]}" for t in touched)
+            return Decision("load_fidelity", f"differs from the SQLite source -- {detail}", expected_sql, frame)
+
+    if transpile_error is not None:
+        return Decision(None, transpile_error, expected_sql, frame, flag="fidelity_unverified")
     if engine is None:
         return Decision(
-            None if keep_unverified else "fidelity_unverified",
-            "the SQL Server copy was not queried", expected_sql, frame,
+            None, "the SQL Server copy was not queried", expected_sql, frame, flag="fidelity_unverified"
         )
     verdict, message = check_fidelity(
         engine, expected_sql, frame, dialect=target, options=options, timeout=timeout
@@ -608,10 +684,13 @@ def decide(
     if verdict == "same":
         return Decision(None, "", expected_sql, frame)
     if verdict == "differs":
-        return Decision("load_fidelity", message, expected_sql, frame)
+        detail = f"{message}, although every table it reads is identical"
+        if exclude_semantic_difference:
+            return Decision("semantic_difference", detail, expected_sql, frame)
+        return Decision(None, detail, expected_sql, frame, flag="semantic_difference")
     return Decision(
-        None if keep_unverified else "fidelity_unverified",
-        f"the transpiled reference failed on the copy ({message})", expected_sql, frame,
+        None, f"the transpiled reference failed on the copy ({message})", expected_sql, frame,
+        flag="fidelity_unverified",
     )
 
 
@@ -620,9 +699,11 @@ def golden_case(
 ) -> GoldenCase:
     """The golden case of *question* under *decision*.
 
-    Tags are ``bench:bird``, ``db:<db_id>`` and ``difficulty:<x>``. A scored
-    case carries the SQLite result as ``expected_rows`` with ``match="execution"``,
-    which is what ``run --reference stored`` compares with.
+    Tags are ``bench:bird``, ``db:<db_id>`` and ``difficulty:<x>``, plus
+    ``fidelity:semantic_difference`` or ``fidelity:unverified`` when the
+    per-query diagnostic flagged the case. A scored case carries the SQLite
+    result as ``expected_rows`` with ``match="execution"``, which is what
+    ``run --reference stored`` compares with.
 
     Parameters
     ----------
@@ -645,6 +726,9 @@ def golden_case(
     'schools = rows of frpm'
     >>> golden_case(q, Decision("load_fidelity", "result values differ", "SELECT 1", frame)).exclusion_reason
     'load_fidelity'
+    >>> flagged = golden_case(q, Decision(None, "result values differ", "SELECT 1", frame, "semantic_difference"))
+    >>> flagged.status, flagged.tags[-1]
+    ('active', 'fidelity:semantic_difference')
     """
     text = question.question
     if with_evidence and question.evidence:
@@ -656,6 +740,9 @@ def golden_case(
         f"transpilation (used for ordering and table retrieval, not executed by a stored run). "
         f"SQLite SQL: {question.sql}"
     )
+    if decision.reason is None and decision.flag is not None:
+        tags.append(SEMANTIC_DIFFERENCE_TAG if decision.flag == "semantic_difference" else UNVERIFIED_TAG)
+        notes += f" Per-query check ({decision.flag}): {decision.detail}; the case is scored."
     common: dict[str, Any] = {
         "id": f"bird_{question.question_id}",
         "question": text,
@@ -680,14 +767,17 @@ def golden_case(
 
 @dataclass(slots=True)
 class Tally:
-    """Counts of scored and excluded cases, with the excluded ones listed."""
+    """Counts of scored and excluded cases; the excluded and the flagged ones are listed."""
 
     scored: int = 0
     excluded: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    flagged: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
     def add(self, case_id: str, decision: Decision) -> None:
         if decision.reason is None:
             self.scored += 1
+            if decision.flag is not None:
+                self.flagged.setdefault(decision.flag, []).append((case_id, decision.detail))
         else:
             self.excluded.setdefault(decision.reason, []).append((case_id, decision.detail))
 
@@ -696,13 +786,17 @@ class Tally:
         return self.scored + sum(len(v) for v in self.excluded.values())
 
     def to_dict(self) -> dict[str, Any]:
+        def listed(groups: Mapping[str, list[tuple[str, str]]]) -> dict[str, Any]:
+            return {
+                name: [{"case_id": cid, "detail": detail} for cid, detail in items]
+                for name, items in sorted(groups.items())
+            }
+
         return {
             "total": self.total,
             "scored": self.scored,
-            "excluded": {
-                reason: [{"case_id": cid, "detail": detail} for cid, detail in items]
-                for reason, items in sorted(self.excluded.items())
-            },
+            "excluded": listed(self.excluded),
+            "flagged": listed(self.flagged),
         }
 
 
@@ -712,7 +806,8 @@ def build_cases(
     engine: Engine | None,
     *,
     max_rows: int,
-    keep_unverified: bool = False,
+    contents: Mapping[str, ContentReport] | None = None,
+    exclude_semantic_difference: bool = False,
     options: ComparisonOptions | None = None,
     timeout: float = DEFAULT_QUERY_TIMEOUT,
     progress: Callable[[str], None] | None = None,
@@ -726,8 +821,10 @@ def build_cases(
     connections:
         ``{db_id: read-only SQLite connection}``.
     engine:
-        The SQL Server copy, or ``None`` to skip the load-fidelity check.
-    max_rows, keep_unverified, options, timeout:
+        The SQL Server copy, or ``None`` to skip the per-query diagnostic.
+    contents:
+        ``{db_id: content comparison}``; see :func:`decide`.
+    max_rows, exclude_semantic_difference, options, timeout:
         See :func:`decide`.
     progress:
         Called now and then with a short message.
@@ -738,7 +835,9 @@ def build_cases(
     for position, question in enumerate(questions, start=1):
         decision = decide(
             question, connections[question.db_id], engine, max_rows=max_rows,
-            keep_unverified=keep_unverified, options=options, timeout=timeout,
+            content=(contents or {}).get(question.db_id),
+            exclude_semantic_difference=exclude_semantic_difference,
+            options=options, timeout=timeout,
         )
         case = golden_case(question, decision)
         plain.append(case)

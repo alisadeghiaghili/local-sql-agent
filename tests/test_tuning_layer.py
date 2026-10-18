@@ -146,6 +146,15 @@ _ALLOWED_MODULE_CONSTANTS = {
         "implementation detail -- rows per insert batch of the benchmark loader, the "
         "default of --chunk-size; it changes no result"
     ),
+    "eval/benchmarks/sqlite_load.py::FLOAT_SIGNIFICANT_DIGITS": (
+        "definition of 'the same data' -- floats are compared after being written with "
+        "12 significant digits, documented in the runbook; a knob would let two imports "
+        "of one benchmark disagree on whether the copy is faithful"
+    ),
+    "eval/benchmarks/sqlite_load.py::_MODULUS": (
+        "implementation detail -- the table digest is a sum of 128-bit row hashes, "
+        "modulo 2**128"
+    ),
     "eval/benchmarks/sqlite_load.py::_PK_MAX_CHARS": (
         "platform invariant -- SQL Server's index key limit is 900 bytes, 450 NVARCHAR "
         "characters; a longer primary key cannot be created, so this is not a knob"

@@ -23,7 +23,12 @@ benchmark:
   statements, and a key the target refuses (SQL Server compares text without
   regard to case by default, SQLite does not) is reported as a warning, never
   fatal: the data are what matters.
-* Afterwards every table's row count on the target is compared with the source.
+* Afterwards every table's row count on the target is compared with the source,
+  and then its **content** (:func:`compare_contents`): each row is reduced to a
+  canonical form (integers as integers, floats rounded to 12 significant digits,
+  text exactly as it is, trailing spaces and case included, blobs by their SHA-256)
+  and hashed, and the sum of the row hashes is an order-independent digest of the
+  table that is computed in Python on both sides, chunk by chunk.
 * The load refuses a schema that already holds tables unless ``replace`` is
   given, so running it twice cannot silently merge two copies.
 
@@ -33,9 +38,10 @@ read-only login; see runbook 18.7.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -47,14 +53,20 @@ from sqlalchemy.engine import Engine
 __all__ = [
     "ColumnKind",
     "ColumnObservation",
+    "ContentReport",
     "LoadReport",
     "SchemaNotEmpty",
     "SourceColumn",
     "SourceForeignKey",
     "SourceTable",
+    "TableContent",
     "TableLoad",
+    "collation_problem",
     "column_kind",
+    "compare_contents",
     "create_target_engine",
+    "database_collation",
+    "digest_rows",
     "load_sqlite_schema",
     "open_sqlite_readonly",
     "post_load_statements",
@@ -735,6 +747,313 @@ def load_sqlite_schema(
         if table.primary_key and not _primary_key_columns(table) and engine.dialect.name == "mssql":
             report.warnings.append(f"{schema}: primary key of {table.name} skipped (type, NULLs or length)")
     return report
+
+
+# ---------------------------------------------------------------------------
+# Content fidelity
+# ---------------------------------------------------------------------------
+
+#: Floats are compared after being written with this many significant digits
+#: (a relative tolerance of about 5e-13): far below any difference a query could
+#: see, and enough to absorb a driver that does not return the exact double.
+FLOAT_SIGNIFICANT_DIGITS = 12
+
+_MODULUS = 1 << 128
+
+
+def _cell_bytes(kind: ColumnKind, value: Any) -> bytes:
+    """One cell in the canonical form that is hashed.
+
+    Examples
+    --------
+    >>> _cell_bytes("integer", 7), _cell_bytes("integer", None)
+    (b'i7', b'N')
+    >>> _cell_bytes("float", 0.1 + 0.2) == _cell_bytes("float", 0.3)
+    True
+    >>> _cell_bytes("float", -0.0)
+    b'f0'
+    >>> _cell_bytes("text", "Ab ") == _cell_bytes("text", "Ab")
+    False
+    >>> _cell_bytes("text", "Ab") == _cell_bytes("text", "AB")
+    False
+    >>> _cell_bytes("blob", b"\\x00\\x01")[:1]
+    b'b'
+    """
+    if value is None:
+        return b"N"
+    if kind == "integer":
+        return b"i" + str(int(value)).encode("ascii")
+    if kind == "float":
+        number = float(value)
+        return b"f" + (b"0" if number == 0.0 else format(number, f".{FLOAT_SIGNIFICANT_DIGITS}g").encode("ascii"))
+    if kind == "blob":
+        return b"b" + hashlib.sha256(bytes(value)).digest()
+    return b"s" + str(value).encode("utf-8", "surrogatepass")
+
+
+def _hash_bytes(parts: Sequence[bytes]) -> int:
+    digest = hashlib.blake2b(digest_size=16)
+    for part in parts:
+        digest.update(len(part).to_bytes(4, "big"))
+        digest.update(part)
+    return int.from_bytes(digest.digest(), "big")
+
+
+@dataclass(frozen=True, slots=True)
+class RowDigest:
+    """An order-independent digest of a table: its row count and the sum of its row hashes.
+
+    ``columns`` holds the same sum per column, when it was asked for, to say
+    *which* column differs.
+    """
+
+    rows: int
+    total: int
+    columns: tuple[int, ...] | None = None
+
+
+def digest_rows(
+    rows: Iterable[Sequence[Any]], columns: Sequence[SourceColumn], *, per_column: bool = False
+) -> RowDigest:
+    """The :class:`RowDigest` of *rows* (tuples in the order of *columns*).
+
+    Each value is first converted exactly as the loader converts it, then
+    canonicalised (:func:`_cell_bytes`); a row hashes to 128 bits and the hashes
+    are added modulo 2**128, so the order of the rows does not matter and a
+    repeated row counts twice.
+
+    Examples
+    --------
+    >>> cols = (SourceColumn("a", "INTEGER", True, "integer", ColumnObservation()),
+    ...         SourceColumn("b", "TEXT", True, "text", ColumnObservation()))
+    >>> one = digest_rows([(1, "x"), (2, "y")], cols)
+    >>> one == digest_rows([(2, "y"), (1, "x")], cols)
+    True
+    >>> one == digest_rows([(1, "x"), (2, "y "), ], cols), one == digest_rows([(1, "x"), (2, "Y")], cols)
+    (False, False)
+    >>> digest_rows([(1, "x"), (1, "x")], cols) == digest_rows([(1, "x")], cols)
+    False
+    >>> digest_rows([(1, "x"), (2, "z")], cols, per_column=True).columns == \\
+    ...     digest_rows([(1, "x"), (2, "y")], cols, per_column=True).columns
+    False
+    """
+    converters = [_converter(c) for c in columns]
+    kinds = [c.kind for c in columns]
+    count = 0
+    total = 0
+    per = [0] * len(columns) if per_column else None
+    for row in rows:
+        cells = [_cell_bytes(k, f(v)) for k, f, v in zip(kinds, converters, row)]
+        total = (total + _hash_bytes(cells)) % _MODULUS
+        count += 1
+        if per is not None:
+            for i, cell in enumerate(cells):
+                per[i] = (per[i] + _hash_bytes([cell])) % _MODULUS
+    return RowDigest(count, total, tuple(per) if per is not None else None)
+
+
+@dataclass(frozen=True, slots=True)
+class TableContent:
+    """Whether one table holds the same data on the target as in the source."""
+
+    name: str
+    source_rows: int
+    target_rows: int
+    same: bool
+    differing_columns: tuple[str, ...] = ()
+
+    @property
+    def detail(self) -> str:
+        """A short, value-free description of the difference (empty when the table is the same)."""
+        if self.same:
+            return ""
+        if self.source_rows != self.target_rows:
+            return f"{self.source_rows} rows in the source, {self.target_rows} on the target"
+        if self.differing_columns:
+            return "column(s) differ: " + ", ".join(self.differing_columns)
+        return "the rows differ"
+
+
+@dataclass(slots=True)
+class ContentReport:
+    """The content comparison of one schema."""
+
+    schema: str
+    tables: list[TableContent] = field(default_factory=list)
+
+    @property
+    def table_names(self) -> list[str]:
+        return [t.name for t in self.tables]
+
+    @property
+    def unfaithful(self) -> dict[str, str]:
+        """``{table: what differs}`` for every table that is not the same."""
+        return {t.name: t.detail for t in self.tables if not t.same}
+
+    @property
+    def faithful(self) -> bool:
+        return not self.unfaithful
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "faithful": self.faithful,
+            "tables_compared": len(self.tables),
+            "unfaithful": self.unfaithful,
+        }
+
+
+def _digest_source(conn: sqlite3.Connection, table: SourceTable, *, per_column: bool, chunk: int) -> RowDigest:
+    names = ", ".join(_q(c.name) for c in table.columns)
+    cursor = conn.execute(f"SELECT {names} FROM {_q(table.name)}")
+    return digest_rows(
+        (row for rows in _chunks(cursor, chunk) for row in rows), table.columns, per_column=per_column
+    )
+
+
+def _digest_target(
+    engine: Engine, schema: str, table: SourceTable, *, per_column: bool, chunk: int
+) -> RowDigest:
+    quote = engine.dialect.identifier_preparer.quote_identifier
+    names = ", ".join(quote(c.name) for c in table.columns)
+    sql = f"SELECT {names} FROM {quote(schema)}.{quote(table.name)}"
+    with engine.connect() as conn:
+        result = conn.exec_driver_sql(sql)
+
+        def rows() -> Iterator[Sequence[Any]]:
+            while True:
+                batch = result.fetchmany(chunk)
+                if not batch:
+                    return
+                yield from batch
+
+        return digest_rows(rows(), table.columns, per_column=per_column)
+
+
+def compare_contents(
+    source: str | Path, engine: Engine, schema: str, *, chunk_size: int = DEFAULT_CHUNK
+) -> ContentReport:
+    """Compare every table of *schema* on the target with the SQLite file, by content.
+
+    A count is not enough: a value changed on the way in, a text that lost its
+    trailing spaces or its case, a number that lost precision all keep the count.
+    Both sides are read in chunks and reduced to a :class:`RowDigest`; a table
+    whose digests differ is read once more with a digest per column, to name the
+    columns. A table missing on the target is reported as different.
+
+    Parameters
+    ----------
+    source:
+        The SQLite file.
+    engine, schema:
+        The target and its schema.
+    chunk_size:
+        Rows per fetch, on both sides.
+
+    Examples
+    --------
+    >>> import tempfile, os
+    >>> d = tempfile.mkdtemp()
+    >>> src = os.path.join(d, "src.sqlite")
+    >>> c = sqlite3.connect(src)
+    >>> _ = c.executescript("CREATE TABLE t (ID INTEGER PRIMARY KEY, Name TEXT); INSERT INTO t VALUES (1, 'Ada '), (2, 'Bo');")
+    >>> c.commit(); c.close()
+    >>> main = os.path.join(d, "main.db")
+    >>> sqlite3.connect(main).close()
+    >>> sqlite3.connect(os.path.join(d, "shop.db")).close()
+    >>> engine = sa.create_engine(f"sqlite:///{main}")
+    >>> @sa.event.listens_for(engine, "connect")
+    ... def _attach(dbapi_connection, _record):
+    ...     dbapi_connection.execute("ATTACH DATABASE ? AS shop", (os.path.join(d, "shop.db"),))
+    >>> _ = load_sqlite_schema(src, engine, "shop")
+    >>> compare_contents(src, engine, "shop").faithful
+    True
+    >>> with engine.begin() as conn:
+    ...     _ = conn.exec_driver_sql("UPDATE shop.t SET Name = 'Ada' WHERE ID = 1")
+    >>> compare_contents(src, engine, "shop").unfaithful
+    {'t': 'column(s) differ: Name'}
+    """
+    tables = reflect_source(source)
+    present = set(sa.inspect(engine).get_table_names(schema=schema))
+    report = ContentReport(schema=schema)
+    raw = open_sqlite_readonly(source)
+    try:
+        for table in tables:
+            if table.name not in present:
+                report.tables.append(TableContent(table.name, table.rows, -1, False))
+                continue
+            a = _digest_source(raw, table, per_column=False, chunk=chunk_size)
+            b = _digest_target(engine, schema, table, per_column=False, chunk=chunk_size)
+            if a == b:
+                report.tables.append(TableContent(table.name, a.rows, b.rows, True))
+                continue
+            differing: tuple[str, ...] = ()
+            if a.rows == b.rows:
+                a = _digest_source(raw, table, per_column=True, chunk=chunk_size)
+                b = _digest_target(engine, schema, table, per_column=True, chunk=chunk_size)
+                assert a.columns is not None and b.columns is not None
+                differing = tuple(
+                    c.name for c, x, y in zip(table.columns, a.columns, b.columns) if x != y
+                )
+            report.tables.append(TableContent(table.name, a.rows, b.rows, False, differing))
+    finally:
+        raw.close()
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Collation
+# ---------------------------------------------------------------------------
+
+
+def collation_problem(name: str) -> str | None:
+    """Why the collation *name* cannot reproduce SQLite's text comparison, or ``None``.
+
+    SQLite compares text case-sensitively and accent-sensitively. A SQL Server
+    database must too (``CS`` and ``AS`` in the name, or a binary ``BIN`` /
+    ``BIN2`` collation), or ``WHERE name = 'abc'`` matches ``'ABC'`` and a correct
+    answer can differ from the reference through no fault of the model.
+
+    Examples
+    --------
+    >>> collation_problem("Latin1_General_100_CS_AS_SC_UTF8") is None
+    True
+    >>> collation_problem("Latin1_General_BIN2") is None
+    True
+    >>> collation_problem("SQL_Latin1_General_CP1_CI_AS")
+    'is case-insensitive (CI)'
+    >>> collation_problem("Latin1_General_CS_AI")
+    'is accent-insensitive (AI)'
+    >>> collation_problem("Latin1_General_100")
+    'is not recognisably case- and accent-sensitive'
+    """
+    tokens = set(name.upper().split("_"))
+    if tokens & {"BIN", "BIN2"}:
+        return None
+    if "CI" in tokens:
+        return "is case-insensitive (CI)"
+    if "AI" in tokens:
+        return "is accent-insensitive (AI)"
+    if {"CS", "AS"} <= tokens:
+        return None
+    return "is not recognisably case- and accent-sensitive"
+
+
+def database_collation(engine: Engine) -> str | None:
+    """The default collation of the database *engine* is connected to; ``None`` off SQL Server.
+
+    Examples
+    --------
+    >>> database_collation(sa.create_engine("sqlite://")) is None
+    True
+    """
+    if engine.dialect.name != "mssql":
+        return None
+    with engine.connect() as conn:
+        value = conn.exec_driver_sql(
+            "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS NVARCHAR(128))"
+        ).scalar()
+    return str(value) if value is not None else None
 
 
 def verify_loaded(source: str | Path, engine: Engine, schema: str) -> LoadReport:

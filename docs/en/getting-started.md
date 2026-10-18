@@ -1520,8 +1520,9 @@ python -m eval.cli compare D:\bird\out\runs\model-a\report.json D:\bird\out\runs
 
 - **Its number is not your accuracy.** The questions are in English and about someone else's domain; the report says so in its first line, and it never replaces the golden set of this part.
 - **Two logins.** The load creates schemas and tables, so it takes its own administrator login (`--target-url`); the application reads the benchmark database with its normal read-only login. Never give the application's login the right to create anything.
-- **What is left out is listed.** Questions whose reference fails, returns nothing or differs after the data was copied to SQL Server are excluded from the count with a reason, and `import_report.txt` lists each one.
-- **Read the intervals.** Every percentage carries a 95% interval and its number of cases, a group of fewer than 20 cases is marked "not interpretable", and `compare` adds the paired test (section 18.3 of the runbook) for two models or two settings.
+- **A case-sensitive database.** SQLite compares text case-sensitively; in a database that does not, `WHERE name = 'abc'` also matches `'ABC'` and a correct answer can differ from the reference. The import reads the database's collation and, unless you pass `--allow-ci-collation`, refuses one that is not case- and accent-sensitive.
+- **The data is compared table by table.** After the load every table is compared with the SQLite file by content, not only by row count. Only the questions that read a table that differs, or whose reference fails or returns nothing, are excluded from the count, each with a reason, and `import_report.txt` lists them.
+- **Read both accuracies.** Every percentage carries a 95% interval and its number of cases, and a group of fewer than 20 cases is marked "not interpretable". The report gives the accuracy on all scored cases and, beside it, without the cases where the T-SQL dialect itself cannot give the SQLite answer; `compare` adds the paired test (section 18.3 of the runbook) for two models or two settings.
 
 ---
 

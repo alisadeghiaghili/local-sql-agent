@@ -3075,16 +3075,30 @@ importer is for.
 
 The load creates schemas and tables, which the application's login must never be
 allowed to do. Use **two logins** on a **separate database** (never your
-warehouse):
+warehouse), created **case-sensitive and accent-sensitive**:
 
 ```sql
-CREATE DATABASE BirdBench;
+CREATE DATABASE BirdBench COLLATE Latin1_General_100_CS_AS_SC_UTF8;   -- SQL Server 2019 and later
+-- older versions: COLLATE Latin1_General_100_CS_AS_SC  (or Latin1_General_BIN2)
 CREATE LOGIN bench_loader WITH PASSWORD = '...';   -- DDL rights: used by bench-import only
 CREATE LOGIN bench_reader WITH PASSWORD = '...';   -- read only: what the application uses
 USE BirdBench;
 CREATE USER bench_loader FOR LOGIN bench_loader;  ALTER ROLE db_owner ADD MEMBER bench_loader;
 CREATE USER bench_reader FOR LOGIN bench_reader;  ALTER ROLE db_datareader ADD MEMBER bench_reader;
 ```
+
+**Why the collation matters.** SQLite compares text case-sensitively and
+accent-sensitively. A default SQL Server database does not, so `WHERE name = 'abc'`
+also matches `'ABC'`, and a correct T-SQL answer can then differ from the SQLite
+reference through no fault of the model. The import reads
+`DATABASEPROPERTYEX(DB_NAME(), 'Collation')` and **refuses** a database that is not
+case- and accent-sensitive (a name with `CS` and `AS`, or a `BIN` / `BIN2` collation)
+before it writes anything, with the `CREATE DATABASE` line above in the message.
+`--allow-ci-collation` imports anyway; the first line of `import_report.txt` and a
+`WARNING` line in the header of every report then say the accuracy is a lower bound.
+Text columns are `NVARCHAR` in the database's collation, so primary keys and indexes
+work as usual (keys are limited to 450 characters, SQL Server's 900-byte limit); with
+a case-sensitive collation, two keys that differ only in case no longer collide.
 
 Each BIRD database becomes **one schema of that one database, named after its
 `db_id`**, so a combined configuration exercises the multi-schema handling and the
@@ -3095,10 +3109,15 @@ declared (SQLite does not enforce declared types): integers only `BIGINT`, numbe
 `NVARCHAR(n)` (dates stay the text they were, so a date is never silently
 reinterpreted), blobs `VARBINARY(MAX)`. Rows are inserted in chunks (pyodbc
 `fast_executemany` unless `--no-fast-executemany`); primary and foreign keys are
-added **after** the data, and one SQL Server refuses (its default collation ignores
-case, SQLite's does not) is a warning, not a failure. After the load every table's row
-count on SQL Server is compared with the SQLite file, and the import stops if one
-differs.
+added **after** the data, and one SQL Server refuses is a warning, not a failure.
+After the load every table's row count on SQL Server is compared with the SQLite file,
+and the import stops if one differs. Then every table is compared **by content**: each
+row is reduced to a canonical form (integers as integers; floats rounded to 12
+significant digits, a relative tolerance of about 5e-13; text exactly, case and
+trailing spaces included; blobs by their SHA-256) and hashed, and the sum of the row
+hashes is an order-independent digest of the table, computed in Python on both sides in
+chunks, so it works on large tables. A table whose digests differ is read again with a
+digest per column, to name the columns that differ.
 
 Run everything from a shell of its own, so the production `.env` is not touched
 (a variable exported in the shell wins over `.env`):
@@ -3118,7 +3137,10 @@ variable, so the password is not in the command line or the shell history). The
 configurations are drafted with the **application's** login: the inspector of §2.3
 runs as `bench_reader` through `DB_CONNECTION_URL` (or `--datasource NAME` for a
 source of `datasources.yaml`), so a draft lists exactly what the application can
-query. `--dbs a,b` imports only those databases. The import refuses a schema that
+query. `--dbs a,b` imports only those databases. A column that SQLite stores with mixed
+types (numbers and text in one column) is loaded as text, so the copy cannot answer a
+question about its storage type (`typeof`) as SQLite does; the importer lists these as
+semantic differences below. The import refuses a schema that
 already holds tables (exit `2`, nothing written): add `--replace` to drop and reload
 it, or `--skip-load` to keep what is there and only check its row counts against the
 SQLite files again.
@@ -3140,23 +3162,32 @@ SQLite files again.
   (§18.3: column names ignored, the order of rows only where the reference sorts with
   `TOP`). No reference is translated, so a translation error cannot make a question
   wrong. Cases have the tags `bench:bird`, `db:<db_id>` and `difficulty:<x>`.
-- **The load-fidelity check.** Because the model writes T-SQL against the copy, the copy
-  must answer like the original. The importer therefore transpiles each reference to
-  T-SQL (sqlglot), runs it on SQL Server and compares it with the SQLite result. A
-  question where they differ (a case-sensitive comparison, an integer division, a date
-  that was text) has `status: "excluded"` and `exclusion_reason: "load_fidelity"`: it
-  measures the load, not the model. The transpilation is kept as `expected_sql` for
-  reading, ordering and `eval.cli recall`; a stored run never executes it.
-- **Excluded cases are listed, never dropped.** `reference_failed` (the SQLite
-  reference errors or runs over `--query-timeout`), `reference_empty` (no row, or only
-  NULLs), `reference_too_large` (as many rows as `MAX_ROWS_RETURNED`, which the server
-  would cut), `load_fidelity`, and `fidelity_unverified` (the reference could not be
-  transpiled, or failed on SQL Server, so the copy could not be checked; `--keep-unverified`
-  scores these anyway). They stay in `golden.jsonl`, are skipped by `run` (which prints
-  `Not scored: N of M case(s) -- excluded ...`) and are listed one by one with their
-  reason in `import_report.txt`. Expect `fidelity_unverified` to be common on a real
-  SQL Server, since sqlglot does not translate every SQLite function; read the list
-  before you trust the denominator.
+- **The data are shown faithful, not guessed from queries.** The table-content comparison
+  above is the load-fidelity check. If every table is identical, the copy is faithful and no
+  question is excluded for a doubt about the load. If a table differs, the import report
+  names it and the columns, and **only the questions whose reference SQL reads that table**
+  are excluded, with `exclusion_reason: "load_fidelity"`; the rest are unaffected.
+- **A per-query check, as a diagnostic only.** Each reference is also transpiled to T-SQL
+  (sqlglot), run on the copy and compared with the SQLite result. The transpilation is kept as
+  `expected_sql` for reading, ordering and `eval.cli recall`; a stored run never executes it.
+  The outcome is a tag on the case and never removes it by itself:
+  `fidelity:semantic_difference` when the result differs although every table the query reads
+  is identical (integer division, string comparison, NULL ordering, a mixed-type column: the
+  dialect's semantics, not the data), and `fidelity:unverified` when the reference cannot be
+  transpiled or fails on SQL Server (`julianday`, a SQLite double-quoted string...), which is
+  information only. A semantic-difference case **stays in the count by default**: the model
+  is asked to answer the question correctly in T-SQL, so the SQLite answer is still the right
+  answer, and dropping the questions that are hard to translate would inflate the accuracy.
+  They are counted and listed (`import_report.txt`, "Semantic differences"), and every report
+  gives the accuracy on all scored cases and, beside it, without them.
+  `--exclude-semantic-difference` removes them instead (reason `semantic_difference`).
+- **Excluded cases are listed, never dropped.** `reference_failed` (the SQLite reference errors
+  or runs over `--query-timeout`), `reference_empty` (no row, or only NULLs),
+  `reference_too_large` (as many rows as `MAX_ROWS_RETURNED`, which the server would cut),
+  `load_fidelity` (the reference reads a table that differs) and, only with the flag,
+  `semantic_difference`. They stay in `golden.jsonl`, are skipped by `run` (which prints
+  `Not scored: N of M case(s) -- excluded ...`) and are listed one by one with their reason in
+  `import_report.txt`. Transpilation trouble never excludes a case.
 - **Evidence.** Each question comes with an expert's `evidence` hint. Your analysts
   give none, so the default golden file has none. `--with-evidence` also writes
   `golden.with_evidence.jsonl`, the same cases with the hint appended under a marker, for
@@ -3204,8 +3235,14 @@ its own `--label`, or the next run replaces the last.
 #### Reading and sending the report
 
 The text report starts with the benchmark notice and says the mode, whether the hint was
-given and whether descriptions were added. The overall figure and every stratum (`db:*`,
-`difficulty:*`) carry a Wilson 95% interval and their `n`; a stratum under 20
+given and whether descriptions were added, then states how many cases were scored, how many
+were excluded and why, and how many are flagged (`Cases: scored 112; excluded 14
+(reference_empty 9, ...); semantic-difference cases kept in 5; ...`). It gives **two
+accuracies**: on all scored cases, and without the semantic-difference cases ("Without the 5
+semantic-difference case(s): ..."); the first is the figure for the model asked to answer in
+T-SQL, the second the figure where SQLite's and T-SQL's semantics cannot disagree, and the gap
+between them is the cost of the dialect. The overall figure and every stratum (`db:*`,
+`difficulty:*`, and the two `fidelity:*` tags) carry a Wilson 95% interval and their `n`; a stratum under 20
 cases is marked **not interpretable** (§18.3): with 30 questions in a database a single
 case moves its accuracy by three points. To compare two models or two settings use
 `compare` on the two merged `report.json`, not the two percentages.
