@@ -431,6 +431,15 @@ button { font-family: inherit; }
 .notice.error { background: var(--status-critical-bg); color: var(--status-critical); border: 1px solid color-mix(in srgb, var(--status-critical) 35%, transparent); }
 .notice.warn  { background: var(--status-warn-bg); color: var(--status-warn); border: 1px solid color-mix(in srgb, var(--status-warn) 35%, transparent); }
 .notice.info  { background: var(--status-neutral-bg); color: var(--ink); border: 1px solid var(--border); }
+/* .notice sets display:flex, which beats the [hidden] attribute's own
+   display:none; the diagnosis banner is shown and hidden through [hidden]. */
+.notice[hidden] { display: none; }
+/* The diagnosis banner (diagnosis.js) is several lines of text, one per
+   line of the message, with the .env line on a line of its own. */
+.notice.api-diagnosis {
+  margin: 12px 20px 0; white-space: pre-line; align-items: flex-start;
+  font-weight: 500; line-height: 1.9;
+}
 
 /* ── Transcript ──────────────────────────────────────────────────── */
 /* padding-block-end (logical — this is an RTL-first product, and "bottom"

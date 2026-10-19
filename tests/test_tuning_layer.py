@@ -118,6 +118,19 @@ _ALLOWED_MODULE_CONSTANTS = {
         "bundle's diagnosis may carry; bounds what an alias that smuggles a "
         "value into a name can export"
     ),
+    "api/cors_diagnostics.py::MAX_REMEMBERED_ORIGINS": (
+        "abuse bound -- how many distinct rejected origins the log middleware "
+        "remembers (and so logs); origins are attacker-supplied text, and a knob "
+        "would only be a way to let a request stream grow the set and the log"
+    ),
+    "api/cors_diagnostics.py::_MAX_PARSED_ORIGIN": (
+        "abuse bound -- an Origin header longer than this is never parsed for the "
+        "same-origin test (it is not a real origin); it changes no CORS decision"
+    ),
+    "core/cors_origins.py::MAX_ORIGIN_LENGTH": (
+        "abuse bound -- the most characters of a request-supplied origin that are "
+        "ever printed; a longer value is cut, never echoed whole"
+    ),
     "eval/compare.py::_CONTAINMENT_ROW_LIMIT": (
         "implementation detail -- the diagnosis' subset/superset check is a "
         "quadratic scan and is skipped past this many rows (the class then "

@@ -454,9 +454,9 @@ If the DBA of the second server requires it too, put `nolock: true` under `inven
 python -m scripts.verify_deployment
 ```
 
-It runs twenty-one checks (with several sources, the database checks run separately for each source): the settings, the mapping of tables to sources, the database connection, whether the login is read-only,
+It runs twenty-two checks (with several sources, the database checks run separately for each source): the settings, the mapping of tables to sources, the database connection, whether the login is read-only,
 the row cap and the timeout, whether the tables are in the right source, whether the structure of `schema.yaml` matches the databases, whether the model exists on the endpoint and answers each prompt itself, the API key, whether the audit-log and session-store paths are writable, the loading of `project_config/`, six checks that only read files and do not touch the database (five tell a raw draft from a configured setup; the sixth notices a table of `schema.yaml` that sits in a schema the setup tools are told not to scan),
-and whether the rate limit is sane; the table below describes each one. The last line is `N passed, N failed, N skipped` and must be `0 failed`. **Run this before every real deployment.**
+whether the rate limit is sane, and whether the address of the web UI is allowed by CORS; the table below describes each one. The last line is `N passed, N failed, N skipped` and must be `0 failed`. **Run this before every real deployment.**
 
 > **This test alone does not prove that your key works.** Without
 > `VERIFY_API_KEY` it only checks that the configured keys (`API_KEYS_FILE` or
@@ -474,6 +474,8 @@ and whether the rate limit is sane; the table below describes each one. The last
 > recognized`) — which looks like a failure of the script itself, not like
 > a difference between shells. Since 4.7.0 the script itself prints the right
 > form for the shell it was run in.
+
+> **The preflight cannot see the browser's address unless you tell it.** The script, the CLI and `curl` send no `Origin`, so they cannot notice that the page you open would be refused by CORS. Set `VERIFY_UI_ORIGIN` to the address people open the UI at, exactly as the browser's address bar shows it (for example `http://172.16.101.42:8077`), and the check `Web UI origin is allowed by CORS` passes or fails on it. Without it the check only advises.
 
 #### What each check means, and what to do on `[FAIL]`
 
@@ -502,6 +504,7 @@ Each line is `[PASS]`, `[FAIL]` or `[SKIP]` with the check name and the reason; 
 | `No live sample values in descriptions` | Looks at the text after each `e.g.` in a table description or column note (outside a parenthesis) for a run of 7 or more digits (phone-like; Persian digits too), exactly 10 digits (national-id-like) or a long segment of words with digits (address-like). Dates and plain words are left alone. | It never fails. A `[PASS]` line beginning with `advice: N note(s) in M table(s) seem to quote live sample values (phone-like: N, national-id-like: N, address-like: N); tables: <keys>` gives counts and table keys, never a value. A `schema.yaml` drafted before 6.13.0 quotes up to three values of each text column, and the notes go into the prompt sent to the model. Replace each `e.g.` list with a description of the column. | `schema.yaml` does not load. |
 | `No table in an excluded schema` | Reads `schema.yaml` and the exclusion rule of each table's source (the system schemas, `EXCLUDE_SCHEMAS` and the source's `exclude_schemas:`, section 0.3.3). A table counts when its schema (`db_schema`, or the key's qualifier) is excluded in every source it is assigned to; a table whose schema is unknown is never counted. | It never fails. A `[PASS]` line beginning `advice: N of M table(s) are in a schema the setup tools are told not to scan: <keys>` lists the first keys and the two fixes: remove the tables from `schema.yaml`, or narrow the exclusion. The exclusion only limits what the inspector and `sync_schema.py` propose, so such a table is still synced. | Nothing is excluded beyond the system schemas and no table is in one, or `schema.yaml` or `datasources.yaml` does not load. |
 | `Rate limit sane for deployment` | From `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST` works out the requests per second for each analyst, assuming `VERIFY_EXPECTED_ANALYSTS` people (default 10) share one key's bucket. | Fewer than 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS` or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
+| `Web UI origin is allowed by CORS` | Reads the settings only. With `VERIFY_UI_ORIGIN` set to the address people open the UI at, it looks for that origin in `CORS_ALLOWED_ORIGINS`. Without it nothing can be proved, so it only advises. | `<origin> is not in CORS_ALLOWED_ORIGINS (...)` together with the line to add: `CORS_ALLOWED_ORIGINS=<current list>,<origin>`. Add it and restart the server, or open the page with exactly an allowed address. Without `VERIFY_UI_ORIGIN` it never fails: an `advice:` appears when every allowed origin is loopback but `API_HOST` is not, or when exactly one non-loopback origin is allowed. List every address the page is opened with (IP address, host name, `localhost`) and set `VERIFY_UI_ORIGIN` to test one. | Never. |
 
 Note: up to 6.7.0 the `project_config/ loads` check read only six files and did not catch a missing `session_policy.yaml`, `memory_policy.yaml`, `retrieval_hints.yaml` or `system_prompt.md`; since 6.8.0 it reads all ten. A relative `PROJECT_CONFIG_DIR` is resolved from the repository root, as the server itself does.
 
@@ -842,6 +845,14 @@ CORS_ALLOWED_ORIGINS=http://your-ui-host:8080
 > If your UI's real origin (protocol + host + port) is not in this list, set the
 > `CORS_ALLOWED_ORIGINS` above and restart the server.
 
+When a request arrives from an origin that is not in the list, the server also writes one warning to its log, once for each origin. It names the origin and the line to add to `.env`:
+
+```
+CORS: origin 'http://localhost:8077' is not allowed (allowed: http://172.16.101.42:8077). Browsers show this as 'Failed to fetch'. To allow it add this line to .env and restart: CORS_ALLOWED_ORIGINS=http://172.16.101.42:8077,http://localhost:8077 -- or open the page with exactly an allowed address (scheme, host and port). Logged once per origin.
+```
+
+The page must be opened with **exactly** an allowed address: protocol, host and port. `http://localhost:8077` and `http://172.16.101.42:8077` are two different origins even when they are the same machine, and so are `localhost` and `127.0.0.1`. The variable replaces the default list, so write every address the page is opened with (IP address, host name, `localhost`), comma-separated. The web page and the admin panel show a red banner at the top that names the origin to add, instead of leaving you with three red lights; and the preflight check `Web UI origin is allowed by CORS` (section 0.4) tests an address before the first analyst opens the page.
+
 ### 2.4 Terminal 2 — the static files
 
 ```powershell
@@ -1098,6 +1109,9 @@ So a restored turn shows the question, the SQL and the real row count with a
 | `ModuleNotFoundError: No module named 'api'` | You ran the backend from `web/`. Run it from the repository root |
 | `localhost:8000` shows nothing in the browser | Correct — the UI is on 8080. Start terminal 2 |
 | All three lights are red but the CLI works | Almost always CORS. Section 2.3.1 |
+| All three lights are red and a red banner at the top lists two likely causes | The address of the page is not in `CORS_ALLOWED_ORIGINS`, or the API is down. The server log has the line `CORS: origin '...' is not allowed` with the `.env` line to add — section 2.3.1 |
+| Every admin card says «به API نرسید؛ پیام بالای صفحه را ببینید.» ("Could not reach the API; see the message at the top of the page") and a banner says the address is not the API | The API address saved in the browser (or in `web/js/config.js`) is the address of the static server itself. Type `http://<host>:8000` in the top bar and press «اتصال» ("Connect") — section 2.5 |
+| The server log has `OPTIONS /health ... 400 Bad Request` and nothing else | A browser at an origin that is not allowed; the `CORS: origin '...' is not allowed` line next to it says which — section 2.3.1 |
 | Only the LLM light is red but the CLI answers | Hover over the light — the tooltip gives the reason. If it says "does not implement /models", since 4.1.2 it no longer turns red |
 | `Failed to fetch` or `TRANSPORT_ERROR` | Either the backend is not up, or your origin is not allowed in `CORS_ALLOWED_ORIGINS` |
 | The UI says the backend is unreachable | Terminal 1 is not up, or the port differs |

@@ -64,6 +64,8 @@ _GRAPH = {
     # above, so no further additions are needed once it is here.
     "js/config.mjs": _JS_DIR / "config.js",
     "js/api.mjs": _JS_DIR / "api.js",
+    # main.js asks diagnosis.js whether a failed call's address is the API.
+    "js/diagnosis.mjs": _JS_DIR / "diagnosis.js",
 }
 
 # Matches a relative import/export specifier ending in .js, e.g.

@@ -510,6 +510,15 @@
   border-color: var(--status-warn);
 }
 
+/* The wrong-address / unreachable-API message (js/diagnosis.js): several
+ * lines, one per line of the message; the .env line stands on its own line. */
+.admin-banner-diagnosis {
+  background: var(--status-critical-bg);
+  color: var(--status-critical);
+  border-color: var(--status-critical);
+  white-space: pre-line;
+}
+
 .admin-loading {
   color: var(--muted);
   font-size: 0.82rem;

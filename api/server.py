@@ -54,6 +54,7 @@ import api.v2_routes as v2_routes
 # api/runner.py and translated to responses by the handlers that
 # register_handlers() attaches, so this module never names them.
 from api.auth import AuthMiddleware, get_principal_if_any, require_principal
+from api.cors_diagnostics import RejectedOriginLogMiddleware
 from api.errors import register_handlers
 from api.maintenance import require_not_in_maintenance
 from core.logging_setup import configure_stdlib_logging
@@ -418,7 +419,12 @@ app = FastAPI(
 # 5. CORSMiddleware          — a preflight OPTIONS request must get CORS
 #                              headers even when every other layer would
 #                              otherwise reject it
-# 6. SecurityHeadersMiddleware — outermost of all: must wrap even the
+# 6. RejectedOriginLogMiddleware — logs (once per origin) the Origin that
+#                              CORSMiddleware is about to refuse; it must sit
+#                              OUTSIDE CORSMiddleware because that layer
+#                              answers a refused preflight itself and never
+#                              passes it on. It changes no request or response.
+# 7. SecurityHeadersMiddleware — outermost of all: must wrap even the
 #                              exception-handling middleware FastAPI installs
 #                              beneath every add_middleware() layer, so an
 #                              error response carries the same headers as a
@@ -437,13 +443,18 @@ app.add_middleware(RequestIDMiddleware)
 # unaffected either way. Set CORS_ALLOWED_ORIGINS (comma-separated) to
 # unblock the bundled web/ UI when it is served from a different
 # origin/port than this API, e.g. CORS_ALLOWED_ORIGINS=http://localhost:8080.
+_cors_allowed_origins = list(cfg.settings.cors_allowed_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list(cfg.settings.cors_allowed_origins),
+    allow_origins=_cors_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Registered right after CORSMiddleware, so it wraps it (the last
+# add_middleware() call is the outermost). Given the very list CORSMiddleware
+# enforces, so what it reports is what is refused.
+app.add_middleware(RejectedOriginLogMiddleware, allowed_origins=_cors_allowed_origins)
 
 # Outermost of all: see the middleware-ordering comment above for why
 # SecurityHeadersMiddleware has to be the very last add_middleware() call.

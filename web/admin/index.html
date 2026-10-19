@@ -79,6 +79,10 @@
 <main class="admin-layout">
 
   <div id="admin-forbidden-banner" class="admin-banner admin-banner-warn" hidden></div>
+  <!-- Filled by main.js through js/diagnosis.js when the address in the top
+       bar is not the API, or the API was refused/unreachable: said once here,
+       each card then points to it. Text only (textContent). -->
+  <div id="admin-diagnosis-banner" class="admin-banner admin-banner-diagnosis" role="alert" hidden></div>
   <div id="admin-notice-area"></div>
 
   <!-- Health summary rail: the first thing an operator reads. Answers

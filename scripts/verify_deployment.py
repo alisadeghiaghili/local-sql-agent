@@ -65,6 +65,12 @@ There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
 the exit code, the summary line and the admin card need no new state. The file
 reading lives in :mod:`core.config_doctor`.
 
+``check_web_ui_origin_allowed`` is the one check that speaks for the browser,
+which sends an ``Origin`` that this script, the CLI and ``curl`` do not: with
+``VERIFY_UI_ORIGIN`` set to the address the web UI is opened with it PASSes when
+``CORS_ALLOWED_ORIGINS`` holds that origin and FAILs, printing the ``.env`` line,
+when it does not; without it, it only advises (settings only, no network).
+
 ``check_model_answers_each_prompt`` sends two tiny requests whose prompts differ
 only in a random token and fails when the endpoint answers the second with the
 first's token: a response cache (semantic or prefix) in a gateway in front of the
@@ -111,6 +117,7 @@ from sqlalchemy.exc import SQLAlchemyError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console
+from core.cors_origins import clean_origin, env_line, is_loopback_origin, parse_origin
 import config as cfg
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1212,6 +1219,76 @@ def check_rate_limit_sane_for_deployment() -> CheckResult:
     return CheckResult("Rate limit sane for deployment", "PASS", detail)
 
 
+def check_web_ui_origin_allowed() -> CheckResult:
+    """The address the web UI is opened with must be in ``CORS_ALLOWED_ORIGINS``.
+
+    A browser page whose origin is not allowed gets its preflight answered
+    ``400`` and reports only "Failed to fetch": every light red, while this
+    script, the CLI and a ``curl`` all pass (the 6.14.0 incident: the list
+    held ``http://172.16.101.42:8077`` and the page was opened as
+    ``http://localhost:8077``). Nothing else here can see that, because none
+    of them is a browser and none sends an ``Origin``.
+
+    With ``VERIFY_UI_ORIGIN`` set (the address as typed in the browser, e.g.
+    ``http://172.16.101.42:8077``; a trailing slash or path is ignored) the
+    check PASSes when that origin is in the list and FAILs otherwise, printing
+    the ``.env`` line that adds it. Without it nothing can be proved, so the
+    check only advises (a PASS whose detail starts ``advice:``), in the two
+    shapes that produced the incident: every allowed origin is loopback while
+    ``API_HOST`` makes the API reachable from other machines, or the list has
+    a single non-loopback origin so the same page opened any other way (the
+    host name, ``localhost``) is refused. It sees ``API_HOST`` only, not a
+    ``--host`` given to ``uvicorn`` on the command line. Settings only: no
+    network, no database.
+    """
+    name = "Web UI origin is allowed by CORS"
+    allowed = list(cfg.settings.cors_allowed_origins)
+    shown_list = ", ".join(allowed) or "(none)"
+    wildcard = "*" in allowed
+
+    raw = os.environ.get("VERIFY_UI_ORIGIN", "").strip()
+    if raw:
+        origin = parse_origin(raw)
+        if origin is None:
+            return CheckResult(
+                name, "FAIL",
+                f"VERIFY_UI_ORIGIN={clean_origin(raw, 80)!r} is not an address -- write it as scheme://host[:port], "
+                "exactly as the browser shows it (e.g. http://172.16.101.42:8077)",
+            )
+        if wildcard or origin in allowed:
+            return CheckResult(name, "PASS", f"{origin} is allowed (CORS_ALLOWED_ORIGINS={','.join(allowed)})")
+        return CheckResult(
+            name, "FAIL",
+            f"{origin} is not in CORS_ALLOWED_ORIGINS ({shown_list}): a page opened at that address "
+            f"gets 'Failed to fetch' and every light shows red. Set in .env and restart the API: "
+            f"{env_line(allowed, origin)} -- or open the page with exactly an allowed address "
+            "(scheme, host and port)",
+        )
+
+    how_to_check = "set VERIFY_UI_ORIGIN=<the address in the browser's address bar> to check it"
+    if wildcard:
+        return CheckResult(name, "PASS", f"any origin is allowed (CORS_ALLOWED_ORIGINS={','.join(allowed)})")
+    api_host = cfg.settings.api_host.strip()
+    api_host_url = f"http://[{api_host}]" if ":" in api_host else f"http://{api_host}"
+    reachable_elsewhere = bool(api_host) and not is_loopback_origin(api_host_url)
+    if allowed and all(is_loopback_origin(o) for o in allowed) and reachable_elsewhere:
+        return CheckResult(
+            name, "PASS",
+            f"advice: every allowed origin is loopback ({shown_list}) but API_HOST={api_host} makes the API "
+            "reachable from other machines; a page opened there by IP address or host name is refused. "
+            "List every address the page is opened with (IP address, host name, localhost) in "
+            f"CORS_ALLOWED_ORIGINS, and {how_to_check}",
+        )
+    if len(allowed) == 1 and not is_loopback_origin(allowed[0]):
+        return CheckResult(
+            name, "PASS",
+            f"advice: only {allowed[0]} is allowed; the same page opened any other way (the host name instead "
+            "of the IP address, localhost, another port) is refused. List every address the page is opened "
+            f"with (IP address, host name, localhost) in CORS_ALLOWED_ORIGINS, and {how_to_check}",
+        )
+    return CheckResult(name, "PASS", f"{len(allowed)} origin(s) allowed: {shown_list}; {how_to_check}")
+
+
 def check_table_datasources() -> CheckResult:
     """Every ``schema.yaml`` table must name a configured data source."""
     try:
@@ -1364,6 +1441,7 @@ _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_no_sample_values_in_descriptions,
     check_no_table_in_excluded_schema,
     check_rate_limit_sane_for_deployment,
+    check_web_ui_origin_allowed,
 ]
 
 

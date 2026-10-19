@@ -112,6 +112,12 @@
   </div>
 </header>
 
+<!-- Page-level answer to "the status lights are red": filled by main.js's
+     refreshHealth() through diagnosis.js only when the address this page
+     calls is not the API, or the call was refused/unreachable. Text only
+     (textContent); hidden whenever the status check succeeds. -->
+<div id="api-diagnosis" class="notice error api-diagnosis" role="alert" hidden></div>
+
 <div class="app-body">
 
   <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar">
