@@ -25,7 +25,7 @@ verified, running server, with the command for each step and how to tell it
 worked. The numbered sections hold the detail it links to. A deployment that
 queries more than one database also follows §16, in the order it gives. An
 installation already running any 6.x release (6.7.0 included) that is moving to
-6.14.1 follows §17, which sequences the upgrade notes of every release in between
+6.14.2 follows §17, which sequences the upgrade notes of every release in between
 into one checklist.
 Before sending logs or configuration to anyone for help, read §19.
 
@@ -85,7 +85,7 @@ is the sign you can move on: do not continue past a step that did not show it.
    `Tables are in their data source` (several databases), and with
    `Schema structure matches the databases` as soon as the databases differ from
    the file. A file that only lacks the recorded column types passes that check
-   with a note (step 14 of "Upgrading from 6.0 to 6.14.1", §17).
+   with a note (step 14 of "Upgrading from 6.0 to 6.14.2", §17).
    *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
    (§16.3).
 7. **Review the proposal, replace `schema.yaml`, check**: read
@@ -2060,10 +2060,10 @@ raw, un-encoded password in a new `DB_PASSWORD_*` variable; replace `url_env`
 with `password_env`; restart and run `python scripts/verify_deployment.py`.
 Remove the old `DB_URL_*` variable afterwards.
 
-## 17. Upgrading from 6.0 to 6.14.1
+## 17. Upgrading from 6.0 to 6.14.2
 
 One checklist for an installation that is running any 6.x release and is moving
-to 6.14.1. It puts the **Upgrading** notes of 6.0.1 to 6.14.1 in the order to do
+to 6.14.2. It puts the **Upgrading** notes of 6.0.1 to 6.14.2 in the order to do
 them, and adds what 6.7.0 and 6.9.0 bring that you will want to use (6.6.1 and
 6.7.0 have no **Upgrading** notes of their own); `CHANGELOG.md` has each
 release's full text. From 5.x, do the 6.0.0
@@ -2073,24 +2073,25 @@ refuses to start without it), and check a relative `PROJECT_CONFIG_DIR`,
 which is now resolved against the repository root.
 
 Every step names the release it comes from, so skip the ones for releases you
-already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 23, then
-the parts of step 24 that are new in 6.9.0, and step 25 if it contributes code;
-one on 6.8.0 does steps 1 to 3 and 11 to 23; one on 6.9.0 does steps 1 to 3 and
-15 to 23; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
+already run. An installation on **6.7.0** does steps 1 to 3, then 9 to 24, then
+the parts of step 25 that are new in 6.9.0, and step 26 if it contributes code;
+one on 6.8.0 does steps 1 to 3 and 11 to 24; one on 6.9.0 does steps 1 to 3 and
+15 to 24; one on 6.9.1 does steps 1 to 3, step 14 if it never ran
 `scripts/sync_schema.py` (which also records the column types the 6.9.2 note
 of step 3 is about), step 15 if a console-encoding workaround is still in place,
-and steps 16 to 22; one on 6.9.2 or 6.9.3 does steps 1 to 3, steps 16 to 21
-and the restart in step 22 (6.9.3 changes no configuration format); one on
-6.10.0 does steps 1 to 3, steps 17 to 21 and the restart in step 22; one on
-6.11.0 does steps 1 to 3, steps 18 to 21 and the restart in step 22; one on
-6.12.0 does steps 1 to 3, steps 19 to 21 and the restart in step 22; one on
-6.13.0 does steps 1 to 3, steps 20 and 21 and the restart in step 22; one on
-6.14.0 does steps 1 to 3, step 21 and the restart in step 22. Steps 1 to 4, 14
-and 16 to 23 apply to every installation. Steps 5 to
+and steps 16 to 23; one on 6.9.2 or 6.9.3 does steps 1 to 3, steps 16 to 22
+and the restart in step 23 (6.9.3 changes no configuration format); one on
+6.10.0 does steps 1 to 3, steps 17 to 22 and the restart in step 23; one on
+6.11.0 does steps 1 to 3, steps 18 to 22 and the restart in step 23; one on
+6.12.0 does steps 1 to 3, steps 19 to 22 and the restart in step 23; one on
+6.13.0 does steps 1 to 3, steps 20 to 22 and the restart in step 23; one on
+6.14.0 does steps 1 to 3, steps 21 and 22 and the restart in step 23; one on
+6.14.1 does steps 1 to 3, step 22 and the restart in step 23. Steps 1 to 4, 14
+and 16 to 24 apply to every installation. Steps 5 to
 8 are each optional: do the ones that fit (a password move, a key file, a UI on
 another origin, several databases). Steps 9 to 13 and 15 each say what to check or decide, and
 need no action on an installation that does not use the thing they change.
-Steps 24 and 25 come last on purpose.
+Steps 25 and 26 come last on purpose.
 
 1. **Back up** `.env` and `project_config/`. Both are outside the repository.
    If you already have a golden set (6.7.0 or later), record its baseline now,
@@ -2101,7 +2102,7 @@ Steps 24 and 25 come last on purpose.
    `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
    `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
    python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
-   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.14.1
+   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.14.2
    change no pin in `requirements.lock`, but run the command anyway.
 3. **Run the preflight before restarting**, in its own process:
    `python scripts/verify_deployment.py` (§3). Several releases made the
@@ -2339,7 +2340,7 @@ Steps 24 and 25 come last on purpose.
       confirmed answer becomes a reviewed golden case (tag `origin:confirmed`),
       and `python -m eval.cli verify --accept` checks that its SQL runs, not
       that the SQL is right, so a wrong confirmation would end up in the
-      accuracy gate of step 24. Check the `origin:confirmed` rows of
+      accuracy gate of step 25. Check the `origin:confirmed` rows of
       `scripts/golden_sheet.py export` before accepting them, or harvest with
       `--no-confirmations` until you trust the confirmations you see.
     - *Optional: `LLM_STREAM_TIMINGS=true`.* Set it in `.env` if the admin
@@ -2542,7 +2543,8 @@ Steps 24 and 25 come last on purpose.
       served by the API itself is same-origin. Do this in `.env` before the
       restart.
     - *Run the new preflight check (§3, §3.1).* `Web UI origin is allowed by
-      CORS` makes the preflight twenty-two checks with one data source. It reads
+      CORS` is one of the twenty-four checks the preflight has with one data
+      source (it made them twenty-two in 6.14.1; step 22 adds two). It reads
       settings only. Set `VERIFY_UI_ORIGIN` to the address as the browser's
       address bar shows it (`http://172.16.101.42:8077`) and it passes or fails
       on that address, printing the `.env` line to add; run it once per
@@ -2555,14 +2557,68 @@ Steps 24 and 25 come last on purpose.
       top of the admin panel and press «اتصال», or load the page once with
       `?base=http://<host>:8000`. The analyst page shows the same banner and
       names `web/js/config.js` (`DEFAULT_BASE_URL`).
-22. **Restart** (every change above, including `datasources.yaml` and
+22. **One entity per table, no row values in aliases, and drafts caught by the
+    preflight (6.14.2).** No setting is renamed or added, no file format
+    changes and `requirements.lock` has no new pin
+    (`git diff v6.14.1 -- requirements.lock` is empty). One template changed:
+    `project_config.example/entities.yaml` now names real keys of the
+    template's own `schema.yaml`. The server's answers, the audit log and the
+    CORS policy are as in 6.14.1; the changes are in the setup wizard, the
+    schema inspector and the preflight. Four things to read or do before the
+    restart:
+    - *If you ran the wizard of 6.13 or 6.14, check what it wrote (§2.2, §3,
+      §3.1).* It produced drafts that passed the preflight and answered almost
+      every question about one source with `OUT_OF_SCOPE`: two entities for
+      nearly every table, `aliases.yaml` full of raw values from the rows, an
+      empty `examples.yaml`. Run `python scripts/verify_deployment.py` on the
+      folder you deployed (or on the drafts, with `PROJECT_CONFIG_DIR` pointing
+      at them). The preflight now has twenty-four checks with one data source
+      (twenty-two before): `Entities match schema keys` lists the entities
+      that name no table of `schema.yaml` and the tables that have two, and
+      `Aliases hold no raw data values` counts the synonyms copied from rows.
+      Fix `entities.yaml` and `aliases.yaml`: one entity per table, under the
+      key `schema.yaml` uses, with the aliases of both united and the same
+      keys in `ring_aliases`; or restore the curated files from a backup or
+      version control and add new tables with
+      `python scripts/sync_schema.py --add-tables 'Schema.*'`. Running the new
+      wizard again over the same output folder does the merge for you and
+      prints what it merged.
+    - *Remove the value synonyms and read `aliases.yaml` for names (§2.2).* The
+      merge of the new wizard drops every `synonyms` key of an earlier
+      `aliases.yaml` that is a date, a time, a phone number, an IP address, a
+      masked value, a long digit string, an address, a hash or an error
+      message, and counts them per shape in the summary and in
+      `.setup_log.json`, never listing a key (`--keep-existing-synonyms` keeps
+      them). A key that is a person's name has no shape the check can
+      recognise: read the file yourself and delete such keys. The values were
+      in the prompt, and in git if the file was committed; treat a committed
+      copy as having published them. Copy the cleaned `aliases.yaml` into
+      `project_config/` yourself; the wizard never writes there on its own.
+    - *A preflight that passed on 6.14.1 can fail on this version (§3.1).*
+      `project_config/ is curated, not a raw draft` now sees a draft without
+      its header line: it fails when most table descriptions are only the key,
+      the bare name or `Schema.Table`, or most column descriptions are only
+      `<type> column`, with the counts, and the wizard's own header,
+      `# AUTO-GENERATED by setup_project.py`, counts as a draft header like the
+      inspector's. It is the same check telling you a file is a draft: restore
+      the curated files and add tables with `sync_schema.py --add-tables`, and
+      describe the ones you add. An `entities.yaml` copied from the older
+      template and never filled in fails `Entities match schema keys` too,
+      because `Entity1` is not a table of `schema.yaml`.
+    - *Scripts that run the wizard (§2.2).* It builds no synonym from a row
+      value unless `--value-synonyms` is given; it makes one model call per
+      data source for the examples, and says so, in the summary and in the
+      file, when the model gave none; and it drafts a value or volume rule only
+      for a fact table that has a numeric column that is not a key. It still
+      writes to `project_config_draft/` unless you say otherwise.
+23. **Restart** (every change above, including `datasources.yaml` and
     `schema.yaml`, takes effect at a restart). Then run the preflight once more
     with `VERIFY_API_KEY` set to an analyst's raw key (§3), and read the
     start-up log (§5): the provenance banner, `CORS allowed origins`, and with
     several sources one `Prompt path for data source` line each. Since 6.9.0
     each static-prefix source also logs an `LLM prefix warm-up` line a little
     later (§20.2).
-23. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
+24. **After the first day**, read the new audit fields (6.5.0, 6.9.0): a reader of
     `audit_log.jsonl` that does not know `datasource_selection` (6.5.0), or the
     `llm` block's `ttft_ms`, `generation_ms`, `reasoning_tokens` and
     `reasoning_tokens_estimated` (6.9.0; the first two are filled only with
@@ -2572,7 +2628,7 @@ Steps 24 and 25 come last on purpose.
     analysts will ask: the SQL shown in a conversation is laid out in a fixed
     style (6.5.0; display only, the statement that ran is unchanged), and a refused
     statement can be opened with the same layout.
-24. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
+25. **Start measuring accuracy** (6.7.0, optional but recommended). 6.7.0
     adds the tools that turn real usage into an evaluation set and a release
     gate: `python scripts/harvest_golden.py` (candidates from the audit log),
     `python scripts/golden_sheet.py export` and `import` (the analysts' review
@@ -2590,7 +2646,7 @@ Steps 24 and 25 come last on purpose.
     off unless set (§18.2), and `python -m eval.cli recall`, which measures table
     selection with no model and no database (§18.4). Nothing else in 6.7.0 changes
     how the server runs.
-25. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
+26. **Contributors only: install `requirements-dev.txt` (6.9.0).** It pins `ruff`
     to an exact version, and CI now has a `lint` job that fails on
     `ruff check .`. Run `pip install -r requirements.txt -r requirements-dev.txt`
     and `ruff check .` before pushing. A deployment that does not change this
