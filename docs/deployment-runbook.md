@@ -489,6 +489,7 @@ It asks questions as it goes, unless told not to. Its options:
 | `--dry-run` | Print the files and write none, the setup log included; the validation step is skipped. |
 | `--resume` | Continue from the first step `.setup_log.json` does not record as completed (see below). |
 | `--allow-repeated-answers` | Do not stop step 3 or 4 when 3 tables in a row get the identical answer from the model (see "It stops when the model repeats itself" below). Only for a genuinely tiny schema whose tables really are alike. |
+| `--keep-existing-synonyms` | When merging into an `aliases.yaml` that already holds synonyms, keep the keys that are values read from rows. By default they are dropped and counted per shape (see "No value from a row" below). |
 | `--value-synonyms` | Also write the `synonyms` of `aliases.yaml` from the values of label columns (name, title, kind, status, type) that hold at most 50 distinct values. Off by default: no synonym is built from a value read from a row (see "No value from a row" below). Even with it, dates and times, numbers and codes, phone numbers, e-mail and IP addresses, URLs, addresses, masked values (`xxx`, `***`), error text, anything over 40 characters, any column named like personal or contact data (`FirstName`, `Family`, `Mobile`, `Phone`, `Address`, `Email`, `NationalCode`, ...) and the `Name` or `Title` of a table of people (`Customer`, `Employee`, `User`, ...) are never taken; at most 20 per table. It reads up to 51 distinct values of each such column. |
 
 What it does, in order. Each step is recorded in `<output>/.setup_log.json`
@@ -614,9 +615,14 @@ Things to know before you run it:
   keys it wrote before you use them; in return no row value is in the prompt or in git by
   default. The setup log records the counts, never a value. The preflight check `Aliases
   hold no raw data values` (§3.1) counts the keys of an existing `aliases.yaml` that have
-  these shapes; the merge keeps the keys of an earlier run, so delete them by hand and the
-  summary says how many it found (`aliases.yaml: 37 synonym key(s) from an earlier run look
-  like raw data values (<date>: 20, <phone>: 9, ...) and were kept`).
+  these shapes. A re-run over an output folder that holds such an `aliases.yaml` drops
+  those keys (date, phone, IP, masked value, long digit string, address, hash, error
+  message) when it merges, and the summary and `.setup_log.json` give the count per shape,
+  never a key (`aliases.yaml: 37 synonym key(s) from an earlier run were values read from
+  rows (<date>: 20, <phone>: 9, ...) and were dropped`); `--keep-existing-synonyms` keeps
+  them. The same rules filter the sample values the model sees in step 3: nothing from a
+  column named like personal or contact data, and no date, number, phone number, address,
+  masked value or error text from the others; short statuses and kinds stay.
 - **It reads the data sources of `datasources.yaml`.** When `project_config/datasources.yaml`
   exists and no `--db-url` is given, every source in it is described (or those named
   with `--datasource NAME`, repeatable), each through the engine the server uses
@@ -898,7 +904,8 @@ CORS list would refuse). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
 
-The checks run in this order: `Settings.validate()` (required settings,
+The preflight has twenty-four checks with one data source (twenty-two in 6.14.1, before two
+file checks were added). The checks run in this order: `Settings.validate()` (required settings,
 leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then

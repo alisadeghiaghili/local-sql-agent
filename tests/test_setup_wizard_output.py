@@ -669,3 +669,107 @@ class TestFileHeader:
         for name in sp._WIZARD_OUTPUT_FILES:
             assert (out / name).read_text(encoding="utf-8").startswith(f"# {WIZARD_DRAFT_HEADER} ")
         assert set(find_draft_header_kinds(out)) == set(sp._WIZARD_OUTPUT_FILES)
+
+
+# ---------------------------------------------------------------------------
+# 8. Synonyms an earlier run copied from rows
+# ---------------------------------------------------------------------------
+
+#: Invented keys of the shapes 6.13 and 6.14 wrote.
+EARLIER_KEYS = {
+    "1387/03/24": "date", "2024-05-01 10:00:00": "date", "09120000001": "phone", "10.0.12.200": "ip",
+    "ab xxxxx cd": "masked", "1234567890123": "digits", "12 Example Street, Building 4, Floor 2": "address",
+    "5f4dcc3b5aa765d61d8327deb882cf99": "hash", "Login failed for user": "error",
+}
+
+
+def _seed_synonyms(out: Path) -> None:
+    """An ``aliases.yaml`` of the earlier run: the keys above and two real words."""
+    lines = "".join(f"  {key!r}: [bank]\n" for key in EARLIER_KEYS) + "  annual: [year]\n  failed: [status]\n"
+    _write(out, "aliases.yaml", "ring_aliases: {}\nsynonyms:\n" + lines)
+
+
+class TestEarlierValueSynonymsAreDropped:
+    def test_a_rerun_drops_the_keys_that_are_row_values_and_keeps_the_words(self, tmp_path, capsys):
+        out = tmp_path / "draft"
+        _seed_synonyms(out)
+
+        run_wizard(out, snapshot_of(table("sales", "Bank")))
+
+        assert read_yaml(out / "aliases.yaml")["synonyms"] == {"annual": ["year"], "failed": ["status"]}
+        summary = capsys.readouterr().out
+        assert "9 synonym key(s) from an earlier run were values read from rows" in summary
+        assert "<date>: 2" in summary and "<phone>: 1" in summary and "<error>: 1" in summary
+        assert not [key for key in EARLIER_KEYS if key in summary]
+        done = json.loads((out / ".setup_log.json").read_text(encoding="utf-8"))["step6_write"]
+        assert done["dropped_value_synonyms"] == {
+            "date": 2, "phone": 1, "ip": 1, "masked": 1, "digits": 1, "address": 1, "hash": 1, "error": 1,
+        }
+        log_text = (out / ".setup_log.json").read_text(encoding="utf-8")
+        assert not [key for key in EARLIER_KEYS if key in log_text]
+
+    def test_keep_existing_synonyms_opts_out(self, tmp_path, capsys):
+        out = tmp_path / "draft"
+        _seed_synonyms(out)
+
+        run_wizard(out, snapshot_of(table("sales", "Bank")), None, "--keep-existing-synonyms")
+
+        assert set(EARLIER_KEYS) <= set(read_yaml(out / "aliases.yaml")["synonyms"])
+        summary = capsys.readouterr().out
+        assert "were dropped" not in summary and "and were kept (--keep-existing-synonyms)" in summary
+        done = json.loads((out / ".setup_log.json").read_text(encoding="utf-8"))["step6_write"]
+        assert done["dropped_value_synonyms"] == {}
+
+    def test_a_clean_run_reports_nothing_dropped(self, tmp_path, capsys):
+        run_wizard(tmp_path / "draft", snapshot_of(table("sales", "Bank")))
+        assert "were dropped" not in capsys.readouterr().out
+
+    def test_the_helper_counts_shapes_only(self):
+        kept, dropped = sp._without_value_synonyms({"09120000001": ["t"], "annual": ["y"]})
+        assert kept == {"annual": ["y"]} and dropped == {"phone": 1}
+
+
+# ---------------------------------------------------------------------------
+# 9. What the alias prompt shows the model
+# ---------------------------------------------------------------------------
+
+class TestAliasPromptSamples:
+    def _prompt_for(self, tmp_path, name: str, columns: list[ColumnInfo]) -> str:
+        llm = RecordingLLM()
+        snap = snapshot_of(TableInfo(name=name, schema="sales", columns=columns, classification="dim"))
+        run_wizard(tmp_path / "draft", snap, llm)
+        (prompt,) = [p for p in llm.prompts if "Table name:" in p]
+        return prompt
+
+    def test_contact_columns_and_value_shaped_samples_never_reach_the_model(self, tmp_path):
+        columns = [
+            ColumnInfo("Status", "varchar", sample_values=["Open", "Closed"]),
+            ColumnInfo("Phone", "varchar", sample_values=["09120000001"]),
+            ColumnInfo("NationalCode", "varchar", sample_values=["0012345001"]),
+            ColumnInfo("Address", "varchar", sample_values=["12 Example Street, Building 4, Floor 2"]),
+            ColumnInfo("Note", "varchar", sample_values=[
+                "Pending review", "ab xxxxx cd", "10.0.12.200", "2024-05-01", "Login failed", "user@example.test",
+            ]),
+        ]
+
+        prompt = self._prompt_for(tmp_path, "Bank", columns)
+
+        for kept in ("Open", "Closed", "Pending review"):
+            assert f'"{kept}"' in prompt
+        for gone in (
+            "09120000001", "0012345001", "Example Street", "ab xxxxx cd", "10.0.12.200", "2024-05-01",
+            "Login failed", "user@example.test",
+        ):
+            assert gone not in prompt
+
+    def test_the_name_of_a_table_of_people_is_left_out_but_its_status_stays(self, tmp_path):
+        columns = [
+            ColumnInfo("Name", "varchar", sample_values=["Sample Person One"]),
+            ColumnInfo("Status", "varchar", sample_values=["Active"]),
+        ]
+        prompt = self._prompt_for(tmp_path, "Customer", columns)
+        assert "Sample Person One" not in prompt and '"Active"' in prompt
+
+    def test_a_table_with_no_safe_sample_says_none(self, tmp_path):
+        prompt = self._prompt_for(tmp_path, "Bank", [ColumnInfo("Phone", "varchar", sample_values=["09120000001"])])
+        assert "Sample values: (none)" in prompt

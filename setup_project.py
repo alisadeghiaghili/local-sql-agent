@@ -73,6 +73,11 @@ Flags
                     personal or contact data are never taken; at most 20 keys
                     per table.
 
+--keep-existing-synonyms
+                    Keep, when merging, the synonym keys of an earlier
+                    ``aliases.yaml`` that are values read from rows. By
+                    default they are dropped (counted per shape, never listed).
+
 --allow-repeated-answers
                     Do not stop a per-table step (3 aliases, 4 business rules)
                     when 3 tables in a row get the identical answer. By
@@ -207,6 +212,7 @@ except ImportError:
 
 from core.config_doctor import WIZARD_DRAFT_HEADER
 from core.console import use_utf8_console
+from core.value_shapes import data_shape, prompt_samples
 from core.wizard_drafts import (
     ALIAS_LIMIT,
     DEFAULT_DRAFT_DIR,
@@ -1833,9 +1839,29 @@ def _data_shaped_count(synonyms: Mapping[str, Any]) -> dict[str, int]:
         >>> _data_shaped_count({"1387/03/24": ["t"], "bank": ["t"], "09120000000": ["t"]})
         {'date': 1, 'phone': 1}
     """
-    from core.config_doctor import raw_value_synonym_keys
+    counts: dict[str, int] = {}
+    for key in synonyms:
+        shape = data_shape(key)
+        if shape:
+            counts[shape] = counts.get(shape, 0) + 1
+    return counts
 
-    return raw_value_synonym_keys(list(synonyms))
+
+def _without_value_synonyms(synonyms: Mapping[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """The synonyms without the keys that are values read from rows, and the count per shape.
+
+    A date, phone number, IP address, masked value, long digit run, address, hash
+    or error message is never useful as a synonym and, copied from a row, leaks
+    data; an earlier wizard run (6.13, 6.14) wrote hundreds. Only the shapes are
+    counted, never the keys.
+
+    Examples:
+        >>> kept, dropped = _without_value_synonyms({"1387/03/24": ["t"], "bank": ["b"], "Login failed for user": ["t"]})
+        >>> kept, dropped
+        ({'bank': ['b']}, {'date': 1, 'error': 1})
+    """
+    kept = {key: tokens for key, tokens in synonyms.items() if data_shape(key) is None}
+    return kept, _data_shaped_count({k: v for k, v in synonyms.items() if k not in kept})
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -3216,7 +3242,12 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
         console.print(f"  [{idx}/{total}] {table.full_name} ...", end=" ")
 
         col_names   = [c.name for c in table.columns]
-        all_samples = [s for c in table.columns for s in c.sample_values]
+        # Sample values help the model name a table, but a phone number, an address, a
+        # national id or a masked name must not reach it: personal columns and
+        # value-shaped samples are left out (core.value_shapes.prompt_samples).
+        all_samples = [
+            s for c in table.columns for s in prompt_samples(table.name, c.name, c.sample_values)
+        ]
 
         try:
             prompt = _prompt_aliases(table.full_name, col_names, all_samples, language)
@@ -3741,6 +3772,10 @@ def step6_review_and_write(
         links, _ = _collect_links(snapshot, namer)
     existing = existing or _ExistingDraft()
     rename = dict(rename or {})
+    dropped_values: dict[str, int] = {}
+    if not getattr(args, "keep_existing_synonyms", False):
+        kept_synonyms, dropped_values = _without_value_synonyms(existing.synonyms)
+        existing = replace(existing, synonyms=kept_synonyms)
     stats: dict[str, MergeStats] = {}
     made: list[Path] = backups if backups is not None else []
 
@@ -3870,6 +3905,7 @@ def step6_review_and_write(
         "rekeyed": {name: [list(pair) for pair in st.rekeyed] for name, st in stats.items() if st.rekeyed},
         "held": {name: list(st.held) for name, st in stats.items() if st.held},
         "merged_duplicates": {name: [list(pair) for pair in pairs] for name, pairs in (collapsed or {}).items() if pairs},
+        "dropped_value_synonyms": dropped_values,
         "earlier_value_synonyms": _data_shaped_count(existing.synonyms),
         "backups": [str(b) for b in made],
         "inferred_relationships": sum(1 for link in links if link.inferred),
@@ -4086,13 +4122,21 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
             f"{shown}{' ...' if len(pairs) > 10 else ''}",
             markup=False,
         )
+    dropped = done.get("dropped_value_synonyms") or {}
+    if dropped:
+        kinds = ", ".join(f"<{shape}>: {n}" for shape, n in sorted(dropped.items()))
+        console.print(
+            f"  aliases.yaml: {sum(dropped.values())} synonym key(s) from an earlier run were values read "
+            f"from rows ({kinds}) and were dropped; --keep-existing-synonyms keeps them.",
+            markup=False,
+        )
     earlier = done.get("earlier_value_synonyms") or {}
     if earlier:
         kinds = ", ".join(f"<{shape}>: {n}" for shape, n in sorted(earlier.items()))
         console.print(
             f"  aliases.yaml: {sum(earlier.values())} synonym key(s) from an earlier run look like raw data "
-            f"values ({kinds}) and were kept. Remove them (the preflight check `Aliases hold no raw data "
-            "values` counts them).",
+            f"values ({kinds}) and were kept (--keep-existing-synonyms). Remove them (the preflight check "
+            "`Aliases hold no raw data values` counts them).",
             markup=False,
         )
     verb = "would be" if args.dry_run else "are"
@@ -4209,6 +4253,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         "masked values, error text, values over 40 characters and any column named "
                         "like personal or contact data are never taken; at most 20 per table. Reads "
                         "up to 51 distinct values of each such column from the database.")
+    p.add_argument("--keep-existing-synonyms", action="store_true", default=False,
+                   help="When merging into an aliases.yaml that already holds synonyms, keep the keys "
+                        "that are values read from rows (dates, phone numbers, IP addresses, masked "
+                        "values, long digit strings, addresses, hashes, error messages). By default "
+                        "they are dropped and counted per shape in the summary and the setup log.")
     p.add_argument("--non-interactive", action="store_true", default=False)
     p.add_argument("--allow-repeated-answers", action="store_true", default=False,
                    help="Do not stop step 3 or 4 when 3 tables in a row get the identical "

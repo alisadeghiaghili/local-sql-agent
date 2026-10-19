@@ -1319,7 +1319,15 @@ class TestTheNewChecksInTheReport:
                 patch("database.connection.get_engine", side_effect=AssertionError("database touched")):
             assert [getattr(verify, name)().status for name in NEW_CHECK_NAMES] == ["SKIP", "SKIP"]
 
-    def test_the_example_configuration_has_nothing_to_report_about_its_aliases(self):
+    def test_the_shipped_template_passes_its_own_file_checks(self):
+        # A fresh install that copies project_config.example/ must not start with a FAIL
+        # about its own entities: they name real keys of the template's schema.yaml.
         example = Path(__file__).resolve().parent.parent / "project_config.example"
         with cfg.override_settings(project_config_dir=str(example)):
-            assert verify.check_aliases_hold_no_raw_values().status == "PASS"
+            results = {name: getattr(verify, name)() for name in (
+                "check_project_config_is_curated", "check_aliases_are_curated",
+                "check_aliases_hold_no_raw_values", "check_entities_match_schema_keys",
+            )}
+        for name, result in results.items():
+            assert result.status == "PASS", (name, result.detail)
+        assert results["check_entities_match_schema_keys"].detail.startswith("all 3 entity key(s)")

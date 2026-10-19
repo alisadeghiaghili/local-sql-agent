@@ -18,8 +18,11 @@ from core.value_shapes import (
     SHAPES,
     VALUES_PER_TABLE,
     categorical_values,
+    data_shape,
     identifier_words,
+    prompt_samples,
     is_categorical_column,
+    is_personal_column,
     shape_label,
     unsuitable_value,
     value_shape,
@@ -118,3 +121,23 @@ class TestCategoricalValues:
 
     def test_the_limits_are_the_documented_ones(self):
         assert (MAX_DISTINCT_VALUES, VALUES_PER_TABLE, MAX_VALUE_LENGTH) == (50, 20, 40)
+
+
+class TestDataShapeAndPromptSamples:
+    @pytest.mark.parametrize(("value", "shape"), [
+        ("1387/03/24", "date"), ("ab xxxxx cd", "masked"), ("Login failed for user", "error"),
+        ("Connection timeout while reading", "error"), ("failed", None), ("annual", None), ("", None),
+    ])
+    def test_data_shape_is_the_value_shape_plus_error_phrases(self, value, shape):
+        assert data_shape(value) == shape
+
+    def test_personal_columns_are_found_by_name(self):
+        assert is_personal_column("Bank", "MobileNo") and is_personal_column("Employee", "Title")
+        assert not is_personal_column("Bank", "Name") and not is_personal_column("Bank", "Description")
+
+    def test_prompt_samples_keep_words_and_drop_values_and_personal_columns(self):
+        values = ["Open", "09120000001", "Closed", "2024-05-01", "ab xxxxx cd", "Login failed"]
+        assert prompt_samples("Trade", "Status", values) == ["Open", "Closed"]
+        assert prompt_samples("Trade", "Note", values) == ["Open", "Closed"]
+        assert prompt_samples("Trade", "Phone", values) == []
+        assert prompt_samples("Customer", "Name", ["Sam"]) == []

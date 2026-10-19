@@ -27,6 +27,12 @@ unsuitable_value(text, max_length) -> str | None
     Why *text* must not become a synonym key, or ``None``.
 identifier_words(identifier) -> list[str]
     The lower-cased words of a CamelCase or snake_case name.
+data_shape(text) -> str | None
+    :func:`value_shape`, plus ``"error"`` for an error message.
+is_personal_column(table, column) -> bool
+    Whether a column holds personal or contact data, by its name.
+prompt_samples(table, column, values) -> list[str]
+    The sample values of a column that may go into a model prompt.
 is_categorical_column(table, column) -> bool
     Whether the values of a text column may be considered as synonym keys.
 categorical_values(values, max_distinct) -> list[str]
@@ -46,8 +52,11 @@ __all__ = [
     "SHAPES",
     "VALUES_PER_TABLE",
     "categorical_values",
+    "data_shape",
     "identifier_words",
     "is_categorical_column",
+    "is_personal_column",
+    "prompt_samples",
     "shape_label",
     "unsuitable_value",
     "value_shape",
@@ -181,6 +190,25 @@ def value_shape(text: str) -> str | None:
     return None
 
 
+def data_shape(text: str) -> str | None:
+    """:func:`value_shape`, and ``"error"`` for a phrase that reads as an error message.
+
+    A single word such as ``failed`` may be a curated synonym; only a phrase
+    of two words or more that names an error counts.
+
+    Examples
+    --------
+    >>> data_shape("1387/03/24"), data_shape("Login failed for user"), data_shape("failed")
+    ('date', 'error', None)
+    """
+    shape = value_shape(text)
+    if shape:
+        return shape
+    if len((text or "").split()) >= 2 and _ERROR_TEXT.search(text):
+        return "error"
+    return None
+
+
 def shape_label(shape: str) -> str:
     """How a shape is written in a message: the value is never shown, only this.
 
@@ -283,6 +311,49 @@ def identifier_words(identifier: str) -> list[str]:
     return [w.lower() for w in re.split(r"[^A-Za-z0-9\u0600-\u06ff]+", spaced) if w]
 
 
+def is_personal_column(table: str, column: str) -> bool:
+    """Whether a column holds personal or contact data, judged by its name.
+
+    ``FirstName``, ``Family``, ``Mobile``, ``Phone``, ``Address``, ``Email``,
+    ``NationalCode`` and the like are; so is the ``Name`` or ``Title`` of a
+    table of people (``Customer``, ``Employee``, ``User``, ...).
+
+    Examples
+    --------
+    >>> is_personal_column("Bank", "Phone"), is_personal_column("Customer", "Name")
+    (True, True)
+    >>> is_personal_column("Bank", "Name"), is_personal_column("Customer", "Status")
+    (False, False)
+    """
+    words = identifier_words(column)
+    squashed = "".join(words)
+    if _PERSON_SHORT & set(words) or any(term in squashed for term in _PERSON_LONG):
+        return True
+    people = "".join(identifier_words(table))
+    return any(term in people for term in _PERSON_TABLE) and bool({"name", "title"} & set(words))
+
+
+def prompt_samples(table: str, column: str, values: Iterable[str]) -> list[str]:
+    """The sample values of a column that may be shown to a model.
+
+    Nothing from a column named like personal or contact data; from the
+    others, only values :func:`unsuitable_value` accepts (no date, number or
+    code, phone number, address, masked value, error text or long text).
+    Short words and phrases such as the statuses and kinds of a lookup table
+    stay: they are what makes an alias useful.
+
+    Examples
+    --------
+    >>> prompt_samples("Trade", "Status", ["Open", "09120000001", "ab xxxxx cd", "Closed"])
+    ['Open', 'Closed']
+    >>> prompt_samples("Bank", "Phone", ["Open"]), prompt_samples("Bank", "Name", [])
+    ([], [])
+    """
+    if is_personal_column(table, column):
+        return []
+    return [v for v in values if isinstance(v, str) and unsuitable_value(v) is None]
+
+
 def is_categorical_column(table: str, column: str) -> bool:
     """Whether the values of a text column may be considered as synonym keys.
 
@@ -320,15 +391,7 @@ def is_categorical_column(table: str, column: str) -> bool:
     (False, False)
     """
     words = identifier_words(column)
-    squashed = "".join(words)
-    if not _LABEL_WORDS & set(words):
-        return False
-    if _PERSON_SHORT & set(words) or any(term in squashed for term in _PERSON_LONG):
-        return False
-    people = "".join(identifier_words(table))
-    if any(term in people for term in _PERSON_TABLE) and {"name", "title"} & set(words):
-        return False
-    return True
+    return bool(_LABEL_WORDS & set(words)) and not is_personal_column(table, column)
 
 
 def categorical_values(values: Iterable[str], max_distinct: int = MAX_DISTINCT_VALUES) -> list[str]:
