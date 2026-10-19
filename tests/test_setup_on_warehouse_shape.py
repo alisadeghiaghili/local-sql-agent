@@ -771,6 +771,34 @@ class TestSetupWizardOverBothSources:
         assert not llm.asked_about("_Stg.")
         assert not [key for key in entities if key.endswith(("_Inserts", "_Updates", "_Deletes"))]
 
+    def test_its_keys_are_the_keys_of_the_inspector_cli_s_schema_yaml(self, wizard, tmp_path):
+        # The same tables (staging left out by both), the same spelling: a bare name when
+        # no other schema has it, `Schema.Table` when one does, `[Price List]` and
+        # `[Run.Log]` bracketed. A key that is not one of schema.yaml's matches no table.
+        _, _, entities = wizard
+        done = _capture(inspect_main, ["--output-dir", str(tmp_path / "cli"), "--no-row-counts"])
+        assert done.rc == 0, done.err
+
+        keys = set(_tables(_read(tmp_path / "cli" / "schema.yaml")))
+
+        assert set(entities) == keys
+        assert {"[Price List]", "[Run.Log]"} <= keys
+        assert any("." in key and not key.startswith("[") for key in keys)
+
+    def test_a_second_run_over_the_same_tables_changes_no_key(self, project, tmp_path):
+        import setup_project as sp
+        from tests.test_setup_wizard_drafts import RecordingLLM
+
+        out = tmp_path / "again"
+        keys = []
+        for _ in range(2):
+            with patch.object(sp, "setup_wizard_llm", return_value=RecordingLLM()):
+                assert sp.main([
+                    "--language", "en", "--non-interactive", "--output", str(out), "--allow-repeated-answers",
+                ]) == 0
+            keys.append(list(safe_load_strict(_read(out / "entities.yaml"))["entities"]))
+        assert keys[0] == keys[1] and len(set(keys[1])) == len(keys[1])
+
 
 # ---------------------------------------------------------------------------
 # 3. scripts/prompt_budget.py
@@ -1083,8 +1111,26 @@ class TestPreflightOnTheCliDraft:
         assert results["No live sample values in descriptions"].detail.startswith("no description quotes")
         assert results["Aliases are curated"].status == "PASS"
 
-    def test_the_descriptions_are_not_the_old_placeholder(self, results):
-        assert "table descriptions" not in results["project_config/ is curated, not a raw draft"].detail
+    def test_the_descriptions_are_not_the_old_placeholder_but_they_are_only_the_name_and_a_type(self, results):
+        detail = results["project_config/ is curated, not a raw draft"].detail
+
+        assert "are still the placeholder" not in detail
+        assert "table descriptions (100%) are only the table's own name" in detail
+        assert "column descriptions (100%) are only `<type> column`" in detail
+
+    def test_it_is_a_draft_even_with_the_header_lines_deleted(self, results, tmp_path_factory, inspected):
+        directory = tmp_path_factory.mktemp("cli_draft_reviewed")
+        for name in ("schema.yaml", "entities.yaml", "aliases.yaml", "relationships.yaml"):
+            text_ = _read(inspected.directory / name)
+            (directory / name).write_text(
+                "\n".join(line for line in text_.splitlines() if "AUTO-GENERATED DRAFT" not in line), encoding="utf-8",
+            )
+
+        curated = _run_curation_checks(directory)["project_config/ is curated, not a raw draft"]
+
+        assert curated.status == "FAIL"
+        assert "file(s) carry the" not in curated.detail
+        assert "table descriptions (100%) are only the table's own name" in curated.detail
 
 
 class TestPreflightOnTheCuratedConfig:
@@ -1115,15 +1161,32 @@ class TestPreflightOnTheCuratedConfig:
         assert code == 0
         assert "5 passed, 0 failed, 0 skipped" in out.getvalue()
 
-    def test_tables_added_with_add_tables_do_not_make_it_a_draft(self, project, added_tables):
-        # sync_schema.py appends a table with its own name as the description,
-        # not the inspector's placeholder, so the file stays curated; the staging
-        # schemas it was told to add are advice.
+    def test_a_few_tables_added_with_add_tables_do_not_make_it_a_draft(self, project):
+        # sync_schema.py appends a table with its own name as the description and
+        # `<type> column` for its columns; a few of them among curated ones are the
+        # normal state of a file that is being brought up to date.
+        text_ = _read(project / "schema.yaml")
+        added = "".join(
+            f'  Added{n}:\n    description: "ledger_Stg.Added{n}"  # TO BE FILLED (added by sync_schema.py)\n'
+            f'    db_schema: "ledger_Stg"\n    columns:\n      ID: "int column"  # TO BE FILLED (added by sync_schema.py)\n\n'
+            for n in range(3)
+        )
+        assert "\ntables:\n" in text_
+        _replace_schema_yaml(project, text_.replace("\ntables:\n", "\ntables:\n" + added, 1))
+        curated = _run_curation_checks(project)["project_config/ is curated, not a raw draft"]
+
+        assert curated.status == "PASS", curated.detail
+        assert "3 of 37 only repeat the table's name" in curated.detail
+
+    def test_a_file_that_is_mostly_added_tables_is_a_draft_again(self, project, added_tables):
+        # 34 curated tables and the 79 that `--add-tables` appended for the staging and
+        # fact schemas it was told to add: most of the file says nothing but its names.
         _replace_schema_yaml(project, added_tables.second.synced)
         results = _run_curation_checks(project)
 
-        assert results["project_config/ is curated, not a raw draft"].status == "PASS"
-        assert "0 of" in results["project_config/ is curated, not a raw draft"].detail
+        curated = results["project_config/ is curated, not a raw draft"]
+        assert curated.status == "FAIL"
+        assert "of 113 table descriptions" in curated.detail and "are only the table's own name" in curated.detail
         assert results["Every data source is described"].status == "PASS"
         staging = results["No staging or change-capture tables"]
         assert staging.detail.startswith("advice: ") and "sales_Stg:" in staging.detail and "ledger_Stg:" in staging.detail

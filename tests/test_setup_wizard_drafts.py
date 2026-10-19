@@ -101,8 +101,12 @@ class RecordingLLM:
 
 
 def table(schema: str, name: str, *columns: str, kind: str = "dim", pk: str | None = None) -> TableInfo:
-    """A table with the given columns (``int`` typed); *pk* names the primary key column."""
-    cols = [ColumnInfo(c, "int", is_pk=(c == pk)) for c in (columns or ("ID",))]
+    """A table with the given columns (``int`` typed); *pk* names the primary key column.
+
+    A fact table with no columns given has an ``Amount`` beside its ``ID``: a rule needs
+    a numeric column that is not a key to name as the value.
+    """
+    cols = [ColumnInfo(c, "int", is_pk=(c == pk)) for c in (columns or (("ID", "Amount") if kind == "fact" else ("ID",)))]
     return TableInfo(name=name, schema=schema, columns=cols, classification=kind)
 
 

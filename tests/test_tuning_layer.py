@@ -361,6 +361,44 @@ _ALLOWED_MODULE_CONSTANTS = {
         "digits looks like a street address to the sample-value advice; a "
         "heuristic of an advice-only check, not a deployment tuning knob"
     ),
+    "core/config_doctor.py::SYNC_DRAFT_SHARE": (
+        "invariant: the share of table descriptions that only repeat the table's "
+        "name, or of column descriptions that are only `<type> column`, above "
+        "which schema.yaml is the sync-format draft and not a curated file; the "
+        "same reasoning as DRAFT_DESCRIPTION_SHARE, pinned at its edge by "
+        "tests/test_config_doctor.py"
+    ),
+    "core/config_doctor.py::RAW_VALUE_SYNONYM_LIMIT": (
+        "invariant: how many synonym keys shaped like a date, phone number or "
+        "address aliases.yaml may hold before the preflight fails; a "
+        "deployment-tunable limit would let one variable silence the check that "
+        "exists to keep row values out of the prompt and out of version control"
+    ),
+    "core/value_shapes.py::MAX_VALUE_LENGTH": (
+        "implementation detail: the longest value the setup wizard's "
+        "--value-synonyms takes as a synonym key (a name, title or status is "
+        "short, a message is not); a heuristic of an opt-in wizard flag, not a "
+        "deployment tuning knob"
+    ),
+    "core/value_shapes.py::MAX_DISTINCT_VALUES": (
+        "implementation detail: a column with more distinct values than this is "
+        "not categorical for the wizard's --value-synonyms; an opt-in heuristic, "
+        "not a deployment tuning knob"
+    ),
+    "core/value_shapes.py::VALUES_PER_TABLE": (
+        "implementation detail: the most synonym keys --value-synonyms takes "
+        "from one table; bounds what an opt-in wizard flag writes"
+    ),
+    "core/value_shapes.py::_ADDRESS_LENGTH": (
+        "implementation detail: the length at which a run of words with digits "
+        "looks like an address to the value-shape test; a heuristic, not a "
+        "deployment tuning knob"
+    ),
+    "core/wizard_drafts.py::ALIAS_LIMIT": (
+        "implementation detail: aliases kept per table by the setup wizard, whose "
+        "model sometimes answers with every concatenation of the same few words; "
+        "bounds what a draft file holds, not a runtime behaviour"
+    ),
     "schema_data/sync.py::REPORT_LIST_LIMIT": (
         "implementation detail: how many names one section of the "
         "operator script's printed report lists before '... and N more'. "

@@ -13,10 +13,14 @@ be tested on their own:
 * how the files of a second run are merged into those of the first, by key,
   without shrinking them (:func:`merge_mapping`, :func:`merge_synonyms`,
   :func:`merge_examples`, :func:`merge_relationships`), with the counts the
-  summary prints (:class:`MergeStats`).
+  summary prints (:class:`MergeStats`);
+* how two earlier entries that the new keys would put on one key become one
+  (:func:`collapse_same_key`), so a merge never leaves two entries for one
+  table, and how a model's alias list is made usable (:func:`tidy_aliases`).
 
-Merging never removes an entry. An entry the new run produced replaces the old
-one with the same key; every other old entry stays as it was.
+Merging never removes an entry, except that two old entries for one table
+become one. An entry the new run produced replaces the old one with the same
+key; every other old entry stays as it was.
 
 Public API
 ----------
@@ -30,21 +34,28 @@ merge_mapping(existing, new, rename) -> (dict, MergeStats)
 merge_synonyms(existing, new) -> (dict, MergeStats)
 merge_examples(existing, new) -> (list, MergeStats)
 merge_relationships(existing, new, rename) -> (list, MergeStats)
+collapse_same_key(existing, rename, combine) -> (dict, tuple[(dropped, kept), ...])
+tidy_aliases(aliases, limit) -> list[str]
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.persian import normalize_for_matching
+
 __all__ = [
+    "ALIAS_LIMIT",
     "DEFAULT_DRAFT_DIR",
     "EXAMPLE_DIR_NAME",
     "MergeStats",
     "back_up",
+    "collapse_same_key",
     "hold_back_empty",
     "merge_examples",
     "merge_mapping",
@@ -52,6 +63,7 @@ __all__ = [
     "merge_synonyms",
     "protected_directory",
     "refusal_message",
+    "tidy_aliases",
 ]
 
 #: Directory the wizard writes to unless ``--output`` says otherwise. It is
@@ -61,6 +73,11 @@ DEFAULT_DRAFT_DIR = "project_config_draft"
 #: The committed template directory; never a place for drafts built from a
 #: real warehouse.
 EXAMPLE_DIR_NAME = "project_config.example"
+
+#: Aliases kept per table. A model asked for aliases of one table sometimes
+#: answers with every concatenation of the same three words (22 for one table
+#: in a real run); a handful of distinct phrasings is what retrieval can use.
+ALIAS_LIMIT = 8
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +551,143 @@ def merge_relationships(
             untouched.discard(position)
             replaced += 1
     return merged, MergeStats(len(untouched), added, replaced, tuple(rekeyed))
+
+
+def collapse_same_key(
+    existing: Mapping[str, Any],
+    rename: Mapping[str, str],
+    combine: Callable[[Any, Any], Any],
+) -> tuple[dict[str, Any], tuple[tuple[str, str], ...]]:
+    """Make one entry of the old entries that *rename* would put on the same key.
+
+    :func:`merge_mapping` re-keys old entries and, when two end up on one key,
+    keeps whichever it saw last. Two earlier entries for one table (a bare one
+    from the inspector's draft and a qualified one from an earlier wizard run)
+    are exactly that case, and neither should be lost: they are combined here,
+    before the merge. Keys compare case-insensitively.
+
+    The entry whose key already is the target keeps its key, and so does the
+    first of the group when none is; the others are dropped, and their data is
+    folded into it with *combine*, in file order.
+
+    Parameters
+    ----------
+    existing:
+        The old file's mapping.
+    rename:
+        ``{old key: new key}`` the merge will apply.
+    combine:
+        ``combine(kept, other)`` returns the entry that replaces *kept* once
+        *other* is folded into it.
+
+    Returns
+    -------
+    tuple
+        ``(entries, dropped)``: the mapping without the duplicates, and
+        ``(dropped key, kept key)`` for each entry folded away.
+
+    Raises
+    ------
+    Nothing. This function never raises.
+
+    Examples
+    --------
+    >>> old = {"Trade": ["a"], "sales.Trade": ["b"], "Customer": ["c"]}
+    >>> merged, dropped = collapse_same_key(old, {"sales.Trade": "Trade"}, lambda keep, other: keep + other)
+    >>> merged, dropped
+    ({'Trade': ['a', 'b'], 'Customer': ['c']}, (('sales.Trade', 'Trade'),))
+    >>> collapse_same_key({"A": 1, "B": 2}, {}, lambda keep, other: keep)[1]
+    ()
+    """
+    lowered = {_fold(k): v for k, v in rename.items()}
+
+    def final(key: str) -> str:
+        return _fold(lowered.get(_fold(key), key))
+
+    groups: dict[str, list[str]] = {}
+    for key in existing:
+        groups.setdefault(final(key), []).append(key)
+    result: dict[str, Any] = {}
+    dropped: list[tuple[str, str]] = []
+    for key in existing:
+        group = groups[final(key)]
+        if len(group) == 1:
+            result[key] = existing[key]
+        elif key == group[0]:
+            keeper = next((k for k in group if _fold(k) == final(key)), key)
+            value = existing[keeper]
+            for other in group:
+                if other != keeper:
+                    value = combine(value, existing[other])
+                    dropped.append((other, keeper))
+            result[keeper] = value
+    return result, tuple(dropped)
+
+
+def _alias_key(text: str) -> str:
+    """The words of an alias, folded and without punctuation: what makes two aliases the same."""
+    return " ".join(re.findall(r"\w+", normalize_for_matching(text)))
+
+
+def tidy_aliases(aliases: Iterable[Any] | None, limit: int = ALIAS_LIMIT) -> list[str]:
+    """A model's alias list made usable: strings, no repeats, at most *limit*.
+
+    Aliases are compared after folding (case, Persian and Arabic letter and
+    digit forms, punctuation, spacing), and the first spelling of each is
+    kept. When more than *limit* remain, an alias whose words are all in a
+    shorter alias of the list, or that has the same words in another order,
+    is dropped (``"bank name list"`` beside ``"bank name"``), and if that is
+    not enough the shortest are kept. The order of what is left is the
+    model's.
+
+    Parameters
+    ----------
+    aliases:
+        What the model returned; anything that is not text is ignored.
+    limit:
+        The most aliases to keep.
+
+    Returns
+    -------
+    list[str]
+        The aliases to write.
+
+    Raises
+    ------
+    Nothing. This function never raises.
+
+    Examples
+    --------
+    >>> tidy_aliases(["Bank", "bank", " Bank  ", "banks", None, 3, ""])
+    ['Bank', 'banks', '3']
+    >>> many = ["bank name", "bank name list", "list bank name", "name bank", "bank", "bank list",
+    ...         "list of bank", "banks", "bank names", "bank name code", "the bank"]
+    >>> tidy_aliases(many, 4)
+    ['bank', 'banks']
+    >>> tidy_aliases(["alpha beta", "gamma", "delta epsilon zeta", "eta theta"], 2)
+    ['alpha beta', 'gamma']
+    >>> tidy_aliases(["a b", "a b c"], 8)
+    ['a b', 'a b c']
+    """
+    seen: dict[str, str] = {}
+    for raw in aliases or []:
+        if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            continue
+        text = " ".join(str(raw).split())
+        key = _alias_key(text)
+        if key and key not in seen:
+            seen[key] = text
+    items = list(seen.items())
+    if len(items) <= limit:
+        return [text for _, text in items]
+    words = [frozenset(key.split()) for key, _ in items]
+    kept = [
+        i for i in range(len(items))
+        if not any(
+            j != i and words[j] <= words[i] and (len(words[j]) < len(words[i]) or j < i)
+            for j in range(len(items))
+        )
+    ]
+    if len(kept) > limit:
+        kept = sorted(sorted(kept, key=lambda i: (len(words[i]), i))[:limit])
+    return [items[i][1] for i in kept]

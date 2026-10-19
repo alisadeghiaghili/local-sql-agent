@@ -125,14 +125,14 @@ class TestSchemaDraftIsValid:
 
         config = validate_schema_yaml_text(_schema_draft(snap))
 
-        assert sorted(config.tables) == ["[c.d]", "[ref].[a.b]", "[sales].[a.b]"]
+        assert sorted(config.tables) == ["[c.d]", "ref.[a.b]", "sales.[a.b]"]
 
     def test_a_dotted_schema_name_is_carried_by_the_key_not_db_schema(self):
         snap = SchemaSnapshot(tables=[_table("Trade", "a.b"), _table("Trade", "ref")])
 
         config = validate_schema_yaml_text(_schema_draft(snap))
 
-        assert config.tables["[a.b].[Trade]"].db_schema == ""
+        assert config.tables["[a.b].Trade"].db_schema == ""
         assert config.tables["ref.Trade"].db_schema == "ref"
 
     def test_relationship_to_a_table_outside_the_snapshot_is_qualified(self):
@@ -192,7 +192,7 @@ class TestEntitiesDraft:
 
         text = SchemaInspector("sqlite://").draft_entities_yaml(snap)
 
-        assert sorted(safe_load_strict(text)["entities"]) == ["[ref].[a.b]", "[sales].[a.b]"]
+        assert sorted(safe_load_strict(text)["entities"]) == ["ref.[a.b]", "sales.[a.b]"]
 
 
 class TestDraftsQuoteTheValuesTheyQuote:
@@ -222,7 +222,7 @@ class TestDraftsQuoteTheValuesTheyQuote:
     def test_entities_draft_parses_and_keeps_the_values(self):
         text = SchemaInspector("sqlite://").draft_entities_yaml(self._snapshot_with_awkward_values())
 
-        entity = safe_load_strict(text)["entities"]['Odd Name']
+        entity = safe_load_strict(text)["entities"]["[Odd Name]"]
 
         assert entity["table"] == 'Odd Name'
         (column,) = entity["columns"]

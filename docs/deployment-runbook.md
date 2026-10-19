@@ -489,6 +489,8 @@ It asks questions as it goes, unless told not to. Its options:
 | `--dry-run` | Print the files and write none, the setup log included; the validation step is skipped. |
 | `--resume` | Continue from the first step `.setup_log.json` does not record as completed (see below). |
 | `--allow-repeated-answers` | Do not stop step 3 or 4 when 3 tables in a row get the identical answer from the model (see "It stops when the model repeats itself" below). Only for a genuinely tiny schema whose tables really are alike. |
+| `--keep-existing-synonyms` | When merging into an `aliases.yaml` that already holds synonyms, keep the keys that are values read from rows. By default they are dropped and counted per shape (see "No value from a row" below). |
+| `--value-synonyms` | Also write the `synonyms` of `aliases.yaml` from the values of label columns (name, title, kind, status, type) that hold at most 50 distinct values. Off by default: no synonym is built from a value read from a row (see "No value from a row" below). Even with it, dates and times, numbers and codes, phone numbers, e-mail and IP addresses, URLs, addresses, masked values (`xxx`, `***`), error text, anything over 40 characters, any column named like personal or contact data (`FirstName`, `Family`, `Mobile`, `Phone`, `Address`, `Email`, `NationalCode`, ...) and the `Name` or `Title` of a table of people (`Customer`, `Employee`, `User`, ...) are never taken; at most 20 per table. It reads up to 51 distinct values of each such column. |
 
 What it does, in order. Each step is recorded in `<output>/.setup_log.json`
 under the key shown:
@@ -497,10 +499,10 @@ under the key shown:
 |---|---|---|
 | `step1_connection` | Database connection | Opens the URL, or each data source of `datasources.yaml` through the application's engine, and runs `SELECT 1`; on failure it prints the error (the password masked) and, for a URL and interactively, offers a retry; a data source that cannot be reached stops the run (exit status 1). |
 | `step2_schema` | Schema discovery | In two phases, over all the selected sources together. First it lists schema and table names (names only: no column, no row) for each source, applies the exclusion (system schemas, `EXCLUDE_SCHEMAS`, the source's `exclude_schemas:`, `--include-schemas`, `--exclude-schemas`), drops the staging tables (below) and, interactively, shows the schemas of each source with the number of tables that would be read and asks which to leave out (and whether to record the answer, below). Only then does it read the remaining schemas (tables, columns, foreign keys and up to five sample values per text column) and call each table a fact or a dimension table. Interactively it then asks which single tables to leave out. |
-| `step3_aliases` | Aliases | One model call per table for aliases and a one-line description (the model is told the schema-qualified name); interactively you accept, edit or clear each. |
-| `step4_rules` | Business rules | One model call per fact table for its value and volume columns and a rule text; the prompt carries the table's join hints (declared foreign keys, or relationships inferred from column names). |
-| `step5_examples` | Examples | One model call that asks for ten question-and-SQL pairs. |
-| `step6_write` | Review and write | Merges this run into the files already in `--output` and writes `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` and `relationships.yaml` there. Interactively each file is shown first: Accept, Edit in `$EDITOR`, Regenerate or Skip. A summary at the end gives, per file, the entries kept, added and replaced. |
+| `step3_aliases` | Aliases | One model call per table for aliases and a one-line description (the model is told the schema-qualified name). The list is cleaned: repeats (after folding case, Persian and Arabic letter forms, digits and punctuation) are dropped, and a list of more than 8 first loses every alias whose words are all in a shorter alias of the same table, then keeps the shortest 8; the summary counts the tables cleaned. Interactively you accept, edit or clear each (what you type stays as typed). |
+| `step4_rules` | Business rules | One model call per fact table that has at least one numeric column that is not a key (not the primary key, not a foreign key or join column, not named `...ID`, `...Key` or `...Code`), for its value and volume columns and a rule text; the prompt lists those columns and only they can be named (a key the model names, as in `Value column: ID. Volume column: ID.`, is dropped). A fact table with none gets no rule and the summary lists it. The prompt carries the table's join hints (declared foreign keys, or relationships inferred from column names). |
+| `step5_examples` | Examples | One model call for each data source (one for a single database) that asks for ten question-and-SQL pairs about the tables of that source, fact tables first, up to 20. An answer with no usable pair is asked once more with a smaller request. A pair needs a question and a read-only statement (`SELECT` or `WITH`); the others are counted and dropped (`4 item(s) of the answers discarded`). When no pair is usable, the step and the summary say so (`WARNING: examples.yaml has no example from this run`), the setup log records why under `problems`, and the file begins with `# NO EXAMPLES`. |
+| `step6_write` | Review and write | Merges this run into the files already in `--output` and writes `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` and `relationships.yaml` there. Earlier entries for one table are made one before the merge, and `aliases.yaml` gets no `synonyms` unless `--value-synonyms` is given. Interactively each file is shown first: Accept, Edit in `$EDITOR`, Regenerate or Skip. A summary at the end gives, per file, the entries kept, added and replaced. |
 | `step7_validate` | Validation | Loads the four files that have a loader through the application's own validators and prints `OK`, `FAILED: ...` or `skipped` for each. If any of the ten required `project_config/` files (§2.1) is still missing it lists them with the `cp` command that copies each template from `project_config.example/`, and says `Setup is NOT complete`; it copies nothing. Only when none is missing and none failed does it print `Setup complete.` and the number of entities, rules and examples. |
 
 What it does not do:
@@ -574,6 +576,53 @@ Things to know before you run it:
   the summary lists it, instead of being replaced by the other schema's table. Only a
   key that is the table's default spelling is re-keyed; an entity name you chose is
   left alone. The model is told the schema-qualified name of each table.
+- **One entity per table, and the keys of `schema.yaml`.** The keys are
+  exactly the ones `schema.yaml` gets from `database.schema_inspector_cli` and
+  `scripts/sync_schema.py`: one function, `schema_data.registry.table_key_for`,
+  spells them all (a bare name, `Schema.Table` for a shared name, a part that is
+  not a plain identifier in brackets: `[Price List]`, `ref.[Run.Log]`), so an
+  entity key always names a table of `schema.yaml`; retrieval reads it that way.
+  An earlier entry is the same table when its key is the table's bare name or
+  `Schema.Table`; its schema is read from `schema_name:`, from the `schema:` the
+  inspector's draft writes, from its key, or from the one table of that name this
+  run found. Earlier, an inspector draft in the output folder (bare keys, `schema:`)
+  was read as a second schema of every name, every name looked shared, everything
+  was written `Schema.Table` and the bare entry stayed beside it: two entities per
+  table, the one that matched `schema.yaml` without aliases. Now two earlier entries
+  that end up on one key (a bare one and a qualified one) become one, with the
+  aliases of both, in `entities.yaml`, `aliases.yaml` and `business_rules.yaml`, and
+  the summary lists them (`Merged 1 duplicate entry of one table in entities.yaml:
+  Sales_Dim.ActionType -> ActionType`). A bare entry whose name several schemas
+  share cannot be matched to one of them and is left as it is; an entity name you
+  chose is never touched.
+- **No value from a row goes into `aliases.yaml` unless you ask (`--value-synonyms`).**
+  The wizard of 6.13 and 6.14 made a `synonyms` key of every sample value of every
+  text column: hundreds of dates (`1387/03/24`), times, numeric ids, national-id-like
+  numbers, phone numbers, addresses, IP addresses, partly masked names (`ab xxxxx cd`),
+  application error messages and hashes, each mapped to a table name, in a file that goes
+  into the prompt and into version control. It now builds none. With `--value-synonyms`
+  it reads, for each text column whose name is a label (a word such as `name`, `title`,
+  `kind`, `status`, `type`, `category`), up to 51 distinct values; a column with more than
+  50 is not categorical and gives nothing. Of the others it keeps a value only when it is
+  not a date or time, a number or code (mostly digits or punctuation, a hash), a phone
+  number, an e-mail or IP address, a URL, an address (words with digits), a masked value
+  (`xxx` runs, `***`), error text, or longer than 40 characters; never from a column named
+  like personal or contact data (`FirstName`, `Family`, `Mobile`, `Phone`, `Address`,
+  `Email`, `NationalCode`, ...), and never the `Name` or `Title` of a table of people
+  (`Customer`, `Employee`, `User`, ...); at most 20 per table. **The trade-off:** a
+  word that only a row holds (the name of a status) no longer reaches retrieval through a
+  synonym, and a bare `Name` column of a lookup table (`Bank.Name`) is read, so review the
+  keys it wrote before you use them; in return no row value is in the prompt or in git by
+  default. The setup log records the counts, never a value. The preflight check `Aliases
+  hold no raw data values` (§3.1) counts the keys of an existing `aliases.yaml` that have
+  these shapes. A re-run over an output folder that holds such an `aliases.yaml` drops
+  those keys (date, phone, IP, masked value, long digit string, address, hash, error
+  message) when it merges, and the summary and `.setup_log.json` give the count per shape,
+  never a key (`aliases.yaml: 37 synonym key(s) from an earlier run were values read from
+  rows (<date>: 20, <phone>: 9, ...) and were dropped`); `--keep-existing-synonyms` keeps
+  them. The same rules filter the sample values the model sees in step 3: nothing from a
+  column named like personal or contact data, and no date, number, phone number, address,
+  masked value or error text from the others; short statuses and kinds stay.
 - **It reads the data sources of `datasources.yaml`.** When `project_config/datasources.yaml`
   exists and no `--db-url` is given, every source in it is described (or those named
   with `--datasource NAME`, repeatable), each through the engine the server uses
@@ -654,7 +703,9 @@ Things to know before you run it:
   again, because the connection string is never stored. The aliases, rules and
   examples of completed model steps are reused instead of generated again, as
   long as the schema and the language are unchanged (a result made by the mock
-  provider is never reused); a file that already exists is not rewritten. When
+  provider is never reused, nor is an empty list of examples: that step asks the model
+  again); a file that already exists is not rewritten, except an `examples.yaml` that holds
+  no example (the file written when the model gave nothing). When
   steps 1 to 6 are recorded and every file exists, only the validation runs,
   without the database or the model. A run without `--resume` starts a new log. The
   schema's fingerprint is taken after the exclusions and includes the table keys,
@@ -680,7 +731,7 @@ Things to know before you run it:
   number far below the table count is the same warning after the fact, for a
   repeat that never ran three in a row. `--allow-repeated-answers` turns the stop
   into one warning, for a schema so small that identical answers are expected.
-  Step 5 asks a single question for the whole schema, so there is nothing to compare.
+  Step 5 asks one question for each data source, so there is nothing to compare.
 - **Step 7 no longer needs a populated `project_config/`.** It validates the
   files it wrote and lists the required files still missing (§2.1), instead of
   ending in a `ConfigNotFoundError` traceback on a tree without the template
@@ -740,7 +791,9 @@ selected sources, when every occurrence is keyed `Schema.Table`
 qualified key carries its schema. The `relationships:` entries and the entity
 names in `entities.yaml` use the same keys, and `entities.yaml` also gets a
 `datasource:` line per table with several sources. A sync of the draft against
-the same databases changes nothing.
+the same databases changes nothing. The setup wizard (§2.2) spells its keys with
+the same function (`schema_data.registry.table_key_for`), so its entity, alias, rule and
+relationship keys are the keys of this `schema.yaml` for the same tables.
 
 **Which tables are left out.** The end-of-run summary says how many tables and
 schemas each rule skipped:
@@ -819,6 +872,12 @@ description is a placeholder (`TO BE FILLED`) and the files carry the
 delete it after review. Write real descriptions, then copy `schema.yaml` into
 `project_config/`. Run `tests/test_schema_registry_snapshot.py` after editing it,
 as the README says, and `python scripts/verify_deployment.py` (§3) to load it.
+A draft whose header line was deleted is still recognised: its tables are described
+by their own name (`description: 'Sales_Fact.Trade'`) and its columns by
+`<type> column`, and when most of them are the preflight fails
+`project_config/ is curated, not a raw draft` and gives the counts (§3.1). The files
+of the setup wizard begin with `# AUTO-GENERATED by setup_project.py`, a draft header
+in the same sense.
 
 An existing deployment does not redraft. Once `schema.yaml` is in
 `project_config/`, keep it current with `python scripts/sync_schema.py` (§16.3),
@@ -838,13 +897,15 @@ This must print `0 failed` before you go further. Every line is
 what to fix (a placeholder still in `.env`, an unreachable database, a
 model name the endpoint doesn't actually serve, no API key configured, an
 unwritable log directory, a `project_config/` that fails to load, a `project_config/` that is
-a raw draft from the schema inspector, a data source with no table, a rate
+a raw draft from the schema inspector or the setup wizard, synonyms copied from rows,
+entities that name no table of `schema.yaml`, a data source with no table, a rate
 limit too tight for your expected number of analysts, or a web UI address the
 CORS list would refuse). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
 
-The checks run in this order: `Settings.validate()` (required settings,
+The preflight has twenty-four checks with one data source (twenty-two in 6.14.1, before two
+file checks were added). The checks run in this order: `Settings.validate()` (required settings,
 leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then
@@ -857,6 +918,7 @@ draft (`project_config/ is curated, not a raw draft`, `Aliases are curated`,
 `Every data source is described`, `No staging or change-capture tables` and
 `No live sample values in descriptions`: file reads only, no database call),
 `No table in an excluded schema` (advice, also file reads only),
+`Aliases hold no raw data values` and `Entities match schema keys` (file reads only),
 `Rate limit sane for deployment` and `Web UI origin is allowed by CORS` (settings
 only). With several data sources the four database
 checks run once per source and each name carries the source, as
@@ -931,12 +993,14 @@ data sources, the four marked * print once per source, as
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
 | `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
 | `project_config/ loads` | Checks that all ten required files exist (`aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml`, `schema.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml`, `system_prompt.md`), then loads each under the current code's models. An empty `system_prompt.md` fails. | `N of 10 required files not found under '<dir>': <names>`, with every missing name at once (copy each from `project_config.example/`, §2.1), `<file> not found under '<dir>'`, or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
-| `project_config/ is curated, not a raw draft` | Reads the first lines of every `*.yaml` file in `project_config/` for the `# AUTO-GENERATED DRAFT` header that `database.schema_inspector_cli` writes, and counts the `schema.yaml` tables whose description is still the inspector's placeholder (`<schema.table> — auto-detected <kind> table (~N rows)`). It reads `schema.yaml` even when a repeated key (an inspector draft from before 6.9.3) keeps the application from loading it. No database call. | `N file(s) carry the AUTO-GENERATED DRAFT header: <files>` and/or `schema.yaml: N of M table descriptions (P%) are still the placeholder`: the files are a draft, not a curated configuration (a draft lists every table of one database, so a curated file that was replaced by it loses its descriptions, its aliases and, with two databases, one of them). Restore the curated files from your backup or version control, and bring new tables in with `python scripts/sync_schema.py --add-tables 'Schema.*'` (§2.3, §16.3), which keeps the curated text. A file you really did review passes once its header line is deleted. More than a quarter of the descriptions has to be the placeholder; a table added by `--add-tables` is described by its own name and does not count. | `schema.yaml` is missing or unreadable (`project_config/ loads` says which). |
+| `project_config/ is curated, not a raw draft` | Reads the first lines of every `*.yaml` file in `project_config/` for the header a draft carries (`# AUTO-GENERATED DRAFT` from `database.schema_inspector_cli`, `# AUTO-GENERATED by setup_project.py` from the wizard), and counts in `schema.yaml` the tables whose description is still the older inspector's placeholder (`<schema.table> — auto-detected <kind> table (~N rows)`), the tables described by nothing but their own name (`description: 'Sales_Fact.Trade'`: the key, the bare name or `Schema.Table`, which is what `sync_schema.py --add-tables` and the inspector since 6.9.3 write) and the column descriptions that are only `<type> column` (`bigint column`). It reads `schema.yaml` even when a repeated key (an inspector draft from before 6.9.3) keeps the application from loading it. No database call. | `N file(s) carry the AUTO-GENERATED DRAFT header: <files>` (for the wizard's files, the same with `AUTO-GENERATED by setup_project.py`) and/or `schema.yaml: N of M table descriptions (P%) are still the placeholder`, `... are only the table's own name` or `schema.yaml: N of M column descriptions (P%) are only <type> column`: the files are a draft, not a curated configuration (a draft lists every table of one database, so a curated file that was replaced by it loses its descriptions, its aliases and, with two databases, one of them). Restore the curated files from your backup or version control, and bring new tables in with `python scripts/sync_schema.py --add-tables 'Schema.*'` (§2.3, §16.3), which keeps the curated text. A file you really did review passes once its header line is deleted. The older placeholder counts when more than a quarter of the descriptions are it, the other two when more than half are; a few tables added with `--add-tables` among curated ones show in the `[PASS]` line (`3 of 37 only repeat the table's name`) and do not fail the check, but a file made mostly of added tables is a draft again, and so is one whose header line was deleted. Restore the curated files, or describe the added tables. | `schema.yaml` is missing or unreadable (`project_config/ loads` says which). |
 | `Aliases are curated` | Reads `aliases.yaml`. Counts the synonym keys that are not words (no run of two letters: timestamps, numbers) and the synonym lines that still end in the inspector's `# REVIEW` marker. It also reads an `aliases.yaml` that is not valid YAML (a draft from before 6.9.3 with a quote in a sample value), from its lines. | `N of M synonym keys are not words (timestamps or numbers)` or ``N of M synonym entries still end in the inspector's `# REVIEW` marker``, more than half of them: the synonyms are the inspector's seeds (sample values of string columns, not a vocabulary). Restore the curated `aliases.yaml`. An empty `ring_aliases` is **not** a failure: only `ValueRetriever.extract_ring` reads it, to set the `Ring` filter from a ring (hall) name in the question, so a warehouse without that dimension leaves it empty (the setup wizard writes it empty too when it finds no dimension table). It shows as `advice: ring_aliases is empty` in a `[PASS]` line while `schema.yaml` or `entities.yaml` exists; add the ring names if your questions do name one. | `aliases.yaml` is missing. |
 | `Every data source is described` | Reads `datasources.yaml` (one source named `default` without it) and `schema.yaml`: a table belongs to the source its `datasource:` line names (to each, for a list) and to the default source when it has none. | `N of M data source(s) have no table in schema.yaml: <sources>`: a whole database is missing from the configuration (a `schema.yaml` drafted from one of two databases is the usual cause). Restore the curated `schema.yaml`, or add the tables with `python scripts/sync_schema.py --add-tables 'Schema.*'`. `schema.yaml describes no table` when the file has none. A `datasources.yaml` listing a second source while `schema.yaml` has no `datasource:` line fails here too, naming the second source: run `scripts/sync_schema.py` (§16.3) to write the lines. | `schema.yaml` or `datasources.yaml` does not load (their own checks say why). |
 | `No staging or change-capture tables` | Counts the `schema.yaml` tables whose schema or name matches `STAGING_PATTERNS` (default `*_Stg,*stg*,*staging*,table:*_Inserts,table:*_Updates,table:*_Deletes`). Comma-separated `fnmatch` patterns, case-insensitive; a bare pattern is matched against the schema, a `table:` prefix against the table name; empty switches the check off. | Never fails. A `[PASS]` line starting `advice: N of M table(s) look like staging or change-capture tables (<schema>: N, ...)` lists the counts per schema (never a value). Those tables repeat the ones analysts ask about, so the model sees the same name several times and the prompt budget goes to them; take them out of `schema.yaml` unless analysts need them (the inspector's `--exclude-schemas` keeps them out of a draft). | `STAGING_PATTERNS` is empty, or `schema.yaml` does not load. |
 | `No live sample values in descriptions` | Looks at the text after each `e.g.` in a table description or column note (outside a parenthesis) for a run of 7 or more digits (phone-like; Persian digits too), exactly 10 digits (national-id-like) or a long segment of words with digits (address-like). Dates and plain words are left alone. | Never fails. A `[PASS]` line starting `advice: N note(s) in M table(s) seem to quote live sample values (phone-like: N, national-id-like: N, address-like: N); tables: <keys>` gives counts and table keys, never a value. A `schema.yaml` drafted by a release before the inspector stopped writing values quotes up to three values of each text column; the notes go into the prompt sent to the model. Replace each `e.g.` list with a description of the column. | `schema.yaml` does not load. |
 | `No table in an excluded schema` | Reads `schema.yaml` and the exclusion rule of each table's data source(s): the system schemas, `EXCLUDE_SCHEMAS` and the source's `exclude_schemas:` (§2.3). A table counts when its schema (`db_schema`, or the key's qualifier) is excluded in every source it is assigned to; a table whose schema is unknown is never counted. | Never fails. A `[PASS]` line starting `advice: N of M table(s) are in a schema the setup tools are told not to scan: <keys>` lists the first keys and the two fixes: remove the tables from `schema.yaml`, or narrow the exclusion. The exclusion only limits what the inspector and `sync_schema.py` propose, so such a table is still synced. `[SKIP]` when nothing is excluded beyond the system schemas and no table is in one. | `schema.yaml` or `datasources.yaml` does not load. |
+| `Aliases hold no raw data values` | Reads `aliases.yaml` and counts the `synonyms` keys that have the shape of a value copied out of a row: a date or time (`1387/03/24`, `2024-05-01 10:00:00`), a phone number, an IP address, an e-mail address or URL, a masked value (`ab xxxxx cd`, `****1234`), a hash, a run of 8 or more digits (a national id) or an address (words with digits and a street word). A year, `q1` or any word is left alone; Persian digits are read as digits. It also reads an `aliases.yaml` that is not valid YAML, from its lines. | More than 5 such keys: `N of M synonym keys look like raw data values (<date>: N, <phone>: N, ...)`, the count for each shape and never a key. These are the synonyms the wizard of 6.13 and 6.14 built from sample values; they go into the prompt and stay in version control, and the check cannot tell a person's name from a word, so read the file as well. Delete them (keep only words people type); the wizard no longer writes them unless `--value-synonyms` is given (§2.2). | `aliases.yaml` is missing. |
+| `Entities match schema keys` | Reads `entities.yaml`, the keys of `ring_aliases` and `schema.yaml`. Retrieval takes an entity's key to be the name of a table (`retrieval/table_keys.py`), so it has to be that table's key in `schema.yaml`: a bare name for a table keyed by its bare name, `Schema.Table` for one keyed so; the bare name of a `Schema.Table` key is accepted when it picks out one key. `db_schema` does not help: `Sales_Dim.ActionType` finds nothing when the table is keyed `ActionType`. It reports an entity key that is no table's key, two entities for one table, and a `ring_aliases` key that names a table of `schema.yaml` by something other than its key (the name of a hall that is no table is left alone, as in a curated file). | `N entity key(s) are not a schema.yaml table key: Sales_Dim.ActionType (use ActionType), ...`, `N table(s) have two entities: Sales_Dim.ActionType (ActionType and Sales_Dim.ActionType), ...` and `N ring_aliases key(s) name a table but not by its schema.yaml key: ...`: the keys and the key to use, never a value. This is what the wizard of 6.13 and 6.14 left behind: it wrote every table as `Schema.Table` while `schema.yaml` keys a table whose name is unique by its bare name, so the qualified entity matched nothing and the bare duplicate beside it had no aliases; retrieval and alias matching lost those tables, and nothing else failed. Rename each key to the one in brackets, merge the aliases of two entities into one, and give `ring_aliases` the same keys; running the wizard again over the same output folder merges them for you (§2.2). | `schema.yaml` or `entities.yaml` does not load. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
 | `Web UI origin is allowed by CORS` | Settings only, no network. With `VERIFY_UI_ORIGIN` set (the address people open the UI at, e.g. `http://172.16.101.42:8077`), looks for that origin in `CORS_ALLOWED_ORIGINS`; `*` allows any. Without it nothing can be proved, so it only advises (below). | With `VERIFY_UI_ORIGIN` set and not listed: `http://localhost:8077 is not in CORS_ALLOWED_ORIGINS (http://172.16.101.42:8077): a page opened at that address gets 'Failed to fetch' and every light shows red. Set in .env and restart the API: CORS_ALLOWED_ORIGINS=http://172.16.101.42:8077,http://localhost:8077 -- or open the page with exactly an allowed address (scheme, host and port)`. Add the line (the variable replaces the list, so the line carries the current entries too) and restart, or open the page with an allowed address. Also a `VERIFY_UI_ORIGIN` that is not `scheme://host[:port]`. Without `VERIFY_UI_ORIGIN` it never fails; a `[PASS]` line starting `advice:` appears when every allowed origin is loopback while `API_HOST` is not (the API is reachable from other machines, whose pages would be refused), or when exactly one non-loopback origin is allowed (the same page opened by host name, as `localhost`, or on another port is refused). It says to list every address the page is opened with (IP address, host name, `localhost`) and to set `VERIFY_UI_ORIGIN` to check one. It reads `API_HOST`, not a `--host` given to `uvicorn` on the command line. | Never. |
 
@@ -953,7 +1017,7 @@ a line in the gateway's own log and, behind a response cache, two junk entries i
 it each time it runs. It tests a property of the deployment that changes only when
 the gateway does, so it belongs where an operator asks for it, not on a page load
 or a timer; the command line always runs it.
-The five checks above that read `project_config/` run on the panel without it: they
+The eight checks above that read only `project_config/` run on the panel without it: they
 only read files. So does `Web UI origin is allowed by CORS` (it reads settings only);
 on the panel it sees the server's own environment, so `VERIFY_UI_ORIGIN` has to be
 set there for it to be more than advice.
