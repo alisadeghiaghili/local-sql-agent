@@ -34,10 +34,15 @@ import { getApiKey } from "../js/apikey.js";
 import { describeTransportFailure } from "../js/api.js";
 
 export class AdminApiError extends Error {
-  constructor(message, status) {
+  /** `code` is "TRANSPORT_ERROR" (no response at all) or
+   * "UNEXPECTED_PAYLOAD" (a response whose body is not JSON) when the
+   * failure is one of those, else null -- web/js/diagnosis.js reads it to
+   * tell a wrong address from an API that answered. */
+  constructor(message, status, code = null) {
     super(message);
     this.name = "AdminApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -343,7 +348,7 @@ export class AdminApi {
       // page's own origin and CORS_ALLOWED_ORIGINS explicitly instead of
       // leaving the operator to guess -- see its docstring for the real
       // deployment incident this exists for.
-      throw new AdminApiError(describeTransportFailure(this.baseUrl, path, err), 0);
+      throw new AdminApiError(describeTransportFailure(this.baseUrl, path, err), 0, "TRANSPORT_ERROR");
     }
 
     if (res.status === 401) {
@@ -362,7 +367,17 @@ export class AdminApi {
       const body = await _safeJson(res);
       throw new AdminApiError(body?.error?.message || body?.detail || `HTTP ${res.status}`, res.status);
     }
-    return res.json();
+    try {
+      return await res.json();
+    } catch {
+      // A 2xx whose body is not JSON is not this API answering (a static
+      // server handing back its index page, say). Typed so the panel can
+      // ask whether the address is the API at all, once, instead of every
+      // card showing the parser's own wording.
+      throw new AdminApiError(
+        "پاسخ سرور JSON نیست — احتمالاً این نشانی، نشانی API نیست.", res.status, "UNEXPECTED_PAYLOAD",
+      );
+    }
   }
 
   async _get(path) {

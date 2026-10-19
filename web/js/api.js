@@ -278,7 +278,9 @@ export class Api {
       throw new ApiError(describeTransportFailure(this.baseUrl, "/health", err), 0, "TRANSPORT_ERROR");
     }
     if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
-    const h = await res.json();
+    // `?? {}`: a body of JSON `null` must reach the shape check below as
+    // "not the API's response", not as a TypeError on the next line.
+    const h = (await res.json()) ?? {};
     return {
       api: true,
       llm: !!h.openai,
@@ -291,6 +293,12 @@ export class Api {
       // even a fault. Optional: an older backend omits these.
       llmDetail: h.openai_detail || null,
       dbDetail: h.database_detail || null,
+      // The parsed body, untouched. Whatever answers at this address can
+      // return 200 and JSON that is not the API's health response (a
+      // different service on the port); the caller judges that with
+      // diagnosis.js's isApiHealthShape rather than this method throwing
+      // on a body it cannot know the shape of for every backend version.
+      raw: h,
     };
   }
 

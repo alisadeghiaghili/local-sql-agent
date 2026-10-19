@@ -185,8 +185,20 @@ Serving this folder from any other origin or port requires setting
 `CORS_ALLOWED_ORIGINS` to that origin before starting the API (setting it
 replaces the default list rather than adding to it) — same-origin
 deployments never need it. The server logs the effective list at start-up
-(`CORS allowed origins: ...`). See `config.py` for the full setting and
-`docs/deployment-runbook.md` §4 for the failure it prevents.
+(`CORS allowed origins: ...`) and, once per origin, names any origin it
+refuses (`CORS: origin '...' is not allowed`, with the `.env` line to add).
+See `config.py` for the full setting and `docs/deployment-runbook.md` §4 for
+the failure it prevents.
+
+**A wrong address or a refused page is said once, at the top.** When a call
+to the configured API address fails, `js/diagnosis.js` classifies it: the
+address is the page's own server, or answers `GET /health` with something that
+is not the API (a 404, an HTML page, JSON of another shape); or the call got no
+response at all (a refused origin and an unreachable host look the same to a
+browser, so the message names both). The analyst page shows it in the banner
+`#api-diagnosis`, the admin panel in `#admin-diagnosis-banner`; each admin card
+then says only «به API نرسید؛ پیام بالای صفحه را ببینید.» instead of repeating
+it. A 401, 403, 429 or 5xx is the API answering and keeps its own message.
 
 ## Structure
 

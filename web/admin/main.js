@@ -41,8 +41,20 @@ import {
   resolveBootBaseUrl, resolveDefaultBaseUrl, normalizeBaseUrl,
 } from "../js/state.js";
 import { DEFAULT_BASE_URL, DEFAULT_API_PORT } from "../js/config.js";
+import {
+  CARD_UNREACHABLE_TEXT, KIND_OTHER, createDiagnoser, hideDiagnosisBanner, showDiagnosisBanner,
+} from "../js/diagnosis.js";
 
 const $ = (id) => document.getElementById(id);
+
+/* Decides, once per round of calls, whether the address this panel talks to
+ * is the API at all (js/diagnosis.js), so thirteen failing cards produce one
+ * page-level message and thirteen short pointers to it. Declared before the
+ * bootstrap calls below for the reason CARDS is. */
+const diagnoser = createDiagnoser({
+  getBaseUrl: () => state.baseUrl,
+  getPageOrigin: () => location.origin,
+});
 
 /* Every card this page fetches and re-renders, one at a time (see
  * refreshOne below). Declared here, before the top-level bootstrap calls
@@ -195,7 +207,10 @@ function wireTopbar() {
   // (?refresh=1); refreshOne ignores `force` for every other card, which
   // has no such cache to bypass.
   document.querySelectorAll("[data-refresh]").forEach((btn) => {
-    btn.addEventListener("click", () => refreshOne(btn.dataset.refresh, { force: true }));
+    btn.addEventListener("click", () => {
+      diagnoser.reset(); // a fresh question about the address, not last round's answer
+      refreshOne(btn.dataset.refresh, { force: true });
+    });
   });
 
   const deepBtn = $("health-deep-btn");
@@ -298,6 +313,7 @@ async function refreshAll() {
  * shared rail/timestamp. Used both by refreshAll (every card) and by the
  * 30s auto-refresh timer below (every card EXCEPT EXPENSIVE_CARDS). */
 async function refreshMany(names) {
+  diagnoser.reset();
   await Promise.all(names.map((name) => refreshOne(name)));
   updateSummaryRail();
   markLastUpdated();
@@ -445,13 +461,24 @@ async function refreshOne(name, { force = false, deep = false } = {}) {
       renderAuthFailures(await api.authFailures());
     }
     hideForbiddenBanner();
+    hideDiagnosisBanner($("admin-diagnosis-banner"));
   } catch (err) {
     // A card is never left blank: every branch below writes its own text into
     // the card body. The page-level banner (403) and notice (401) say what is
     // wrong for the whole page; the card says it for itself, so someone looking
     // at this card alone, or scrolled away from the top of the page, is not
     // left with an empty box and no explanation.
-    if (err instanceof AdminForbiddenError && CARDS_WHERE_403_IS_A_CAPABILITY_GAP.has(name)) {
+    //
+    // A wrong address (or a refused/unreachable one) is the same for every
+    // card: it is said once, in the banner at the top, and each card points
+    // to it. Only a failure that diagnosis.js recognises goes this way; a
+    // 401, a 403 or a 500 is the API answering and keeps its own message.
+    const diagnosis = await diagnoser.diagnose(err);
+    if (diagnosis.kind === KIND_OTHER) hideDiagnosisBanner($("admin-diagnosis-banner")); // the API answered
+    if (diagnosis.kind !== KIND_OTHER) {
+      body.innerHTML = `<p class="admin-loading">${CARD_UNREACHABLE_TEXT}</p>`;
+      showDiagnosisBanner($("admin-diagnosis-banner"), diagnosis, "admin");
+    } else if (err instanceof AdminForbiddenError && CARDS_WHERE_403_IS_A_CAPABILITY_GAP.has(name)) {
       const capability = CARDS_WHERE_403_IS_A_CAPABILITY_GAP.get(name);
       body.innerHTML =
         `<p class="admin-loading">این بخش به نقش <code>${capability}</code> نیاز دارد و کلید شما آن را ندارد. ` +

@@ -22,6 +22,9 @@ import {
 } from "./state.js";
 import { Api, V2NotSupportedError, ApiError, UnauthorizedError, RateLimitError } from "./api.js";
 import { setApiKey, clearApiKey, hasApiKey } from "./apikey.js";
+import {
+  CODE_UNEXPECTED_PAYLOAD, createDiagnoser, hideDiagnosisBanner, isApiHealthShape, showDiagnosisBanner,
+} from "./diagnosis.js";
 import { DEFAULT_BASE_URL, DEFAULT_API_PORT } from "./config.js";
 import { createTurnCard, FAILURE_BY_CODE } from "./render/turn.js";
 import { canConfirm, renderConfirmationControl } from "./render/confirmation.js";
@@ -84,6 +87,16 @@ function scrollSettledResultAboveComposer(el) {
 // half. Declaring it below the boot call put it in the temporal dead zone at
 // boot, which threw a ReferenceError and killed the entire simulated UI.
 const HEALTH_STATE_LABEL_KEY = { ok: "healthStateUp", down: "healthStateDown", unknown: "healthStateUnknown" };
+
+// Declared here for the same reason: refreshHealth() runs from the boot call
+// below. Decides, once per failed status check, whether the address this page
+// calls is the API at all (diagnosis.js), so the page can say so in one banner
+// instead of three red lights and a tooltip.
+const diagnoser = createDiagnoser({
+  getBaseUrl: () => state.baseUrl,
+  getPageOrigin: () => location.origin,
+});
+let healthCheckSeq = 0;
 
 /* ── Boot ──────────────────────────────────────────────────────────── */
 // T-SQL Prism patch must run before the first Prism.tokenize — Prism
@@ -404,6 +417,7 @@ function setMode(mode) {
         ? "Demo mode — data is synthetic; no real query has run."
         : "حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.";
     setHealth(true, true, true, "simulated");
+    hideDiagnosisBanner($("api-diagnosis"));
   } else {
     foot.textContent =
       state.lang === "en"
@@ -460,8 +474,15 @@ function setHealth(api_, llm, db, label) {
 }
 
 async function refreshHealth() {
+  const seq = ++healthCheckSeq;
   try {
     const h = await api.health();
+    // A 200 whose body is not the API's health response is some other
+    // service answering at this address, not a healthy API: judged here,
+    // not trusted as "API up".
+    if (!isApiHealthShape(h.raw)) {
+      throw new ApiError("/health did not return the API's health response", 200, CODE_UNEXPECTED_PAYLOAD);
+    }
     // The tooltip carries the backend's own reason for each light, so a
     // red LLM indicator says WHY rather than leaving the reader to guess
     // between a wrong host, a wrong key, and an endpoint we never call.
@@ -469,6 +490,7 @@ async function refreshHealth() {
     if (h.llmDetail) lines.push(`LLM: ${h.llmDetail}`);
     if (h.dbDetail) lines.push(`DB: ${h.dbDetail}`);
     setHealth(h.api, h.llm, h.db, lines.join("\n"));
+    hideDiagnosisBanner($("api-diagnosis"));
   } catch (err) {
     // TRANSPORT_ERROR (api.js's health()) means the fetch itself never
     // got a response -- unreachable host, or (the incident this branch
@@ -482,6 +504,12 @@ async function refreshHealth() {
       ? err.message
       : "بک‌اند در دسترس نیست — uvicorn api.server:app را اجرا کنید یا حالت نمایشی را انتخاب کنید";
     setHealth(false, false, false, hint);
+    // The tooltip above is read by nobody who does not hover the lights; a
+    // wrong address or a refused page is said once, in the banner.
+    diagnoser.reset();
+    const diagnosis = await diagnoser.diagnose(err);
+    // A newer check started while this one was probing: its answer wins.
+    if (seq === healthCheckSeq) showDiagnosisBanner($("api-diagnosis"), diagnosis, "analyst");
   }
 }
 
