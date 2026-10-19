@@ -78,7 +78,8 @@ allowlists from ever drifting out of sync with ``schema.yaml``'s own
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import re
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,6 +116,8 @@ __all__ = [
     "table_ref_parts",
     "split_table_key",
     "bare_table_name",
+    "table_key_for",
+    "shared_table_names",
     "effective_qualifier",
     "table_reference_sql",
 ]
@@ -274,6 +277,87 @@ def split_table_key(key: str) -> TableRef:
 def bare_table_name(key: str) -> str:
     """The bare table name of *key* -- ``split_table_key(key).name``."""
     return split_table_key(key).name
+
+
+_PLAIN_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def table_key_for(schema: str, name: str, qualified: bool) -> str | None:
+    """The ``schema.yaml`` key a database table is written under, or ``None`` if none can be.
+
+    The one spelling rule of every tool that writes a table key: the sync
+    engine (``scripts/sync_schema.py``), the inspector and its CLI, and the
+    setup wizard. A table is keyed by its bare name, or -- *qualified*, which
+    the caller decides because the bare name is shared by several schemas --
+    by ``Schema.Table``. A part that is not a plain identifier (a space, a
+    ``.``, a leading digit, a non-Latin letter) is bracket-quoted, with ``]``
+    doubled, the spelling :func:`split_table_key` reads back.
+
+    Parameters
+    ----------
+    schema:
+        The table's schema; ignored (``""`` is fine) when not *qualified*.
+    name:
+        The bare table name.
+    qualified:
+        Whether the key carries the schema.
+
+    Returns
+    -------
+    str | None
+        The key, or ``None`` when it does not parse back to *name*.
+
+    Examples
+    --------
+    >>> table_key_for("sales", "Trade", True), table_key_for("sales", "Trade", False)
+    ('sales.Trade', 'Trade')
+    >>> table_key_for("sales", "Trade 1", True), table_key_for("", "a.b", False)
+    ('sales.[Trade 1]', '[a.b]')
+    >>> table_key_for("", "Trade", True)
+    'Trade'
+    """
+
+    def ident(part: str) -> str:
+        return part if _PLAIN_IDENT.match(part) else "[" + part.replace("]", "]]") + "]"
+
+    key = f"{ident(schema)}.{ident(name)}" if qualified and schema else ident(name)
+    try:
+        ref = split_table_key(key)
+    except ValueError:
+        return None
+    return key if ref.name == name else None
+
+
+def shared_table_names(tables: Iterable[tuple[str | None, str]]) -> frozenset[str]:
+    """The bare names (lower-cased) that more than one schema of *tables* uses.
+
+    Those are the names whose tables are keyed ``Schema.Table``; the others
+    are keyed by the bare name. A table without a schema counts as a schema
+    of its own (``""``), so a bare entry and a qualified one for one name
+    are two schemas -- callers that hold both for one table must resolve the
+    schema first.
+
+    Parameters
+    ----------
+    tables:
+        ``(schema, name)`` pairs.
+
+    Returns
+    -------
+    frozenset[str]
+        Lower-cased bare names found in two or more distinct schemas.
+
+    Examples
+    --------
+    >>> sorted(shared_table_names([("sales", "Trade"), ("ref", "trade"), ("sales", "Customer")]))
+    ['trade']
+    >>> shared_table_names([("sales", "Trade"), ("SALES", "Trade")])
+    frozenset()
+    """
+    schemas: dict[str, set[str]] = {}
+    for schema, name in tables:
+        schemas.setdefault(name.lower(), set()).add((schema or "").lower())
+    return frozenset(name for name, found in schemas.items() if len(found) > 1)
 
 
 def effective_qualifier(key: str, db_schema: str = "") -> tuple[str, ...]:

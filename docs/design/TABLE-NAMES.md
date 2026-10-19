@@ -58,7 +58,13 @@ feature and one a real security hole:
   name unless that name occurs in more than one schema among the tables being
   written together (across every selected data source, compared
   case-insensitively), when every occurrence is keyed `Schema.Table`; a part
-  that is not a plain identifier is bracketed (`[Price List]`). The first-install
+  that is not a plain identifier is bracketed (`[Price List]`). One function,
+  `schema_data.registry.table_key_for`, spells the key for the sync engine, the
+  inspector (both its CLI and the single-database class) and the setup wizard, and
+  `shared_table_names` decides which names are shared for the inspector and the
+  wizard (the sync engine counts the same thing against the keys already in the
+  file), so an entity key the wizard writes is the key `schema.yaml` has for the
+  same table. The first-install
   inspector builds its `schema.yaml` with `schema_data.sync.draft_schema_text`,
   the same code `scripts/sync_schema.py --add-tables` uses, so the two spell a
   table the same way, and a table present with the same `schema.table` in several

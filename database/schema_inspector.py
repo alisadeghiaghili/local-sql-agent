@@ -260,12 +260,9 @@ class _TableNamer:
     """
 
     def __init__(self, snapshot: SchemaSnapshot) -> None:
-        schemas_by_name: dict[str, set[str]] = {}
-        for table in snapshot.tables:
-            schemas_by_name.setdefault(table.name.lower(), set()).add(
-                (table.schema or "").lower()
-            )
-        self._shared = {n for n, schemas in schemas_by_name.items() if len(schemas) > 1}
+        from schema_data.registry import shared_table_names  # lazy: keeps import cheap
+
+        self._shared = shared_table_names((t.schema, t.name) for t in snapshot.tables)
         self._by_ref: dict[tuple[str, str], str] = {}
         self._by_bare: dict[str, list[str]] = {}
         for table in snapshot.tables:
@@ -274,10 +271,19 @@ class _TableNamer:
             self._by_bare.setdefault(table.name.lower(), []).append(key)
 
     def key(self, table: TableInfo) -> str:
-        """The ``schema.yaml`` key (and entity name) of *table*."""
-        if table.schema and table.name.lower() in self._shared:
-            return _render_key((table.schema, table.name))
-        return _render_key((table.name,))
+        """The ``schema.yaml`` key (and entity name) of *table*.
+
+        Spelled by :func:`schema_data.registry.table_key_for`, the rule
+        ``scripts/sync_schema.py`` writes keys with, so a draft and a later
+        sync agree on a name with a space, a dot or a non-Latin letter too.
+        """
+        from schema_data.registry import table_key_for  # lazy: keeps import cheap
+
+        qualified = bool(table.schema) and table.name.lower() in self._shared
+        key = table_key_for(table.schema or "", table.name, qualified)
+        if key is not None:
+            return key
+        return _render_key((table.schema, table.name) if qualified else (table.name,))
 
     def ref(self, schema: str | None, name: str, default_schema: str | None = None) -> str:
         """How a relationship end naming ``schema.name`` is written.

@@ -80,6 +80,7 @@ from schema_data.registry import (
     TableDefinition,
     bare_table_name,
     split_table_key,
+    table_key_for,
     validate_schema_yaml_text,
 )
 from schema_data.yaml_text import (
@@ -133,7 +134,6 @@ STALE_COLUMN_COMMENT = "# not in database (sync_schema.py)"
 
 _STALE_PREFIX = "# not in database"
 _PLAIN_TABLE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
-_PLAIN_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 #: How many names a report section lists before summarising the rest.
 REPORT_LIST_LIMIT = 200
@@ -458,16 +458,12 @@ def _display(info: TableInfo) -> str:
 
 
 def _table_key(schema: str, name: str, qualified: bool) -> str | None:
-    """The key *schema.name* is written under, or ``None`` if it cannot be."""
-    def ident(part: str) -> str:
-        return part if _PLAIN_IDENT.match(part) else "[" + part.replace("]", "]]") + "]"
+    """The key *schema.name* is written under, or ``None`` if it cannot be.
 
-    key = f"{ident(schema)}.{ident(name)}" if qualified and schema else ident(name)
-    try:
-        ref = split_table_key(key)
-    except ValueError:
-        return None
-    return key if ref.name == name else None
+    The rule is :func:`schema_data.registry.table_key_for`, which the
+    inspector and the setup wizard use too.
+    """
+    return table_key_for(schema, name, qualified)
 
 
 def _table_yaml_key(key: str) -> str:
