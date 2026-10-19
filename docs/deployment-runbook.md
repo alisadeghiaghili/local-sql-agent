@@ -393,6 +393,11 @@ than discovering the gap once the UI is already showing three red lights:
   cross-origin check does not silently block every call the UI makes.
   See its dedicated warning in step 4 below — this is the single most
   common cause of "the UI shows the backend as down when it is not."
+  The list must hold **every** address the page is opened with, spelt exactly
+  as the browser shows it: the IP address, the host name and `localhost` are
+  three different origins, and so are two ports on one machine. Setting the
+  variable replaces the default list, so name every one you need, comma-separated.
+  `VERIFY_UI_ORIGIN=<address>` makes the preflight check it (§3).
 
 ### 2.1 Create `project_config/`
 
@@ -833,8 +838,9 @@ This must print `0 failed` before you go further. Every line is
 what to fix (a placeholder still in `.env`, an unreachable database, a
 model name the endpoint doesn't actually serve, no API key configured, an
 unwritable log directory, a `project_config/` that fails to load, a `project_config/` that is
-a raw draft from the schema inspector, a data source with no table, or a
-rate limit too tight for your expected number of analysts). `[SKIP]` is
+a raw draft from the schema inspector, a data source with no table, a rate
+limit too tight for your expected number of analysts, or a web UI address the
+CORS list would refuse). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
 
@@ -850,14 +856,15 @@ required files), the five checks that tell a curated `project_config/` from a ra
 draft (`project_config/ is curated, not a raw draft`, `Aliases are curated`,
 `Every data source is described`, `No staging or change-capture tables` and
 `No live sample values in descriptions`: file reads only, no database call),
-`No table in an excluded schema` (advice, also file reads only) and
-`Rate limit sane for deployment`. With several data sources the four database
+`No table in an excluded schema` (advice, also file reads only),
+`Rate limit sane for deployment` and `Web UI origin is allowed by CORS` (settings
+only). With several data sources the four database
 checks run once per source and each name carries the source, as
 `Database connectivity [sales]`; `Tables are in their data source` is skipped
 with one source. The last line is `N passed, N failed, N skipped`, and the
 exit code is 1 when anything failed.
 
-Two optional environment variables sharpen two of the checks without
+Three optional environment variables sharpen three of the checks without
 changing anything persistent:
 
 - `VERIFY_API_KEY=<raw key from step 1>` — proves that *specific* key
@@ -869,6 +876,13 @@ changing anything persistent:
   actually expect behind the smallest configured key's bucket, so the
   rate-limit check reasons about your real deployment shape instead of
   the default assumption of 10.
+- `VERIFY_UI_ORIGIN=<address>` — the address the web UI is opened with, as
+  the browser's address bar shows it (`http://172.16.101.42:8077`; a trailing
+  slash or a path is ignored). The preflight, the CLI and `curl` send no
+  `Origin`, so none of them can notice that a browser would be refused;
+  with this set, `Web UI origin is allowed by CORS` passes when the address is
+  in `CORS_ALLOWED_ORIGINS` and fails, printing the `.env` line to add,
+  when it is not. Run it once per address people use.
 
 ```bash
 VERIFY_API_KEY=<raw key> VERIFY_EXPECTED_ANALYSTS=15 python -m scripts.verify_deployment
@@ -924,6 +938,7 @@ data sources, the four marked * print once per source, as
 | `No live sample values in descriptions` | Looks at the text after each `e.g.` in a table description or column note (outside a parenthesis) for a run of 7 or more digits (phone-like; Persian digits too), exactly 10 digits (national-id-like) or a long segment of words with digits (address-like). Dates and plain words are left alone. | Never fails. A `[PASS]` line starting `advice: N note(s) in M table(s) seem to quote live sample values (phone-like: N, national-id-like: N, address-like: N); tables: <keys>` gives counts and table keys, never a value. A `schema.yaml` drafted by a release before the inspector stopped writing values quotes up to three values of each text column; the notes go into the prompt sent to the model. Replace each `e.g.` list with a description of the column. | `schema.yaml` does not load. |
 | `No table in an excluded schema` | Reads `schema.yaml` and the exclusion rule of each table's data source(s): the system schemas, `EXCLUDE_SCHEMAS` and the source's `exclude_schemas:` (§2.3). A table counts when its schema (`db_schema`, or the key's qualifier) is excluded in every source it is assigned to; a table whose schema is unknown is never counted. | Never fails. A `[PASS]` line starting `advice: N of M table(s) are in a schema the setup tools are told not to scan: <keys>` lists the first keys and the two fixes: remove the tables from `schema.yaml`, or narrow the exclusion. The exclusion only limits what the inspector and `sync_schema.py` propose, so such a table is still synced. `[SKIP]` when nothing is excluded beyond the system schemas and no table is in one. | `schema.yaml` or `datasources.yaml` does not load. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
+| `Web UI origin is allowed by CORS` | Settings only, no network. With `VERIFY_UI_ORIGIN` set (the address people open the UI at, e.g. `http://172.16.101.42:8077`), looks for that origin in `CORS_ALLOWED_ORIGINS`; `*` allows any. Without it nothing can be proved, so it only advises (below). | With `VERIFY_UI_ORIGIN` set and not listed: `http://localhost:8077 is not in CORS_ALLOWED_ORIGINS (http://172.16.101.42:8077): a page opened at that address gets 'Failed to fetch' and every light shows red. Set in .env and restart the API: CORS_ALLOWED_ORIGINS=http://172.16.101.42:8077,http://localhost:8077 -- or open the page with exactly an allowed address (scheme, host and port)`. Add the line (the variable replaces the list, so the line carries the current entries too) and restart, or open the page with an allowed address. Also a `VERIFY_UI_ORIGIN` that is not `scheme://host[:port]`. Without `VERIFY_UI_ORIGIN` it never fails; a `[PASS]` line starting `advice:` appears when every allowed origin is loopback while `API_HOST` is not (the API is reachable from other machines, whose pages would be refused), or when exactly one non-loopback origin is allowed (the same page opened by host name, as `localhost`, or on another port is refused). It says to list every address the page is opened with (IP address, host name, `localhost`) and to set `VERIFY_UI_ORIGIN` to check one. It reads `API_HOST`, not a `--host` given to `uvicorn` on the command line. | Never. |
 
 The most common first-install `[FAIL]` with several data sources is
 `Tables are in their data source -- 44 table(s): ... not in sales, found in inventory — set datasource: inventory`.
@@ -939,7 +954,9 @@ it each time it runs. It tests a property of the deployment that changes only wh
 the gateway does, so it belongs where an operator asks for it, not on a page load
 or a timer; the command line always runs it.
 The five checks above that read `project_config/` run on the panel without it: they
-only read files.
+only read files. So does `Web UI origin is allowed by CORS` (it reads settings only);
+on the panel it sees the server's own environment, so `VERIFY_UI_ORIGIN` has to be
+set there for it to be more than advice.
 
 ## 4. Start the server
 
@@ -985,7 +1002,11 @@ someone has to remember or script separately. It does not support
 > (protocol + host + port the UI is served from, e.g.
 > `http://172.16.101.42:8077`) and restart — see the CORS block in `.env`
 > step 2 above, and confirm the effective list in the startup log (step 5
-> below logs it as `CORS allowed origins: ...`).
+> below logs it as `CORS allowed origins: ...`). The page must then be
+> opened with **exactly** one of the listed addresses: the same machine
+> reached as `localhost` instead of by its IP address is a different origin
+> and is refused. From the first refused request the server names the origin
+> in its log (§5), and the UI says so in a banner at the top (§5.1).
 
 ## 5. Confirm the startup banner
 
@@ -1011,6 +1032,22 @@ CORS allowed origins: http://localhost:8080, http://127.0.0.1:8080
 If the UI's own origin is not in that list (and the UI is not
 same-origin with the API), that is the fix — see the CORS callout in
 step 4 above before assuming anything else is wrong.
+
+When a request arrives from an origin that is not in the list, the server
+also logs one `WARNING` for that origin (once per origin while the process
+lives, whether the request is a preflight or an ordinary one):
+
+```
+CORS: origin 'http://localhost:8077' is not allowed (allowed: http://172.16.101.42:8077). Browsers show this as 'Failed to fetch'. To allow it add this line to .env and restart: CORS_ALLOWED_ORIGINS=http://172.16.101.42:8077,http://localhost:8077 -- or open the page with exactly an allowed address (scheme, host and port). Logged once per origin.
+```
+
+It names the rejected origin, the allowed list and the exact `.env` line; the
+policy itself is unchanged (the preflight is still answered `400`). At most 64
+distinct origins are remembered; after that one line says
+`CORS: more than 64 distinct rejected origins seen; further rejected origins are not logged.`
+The origin is request text, so control characters are removed and it is cut at
+200 characters. A request to the server's own address (the `Origin` equals the
+`Host`) is same-origin and is not reported.
 
 With several data sources, also look for one line per source saying which
 prompt path its questions take (logged at start-up, or at first use if that
@@ -1070,6 +1107,25 @@ should already have caught. If you see it, create the file by copying
 real schema, business rules, and dialect requirements — the example copy
 describes only the generic example schema and is not meant to be used
 as-is.
+
+### 5.1 The UI opens but cannot use the API
+
+Both of these pass every preflight check that does not know the browser's
+address (§3) and look healthy from the server's side, because the preflight,
+the CLI and `curl` are not browsers:
+
+| What you see | What the server log shows | Cause | Fix |
+|---|---|---|---|
+| The status lights (API, LLM, DB) are all red, a red banner at the top of the page says the connection to the API could not be made and lists two likely causes | Only `OPTIONS /health`, `OPTIONS /v2/sessions` and `OPTIONS /v2/access-requests`, each `400 Bad Request`, and the `CORS: origin '...' is not allowed` line above | The page was opened with an address that is not in `CORS_ALLOWED_ORIGINS` (here `http://localhost:8077` against a list holding only `http://172.16.101.42:8077`). A browser tells the page nothing more than `Failed to fetch`, and cannot tell this from an API that is down, so the banner names both | Add the origin the banner and the log line show: `CORS_ALLOWED_ORIGINS=<current list>,<rejected origin>`, restart, and open the page with exactly an allowed address (scheme, host and port). If the log has no such line and no request at all, the API is not running at the address the banner names |
+| Every admin panel card says «به API نرسید؛ پیام بالای صفحه را ببینید.» (earlier releases showed a 404 on each), and a banner at the top says the address in the top bar is not the API | No `/admin/...` request at all | The API address saved in this browser (it takes precedence over `web/js/config.js`, and the admin panel's top bar saves it) is the address of the static file server (`web/`), which answers 404 to what it does not serve. The banner appears when the address is the page's own origin, or when `GET <address>/health` answers a 404, an HTML page, or JSON that is not the API's health response | Enter the API's address (`http://<host>:8000`) in the top bar and press «اتصال». It is saved and also applies to the analyst page. For the analyst page alone, set `DEFAULT_BASE_URL` in `web/js/config.js` |
+| The analyst page shows the same banner for a wrong address (its text names `web/js/config.js` instead of the top bar, which that page does not have) | No request from this page reaches the API | The same as the row above | The same as the row above |
+
+What the page can and cannot tell: a failed call that never got a response is
+shown as the first row, a guess between a refused origin and an unreachable
+host, because a browser hides the difference on purpose. The second row is a
+verdict only when the address answers `/health` and is not the API; a
+`401`, `403`, `429` or `5xx` is the API answering and keeps its own message on
+the card.
 
 ## 6. Confirm the audit log is being written
 
