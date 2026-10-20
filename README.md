@@ -206,7 +206,8 @@ cp .env.example .env
 #   OPENAI_API_KEY=your-key   # may stay empty for a local endpoint that checks none
 # Querying more than one database? Describe each source in
 # project_config/datasources.yaml (host, database, login; one DB_PASSWORD_*
-# variable each) instead of setting DB_CONNECTION_URL, then follow
+# variable each) instead of setting DB_CONNECTION_URL -- write it first, before
+# any tool that drafts a file reads the databases -- then follow
 # docs/deployment-runbook.md §16: it covers `python scripts/sync_schema.py`
 # (syncs `schema.yaml` with the databases and writes each table's `datasource:`), `keywords:` for routing,
 # `python scripts/prompt_budget.py` (sizes PROMPT_RETRIEVAL_TOKEN_BUDGET) and
@@ -237,6 +238,12 @@ python scripts/sync_schema.py          # writes project_config/schema.synced.yam
 #   overwritten. Review the proposal, keep schema.yaml.bak, move it over
 #   schema.yaml, then confirm:
 python scripts/sync_schema.py --check  # CHECK OK, exit code 0
+# On a first install no description is written yet: the inspector's draft (and
+# `sync_schema.py --add-tables`) describe a table by its own name and a column by its
+# type, which the preflight refuses. Draft real descriptions with the wizard's model
+# (names, types and keys only; no row), review them, replace schema.yaml and delete
+# the draft header on the first line (docs/deployment-runbook.md §2.4):
+python scripts/draft_descriptions.py   # writes project_config/schema.described.yaml
 
 # 4. Issue an API key (every route but /health requires one)
 python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
@@ -475,6 +482,8 @@ local-sql-agent/
 │   ├── columns.py            #   column allowlist (derived, not authored)
 │   ├── relationships.py      #   FK → JOIN SQL map
 │   ├── sync.py               #   scripts/sync_schema.py's engine: schema.yaml's structure vs the catalogues
+│   ├── describe.py           #   scripts/draft_descriptions.py's text editor: what lacks a description, and writing drafts in line by line
+│   ├── describe_prompt.py    #   what the model is told about one table, and what is kept of its answer
 │   ├── relationship_proposals.py #  relationships.proposed.yaml (declared keys and X_ID inference)
 │   └── retriever.py          #   TF-IDF bigram fallback engine
 ├── prompt_engine/
@@ -530,6 +539,7 @@ local-sql-agent/
 │   ├── issue_api_key.py      #   mint a new API key
 │   ├── sync_schema.py        #   bring schema.yaml's structure (datasource:, columns, types, tables) in step with the databases; propose relationships
 │   ├── assign_datasources.py #   the narrower tool: only write each schema.yaml table's datasource: from the databases
+│   ├── draft_descriptions.py #   draft the table and column descriptions schema.yaml lacks with the wizard's model, into schema.described.yaml for review
 │   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
 │   ├── migrate_app_db.py     #   move the application database between backends
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis

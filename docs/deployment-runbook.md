@@ -34,6 +34,10 @@ Before sending logs or configuration to anyone for help, read §19.
 Do these in order; each one assumes the ones before it. A step marked
 *several databases only* is skipped on a one-database deployment. "Done when"
 is the sign you can move on: do not continue past a step that did not show it.
+Two things decide the order. The databases are described first (step 4),
+because every tool that drafts a file afterwards reads them through the login
+the application itself uses. And the first API key is issued (step 11) before
+the first preflight (step 12), because the preflight fails while no key exists.
 
 1. **Check the prerequisites.** Python 3.11 or newer; an ODBC driver for SQL
    Server (17 or 18) on the machine that runs the server; an
@@ -47,105 +51,150 @@ is the sign you can move on: do not continue past a step that did not show it.
    *Done when:* pip ends without an error.
 3. **Create `.env`**: `cp .env.example .env`, then set `DB_CONNECTION_URL`
    and `DB_PASSWORD` (with several databases, one `DB_PASSWORD_*` per source
-   in step 5 instead), `OPENAI_BASE_URL` and `OPENAI_MODEL`, and
+   in step 4 instead), `OPENAI_BASE_URL` and `OPENAI_MODEL`, and
    `OPENAI_API_KEY` only if your endpoint checks one (§2).
    *Done when:* `python -c "import config as cfg; cfg.settings.validate(); print('settings ok')"`
    prints `settings ok`. Anything else is a `ValueError` whose message names
    the variable to fix.
-4. **Create `project_config/`**: `cp -r project_config.example project_config`,
-   then replace the example's content with your own domain. Two optional
-   helpers draft it from the live database: `python -m database.schema_inspector_cli`
-   drafts a first `schema.yaml`, and the setup wizard `python setup_project.py` drafts
-   `entities.yaml`, `aliases.yaml`, `business_rules.yaml` and `examples.yaml`
-   (§2.1 and §2.2; the wizard does not write `schema.yaml` and does not set
-   `datasource:`). Whatever the origin of `schema.yaml`, step 6 brings its
-   structure in step with the databases, so a hand-typed table and column list
-   is enough to start from. The wizard writes **drafts** to `project_config_draft/`
-   (it refuses to write into `project_config/` unless told to, §2.2): review them
-   and copy the files you accept into `project_config/`. *Done when:* `project_config/`
-   holds the nine YAML files and `system_prompt.md`, `schema.yaml` lists your tables,
-   and, if you ran the wizard, the files you copied from `project_config_draft/` are
-   reviewed (the wizard's own last line, `Setup complete.`, appears only in a directory
-   that already holds all ten files).
-5. **Describe the databases** (*several databases only*): write
+4. **Describe the databases first: `datasources.yaml`** (§16.1, §16.2). Every
+   tool of the steps that follow reads the databases through the login the
+   application itself uses, so say where they are before anything else.
+   *Several databases:* `mkdir -p project_config`, write
    `project_config/datasources.yaml` from `project_config.example/datasources.example.yaml`
-   (§16.1, §16.2) and put each source's raw password in `.env` under the
-   variable its `password_env` names.
+   (one entry per source), and put each source's raw password in `.env` under
+   the variable its `password_env` names. *One database:* the file is optional
+   and you can skip it. Without it the deployment has exactly one source, named
+   `default`, whose connection is `DB_CONNECTION_URL` with the raw `DB_PASSWORD`
+   of step 3 (`database/datasources.py`), and every tool below reads that one.
+   For one database, write the file only if you want a setting that lives in
+   it: `exclude_schemas:` (the same rule is `EXCLUDE_SCHEMAS=` in `.env`) or
+   `nolock: true` (step 10).
    *Done when:* `python -c "from database.datasources import datasource_names; print(datasource_names())"`
-   prints every source name, and the check of step 3 still prints `settings ok`.
-6. **Sync `schema.yaml`'s structure with the databases**:
-   `python scripts/sync_schema.py` (any number of databases). It reads every
-   source's catalogue (three `INFORMATION_SCHEMA` views per source, names and
-   types only), and writes `schema.synced.yaml` next to `schema.yaml`: your file
-   with every comment and description kept, plus the `datasource:` line of every
-   table (several databases), the columns the databases have and the file lacks
-   (as drafts), a `column_types:` map, and a marker on every column or table
-   the databases do not have (§16.3). It also writes `relationships.proposed.yaml`
-   for review. Skipping it makes the preflight of step 11 fail with
-   `Tables are in their data source` (several databases), and with
-   `Schema structure matches the databases` as soon as the databases differ from
-   the file. A file that only lacks the recorded column types passes that check
-   with a note (step 14 of "Upgrading from 6.0 to 6.14.2", §17).
-   *Done when:* the run ends with `written: ... -- review it before replacing schema.yaml`
-   (§16.3).
-7. **Review the proposal, replace `schema.yaml`, check**: read
-   `project_config/schema.synced.yaml` (a diff against `schema.yaml` shows
-   exactly what changed), copy `schema.yaml` to `schema.yaml.bak`, move the
-   proposal over `schema.yaml`, then run `python scripts/sync_schema.py --check`.
-   *Done when:* it prints `CHECK OK: schema.yaml's structure matches the databases`
-   (exit code 0).
-8. **Resolve what the sync marked.** The report's section
-   `== columns in schema.yaml that the database does not have: N ==` lists each
-   column that carries the comment `# not in database (sync_schema.py)`, and
-   `== tables in schema.yaml found in no data source: N ==` each table marked
-   `# not found in any data source`. Remove them with `python scripts/sync_schema.py --prune`
-   (review the result and replace `schema.yaml` again), correct a misspelt
-   column by hand, or have the DBA lift a `DENY` that hides a column from the
-   login (§16.3). Fill in the descriptions of the added columns and tables
-   (`# TO BE FILLED`). Then add any table you want that the report lists under
-   `== tables in the database that were not in schema.yaml ==` with
-   `--add-tables 'schema.Table'`, and review `relationships.proposed.yaml` (§16.3).
-   `--check` does not fail on marked columns, so read the sections.
-   *Done when:* the marked sections read `: 0 ==`.
-9. **Set what each source needs** (*several databases only*): `description:`
-   and `keywords:` so questions reach the right source (§16.4), and
-   `nolock: true` on exactly the sources whose DBA requires `WITH (NOLOCK)`;
-   it is a per-source switch (§16.7). *Done when:* the command of step 5
-   still prints the names.
-10. **Issue the first API keys** (§1, §1.1):
+   prints every source name (`('default',)` for one database without the file),
+   and the check of step 3 still prints `settings ok`.
+5. **Create `project_config/` from the template**:
+   `mkdir -p project_config && cp -r project_config.example/. project_config/`
+   (the copy keeps a `datasources.yaml` already there; `cp -r project_config.example project_config`
+   would nest the template inside an existing folder). What you now have is the
+   template's sample content, not yours: `schema.yaml` lists the sample tables,
+   and steps 6 to 9 replace the files one by one (§2.1).
+   *Done when:* `project_config/` holds the nine YAML files and `system_prompt.md`.
+6. **Draft `schema.yaml`** (§2.3):
+   `python -m database.schema_inspector_cli --output-dir project_config_draft --exclude-schemas '*_Stg,Replay'`.
+   It reads every source of step 4 (names, types and keys, no row) and writes
+   `project_config_draft/schema.yaml`: every table described by its own name and
+   every column by its type. Leave out the schemas you will never ask about,
+   with `--exclude-schemas` for this run or, to keep the rule, `EXCLUDE_SCHEMAS=`
+   in `.env` or `exclude_schemas:` in `datasources.yaml`: every table costs
+   prompt tokens. Read the file, delete the tables you do not want, delete its
+   `# AUTO-GENERATED DRAFT` line (the structure is now reviewed; the
+   descriptions are step 8) and put it in place of `project_config/schema.yaml`.
+   Copy only this file: the wizard of step 9 drafts the others better. The
+   tables of one more schema can join it later with
+   `python scripts/sync_schema.py --add-tables 'Schema.*'` (also with
+   `--exclude-schemas`, §16.3). A hand-typed table and column list is a valid
+   start too; step 7 brings its structure in step with the databases.
+   *Done when:* `project_config/schema.yaml` lists your tables and no longer the
+   template's.
+7. **Check the structure**: `python scripts/sync_schema.py --check` (§16.3).
+   It reads every source's catalogue (three `INFORMATION_SCHEMA` views per
+   source, names and types only). *Done when:* it prints
+   `CHECK OK: schema.yaml's structure matches the databases` (exit code 0). If
+   it prints `CHECK FAILED` (a table or column changed after the draft, or you
+   typed the list by hand), run `python scripts/sync_schema.py` without
+   `--check`: it writes `project_config/schema.synced.yaml` next to
+   `schema.yaml` (your file with every comment and description kept, plus the
+   `datasource:` line of every table with several databases, the columns the
+   databases have and the file lacks as drafts, a `column_types:` map, and a
+   marker on every column or table the databases do not have; it also writes
+   `relationships.proposed.yaml` for review). Read it (a diff against
+   `schema.yaml` shows exactly what changed), copy `schema.yaml` to
+   `schema.yaml.bak`, move the proposal over `schema.yaml` and check again. The
+   report's section `== columns in schema.yaml that the database does not have: N ==`
+   lists each column that carries the comment `# not in database (sync_schema.py)`,
+   and `== tables in schema.yaml found in no data source: N ==` each table marked
+   `# not found in any data source`. Remove them with
+   `python scripts/sync_schema.py --prune` (review the result and replace
+   `schema.yaml` again), correct a misspelt column by hand, or have the DBA lift
+   a `DENY` that hides a column from the login (§16.3). `--check` does not fail
+   on marked columns, so read the sections: they should read `: 0 ==`. Without
+   this step the preflight of step 12 fails with `Tables are in their data source`
+   (several databases) and with `Schema structure matches the databases` as soon
+   as the databases differ from the file; a file that only lacks the recorded
+   column types passes that check with a note (step 14 of "Upgrading from 6.0 to
+   6.14.2", §17). Whatever the sync adds comes with the same name-only drafts,
+   which step 8 describes.
+8. **Draft the descriptions, review them, replace `schema.yaml`, delete the
+   header** (§2.4): `python scripts/draft_descriptions.py` (add `--language en`
+   for English; the default is Persian, the language of the questions). For each
+   table it asks the wizard's model one question about the names, types, keys and
+   relationships in `schema.yaml` (no row is read or sent), and writes
+   `project_config/schema.described.yaml`: your file with every description that
+   was empty, a placeholder, only a table's name or only `<type> column` drafted,
+   every other line exactly as it was, each drafted line ending with `# REVIEW`,
+   and a first line `# AUTO-GENERATED by draft_descriptions.py`. Read it and
+   correct what is wrong, copy `schema.yaml` to `schema.yaml.bak`, move the file
+   over `schema.yaml` and **delete the first line**: the preflight fails on that
+   line until you do. If some tables failed, the summary lists them;
+   `python scripts/draft_descriptions.py --resume` asks only about those.
+   *Done when:* `schema.yaml` has no `AUTO-GENERATED` line and
+   `python scripts/sync_schema.py --check` still prints `CHECK OK`.
+9. **The setup wizard: entities, aliases, rules, examples** (§2.2):
+   `python setup_project.py --language fa`. The model is the application's
+   (`OPENAI_BASE_URL` and `OPENAI_MODEL`) unless you give `--llm-base-url` and
+   `--llm-model`. With the `datasources.yaml` of step 4 it needs no URL, and with
+   one database it uses `DB_CONNECTION_URL`. It drafts `entities.yaml`,
+   `aliases.yaml`, `business_rules.yaml` and `examples.yaml` (and
+   `relationships.yaml`) into `project_config_draft/`, never into
+   `project_config/` (it refuses that unless told to). Read the drafts and copy
+   the files you accept into `project_config/`, deleting each file's
+   `# AUTO-GENERATED by setup_project.py` line once you have reviewed it. The
+   wizard does not write `schema.yaml` and does not set `datasource:`.
+   *Done when:* the four files in `project_config/` are the reviewed ones. The
+   wizard's own last line, `Setup complete.`, appears only in a directory that
+   already holds all ten files; in the draft directory it lists the six files it
+   does not write and says `Setup is NOT complete`, which is expected.
+10. **Set what each source needs** (*several databases only*): `description:`
+    and `keywords:` so questions reach the right source (§16.4), and
+    `nolock: true` on exactly the sources whose DBA requires `WITH (NOLOCK)`;
+    it is a per-source switch (§16.7). *Done when:* the command of step 4
+    still prints the names.
+11. **Issue the first admin key and create `api_keys.json`** (§1, §1.1):
     `python -m scripts.issue_api_key --id admin-1 --name "Admin" --full-admin`,
-    add the printed entry to `project_config/api_keys.json` (start from
-    `project_config.example/api_keys.example.json`) and set
+    `cp project_config/api_keys.example.json project_config/api_keys.json`, put
+    the printed entry in it in place of the sample one, and set
     `API_KEYS_FILE=project_config/api_keys.json` in `.env`. This comes before
     the preflight because its `API key authentication` check fails while no
     key exists. *Done when:* you hold the raw key (it is printed once) and
-    its entry is in the file. One key per analyst follows in step 16.
-11. **Run the preflight**: `python scripts/verify_deployment.py`, with
-    `VERIFY_API_KEY` set to the raw key of step 10 (§3). *Done when:* the last
+    its entry is in the file. One key per analyst follows in step 17.
+12. **Run the preflight**: `python scripts/verify_deployment.py`, with
+    `VERIFY_API_KEY` set to the raw key of step 11 (§3). *Done when:* the last
     line reads `N passed, 0 failed, N skipped` and the exit code is 0. §3.1
-    says what each line means and how to fix a `[FAIL]`.
-12. **Size the prompt budget**: `python scripts/prompt_budget.py` (§16.6; it
+    says what each line means and how to fix a `[FAIL]`; the check
+    `project_config/ is curated, not a raw draft` is the one that holds steps 6
+    to 9 to account.
+13. **Size the prompt budget**: `python scripts/prompt_budget.py` (§16.6; it
     applies with one database too), then put the `PROMPT_RETRIEVAL_TOKEN_BUDGET=`
     line it prints in `.env`. *Done when:* the line is in `.env`. Exit code 1
     means a source does not fit the model's context window, and the output
     says which.
-13. **Start the server** (§4): `uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header`
+14. **Start the server** (§4): `uvicorn api.server:app --host 0.0.0.0 --port 8000 --no-server-header`
     (or `python -m api`), and for the web UI the static server of
     `web/README.md` (`python -m http.server 8080`, started from `web/`).
     *Done when:* the log shows the provenance banner, `CORS allowed origins: ...`
     and `System prompt loaded (N chars)` (with several sources also one
     `Prompt path for data source '<name>'` line each, §5), and
     `curl http://localhost:8000/health` answers with `status` set to `ok`.
-14. **Ask one real question and confirm it was audited** (§6): the `curl` of
+15. **Ask one real question and confirm it was audited** (§6): the `curl` of
     §6, then `tail -n 1 logs/audit_log.jsonl`. *Done when:* the line carries
     today's `timestamp` and the `request_id` of the response.
-15. **Run the preflight again** after the `.env` change of step 12, and after
+16. **Run the preflight again** after the `.env` change of step 13, and after
     any later change to `.env` or `project_config/`, with the same command as
-    step 11. *Done when:* `0 failed` each time.
-16. **Issue one key per analyst** (§1), add each entry to the key file and
+    step 12. *Done when:* `0 failed` each time.
+17. **Issue one key per analyst** (§1), add each entry to the key file and
     restart the server (the file is read once at start-up). *Done when:* each
     analyst can open the UI and ask a question.
-17. **Build the golden set** once real questions are in the audit log, and
+18. **Build the golden set** once real questions are in the audit log, and
     keep it for upgrades (§18). *Done when:*
     `python -m eval.cli verify --golden eval_data/golden.jsonl --accept` has
     activated the cases that held up.
@@ -415,7 +464,11 @@ Start from the template, which has all of them with placeholder content:
 cp -r project_config.example project_config
 ```
 
-(PowerShell: `Copy-Item -Recurse project_config.example project_config`.) The
+(PowerShell: `Copy-Item -Recurse project_config.example project_config`.) If
+`project_config/` already exists, because `datasources.yaml` was written first
+(the order of "First install, in order"), copy the contents into it instead:
+`cp -r project_config.example/. project_config/`, in PowerShell
+`Copy-Item -Recurse project_config.example\* project_config\`. The
 copy also holds `README.md`, `datasources.example.yaml`, `api_keys.example.json`
 and `_test_fixtures/`; the templates are not read under those names, and the
 folder is yours to tidy. Then replace the placeholders with your own domain.
@@ -423,7 +476,7 @@ Who writes what:
 
 | File | How it is made |
 |---|---|
-| `schema.yaml` | By hand, or drafted from the live database by `python -m database.schema_inspector_cli` (§2.3). It is the SQL guard's allowlist: a table you add widens what generated SQL may touch. Give every table a `db_schema` (§16.3). |
+| `schema.yaml` | By hand, or drafted from the live database by `python -m database.schema_inspector_cli` (§2.3), whose table and column descriptions `python scripts/draft_descriptions.py` then drafts for you to review (§2.4). It is the SQL guard's allowlist: a table you add widens what generated SQL may touch. Give every table a `db_schema` (§16.3). |
 | `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` | By hand, or drafted with an LLM by the setup wizard `python setup_project.py` (§2.2), which writes the drafts to `project_config_draft/` for you to review and copy across. |
 | `metrics.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml` | By hand. Neither tool writes them, so after the copy they still hold the template's content. `docs/en/tutorial.md` shows how each one steers retrieval and the prompt. |
 | `system_prompt.md` | By hand: the model's instructions for your schema, rules and dialect (§5 says what happens without it). |
@@ -867,10 +920,12 @@ size the prompt with `python scripts/prompt_budget.py`).
 **The drafts are for a first install only.** They describe every table they find
 as a new entry, so they cannot be merged into a `schema.yaml` you have already
 curated. The draft is a starting point, not a `schema.yaml` to deploy: every
-description is a placeholder (`TO BE FILLED`) and the files carry the
-`AUTO-GENERATED DRAFT` header, which the preflight refuses (§3.1) until you
-delete it after review. Write real descriptions, then copy `schema.yaml` into
-`project_config/`. Run `tests/test_schema_registry_snapshot.py` after editing it,
+table is described by its own name and every column by its type, and the files
+carry the `AUTO-GENERATED DRAFT` header, which the preflight refuses (§3.1) until
+you delete it after review. Review the structure (which tables stay), copy
+`schema.yaml` into `project_config/`, and draft the descriptions with
+`python scripts/draft_descriptions.py` (§2.4) instead of writing them all by hand.
+Run `tests/test_schema_registry_snapshot.py` after editing it,
 as the README says, and `python scripts/verify_deployment.py` (§3) to load it.
 A draft whose header line was deleted is still recognised: its tables are described
 by their own name (`description: 'Sales_Fact.Trade'`) and its columns by
@@ -885,6 +940,116 @@ and add the tables of a new schema with
 `python scripts/sync_schema.py --add-tables 'Schema.*'`: it keeps your
 descriptions and only brings in what changed in the databases, while the
 inspector writes a new draft from scratch each time.
+
+### 2.4 Drafting the descriptions: `scripts/draft_descriptions.py`
+
+The preflight (§3.1, the check `project_config/ is curated, not a raw draft`)
+refuses a `schema.yaml` whose descriptions only repeat a table's name
+(`Sales_Fact.Trade`) or a column's type (`bigint column`): such a description
+says nothing the key did not say, and table retrieval matches the words of a
+question against the words of the descriptions. That is exactly what the
+inspector (§2.3) and `sync_schema.py --add-tables` (§16.3) write. On an upgrade
+the answer is to restore the curated files. On a **first install there are no
+curated files**, and writing 76 table and 1388 column descriptions by hand is
+the only way past the check, unless a model drafts them. This command does that
+and leaves the review to you.
+
+It is a separate command next to `sync_schema.py` rather than a step of the
+setup wizard, because it follows the same pattern ("propose a file, the
+operator reviews it and replaces the original"): it needs `schema.yaml` and a
+model but no database connection, it can be run again whenever tables are added,
+and the wizard's drafts go to another directory and merge by key, which is not
+what an in-place text edit of `schema.yaml` needs.
+
+```bash
+python scripts/draft_descriptions.py                      # writes project_config/schema.described.yaml
+python scripts/draft_descriptions.py --dry-run            # lists what would be asked; no model, no file
+python scripts/draft_descriptions.py --tables 'sales.*'   # only these tables
+python scripts/draft_descriptions.py --language en        # English instead of Persian
+python scripts/draft_descriptions.py --resume             # continue an interrupted or partly failed run
+python scripts/draft_descriptions.py --samples            # also show label values (below)
+```
+
+**What it drafts.** Every table description that is empty, the inspector's
+placeholder or only the table's name, and every column description that is empty
+or only `<type> column`. The tests are those of the preflight
+(`core.config_doctor`), so what the command drafts is what the preflight objects
+to. A description a person wrote is never changed. Every key, flag, comment and
+the order of the file stay as they are; a drafted line ends with `# REVIEW` (a
+`# TO BE FILLED` note that `sync_schema.py` left on it is answered and goes), and
+a table without any `description:` line gets one. The script parses its own
+output and compares it with the input plus exactly the drafted descriptions, and
+refuses to write a file that differs in anything else (or a `schema.yaml` laid
+out in a way the line editor cannot edit: flow-style entries). `schema.yaml`
+itself is never overwritten.
+
+**What the model is told.** One call per table: the table key, its schema and
+data source, the column names and types, the notes already written, the
+relationships that name the table (`schema.yaml`'s own, `relationships.yaml`, and
+the declared foreign keys of `relationships.proposed.yaml`; the guesses from
+column names are left out) and the table's aliases in `entities.yaml`. A
+primary or foreign key is told to the model by those relationships and by the
+curated notes, because `schema.yaml` does not record keys. **No row value is read
+or sent** unless you give `--samples`. With it, up to five distinct values of
+each label column (a column named name, title, kind, status, type, category,
+class, label, caption or group, with at most 50 distinct values) are read from
+the table's data source and shown beside the column, under the rules of the
+wizard's `--value-synonyms` (`core/value_shapes.py`): a column named like
+personal or contact data is never read, nothing that looks like a date, number or
+code, phone number, e-mail or IP address, URL, address, masked value or error
+text, and nothing over 40 characters, is shown, and at most 20 values per table.
+A table in another database of the same server (a multi-part `db_schema`) is not
+sampled. The model is told to describe only what the names, types, keys and
+relationships show, to invent no business fact, and to end a guess with `(?)`.
+A table is described in one sentence (what one row is), a column in a few words,
+in Persian (`--language fa`, the default) or English.
+
+**The model and its rules are the wizard's** (§2.2): `--llm-provider`,
+`--llm-model` and `--llm-base-url`, then `WIZARD_LLM_*`, then `OPENAI_BASE_URL`,
+`OPENAI_MODEL` and `OPENAI_API_KEY`, and one line naming the model and the
+endpoint (never the key). An endpoint that is not local (`LLM_TRUSTED`,
+otherwise a loopback host, a private network or `*.local`) is refused before
+anything is sent unless `LLM_ALLOW_REMOTE=true`, and then it prints what it
+sends. Unlike the wizard it does not fall back to a mock model when the endpoint
+does not answer: a mock drafts nothing, so the command stops with an error
+(exit code 2). Each call is sized for its table: `max_tokens` is about 60 per
+column asked about plus a fixed part, never less than `LLM_NUM_PREDICT` and never
+more than `--max-tokens` (default 8192). A model that reasons before it answers
+needs the room; a table of several hundred columns does not fit in one answer
+and is reported as failed.
+
+**The review gate.** The first line of `schema.described.yaml` is
+`# AUTO-GENERATED by draft_descriptions.py`. The preflight reads it as a draft
+header, like the inspector's and the wizard's: while it is there, the check
+fails on the file, whatever its descriptions say. Read the file, correct what is
+wrong, keep `schema.yaml.bak`, move the file over `schema.yaml` and delete that
+first line; then the check passes if the descriptions are real. (A draft from the
+inspector also has its own `# AUTO-GENERATED DRAFT` line, deleted at step 6 of
+"First install, in order" when the structure was reviewed.)
+
+**Failure and resuming.** A table the model fails on (an answer that is not JSON
+or has nothing usable, a timeout, an HTTP error) is recorded and the run goes on.
+A name in an answer that the table does not have is ignored; a column the model
+leaves out keeps the description it had, and the summary counts them; nothing is
+ever removed. The output is written after every table, so an interrupted run
+loses at most the table in progress. The summary gives the counts (tables and
+descriptions drafted, columns left undescribed, failed tables with the reason,
+never a description) and the exit code is 1 when a table failed or the run was
+interrupted. `--resume` keeps the tables already drafted in the existing output,
+as they are in the file now (a correction you made there survives), and asks only
+about the rest. Without `--resume` or `--force` the command refuses to replace
+an existing output, so a reviewed draft is not lost to a second run; `--force`
+starts over.
+
+Other options: `--schema PATH` (default: the `schema.yaml` of `PROJECT_CONFIG_DIR`),
+`--output PATH` (default: `schema.described.yaml` next to the input; naming the
+input itself is refused), `--tables PATTERNS` (comma-separated `fnmatch` patterns,
+repeatable, matched case-insensitively against the table key and against
+`schema.name`). Exit codes: 0 done, or nothing to describe; 1 some tables failed
+or the run was interrupted (the output holds the rest); 2 nothing could be decided
+or written (`schema.yaml` invalid or not editable line by line, the model refused
+or not answering, an existing output without `--resume` or `--force`, a write
+error).
 
 ## 3. Run the preflight
 
@@ -993,7 +1158,7 @@ data sources, the four marked * print once per source, as
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
 | `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
 | `project_config/ loads` | Checks that all ten required files exist (`aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml`, `schema.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml`, `system_prompt.md`), then loads each under the current code's models. An empty `system_prompt.md` fails. | `N of 10 required files not found under '<dir>': <names>`, with every missing name at once (copy each from `project_config.example/`, §2.1), `<file> not found under '<dir>'`, or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
-| `project_config/ is curated, not a raw draft` | Reads the first lines of every `*.yaml` file in `project_config/` for the header a draft carries (`# AUTO-GENERATED DRAFT` from `database.schema_inspector_cli`, `# AUTO-GENERATED by setup_project.py` from the wizard), and counts in `schema.yaml` the tables whose description is still the older inspector's placeholder (`<schema.table> — auto-detected <kind> table (~N rows)`), the tables described by nothing but their own name (`description: 'Sales_Fact.Trade'`: the key, the bare name or `Schema.Table`, which is what `sync_schema.py --add-tables` and the inspector since 6.9.3 write) and the column descriptions that are only `<type> column` (`bigint column`). It reads `schema.yaml` even when a repeated key (an inspector draft from before 6.9.3) keeps the application from loading it. No database call. | `N file(s) carry the AUTO-GENERATED DRAFT header: <files>` (for the wizard's files, the same with `AUTO-GENERATED by setup_project.py`) and/or `schema.yaml: N of M table descriptions (P%) are still the placeholder`, `... are only the table's own name` or `schema.yaml: N of M column descriptions (P%) are only <type> column`: the files are a draft, not a curated configuration (a draft lists every table of one database, so a curated file that was replaced by it loses its descriptions, its aliases and, with two databases, one of them). Restore the curated files from your backup or version control, and bring new tables in with `python scripts/sync_schema.py --add-tables 'Schema.*'` (§2.3, §16.3), which keeps the curated text. A file you really did review passes once its header line is deleted. The older placeholder counts when more than a quarter of the descriptions are it, the other two when more than half are; a few tables added with `--add-tables` among curated ones show in the `[PASS]` line (`3 of 37 only repeat the table's name`) and do not fail the check, but a file made mostly of added tables is a draft again, and so is one whose header line was deleted. Restore the curated files, or describe the added tables. | `schema.yaml` is missing or unreadable (`project_config/ loads` says which). |
+| `project_config/ is curated, not a raw draft` | Reads the first lines of every `*.yaml` file in `project_config/` for the header a draft carries (`# AUTO-GENERATED DRAFT` from `database.schema_inspector_cli`, `# AUTO-GENERATED by setup_project.py` from the wizard, `# AUTO-GENERATED by draft_descriptions.py` from `scripts/draft_descriptions.py`), and counts in `schema.yaml` the tables whose description is still the older inspector's placeholder (`<schema.table> — auto-detected <kind> table (~N rows)`), the tables described by nothing but their own name (`description: 'Sales_Fact.Trade'`: the key, the bare name or `Schema.Table`, which is what `sync_schema.py --add-tables` and the inspector since 6.9.3 write) and the column descriptions that are only `<type> column` (`bigint column`). It reads `schema.yaml` even when a repeated key (an inspector draft from before 6.9.3) keeps the application from loading it. No database call. | `N file(s) carry the AUTO-GENERATED DRAFT header: <files>` (for the wizard's files, the same with `AUTO-GENERATED by setup_project.py`, and for the file of `scripts/draft_descriptions.py` with `AUTO-GENERATED by draft_descriptions.py`) and/or `schema.yaml: N of M table descriptions (P%) are still the placeholder`, `... are only the table's own name` or `schema.yaml: N of M column descriptions (P%) are only <type> column`: the files are a draft, not a curated configuration (a draft lists every table of one database, so a curated file that was replaced by it loses its descriptions, its aliases and, with two databases, one of them). On an upgrade, restore the curated files from your backup or version control, and bring new tables in with `python scripts/sync_schema.py --add-tables 'Schema.*'` (§2.3, §16.3), which keeps the curated text. On a first install there are no curated files to restore: draft the descriptions with `python scripts/draft_descriptions.py` (§2.4), read `schema.described.yaml` (every drafted line ends with `# REVIEW`), replace `schema.yaml` with it and delete its header line. A file you really did review passes once its header line is deleted. The older placeholder counts when more than a quarter of the descriptions are it, the other two when more than half are; a few tables added with `--add-tables` among curated ones show in the `[PASS]` line (`3 of 37 only repeat the table's name`) and do not fail the check, but a file made mostly of added tables is a draft again, and so is one whose header line was deleted. Restore the curated files, or describe the added tables (§2.4). | `schema.yaml` is missing or unreadable (`project_config/ loads` says which). |
 | `Aliases are curated` | Reads `aliases.yaml`. Counts the synonym keys that are not words (no run of two letters: timestamps, numbers) and the synonym lines that still end in the inspector's `# REVIEW` marker. It also reads an `aliases.yaml` that is not valid YAML (a draft from before 6.9.3 with a quote in a sample value), from its lines. | `N of M synonym keys are not words (timestamps or numbers)` or ``N of M synonym entries still end in the inspector's `# REVIEW` marker``, more than half of them: the synonyms are the inspector's seeds (sample values of string columns, not a vocabulary). Restore the curated `aliases.yaml`. An empty `ring_aliases` is **not** a failure: only `ValueRetriever.extract_ring` reads it, to set the `Ring` filter from a ring (hall) name in the question, so a warehouse without that dimension leaves it empty (the setup wizard writes it empty too when it finds no dimension table). It shows as `advice: ring_aliases is empty` in a `[PASS]` line while `schema.yaml` or `entities.yaml` exists; add the ring names if your questions do name one. | `aliases.yaml` is missing. |
 | `Every data source is described` | Reads `datasources.yaml` (one source named `default` without it) and `schema.yaml`: a table belongs to the source its `datasource:` line names (to each, for a list) and to the default source when it has none. | `N of M data source(s) have no table in schema.yaml: <sources>`: a whole database is missing from the configuration (a `schema.yaml` drafted from one of two databases is the usual cause). Restore the curated `schema.yaml`, or add the tables with `python scripts/sync_schema.py --add-tables 'Schema.*'`. `schema.yaml describes no table` when the file has none. A `datasources.yaml` listing a second source while `schema.yaml` has no `datasource:` line fails here too, naming the second source: run `scripts/sync_schema.py` (§16.3) to write the lines. | `schema.yaml` or `datasources.yaml` does not load (their own checks say why). |
 | `No staging or change-capture tables` | Counts the `schema.yaml` tables whose schema or name matches `STAGING_PATTERNS` (default `*_Stg,*stg*,*staging*,table:*_Inserts,table:*_Updates,table:*_Deletes`). Comma-separated `fnmatch` patterns, case-insensitive; a bare pattern is matched against the schema, a `table:` prefix against the table name; empty switches the check off. | Never fails. A `[PASS]` line starting `advice: N of M table(s) look like staging or change-capture tables (<schema>: N, ...)` lists the counts per schema (never a value). Those tables repeat the ones analysts ask about, so the model sees the same name several times and the prompt budget goes to them; take them out of `schema.yaml` unless analysts need them (the inspector's `--exclude-schemas` keeps them out of a draft). | `STAGING_PATTERNS` is empty, or `schema.yaml` does not load. |
@@ -1751,8 +1916,9 @@ Then:
    (or run `--prune` and replace the file again), correct its spelling, or, if it
    exists but the read-only login cannot see it, ask the DBA about the `DENY`
    grants before deleting it. Write real descriptions for the columns and tables
-   marked `# TO BE FILLED`; the placeholder `<type> column` is what the model sees
-   until you do.
+   marked `# TO BE FILLED`, or draft them with `python scripts/draft_descriptions.py`
+   (§2.4) and review the result; the placeholder `<type> column` is what the model
+   sees until you do.
 4. Run `python scripts/sync_schema.py --check`. It writes nothing, prints
    `CHECK OK: schema.yaml's structure matches the databases` and exits 0 when
    `schema.yaml` is in step with the databases; otherwise it prints

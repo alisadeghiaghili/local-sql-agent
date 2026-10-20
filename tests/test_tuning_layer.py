@@ -399,6 +399,43 @@ _ALLOWED_MODULE_CONSTANTS = {
         "model sometimes answers with every concatenation of the same few words; "
         "bounds what a draft file holds, not a runtime behaviour"
     ),
+    "schema_data/describe_prompt.py::RELATIONSHIP_LIMIT": (
+        "implementation detail: how many relationship lines scripts/draft_descriptions.py "
+        "shows the model for one table; bounds the size of an operator tool's prompt, "
+        "never reaches a query, the guard or the serving prompt"
+    ),
+    "schema_data/describe_prompt.py::_ALIAS_LIMIT": (
+        "implementation detail: how many entity aliases scripts/draft_descriptions.py "
+        "shows the model for one table; bounds an operator tool's prompt only"
+    ),
+    "schema_data/describe_prompt.py::SAMPLES_PER_COLUMN": (
+        "implementation detail: the most label values --samples shows the model for "
+        "one column; a privacy bound of an opt-in flag (the wizard's value rules "
+        "decide which values are eligible), deliberately not a deployment knob"
+    ),
+    "schema_data/describe_prompt.py::TABLE_TEXT_LIMIT": (
+        "implementation detail: the longest table description kept from a model's "
+        "draft (one sentence); bounds what a draft file holds"
+    ),
+    "schema_data/describe_prompt.py::COLUMN_TEXT_LIMIT": (
+        "implementation detail: the longest column description kept from a model's "
+        "draft (a few words); bounds what a draft file holds"
+    ),
+    "schema_data/describe_prompt.py::_TOKENS_BASE": (
+        "implementation detail: the fixed part of the max_tokens one "
+        "draft_descriptions.py call asks for; the application's LLM_NUM_PREDICT is "
+        "the floor and --max-tokens the ceiling, so the operator already controls both ends"
+    ),
+    "schema_data/describe_prompt.py::_TOKENS_PER_COLUMN": (
+        "implementation detail: tokens per column asked about in the max_tokens of "
+        "one draft_descriptions.py call (a column name, a few Persian words, JSON "
+        "punctuation); the operator controls the floor (LLM_NUM_PREDICT) and the "
+        "ceiling (--max-tokens)"
+    ),
+    "schema_data/describe_prompt.py::TOKEN_CEILING": (
+        "implementation detail: the default for draft_descriptions.py --max-tokens, "
+        "the most one answer is sized for; the flag overrides it per run"
+    ),
     "llm/wizard_llm.py::ALIAS_MAX_TOKENS": (
         "implementation detail: the completion ceiling of the setup wizard's alias "
         "call, sized from the longest answer that call asks for (eight short phrases "

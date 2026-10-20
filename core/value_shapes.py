@@ -6,7 +6,9 @@ Two tools need to tell a *word* from a *value read out of a row*:
 
 * the setup wizard, which may turn the values of a categorical column into
   synonym keys (``--value-synonyms``) and must never take a date, a phone
-  number, an address, a masked name or an error message (:func:`unsuitable_value`);
+  number, an address, a masked name or an error message (:func:`unsuitable_value`),
+  and ``scripts/draft_descriptions.py --samples``, which shows a model a few
+  of the same values to describe a label column (:func:`label_values`);
 * the preflight (``core.config_doctor``), which counts the synonym keys of an
   ``aliases.yaml`` that look like such values and reports them by *shape*
   (``<date>``, ``<phone>``), never by the value (:func:`value_shape`,
@@ -37,12 +39,14 @@ is_categorical_column(table, column) -> bool
     Whether the values of a text column may be considered as synonym keys.
 categorical_values(values, max_distinct) -> list[str]
     The values of a low-cardinality column that may become synonym keys.
+label_values(table, column, fetch, max_distinct) -> list[str]
+    The safe values of one label column; *fetch* runs only for a column that may be read.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from core.persian import normalize_for_matching
 
@@ -56,6 +60,7 @@ __all__ = [
     "identifier_words",
     "is_categorical_column",
     "is_personal_column",
+    "label_values",
     "prompt_samples",
     "shape_label",
     "unsuitable_value",
@@ -427,3 +432,49 @@ def categorical_values(values: Iterable[str], max_distinct: int = MAX_DISTINCT_V
         if unsuitable_value(value) is None:
             kept.setdefault(value.casefold(), value)
     return list(kept.values())
+
+
+def label_values(
+    table: str,
+    column: str,
+    fetch: Callable[[], Iterable[str]],
+    max_distinct: int = MAX_DISTINCT_VALUES,
+) -> list[str]:
+    """The values of one label column that may be used, reading them only when allowed.
+
+    *fetch* is called only for a column :func:`is_categorical_column` accepts,
+    so nothing is read from a column named like personal or contact data or
+    like anything but a label. What it returns is cut down by
+    :func:`categorical_values`: nothing at all for a column of more than
+    *max_distinct* distinct values, otherwise only the values
+    :func:`unsuitable_value` accepts.
+
+    Parameters
+    ----------
+    table:
+        The table's bare name.
+    column:
+        The column's name.
+    fetch:
+        Reads the column's distinct values (at most ``max_distinct + 1``).
+    max_distinct:
+        More distinct values than this and the column is not categorical.
+
+    Returns
+    -------
+    list[str]
+        The usable values, in the order read; ``[]`` when the column may not
+        be read or has none.
+
+    Examples
+    --------
+    >>> label_values("Trade", "Status", lambda: ["Open", "09120000001", "Closed"])
+    ['Open', 'Closed']
+    >>> def read():
+    ...     raise AssertionError("must not be read")
+    >>> label_values("Customer", "Name", read), label_values("Trade", "Amount", read)
+    ([], [])
+    """
+    if not is_categorical_column(table, column):
+        return []
+    return categorical_values(fetch(), max_distinct)

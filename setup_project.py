@@ -1116,6 +1116,10 @@ class RemoteLLMNotAllowedError(RuntimeError):
     """The wizard's LLM endpoint is remote and ``LLM_ALLOW_REMOTE`` is not true."""
 
 
+class WizardLLMUnavailableError(RuntimeError):
+    """The wizard's LLM endpoint did not answer and the caller wants no mock in its place."""
+
+
 @dataclass(frozen=True)
 class WizardLLMConfig:
     """The LLM endpoint the wizard will use, and where each value came from.
@@ -1361,7 +1365,12 @@ def _build_wizard_llm(llm_config: WizardLLMConfig):
     )
 
 
-def setup_wizard_llm(args: argparse.Namespace):
+def setup_wizard_llm(
+    args: argparse.Namespace,
+    *,
+    mock_fallback: bool = True,
+    sends: str = "Table and column names and sample column values",
+):
     """Resolve, vet, announce and connect the wizard's LLM.
 
     Prints one line saying which provider, model and endpoint is used (never
@@ -1370,8 +1379,18 @@ def setup_wizard_llm(args: argparse.Namespace):
     the mock LLM with a loud notice, because the generated files will then
     hold no aliases, rules or examples.
 
+    ``scripts/draft_descriptions.py`` asks the same model under the same
+    rules; a mock would draft nothing for it, so it passes
+    ``mock_fallback=False`` and gets an error instead, and ``sends`` names
+    what it sends in the notice about a remote endpoint.
+
     Args:
-        args: Parsed command line.
+        args: Parsed command line (``llm_provider``, ``llm_model``,
+            ``llm_base_url``).
+        mock_fallback: Fall back to the mock LLM when the endpoint does not
+            answer (the default); when false, raise instead.
+        sends: What the caller sends to the endpoint, for the notice printed
+            when the endpoint is remote and allowed.
 
     Returns:
         A ``WizardLLM`` ready for ``generate()``.
@@ -1379,6 +1398,8 @@ def setup_wizard_llm(args: argparse.Namespace):
     Raises:
         ValueError: When the configured provider is unsupported.
         RemoteLLMNotAllowedError: When the endpoint is remote and not allowed.
+        WizardLLMUnavailableError: When the endpoint does not answer and
+            *mock_fallback* is false.
     """
     from llm.wizard_llm import WizardLLM
 
@@ -1389,8 +1410,7 @@ def setup_wizard_llm(args: argparse.Namespace):
         return WizardLLM(provider="mock", model="mock")
     if llm_config.remote:
         console.print(
-            "  NOTICE: LLM_ALLOW_REMOTE=true. Table and column names and sample column values "
-            "are sent to the remote endpoint above."
+            f"  NOTICE: LLM_ALLOW_REMOTE=true. {sends} are sent to the remote endpoint above."
         )
 
     reason = ""
@@ -1403,6 +1423,11 @@ def setup_wizard_llm(args: argparse.Namespace):
         reason = str(exc)
     if llm_config.api_key:
         reason = reason.replace(llm_config.api_key, "***")
+    if not mock_fallback:
+        raise WizardLLMUnavailableError(
+            f"the LLM is unavailable ({reason}). Fix the endpoint (WIZARD_LLM_BASE_URL / OPENAI_BASE_URL) "
+            "and run the command again."
+        )
     console.print(
         f"\n  !!! WARNING: the LLM is unavailable ({reason}). FALLING BACK TO THE MOCK LLM. !!!\n"
         "  !!! Aliases, business rules and examples will be EMPTY. Fix the endpoint "
@@ -1733,7 +1758,7 @@ def _value_synonyms(snapshot, fetch: Callable[[Any, Any], list[str]]) -> tuple[d
         >>> _value_synonyms(snap, lambda table, column: values[column.name])
         ({'open': ['bank'], 'closed': ['bank']}, 1)
     """
-    from core.value_shapes import VALUES_PER_TABLE, categorical_values, is_categorical_column
+    from core.value_shapes import VALUES_PER_TABLE, label_values
     from database.schema_inspector import _is_string_type
 
     synonyms: dict[str, list[str]] = {}
@@ -1743,9 +1768,9 @@ def _value_synonyms(snapshot, fetch: Callable[[Any, Any], list[str]]) -> tuple[d
         for column in table.columns:
             if taken >= VALUES_PER_TABLE:
                 break
-            if not _is_string_type(column.type) or not is_categorical_column(table.name, column.name):
+            if not _is_string_type(column.type):
                 continue
-            for value in categorical_values(fetch(table, column)):
+            for value in label_values(table.name, column.name, lambda: fetch(table, column)):
                 key = value.lower().strip()
                 if key in synonyms or taken >= VALUES_PER_TABLE:
                     continue
