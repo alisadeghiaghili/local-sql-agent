@@ -580,6 +580,108 @@ class TestRulesNeedAMeasure:
         assert sp._measure_columns(tbl) == ["Amount"]
 
 
+def _lookup(schema: str, name: str, *, extra: tuple[ColumnInfo, ...] = ()) -> TableInfo:
+    """A key and a title, classed as fact by the name heuristic (as ``ContractType`` is)."""
+    columns = [ColumnInfo("ID", "int", is_pk=True), ColumnInfo("Title", "varchar"), *extra]
+    return TableInfo(name=name, schema=schema, columns=columns, classification="fact")
+
+
+class TestDimensionsGetNoRule:
+    """A table the name heuristic classed as fact but that is a dimension is neither asked about nor listed as a fact table.
+
+    The summary used to say ``N fact table(s) got no rule because they have no
+    numeric column that is not a key`` and list dimension and lookup tables:
+    schemas named ``..._Dim`` and tables of a key and a title.
+    """
+
+    def _run(self, tmp_path, *tables: TableInfo):
+        out, llm = tmp_path / "draft", RecordingLLM()
+        run_wizard(out, snapshot_of(*tables), llm)
+        log = json.loads((out / ".setup_log.json").read_text(encoding="utf-8"))["step4_rules"]
+        return out, llm, log
+
+    def test_a_lookup_in_a_dimension_schema_is_left_out_and_not_called_a_fact_table(self, tmp_path, capsys):
+        out, llm, log = self._run(
+            tmp_path, _lookup("ref_Dim", "Kind"), table("sales", "Trade", "ID", "Amount", kind="fact"),
+        )
+
+        assert list(read_yaml(out / "business_rules.yaml")["rules"]) == ["Trade"]
+        assert not llm.asked_about("Fact table: ref_Dim.Kind")
+        text = capsys.readouterr().out
+        assert "fact table(s) got no rule" not in text
+        assert "Business rules: 1 table(s) classed as fact by name were left out because they look like dimensions: ref_Dim.Kind." in text
+        assert log["skipped_dimension"] == ["ref_Dim.Kind"] and log["skipped_no_measure"] == []
+
+    def test_a_dimension_schema_table_with_a_number_is_not_asked_for_a_value_rule_either(self, tmp_path):
+        # Before: SortOrder was a numeric non-key column, so the model was asked for a value and a volume rule.
+        out, llm, log = self._run(
+            tmp_path, _lookup("ref_Dim", "Kind", extra=(ColumnInfo("SortOrder", "int"),)),
+            table("sales", "Trade", "ID", "Amount", kind="fact"),
+        )
+        assert not llm.asked_about("Fact table: ref_Dim.Kind")
+        assert list(read_yaml(out / "business_rules.yaml")["rules"]) == ["Trade"]
+        assert log["skipped_dimension"] == ["ref_Dim.Kind"]
+
+    def test_a_key_and_a_title_with_a_fact_like_name_is_a_lookup_in_any_schema(self, tmp_path, capsys):
+        out, llm, log = self._run(
+            tmp_path, _lookup("sales", "OrderStatus"), table("sales", "Trade", "ID", "Amount", kind="fact"),
+        )
+        assert not llm.asked_about("Fact table: sales.OrderStatus")
+        assert log["skipped_dimension"] == ["sales.OrderStatus"]
+        assert "OrderStatus" not in "".join(read_yaml(out / "business_rules.yaml")["rules"])
+        assert "fact table(s) got no rule" not in capsys.readouterr().out
+
+    def test_a_real_fact_table_without_a_measure_is_still_listed_and_the_counts_stay_truthful(self, tmp_path, capsys):
+        out, llm, log = self._run(
+            tmp_path,
+            _lookup("ref_Dim", "Kind"),
+            _lookup("sales", "OrderStatus"),
+            table("sales", "Link", "ID", "Customer_ID", "Product_ID", kind="fact"),
+            table("sales", "Trade", "ID", "Amount", kind="fact"),
+        )
+
+        assert list(read_yaml(out / "business_rules.yaml")["rules"]) == ["Trade"]
+        text = capsys.readouterr().out
+        assert "Business rules: 2 table(s) classed as fact by name were left out because they look like dimensions: ref_Dim.Kind, sales.OrderStatus." in text
+        assert "Business rules: 1 fact table(s) got no rule because they have no numeric column that is not a key: sales.Link." in text
+        assert (log["skipped_dimension"], log["skipped_no_measure"], log["rule_count"]) == (
+            ["ref_Dim.Kind", "sales.OrderStatus"], ["sales.Link"], 1,
+        )
+
+    @pytest.mark.parametrize(("schema", "name", "columns", "links_out", "expected"), [
+        ("ref_Dim", "Kind", [("ID", "int", True), ("Title", "varchar", False)], False, True),
+        ("RefDim", "Kind", [("ID", "int", True), ("Title", "varchar", False)], False, True),      # CamelCase schema
+        ("Sales_Dims", "Kind", [("ID", "int", True), ("Amount", "decimal", False)], False, True),   # the schema decides
+        ("Lookups", "Kind", [("ID", "int", True), ("Amount", "decimal", False)], False, True),
+        ("sales", "OrderStatus", [("ID", "int", True), ("Title", "varchar", False)], False, True),   # the shape decides
+        ("sales", "OrderStatus", [("StatusKey", "int", False), ("Title", "nvarchar", False), ("Note", "text", False)], False, True),
+        ("sales", "Trade", [("ID", "int", True), ("Amount", "decimal", False)], False, False),
+        ("Dim_Fact", "Trade", [("ID", "int", True), ("Amount", "decimal", False)], False, False),   # a fact schema is not a dimension
+        ("sales", "OrderStatus", [("ID", "int", True), ("Title", "varchar", False)], True, False),   # it points to something
+        ("sales", "Link", [("ID", "int", True), ("Customer_ID", "int", False), ("Product_ID", "int", False)], False, False),
+        ("sales", "Event", [("ID", "int", True), ("Title", "varchar", False), ("Note", "text", False),
+                            ("Memo", "text", False)], False, False),                                   # too much text for a lookup
+        ("sales", "Event", [("ID", "int", True), ("Rank", "int", False)], False, False),               # a number is not a title
+    ])
+    def test_what_reads_as_a_dimension(self, schema, name, columns, links_out, expected):
+        tbl = TableInfo(
+            name=name, schema=schema, classification="fact",
+            columns=[ColumnInfo(n, t, is_pk=pk) for n, t, pk in columns],
+        )
+        assert sp._looks_like_dimension(tbl, links_out) is expected
+
+    def test_a_table_with_a_declared_foreign_key_is_not_a_lookup(self):
+        from database.schema_inspector import ForeignKeyInfo
+
+        tbl = _lookup("sales", "OrderStatus")
+        tbl.foreign_keys.append(ForeignKeyInfo("ID", "sales", "Parent", "ID"))
+        assert sp._looks_like_dimension(tbl) is False
+
+    def test_the_inspector_s_own_dim_classification_still_counts(self):
+        tbl = TableInfo(name="Trade", schema="sales", columns=[ColumnInfo("ID", "int", is_pk=True)], classification="dim")
+        assert sp._looks_like_dimension(tbl) is True
+
+
 # ---------------------------------------------------------------------------
 # 6. The alias list
 # ---------------------------------------------------------------------------

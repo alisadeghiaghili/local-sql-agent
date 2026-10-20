@@ -85,7 +85,9 @@ class LLMBackend(ABC):
         """Send *prompt* to the model and return raw text."""
         ...
 
-    def generate_with_meta(self, prompt: str) -> tuple[str, dict[str, Any]]:
+    def generate_with_meta(
+        self, prompt: str, *, max_tokens: int | None = None,  # noqa: ARG002
+    ) -> tuple[str, dict[str, Any]]:
         """Send *prompt* to the model; return ``(raw_text, meta)``.
 
         *meta* is an opt-in, backend-specific dict of transport metadata
@@ -110,6 +112,13 @@ class LLMBackend(ABC):
         ----------
         prompt:
             Complete prompt string, as passed to :meth:`generate`.
+        max_tokens:
+            A per-call ceiling on the completion length, for a caller that
+            knows its answer is short and wants a runaway one stopped early
+            (the setup wizard's alias call). It is a request, not a contract:
+            this default has no way to apply it and ignores it, and a backend
+            that can (:class:`~llm.providers.OpenAIBackend`) overrides this
+            method. ``None`` leaves the backend's own setting in force.
 
         Returns
         -------

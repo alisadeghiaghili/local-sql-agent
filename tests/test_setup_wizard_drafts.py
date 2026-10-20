@@ -49,6 +49,7 @@ from database.schema_inspector import (
     TableInfo,
     schema_is_excluded,
 )
+from tests._wizard_fakes import AliasesViaGenerate
 
 _URL = "sqlite:///wizard-fixture.db"
 
@@ -64,7 +65,7 @@ def _unwrapped_console(monkeypatch):
 # Fakes and helpers
 # ---------------------------------------------------------------------------
 
-class RecordingLLM:
+class RecordingLLM(AliasesViaGenerate):
     """A wizard model that answers per prompt and keeps every prompt it was sent.
 
     Aliases name the table they were asked about and rule texts are numbered,

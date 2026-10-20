@@ -598,6 +598,131 @@ def parse_json_response(text: str) -> dict | list:
         raise ValueError(f"JSON parse error: {exc}. Text: {json_str[:200]!r}") from exc
 
 
+_JSON_SPACE = " \t\r\n"
+
+
+def _after_space(text: str, pos: int) -> int:
+    """Index of the first character at or after *pos* that is not JSON whitespace."""
+    while pos < len(text) and text[pos] in _JSON_SPACE:
+        pos += 1
+    return pos
+
+
+def _complete_strings(text: str, pos: int, decoder: json.JSONDecoder) -> list[str]:
+    """The complete strings of the JSON array whose first element starts at or after *pos*.
+
+    Stops at the closing bracket, at the first element that is cut off, and at
+    anything that is not a comma. Returns ``[]`` when an element is not a
+    string: a list that holds numbers or objects is not a flat list of text.
+    """
+    items: list[str] = []
+    while True:
+        pos = _after_space(text, pos)
+        if pos >= len(text) or text[pos] == "]":
+            return items
+        try:
+            value, pos = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            return items
+        if not isinstance(value, str):
+            return []
+        items.append(value)
+        pos = _after_space(text, pos)
+        if text[pos:pos + 1] != ",":
+            return items
+        pos += 1
+
+
+def salvage_string_list(text: str, key: str | None = None) -> list[str]:
+    r"""The complete strings of a flat JSON list that the answer was cut off in.
+
+    A model that loops on the same few phrases until ``max_tokens`` stops it
+    leaves JSON that never closes (``{"aliases": ["a", "b", "a", "c``). Every
+    string before the cut is a whole, valid element, and is returned; the
+    element being written when the answer ended is not. The list is the
+    array itself, or, in an object, the array under *key* (the first array
+    when *key* is ``None``).
+
+    Only a **flat list of strings** is ever salvaged. A list with a number, an
+    object or another list in it gives ``[]``, and so does an answer with no
+    list: a cut-off SQL statement, a rule or a ``{"question": ..., "sql": ...}``
+    pair is not made usable by keeping its first half. Call this for answers
+    that are lists of words, such as table aliases, and nothing else.
+
+    Parameters
+    ----------
+    text:
+        The raw answer: fenced or not, with or without prose in front.
+    key:
+        The key of the object member that holds the list; ``None`` takes the
+        first member that is a list.
+
+    Returns
+    -------
+    list[str]
+        The complete strings in order, repeats included (deduplicate with
+        :func:`core.wizard_drafts.tidy_aliases`); ``[]`` when there are none.
+
+    Raises
+    ------
+    Nothing. This function never raises.
+
+    Examples
+    --------
+    >>> salvage_string_list('{"aliases": ["a", "b", "a", "c', "aliases")
+    ['a', 'b', 'a']
+    >>> salvage_string_list('["x", "y", "z')
+    ['x', 'y']
+    >>> salvage_string_list('```json\n{"aliases": ["one", "two"], "description": "cut off in')
+    ['one', 'two']
+    >>> salvage_string_list(r'{"aliases": ["say \"hi\"", "café", "c', "aliases")
+    ['say "hi"', 'café']
+    >>> salvage_string_list('{"aliases": ["معامله", "سفارش فروش", "قرارد')
+    ['معامله', 'سفارش فروش']
+    >>> salvage_string_list('{"aliases": ["a", "b"]}'), salvage_string_list('{"aliases": []}')
+    (['a', 'b'], [])
+    >>> salvage_string_list('{"aliases": ["cut in the first strin')
+    []
+    >>> salvage_string_list('{"aliases": ["a", {"x": 1}, "b"')
+    []
+    >>> salvage_string_list('{"sql": "SELECT a FROM t WHERE x = ')
+    []
+    >>> salvage_string_list('{"other": ["p"], "aliases": ["q"', "aliases")
+    ['q']
+    >>> salvage_string_list("no json here")
+    []
+    """
+    try:
+        body = _find_json_substring(_strip_fences(text))
+    except ValueError:
+        return []
+    decoder = json.JSONDecoder()
+    if body[0] == "[":
+        return _complete_strings(body, 1, decoder)
+
+    pos = 1  # inside the object, after "{"
+    while True:
+        pos = _after_space(body, pos)
+        try:
+            name, pos = decoder.raw_decode(body, pos)
+        except json.JSONDecodeError:
+            return []
+        pos = _after_space(body, pos)
+        if not isinstance(name, str) or body[pos:pos + 1] != ":":
+            return []
+        pos = _after_space(body, pos + 1)
+        if body[pos:pos + 1] == "[" and (key is None or name == key):
+            return _complete_strings(body, pos + 1, decoder)
+        try:
+            _value, pos = decoder.raw_decode(body, pos)
+        except json.JSONDecodeError:
+            return []
+        pos = _after_space(body, pos)
+        if body[pos:pos + 1] != ",":
+            return []
+        pos += 1
+
+
 class OpenAIBackend(LLMBackend):
     """The one real transport: an OpenAI-compatible ``/chat/completions`` endpoint.
 
@@ -897,18 +1022,24 @@ class OpenAIBackend(LLMBackend):
             "endpoint_status": resp.status_code,
         }
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         """POST *prompt* and return the raw response string.
 
         Thin wrapper over :meth:`generate_with_meta` that discards the
         metadata half of its return value — see that method for the full
         retry/error contract, which is identical here.
         """
-        raw, _meta = self.generate_with_meta(prompt)
+        raw, _meta = self.generate_with_meta(prompt, max_tokens=max_tokens)
         return raw
 
-    def generate_with_meta(self, prompt: str) -> tuple[str, dict[str, Any]]:
+    def generate_with_meta(
+        self, prompt: str, *, max_tokens: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         """POST *prompt*; return ``(raw_text, meta)``.
+
+        *max_tokens* is a per-call ceiling on the completion length that
+        replaces ``LLM_NUM_PREDICT`` for this request only; ``None`` -- what the SQL path always passes --
+        sends the setting unchanged.
 
         *meta* carries the raw response body (undiscarded) plus call-level
         facts the body itself cannot express:
@@ -976,6 +1107,11 @@ class OpenAIBackend(LLMBackend):
             body was unparsable, after all retries.
         """
         payload = self._build_payload(prompt)
+        if max_tokens is not None:
+            if max_tokens < 1:
+                raise ValueError(f"max_tokens must be a positive integer, got {max_tokens!r}")
+            # This request only: the next call is built from LLM_NUM_PREDICT again.
+            payload["max_tokens"] = max_tokens
         streaming = bool(cfg.settings.llm_stream_timings)
         if streaming:
             payload["stream"] = True
@@ -1147,7 +1283,9 @@ class MockBackend(LLMBackend):
     def generate(self, prompt: str) -> str:  # noqa: ARG002
         return self._response
 
-    def generate_with_meta(self, prompt: str) -> tuple[str, dict[str, Any]]:  # noqa: ARG002
+    def generate_with_meta(
+        self, prompt: str, *, max_tokens: int | None = None,  # noqa: ARG002
+    ) -> tuple[str, dict[str, Any]]:
         return self._response, {"raw": {}, "endpoint_status": 200, "attempts": 1}
 
     def generate_structured(self, segments: "PromptSegments", schema: dict) -> tuple[dict, dict[str, Any]]:  # noqa: ARG002
