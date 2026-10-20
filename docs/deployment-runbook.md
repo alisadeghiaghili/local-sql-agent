@@ -2269,8 +2269,9 @@ Steps 26 and 27 come last on purpose.
    `pip install -r requirements.lock` (never `requirements.txt`; the pins keep
    `sqlglot`, which the SQL guard depends on, from changing unreviewed) (6.4.1:
    python-dotenv 1.2.4, so a `.env` saved as UTF-8 with a byte-order mark
-   loads its first variable; 6.3.0: urllib3 2.8.0). Releases 6.8.0 to 6.15.0
-   change no pin in `requirements.lock`, but run the command anyway.
+   loads its first variable; 6.3.0: urllib3 2.8.0; 6.15.0: certifi 2026.10.19,
+   for a published advisory). Releases 6.8.0 to 6.14.2 change no pin in
+   `requirements.lock`, but run the command anyway.
 3. **Run the preflight before restarting**, in its own process:
    `python scripts/verify_deployment.py` (§3). Several releases made the
    preflight or the server refuse input it used to accept silently, and this is
@@ -2780,8 +2781,9 @@ Steps 26 and 27 come last on purpose.
       writes to `project_config_draft/` unless you say otherwise.
 23. **Aliases kept from a looping answer, no rules for dimensions, and
     descriptions drafted for review (6.15.0).** No setting is renamed or added,
-    no file format or template changes and `requirements.lock` has no new pin
-    (`git diff v6.14.2 -- requirements.lock` is empty). The preflight still has
+    no file format or template changes, and `requirements.lock` moves one pin,
+    `certifi` 2026.10.19, for a published advisory (`git diff v6.14.2 --
+    requirements.lock` shows that line only; step 2 installs it). The preflight still has
     twenty-four checks with one data source; one of its messages changed. The
     server's answers, the audit log and the CORS policy are as in 6.14.2; the
     changes are in the setup wizard, a new setup command and the preflight's

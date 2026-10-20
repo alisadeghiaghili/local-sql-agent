@@ -134,7 +134,10 @@ jobs:
           # empty for the floors legs, which are meant to float.
           CONSTRAINT: ${{ matrix.deps == 'lock' && '-c requirements.lock' || '' }}
         run: |
-          pip install --upgrade pip
+          # `python -m pip`, not `pip`: on Windows pip refuses to replace its own
+          # running executable ("To modify pip, please run ... -m pip"), which
+          # failed every Windows leg once pip 26.2.2 was published.
+          python -m pip install --upgrade pip
           if [ "${{ matrix.deps }}" = "lock" ]; then
             pip install -r requirements.lock
           else
