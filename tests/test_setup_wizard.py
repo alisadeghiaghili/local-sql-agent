@@ -30,6 +30,7 @@ import pytest
 
 import config as cfg
 import setup_project as sp
+from tests._wizard_fakes import AliasesViaGenerate
 
 #: Appears only as a password in the fixtures below. Any output containing
 #: it has leaked a credential.
@@ -442,7 +443,7 @@ class TestStep7WithMissingFiles:
 # "Regenerate" in the review screen
 # ---------------------------------------------------------------------------
 
-class _FakeLLM:
+class _FakeLLM(AliasesViaGenerate):
     """A stand-in for ``WizardLLM`` that answers by prompt and counts calls."""
 
     provider = "fake"

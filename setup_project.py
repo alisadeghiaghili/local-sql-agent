@@ -226,7 +226,6 @@ from core.wizard_drafts import (
     merge_synonyms,
     protected_directory,
     refusal_message,
-    tidy_aliases,
 )
 from core.yaml_loading import safe_load_strict
 from database.schema_draft import (
@@ -848,6 +847,8 @@ def _prompt_aliases(table_name: str, columns: list[str], samples: list[str], lan
 
         Generate natural language aliases a business user might use when referring to this table.
         Consider abbreviations, domain jargon, and {'Persian' if language == 'fa' else 'English'} terms.
+        Give at most {ALIAS_LIMIT} aliases, all different from each other: do not repeat a phrase
+        and do not list the same words in another order. Stop after the list and the description.
 
         Return ONLY this JSON (no markdown):
         {{"aliases": ["alias1", "alias2"], "description": "one-sentence description"}}
@@ -3237,6 +3238,8 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
         "Step 3", "alias list", allow=getattr(args, "allow_repeated_answers", False),
     )
     trimmed = 0  # tables whose alias list had repeats or too many entries
+    salvaged: list[str] = []  # tables whose list was recovered from a cut-off answer
+    failed: list[str] = []    # tables whose answer held no alias at all
 
     for idx, table in enumerate(snapshot.tables, 1):
         console.print(f"  [{idx}/{total}] {table.full_name} ...", end=" ")
@@ -3249,25 +3252,31 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
             s for c in table.columns for s in prompt_samples(table.name, c.name, c.sample_values)
         ]
 
+        note = ""  # what the operator should know about how this list came about
         try:
             prompt = _prompt_aliases(table.full_name, col_names, all_samples, language)
-            result = llm.generate(prompt, expect_json=True)
-            aliases     = result.get("aliases", []) if isinstance(result, dict) else []
-            description = result.get("description", "") if isinstance(result, dict) else ""
+            reply = llm.generate_aliases(prompt, limit=ALIAS_LIMIT)
+            # The model's own answer, before it is cleaned and before the operator edits it below.
+            answered, aliases, description = reply.answered, reply.aliases, reply.description
+            if reply.salvaged:
+                salvaged.append(table.full_name)
+                note = f" (salvaged {len(aliases)} from a truncated answer)"
+            elif reply.retried:
+                note = " (the first answer was unusable; answered on the second try)"
         except Exception as exc:  # noqa: BLE001
             logger.warning("Alias generation failed for %s: %s", table.name, exc)
-            aliases, description = [], ""
+            answered, aliases, description = [], [], ""
+            failed.append(table.full_name)
+            note = f" ({getattr(exc, 'reason', None) or f'the model call failed: {type(exc).__name__}'})"
 
-        # The model's own answer, before it is cleaned and before the operator edits it below.
-        answered = aliases
-        aliases = tidy_aliases(answered) if isinstance(answered, list) else []
-        if isinstance(answered, list) and len(aliases) < len(answered):
+        if len(aliases) < len(answered):
             trimmed += 1
-        console.print(f"[green]{len(aliases)} aliases[/green]" if _RICH else f"{len(aliases)} aliases")
-        guard.observe(
-            table.full_name,
-            "\n".join(str(a) for a in answered) if isinstance(answered, list) and answered else None,
-        )
+        text = f"{len(aliases)} aliases{note}"
+        if note:
+            console.print(text, markup=False)
+        else:
+            console.print(f"[green]{text}[/green]" if _RICH else text)
+        guard.observe(table.full_name, "\n".join(str(a) for a in answered) if answered else None)
 
         if not args.non_interactive and not args.dry_run:
             aliases_str = ", ".join(f'"{a}"' for a in aliases) or "(none)"
@@ -3302,9 +3311,23 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
             f"  {trimmed} alias list(s) had repeats or more than {ALIAS_LIMIT} entries and were cleaned.",
             markup=False,
         )
+    if salvaged:
+        console.print(
+            f"  {len(salvaged)} alias list(s) were salvaged from a truncated answer (the model repeated itself "
+            "or was cut off at the token limit); read them before you use them.",
+            markup=False,
+        )
+    if failed:
+        console.print(
+            f"  {len(failed)} table(s) got no aliases because the model call failed or its answer was unusable: "
+            f"{', '.join(failed[:10])}{' ...' if len(failed) > 10 else ''}.",
+            markup=False,
+        )
     _mark_done(log, "step3_aliases", {
         "entity_count": len(entities),
         "aliases_cleaned": trimmed,
+        "aliases_salvaged": salvaged,
+        "aliases_failed": failed,
         "language": language,
         "provider": llm.provider,
         "result": {"entities": entities, "ring_aliases": ring_aliases},
@@ -3369,6 +3392,74 @@ def _measure_columns(table, link_columns: Iterable[str] = ()) -> list[str]:
     return measures
 
 
+#: Words of a schema name that make it a dimension schema (``ref_Dim``, ``Sales_Dims``).
+_DIMENSION_SCHEMA_WORDS = frozenset({"dim", "dims", "dimension", "dimensions", "lookup", "lookups"})
+
+
+def _name_words(name: str) -> list[str]:
+    """The lower-case words of an identifier, split at ``_``, digits and capitals.
+
+    Examples:
+        >>> _name_words("ref_Dim"), _name_words("TradeKey"), _name_words("Customer_ID")
+        (['ref', 'dim'], ['trade', 'key'], ['customer', 'id'])
+    """
+    import re
+
+    return [word.casefold() for word in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+", name)]
+
+
+def _looks_like_dimension(table, has_links_out: bool = False) -> bool:
+    """Whether *table* reads as a dimension or lookup, whatever the name heuristic classed it as.
+
+    The inspector classes a table by its name first, so ``ContractType`` is a
+    fact table (``contract``) and so is a lookup in a ``Reports_Dim`` schema. A
+    value or volume rule for such a table is noise, and listing it as a fact
+    table without a measure is wrong. It is a dimension when the inspector said
+    so, when its schema is named like one (``ref_Dim``, ``Lookups``; not
+    ``Dim_Fact``), or when it is a lookup in shape: one key column and one or
+    two non-numeric descriptive columns, and nothing it points to.
+
+    Args:
+        table: A table with ``classification``, ``schema``, ``columns`` and ``foreign_keys``.
+        has_links_out: Whether a relationship (declared or inferred) starts at the table.
+
+    Returns:
+        ``True`` for a dimension.
+
+    Raises:
+        Nothing for a well-formed table.
+
+    Examples:
+        >>> from types import SimpleNamespace as NS
+        >>> def col(name, kind="int", pk=False): return NS(name=name, type=kind, is_pk=pk)
+        >>> lookup = NS(classification="fact", schema="ref", foreign_keys=[],
+        ...             columns=[col("ID", pk=True), col("Title", "varchar")])
+        >>> _looks_like_dimension(lookup), _looks_like_dimension(lookup, has_links_out=True)
+        (True, False)
+        >>> trade = NS(classification="fact", schema="sales", foreign_keys=[],
+        ...            columns=[col("ID", pk=True), col("Amount", "decimal")])
+        >>> _looks_like_dimension(trade)
+        False
+        >>> _looks_like_dimension(NS(classification="fact", schema="ref_Dim", foreign_keys=[], columns=trade.columns))
+        True
+        >>> _looks_like_dimension(NS(classification="fact", schema="Dim_Fact", foreign_keys=[], columns=trade.columns))
+        False
+    """
+    if table.classification == "dim":
+        return True
+    words = set(_name_words(table.schema or ""))
+    if words & _DIMENSION_SCHEMA_WORDS and not words & {"fact", "facts"}:
+        return True
+    if has_links_out or table.foreign_keys:
+        return False
+    keys = [
+        c for c in table.columns
+        if getattr(c, "is_pk", False) or (_name_words(c.name) or [""])[-1] in _KEY_WORDS
+    ]
+    text = [c for c in table.columns if c not in keys]
+    return len(keys) == 1 and 1 <= len(text) <= 2 and all(c.type not in _NUMERIC_TYPES for c in text)
+
+
 def _pick_measure(name: object, measures: list[str]) -> str:
     """*name* spelled as it is in *measures*, or ``""`` when the table has no such measure column.
 
@@ -3413,7 +3504,8 @@ def step4_business_rules(args, snapshot, llm, log: dict, namer=None, links=None)
     if not fact_tables:
         console.print("  No fact tables detected — skipping.")
         _mark_done(log, "step4_rules", {
-            "rule_count": 0, "skipped_no_measure": [], "provider": llm.provider, "result": {},
+            "rule_count": 0, "skipped_no_measure": [], "skipped_dimension": [],
+            "provider": llm.provider, "result": {},
         })
         return rules
 
@@ -3431,6 +3523,20 @@ def step4_business_rules(args, snapshot, llm, log: dict, namer=None, links=None)
     guard = _AnswerGuard(
         "Step 4", "rule text", allow=getattr(args, "allow_repeated_answers", False),
     )
+
+    # A table the name heuristic called a fact table but that is a dimension or a lookup
+    # gets no value or volume rule, and is not counted among the fact tables without a measure.
+    dimension_like = [
+        t.full_name for t in fact_tables if _looks_like_dimension(t, bool(dims_of.get(namer.key(t))))
+    ]
+    fact_tables = [t for t in fact_tables if t.full_name not in dimension_like]
+    if dimension_like:
+        console.print(
+            f"  {len(dimension_like)} table(s) classed as fact by name look like dimensions (their schema is a "
+            f"dimension schema, or they hold a key and descriptive text only) and get no rule: "
+            f"{', '.join(dimension_like[:10])}{' ...' if len(dimension_like) > 10 else ''}.",
+            markup=False,
+        )
 
     no_measure: list[str] = []
     for table in fact_tables:
@@ -3488,6 +3594,7 @@ def step4_business_rules(args, snapshot, llm, log: dict, namer=None, links=None)
     _mark_done(log, "step4_rules", {
         "rule_count": len(rules),
         "skipped_no_measure": no_measure,
+        "skipped_dimension": dimension_like,
         "provider": llm.provider,
         "result": rules,
     })
@@ -4083,13 +4190,35 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
                 console.print(line, markup=False)
     rules_done = log.get("step4_rules", {})
     no_measure = rules_done.get("skipped_no_measure") or []
+    dimension_like = rules_done.get("skipped_dimension") or []
+    if dimension_like:
+        console.print(
+            f"  Business rules: {len(dimension_like)} table(s) classed as fact by name were left out because they "
+            f"look like dimensions: {', '.join(dimension_like[:10])}{' ...' if len(dimension_like) > 10 else ''}.",
+            markup=False,
+        )
     if no_measure:
         console.print(
             f"  Business rules: {len(no_measure)} fact table(s) got no rule because they have no numeric column "
             f"that is not a key: {', '.join(no_measure[:10])}{' ...' if len(no_measure) > 10 else ''}.",
             markup=False,
         )
-    cleaned = log.get("step3_aliases", {}).get("aliases_cleaned")
+    aliases_done = log.get("step3_aliases", {})
+    salvaged = aliases_done.get("aliases_salvaged") or []
+    if salvaged:
+        console.print(
+            f"  Aliases: {len(salvaged)} table(s) got a list salvaged from a truncated answer "
+            f"({', '.join(salvaged[:10])}{' ...' if len(salvaged) > 10 else ''}); read it before you use it.",
+            markup=False,
+        )
+    failed = aliases_done.get("aliases_failed") or []
+    if failed:
+        console.print(
+            f"  Aliases: {len(failed)} table(s) got none because the model call failed or its answer was unusable "
+            f"({', '.join(failed[:10])}{' ...' if len(failed) > 10 else ''}).",
+            markup=False,
+        )
+    cleaned = aliases_done.get("aliases_cleaned")
     if cleaned:
         console.print(
             f"  Aliases: {cleaned} table(s) had repeated or too many aliases; at most {ALIAS_LIMIT} are kept.",
