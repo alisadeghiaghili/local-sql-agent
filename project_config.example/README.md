@@ -30,6 +30,14 @@ by hand; both produce drafts to review, not files to deploy as they are:
 Both are described in `docs/deployment-runbook.md` §2.1 to §2.3, which also
 lists what each one sends where and which flags they take.
 
+A third drafts the descriptions that the inspector and `sync_schema.py` leave as
+a table's own name and `<type> column`, which the preflight refuses:
+`python scripts/draft_descriptions.py` asks the wizard's model about the names,
+types and keys in `schema.yaml` (no row) and writes `schema.described.yaml` next
+to it, each drafted line ending in `# REVIEW` and the file starting with a draft
+header the preflight fails on until you have read it and deleted that line
+(`docs/deployment-runbook.md` §2.4).
+
 ## Files
 
 | File | Purpose | Exposed variable |
