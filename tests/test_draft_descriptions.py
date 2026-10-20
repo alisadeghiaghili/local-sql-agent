@@ -661,6 +661,24 @@ class TestWhatTheModelSees:
         assert main(["--max-tokens", "0"], generate=FakeModel()) == EXIT_ERROR
 
 
+    def test_the_unchanged_shipped_entities_template_gives_no_alias(self, tmp_path):
+        # On a first install the descriptions are drafted before the wizard
+        # runs, so entities.yaml is still the template; its sample aliases
+        # must not be offered as facts about a real table with the same key.
+        shipped = describe_prompt.SHIPPED_ENTITIES
+        assert doctor.read_entities(shipped.parent), "the template must hold entities with aliases"
+        (tmp_path / "entities.yaml").write_bytes(shipped.read_bytes())
+        assert describe_prompt.entity_aliases(tmp_path) == {}
+
+    def test_an_edited_entities_file_gives_its_aliases(self, tmp_path):
+        shipped = describe_prompt.SHIPPED_ENTITIES
+        (tmp_path / "entities.yaml").write_bytes(shipped.read_bytes() + b"\n# edited\n")
+        assert describe_prompt.entity_aliases(tmp_path) == describe_prompt.entity_aliases(
+            tmp_path, template=tmp_path / "missing.yaml"
+        )
+        assert describe_prompt.entity_aliases(tmp_path)
+
+
 class TestNoRowsWithoutSamples:
     @pytest.fixture()
     def label_schema(self, project):

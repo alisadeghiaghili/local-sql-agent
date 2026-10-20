@@ -372,8 +372,41 @@ def read_listed_relationships(directory: Path) -> list[dict[str, Any]]:
     return found
 
 
-def entity_aliases(directory: Path) -> dict[str, tuple[str, ...]]:
-    """``{table key: aliases}`` from ``entities.yaml`` in *directory*; ``{}`` when it cannot be read.
+#: The ``entities.yaml`` shipped in ``project_config.example/``. On a first
+#: install the descriptions are drafted before the wizard has run, so
+#: ``project_config/entities.yaml`` is still this template, and its sample
+#: aliases would be offered as facts about any real table with the same key.
+SHIPPED_ENTITIES = Path(__file__).resolve().parent.parent / "project_config.example" / "entities.yaml"
+
+
+def _same_text(path: Path, other: Path) -> bool:
+    """Whether two files hold the same text; ``False`` when either cannot be read."""
+    try:
+        return path.read_bytes() == other.read_bytes()
+    except OSError:
+        return False
+
+
+def entity_aliases(directory: Path, template: Path = SHIPPED_ENTITIES) -> dict[str, tuple[str, ...]]:
+    """``{table key: aliases}`` from ``entities.yaml`` in *directory*.
+
+    Parameters
+    ----------
+    directory:
+        The configuration directory.
+    template:
+        The shipped template. An ``entities.yaml`` identical to it holds
+        sample entities, not this warehouse's, and gives no alias.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        Only entries that have aliases; ``{}`` when the file cannot be read
+        or is the unchanged template.
+
+    Raises
+    ------
+    Nothing. This function never raises.
 
     Examples
     --------
@@ -381,9 +414,13 @@ def entity_aliases(directory: Path) -> dict[str, tuple[str, ...]]:
     >>> with tempfile.TemporaryDirectory() as tmp:
     ...     _ = Path(tmp, "entities.yaml").write_text(
     ...         "entities:\\n  sales.Trade:\\n    table: Trade\\n    aliases: [trade, deal]\\n", encoding="utf-8")
-    ...     entity_aliases(Path(tmp))
-    {'sales.Trade': ('trade', 'deal')}
+    ...     found = entity_aliases(Path(tmp))
+    ...     unchanged = entity_aliases(Path(tmp), template=Path(tmp, "entities.yaml"))
+    >>> found, unchanged
+    ({'sales.Trade': ('trade', 'deal')}, {})
     """
+    if _same_text(directory / "entities.yaml", template):
+        return {}
     rows = doctor.read_entities(directory) or ()
     return {row.key: row.aliases for row in rows if row.aliases}
 
