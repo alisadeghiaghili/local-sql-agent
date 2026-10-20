@@ -293,6 +293,12 @@ CASES: tuple[Case, ...] = (
         env=lambda c: {"SQLITE_DB_PATH": str(c.fa_dir / "نمونه.db")},
     ),
     Case(
+        "scripts/draft_descriptions.py",
+        # --dry-run: no model is asked and nothing is written; the schema path carries the Persian.
+        lambda c: ["scripts/draft_descriptions.py", "--dry-run"],
+        FA_CONFIG_NAME,
+    ),
+    Case(
         "scripts/golden_sheet.py",
         lambda c: ["scripts/golden_sheet.py", "export", "--cases", str(c.candidates),
                    "--out", str(c.fa_dir / "بازبینی.csv")],
