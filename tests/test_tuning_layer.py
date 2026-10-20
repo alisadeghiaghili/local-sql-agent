@@ -436,6 +436,17 @@ _ALLOWED_MODULE_CONSTANTS = {
         "implementation detail: the default for draft_descriptions.py --max-tokens, "
         "the most one answer is sized for; the flag overrides it per run"
     ),
+    "llm/wizard_llm.py::ALIAS_MAX_TOKENS": (
+        "implementation detail: the completion ceiling of the setup wizard's alias "
+        "call, sized from the longest answer that call asks for (eight short phrases "
+        "and a sentence); it is lifted when the operator has made room for a "
+        "reasoning model, and never reaches the SQL path or a running request"
+    ),
+    "llm/wizard_llm.py::_SQL_SIZED_BUDGET": (
+        "implementation detail: the default of LLM_NUM_PREDICT, above which the "
+        "alias call takes the operator to have made room for a reasoning model "
+        "and sends no cap of its own; a mirror of a setting, not a second knob"
+    ),
     "schema_data/sync.py::REPORT_LIST_LIMIT": (
         "implementation detail: how many names one section of the "
         "operator script's printed report lists before '... and N more'. "

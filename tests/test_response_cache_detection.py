@@ -36,6 +36,7 @@ from scripts.verify_deployment import (
     build_checks,
     check_model_answers_each_prompt,
 )
+from tests._wizard_fakes import AliasesViaGenerate
 
 LOCAL = "http://127.0.0.1:8000/v1"
 REMOTE = "https://models.example.test/v1"
@@ -257,7 +258,7 @@ def _snapshot(names: list[str], *, fact: bool = False) -> SimpleNamespace:
     )
 
 
-class ScriptedLLM:
+class ScriptedLLM(AliasesViaGenerate):
     """Answers by prompt; ``answer(table_name) -> JSON`` decides what each table gets."""
 
     provider = "fake"
