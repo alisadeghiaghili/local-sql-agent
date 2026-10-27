@@ -1165,7 +1165,7 @@ def check_filter_value_check_has_vocabularies() -> CheckResult:
 
     Only listed while ``FILTER_VALUE_CHECK`` is on
     (:attr:`config.Settings.filter_value_check`). The check compares a string
-    literal in a generated statement with the cached value set of the column
+    literal in a statement the model wrote with the cached value set of the column
     it is compared to, and those sets exist only for a table's
     ``prefetchable_columns``. A dimension table (one ``entities.yaml`` names)
     that has label-like columns (``Name``, ``Title``, ``Kind``, ``Status``,

@@ -480,6 +480,16 @@ def get_vocabulary_for_check(table: str, column: str) -> list[str] | None:
     for the key, and for a key that failed less than a minute ago). No query
     is issued on the calling thread. ``None`` when nothing is cached yet.
 
+    Parameters
+    ----------
+    table, column:
+        A :data:`PREFETCH_COLUMNS` entry.
+
+    Returns
+    -------
+    list[str] | None
+        The cached values, fresh or stale; ``None`` if never cached.
+
     Examples
     --------
     >>> clear_vocabulary_cache()

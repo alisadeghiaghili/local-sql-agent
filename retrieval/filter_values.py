@@ -255,6 +255,21 @@ def nearest_values(value: str, vocabulary: Iterable[str], limit: int = NEAREST_L
     broken by the normalised value, then the value itself. Meant for the
     small sets the prefetch holds.
 
+    Parameters
+    ----------
+    value:
+        The literal that is not a value of the column.
+    vocabulary:
+        The real values of the column.
+    limit:
+        The most values to return.
+
+    Returns
+    -------
+    list[str]
+        Values of *vocabulary* as they are written there, nearest first;
+        empty when none is similar.
+
     Examples
     --------
     >>> nearest_values("Alpa Hall", ["Beta Hall", "Alpha Hall", "Gamma Port"], limit=2)
@@ -405,6 +420,12 @@ def correction_text(sql: str, check: ValueCheck) -> str:
     check:
         Its :class:`ValueCheck`; at least one unknown value.
 
+    Returns
+    -------
+    str
+        The message; the caller puts its own blank line in front, as it does
+        for every other correction text.
+
     Examples
     --------
     >>> text = correction_text(
@@ -428,7 +449,7 @@ def correction_text(sql: str, check: ValueCheck) -> str:
             offered = ", ".join(item.sample)
             real.append(f"{columns}, no value is similar to {_quoted(item.value)}; values that exist include: {offered}")
     parts = [
-        "The SQL query you generated filters on a value that does not exist.",
+        "The SQL query you wrote filters on a value that does not exist.",
         "",
         "--- SQL ---",
         sql,
@@ -466,8 +487,24 @@ def audit_block(check: ValueCheck, *, corrected: bool, fallback: bool) -> dict[s
     first 16 hex digits of the SHA-256 of the normalised literal (the same
     invented value can be counted across requests) and its length; the
     literal itself is not written. *corrected* is true when the statement
-    that ran is the corrected one, *fallback* when the correction was asked
-    for and the original statement ran instead.
+    that ran is the corrected one, *fallback* when there were unknown
+    literals and the original statement ran instead (the model kept the
+    value, the corrected statement failed, or no correction was possible).
+
+    Parameters
+    ----------
+    check:
+        What :func:`check_filter_values` found in the statement as written.
+    corrected:
+        Whether the statement that ran is the corrected one.
+    fallback:
+        Whether there were unknown literals and the original ran.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        The block for :attr:`observability.audit.AuditRecord.value_check`;
+        ``None`` when nothing was checked.
 
     Examples
     --------

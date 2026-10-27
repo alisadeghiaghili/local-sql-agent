@@ -428,7 +428,7 @@ class TestCorrectionText:
         text = correction_text("SELECT 1", self.CHECK)
 
         assert text == (
-            "The SQL query you generated filters on a value that does not exist.\n"
+            "The SQL query you wrote filters on a value that does not exist.\n"
             "\n"
             "--- SQL ---\n"
             "SELECT 1\n"
