@@ -469,6 +469,34 @@ def get_cached_vocabulary(table: str, column: str) -> list[str] | None:
     return values
 
 
+def get_vocabulary_for_check(table: str, column: str) -> list[str] | None:
+    """The cached values of ``(table, column)`` for the filter value check. Never blocks.
+
+    A cache read like :func:`get_cached_vocabulary`, with what
+    :func:`match_question_against_vocabulary` does for a column it reads: a
+    stale list is returned while a background refresh runs, and a column
+    never cached starts one (see :func:`_trigger_background_refresh`; it is a
+    no-op when background refresh is disabled, when one is already running
+    for the key, and for a key that failed less than a minute ago). No query
+    is issued on the calling thread. ``None`` when nothing is cached yet.
+
+    Examples
+    --------
+    >>> clear_vocabulary_cache()
+    >>> get_vocabulary_for_check("Ring", "Name") is None
+    True
+    >>> import pandas as pd
+    >>> _ = refresh_vocabulary("Ring", "Name", execute_fn=lambda sql, params: pd.DataFrame({"Name": ["Alpha"]}))
+    >>> get_vocabulary_for_check("Ring", "Name")
+    ['Alpha']
+    >>> clear_vocabulary_cache()
+    """
+    values, fresh = _cache.get_with_state(table, column)
+    if values is None or not fresh:
+        _trigger_background_refresh(table, column)
+    return values
+
+
 def _default_execute_fn(sql: str, params):
     """Lazily-imported production ``execute_fn`` -- avoids pulling in the
     database/SQLAlchemy dependency chain for callers (most of this test
