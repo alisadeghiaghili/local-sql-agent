@@ -342,6 +342,35 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   with every column denied instead) and the server logs one warning for it;
   write `"denied_columns": []` once that is what you mean.
 
+  **How an entry is read, and when it restricts nothing.** An entry is
+  compared with the column names of `schema.yaml` without regard to case, but
+  otherwise exactly. Since 6.15.1 whitespace and invisible Unicode format
+  characters (the zero-width non-joiner U+200C and joiner U+200D, the marks
+  U+200E and U+200F, the bidi embeddings and isolates U+202A to U+202E and
+  U+2066 to U+2069, the byte-order mark U+FEFF, the soft hyphen) are removed from
+  the **start and the end** of an entry, repeatedly, before it is read; a Persian
+  editor inserts them without showing them, and an entry that carried one used to
+  deny nothing. Nothing inside an entry is changed: a space inside a name is not
+  removed (`National ID` is not `NationalID`), and neither is a zero-width
+  non-joiner inside a Persian column name, which stays exactly as written in the
+  key file, in the stored list and in what the panel shows. When a plain entry
+  does hold such a character inside, the guard denies the entry as written and
+  also the same name without that character (never narrower than what you
+  wrote); an entry matches a column of `schema.yaml` when either spelling does. The
+  same cleaning applies to keys of the admin panel, when they are read and when
+  `PATCH /admin/keys/{key}/acl` saves them. A key with a changed entry logs one
+  WARNING at start-up naming the key id and showing both spellings with `ascii()`
+  (`'NationalID\u200f' -> 'NationalID'`), never the key's hash. A plain name that
+  matches no column of `schema.yaml` (a typo, a renamed column) denies nothing: it
+  is logged as a WARNING once per key, and the preflight check `Column
+  restrictions name real columns` (§3.1) fails and lists the key id and the entry.
+  The server still starts, so an installation that starts today keeps starting;
+  run the preflight after editing the list. The same personal number often lives
+  under several names in a warehouse (`NationalID`, `NationalCode`,
+  `CustomerNationalID`); denying one leaves the others, and the same check
+  advises, when every entry matches, which columns look like a denied name and are
+  not denied.
+
   **Restricting one table, or one data source.** A plain name denies the
   column on every table of every source and refuses every reference. To keep a
   column usable for joins while hiding its values, write a scoped entry; the
@@ -1060,7 +1089,8 @@ python scripts/verify_deployment.py
 This must print `0 failed` before you go further. Every line is
 `[PASS] / [FAIL] / [SKIP]` with a reason — a `[FAIL]` tells you exactly
 what to fix (a placeholder still in `.env`, an unreachable database, a
-model name the endpoint doesn't actually serve, no API key configured, an
+model name the endpoint doesn't actually serve, no API key configured, a
+`denied_columns` name that no column has, an
 unwritable log directory, a `project_config/` that fails to load, a `project_config/` that is
 a raw draft from the schema inspector or the setup wizard, synonyms copied from rows,
 entities that name no table of `schema.yaml`, a data source with no table, a rate
@@ -1069,14 +1099,15 @@ CORS list would refuse). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
 
-The preflight has twenty-four checks with one data source (twenty-two in 6.14.1, before two
+The preflight has twenty-five checks with one data source (twenty-four in 6.15.0, twenty-two in 6.14.1, before two
 file checks were added). The checks run in this order: `Settings.validate()` (required settings,
 leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then
 `Tables are in their data source`, `Schema structure matches the databases`,
 `OpenAI-compatible model exists`, `Model endpoint answers each prompt itself`,
-`API key authentication`, `Audit log directory writable`,
+`API key authentication`, `Column restrictions name real columns` (the keys
+and `schema.yaml`; no database call), `Audit log directory writable`,
 `Session store directory writable`, `project_config/ loads` (all ten
 required files), the five checks that tell a curated `project_config/` from a raw
 draft (`project_config/ is curated, not a raw draft`, `Aliases are curated`,
@@ -1155,6 +1186,7 @@ data sources, the four marked * print once per source, as
 | `OpenAI-compatible model exists` | Asks `OPENAI_BASE_URL` for `/models` (5 second timeout, `OPENAI_API_KEY` as the bearer token) and looks for `OPENAI_MODEL` among the ids it lists. | `could not reach <base>: ...`: wrong URL or port, endpoint down, a proxy, or an endpoint with no `/models` route. Or `'<model>' not found among models <base> lists: [...]`: set `OPENAI_MODEL` to one of the listed ids. | Never. |
 | `Model endpoint answers each prompt itself` | Sends two tiny requests to the model through the same backend settings the server uses (`OPENAI_BASE_URL`, `LLM_EXTRA_BODY`, the seed, `temperature=0`; only `max_tokens` is cut to at most 128, 15 second timeout). Each asks for one fresh random token (`Reply with exactly this token and nothing else: <32 hex characters>`); the two prompts differ only in that token, so a semantic or prefix response cache collides on the second. `[PASS]` when each reply contains its own token (a model that adds words around it still passes); the detail gives the reply times, as `each test request was answered with its own token (replies in 412 ms and 398 ms)`, and never the reply. | `the second test request, which carried a different random token, was answered with the first request's token (...). A response cache in front of the model returned another prompt's answer. The same cache can serve the wrong SQL for a similar question ...`, or `the reply to the first/second test request did not contain its own random token`: a response cache in front of the model (a gateway with semantic or prefix caching) is answering a new prompt with the reply stored for a similar one. Disable response caching for this client at the gateway, or point `OPENAI_BASE_URL` at the model server directly; §20.10 says what to look for. A model that ignores the instruction fails the second form too: ask the model server directly to tell the two apart. | `LLM_PROVIDER=mock`; the endpoint is remote and `LLM_ALLOW_REMOTE` is off (nothing is sent to it); the endpoint did not answer (`OpenAI-compatible model exists` reports that); or a reasoning model used all its tokens before answering (turn reasoning off for the request with `LLM_EXTRA_BODY`). Not part of the admin panel's ordinary run: see below. |
 | `API key authentication` | Checks that at least one key is configured (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) so that the server would start, and, with `VERIFY_API_KEY` set, that this raw key authenticates. | `API key configuration is invalid: ...` (the server would refuse to start; §5); `AUTH_REQUIRED is true but there are no configured keys ...` (issue one, §1); every key revoked or disabled in the application database; or `VERIFY_API_KEY was set but did not match any configured key's SHA-256 digest` (a truncated paste, or the `key_sha256` pasted instead of the raw key). With `AUTH_REQUIRED=false` it passes and says so; do not use that in production. | Never. |
+| `Column restrictions name real columns` | Reads the keys the server would use (`API_KEYS_FILE` or `API_KEYS_JSON`, plus the application database) and `schema.yaml`. A plain `denied_columns` entry (no `.` and no `:`) is cleaned of whitespace and invisible Unicode characters at its two ends, as the guard reads it, and compared with every column name of `schema.yaml` without regard to case; it matches when it, or it without any format character inside it (a zero-width non-joiner in a Persian name is kept in the first spelling), is a column name. Entries with a `.` or `:` are checked when the key is loaded and are not looked at here. | `N plain denied_columns entries of M key(s) match no column of schema.yaml, so they deny nothing -- <key id>: 'Entry', ...`, one group per set of keys with the same entries, each entry in `ascii()` form so an invisible character shows (`'\u200c'`). A typo, a column that was renamed, or a name with an inner space (`National ID`). Correct the entry in `API_KEYS_FILE` / `API_KEYS_JSON` and restart, or save it again with `PATCH /admin/keys/{key}/acl` for a key of the admin panel (§2). The server starts with the entry as it is; until it is fixed it restricts nothing. When every entry matches, a `[PASS]` line starting `advice: ...` lists, per denied plain name, the columns that look like it and are not denied (the name appears inside theirs, or their stem has another ending among `ID`, `Code`, `No`, `Num`, `Number`: `NationalID` next to `NationalCode` and `CustomerNationalID`), with counts and the first names, never a value. It is a guess from spelling and never fails: read each name and add the ones that hold the same data. | No key is configured, the key configuration is invalid (`API key authentication` says why), or `schema.yaml` does not load or lists no column. |
 | `Audit log directory writable` | Creates `LOG_DIR` if needed and writes then deletes a probe file in it; checks an existing `audit_log.jsonl` is writable. It never writes to `audit_log.jsonl` itself. | `could not create ...` or `... is not writable`: fix the directory's permissions or `LOG_DIR`. Fail it loudly here because a failing audit write never fails the user's query (§6). | Never. |
 | `Session store directory writable` | The same probe on the directory of `SESSION_STORE_PATH`. | `could not create ...` or `... is not writable`. | `SESSION_STORE_PATH` is empty (persistence deliberately off). |
 | `project_config/ loads` | Checks that all ten required files exist (`aliases.yaml`, `entities.yaml`, `business_rules.yaml`, `examples.yaml`, `metrics.yaml`, `schema.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml`, `system_prompt.md`), then loads each under the current code's models. An empty `system_prompt.md` fails. | `N of 10 required files not found under '<dir>': <names>`, with every missing name at once (copy each from `project_config.example/`, §2.1), `<file> not found under '<dir>'`, or `<file> failed validation ...` with the field: a file copied from an older deployment is missing a field a later release requires. Edit the field, or compare with `project_config.example/`. Duplicate YAML keys are refused (§17 step 3). | Never. |
@@ -1183,7 +1215,7 @@ it each time it runs. It tests a property of the deployment that changes only wh
 the gateway does, so it belongs where an operator asks for it, not on a page load
 or a timer; the command line always runs it.
 The eight checks above that read only `project_config/` run on the panel without it: they
-only read files. So does `Web UI origin is allowed by CORS` (it reads settings only);
+only read files. So does `Column restrictions name real columns` (it reads the keys and `schema.yaml`), and so does `Web UI origin is allowed by CORS` (it reads settings only);
 on the panel it sees the server's own environment, so `VERIFY_UI_ORIGIN` has to be
 set there for it to be more than advice.
 

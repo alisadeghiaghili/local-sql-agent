@@ -279,6 +279,8 @@ class SchemaTable:
     """The ``datasource:`` value as a tuple; ``()`` when the line is absent."""
     notes: tuple[str, ...]
     """Column notes: the string values of the table's ``columns`` map."""
+    columns: tuple[str, ...] = ()
+    """Column names: the keys of the table's ``columns`` map, as written."""
 
 
 @dataclass(frozen=True)
@@ -417,6 +419,7 @@ def _schema_from_text(text: str) -> SchemaView:
             description=description if isinstance(description, str) else "",
             datasource=_datasources_of(body.get("datasource")),
             notes=tuple(v for v in columns.values() if isinstance(v, str)) if isinstance(columns, dict) else (),
+            columns=tuple(_plain_key(k) for k in columns) if isinstance(columns, dict) else (),
         ))
     return SchemaView(present=True, parsed=True, tables=tuple(rows))
 

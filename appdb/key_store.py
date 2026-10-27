@@ -72,7 +72,7 @@ import security.auth as auth
 from appdb.engine import get_app_engine
 from appdb.models import admin_api_keys, admin_principal_roles
 from security.auth import ApiKeyConfigError, Principal
-from security.column_policy import parse_column_policy
+from security.column_policy import normalize_denied_entries, parse_column_policy
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +291,14 @@ def get_active_principals() -> dict[str, Principal]:
         merged[key_hash] = Principal(
             id=row["principal_id"],
             name=row["name"],
-            denied_columns=row["denied_columns"],
+            # Read as the guard reads it: stored entries that carry
+            # whitespace or invisible characters at either end (written before
+            # entries were cleaned on the way in) are cleaned here, with one
+            # WARNING.
+            denied_columns=auth.read_denied_columns(
+                row["principal_id"], key_hash, row["denied_columns"],
+                source="application database",
+            ),
             capabilities=row["capabilities"] | env_extra_caps,
         )
     for key_hash, principal in env_principals.items():
@@ -395,27 +402,47 @@ def _write_denied_columns(conn, key_sha256: str, denied_columns: list[str], now:
 
     Called by :func:`update_denied_columns` and by
     :func:`appdb.access_requests.approve_request` to update keys within a
-    larger atomic transaction.
+    larger atomic transaction. Entries are stored normalised
+    (:func:`security.column_policy.normalize_denied_entries`), so a list that
+    went through an older write and one written now read the same.
     """
     conn.execute(
         admin_api_keys.update()
         .where(admin_api_keys.c.key_sha256 == key_sha256)
-        .values(denied_columns_json=json.dumps(list(denied_columns)), updated_at=now)
+        .values(
+            denied_columns_json=json.dumps(list(normalize_denied_entries(denied_columns).entries)),
+            updated_at=now,
+        )
     )
 
 
-def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> None:
+def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> list[str]:
     """Set the key identified by *key_sha256*'s ``denied_columns`` — the
     security-gated ACL loosening/tightening endpoint
     (``PATCH /admin/keys/{id}/acl``). An empty list means "no column
     restriction", exactly as it does for an ``API_KEYS_JSON`` entry.
+
+    Entries are normalised before anything else: whitespace and invisible
+    Unicode format characters at the start and end of an entry are removed
+    (:func:`security.column_policy.normalize_denied_entry`), so what is stored
+    is what the guard will compare with a column name. Characters inside an
+    entry are stored as written. A change is logged as
+    one WARNING naming the key id. An entry with nothing visible in it is
+    stored as written, as :func:`security.column_policy.normalize_denied_entries`
+    says.
 
     Scoped (join-only) entries are checked here, against the loaded
     ``schema.yaml`` and ``datasources.yaml``, before anything is written —
     the same check :func:`security.auth.load_api_keys` applies to an
     environment-configured key, so a typo is refused with a message naming
     the entry instead of being stored as an ACL that restricts nothing.
-    Plain column names are not looked up, as before.
+    Plain column names are not looked up, as before; one that names no
+    column of ``schema.yaml`` is logged, as at load.
+
+    Returns
+    -------
+    list[str]
+        The entries as stored.
 
     Raises
     ------
@@ -424,13 +451,21 @@ def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> None:
     KeyNotFoundError
         No such key.
     """
-    parse_column_policy(denied_columns)
+    if isinstance(denied_columns, str):
+        parse_column_policy(denied_columns)  # raises: a bare string is not a list of entries
+    stored = list(normalize_denied_entries(denied_columns).entries)
+    parse_column_policy(stored)
     now = _now_iso()
     engine = get_app_engine()
     with engine.begin() as conn:
-        _get_row(conn, key_sha256)
-        _write_denied_columns(conn, key_sha256, denied_columns, now)
+        row = _get_row(conn, key_sha256)
+        _write_denied_columns(conn, key_sha256, stored, now)
+    auth.read_denied_columns(
+        row["principal_id"], key_sha256, list(denied_columns),
+        source="application database (PATCH /admin/keys/.../acl)",
+    )
     invalidate_cache()
+    return stored
 
 
 def list_keys() -> list[dict]:

@@ -338,7 +338,7 @@ async def _ask_turn_bounded(
     turn = await run_bounded(
         get_turn_engine().ask, record, question, system_prompt,
         denied_columns=principal.denied_columns, memory_entries=memory_entries,
-        interpret=interpret,
+        interpret=interpret, principal_id=principal.id,
     )
     get_session_store().sync_turn(record, turn)
     return turn
@@ -444,6 +444,7 @@ async def _ask_turn_streaming_stages(
                 memory_entries=memory_entries,
                 on_stage=on_stage,
                 interpret=interpret,
+                principal_id=principal.id,
             )
         finally:
             # In a `finally` so a raising turn still releases the drain
@@ -607,6 +608,7 @@ async def patch_assumptions(
         assumption_overrides=overrides,
         denied_columns=principal.denied_columns,
         memory_entries=memory_entries,
+        principal_id=principal.id,
     )
     get_session_store().sync_turn(record, turn)
     return turn

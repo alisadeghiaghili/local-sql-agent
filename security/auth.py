@@ -48,7 +48,10 @@ from security.column_policy import (
     ColumnPolicy,
     ColumnPolicyError,
     cached_column_policy,
+    normalize_denied_entries,
     parse_column_policy,
+    schema_column_names,
+    unmatched_bare_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,6 +128,14 @@ class Principal:
         ``Source:sales.Order.ID``, ``Source:ID`` -- see
         :mod:`security.column_policy`): the column may then be used only as
         a ``JOIN ... ON`` key. :attr:`column_policy` is the parsed form.
+        Entries are held cleaned at their two ends: surrounding whitespace
+        and invisible Unicode format characters are removed on construction
+        (:func:`~security.column_policy.normalize_denied_entry`), so
+        ``"NationalID<RLM>"`` and ``"NationalID"`` are one restriction and one
+        cache partition. Characters inside an entry are never changed (a
+        Persian column name may hold a zero-width non-joiner); the policy
+        parser denies such a name both as written and without the inner
+        format character. A list that needs no cleaning is kept as it came.
         Fed into two
         independent places, both HTTP-only (the CLI/REPL paths --
         ``app.py``, ``llm/wizard_llm.py`` -- have no ``Principal`` and
@@ -160,6 +171,19 @@ class Principal:
     name: str
     denied_columns: tuple[str, ...] = field(default_factory=tuple)
     capabilities: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        # Whatever built this principal (the key file, the application
+        # database, a test), its entries are read the way the guard reads
+        # them: without whitespace or invisible format characters at either
+        # end (never inside an entry). A list that needs no cleaning is left
+        # as it came.
+        entries = self.denied_columns
+        if not entries or isinstance(entries, str):
+            return
+        clean = normalize_denied_entries(entries).entries
+        if clean != tuple(entries):
+            object.__setattr__(self, "denied_columns", clean)
 
     @property
     def column_policy(self) -> ColumnPolicy:
@@ -258,6 +282,107 @@ def _reset_denied_columns_warnings() -> None:
     """Forget every key already warned about. For tests only."""
     with _warned_missing_denied_columns_lock:
         _warned_missing_denied_columns.clear()
+        _warned_denied_entries.clear()
+
+
+# Keyed on the key and its entries after normalisation, so a re-read list does
+# not re-warn (nor does the same key read again from the application database
+# after it was imported there) but an edited one does.
+_warned_denied_entries: set[tuple[str, str, str, tuple[str, ...]]] = set()
+
+
+def _entries_warned(topic: str, principal_id: str, key_sha256: str, entries: tuple[str, ...]) -> bool:
+    """Whether *topic* was already logged for this key and these entries."""
+    with _warned_missing_denied_columns_lock:
+        return (topic, principal_id, key_sha256, entries) in _warned_denied_entries
+
+
+def _remember_entries_warned(topic: str, principal_id: str, key_sha256: str, entries: tuple[str, ...]) -> None:
+    with _warned_missing_denied_columns_lock:
+        _warned_denied_entries.add((topic, principal_id, key_sha256, entries))
+
+
+def read_denied_columns(
+    principal_id: str, key_sha256: str, entries: tuple[str, ...] | list[str], *, source: str,
+) -> tuple[str, ...]:
+    """A key's ``denied_columns``, normalised, with one WARNING for what that changed or found.
+
+    Every source of keys goes through here (the key file and ``API_KEYS_JSON``
+    in :func:`_parse_api_keys`, the application database in
+    :func:`appdb.key_store.get_active_principals`), so an entry is cleaned,
+    and reported, the same way wherever it was written. Two things are
+    logged, each once per key per process (loading repeats on every
+    key-cache refresh):
+
+    * entries that normalisation changed (whitespace or invisible Unicode
+      format characters at either end), or that held nothing visible at all;
+    * plain entries that name no column of ``schema.yaml``, which therefore
+      deny nothing.
+
+    Entries are written with :func:`ascii`, so an invisible character shows
+    as ``\\u200f``; the key hash is never logged. Nothing here raises and no
+    key is refused for it.
+
+    Parameters
+    ----------
+    principal_id:
+        The key's ``id``.
+    key_sha256:
+        The key's digest; only used to tell two keys with one id apart.
+    entries:
+        The raw ``denied_columns`` strings.
+    source:
+        What to call the key in the message (``"API_KEYS_FILE (keys.json)[0]"``).
+
+    Returns
+    -------
+    tuple[str, ...]
+        The normalised entries, in order.
+
+    Examples
+    --------
+    >>> read_denied_columns("a", "0" * 64, ["Name"], source="API_KEYS_JSON[0]")
+    ('Name',)
+    >>> read_denied_columns("a", "0" * 64, [" Name\\u200f"], source="API_KEYS_JSON[0]")
+    ('Name',)
+    """
+    raw = tuple(entries)
+    result = normalize_denied_entries(raw)
+    seen = result.entries
+    if result and not _entries_warned("normalised", principal_id, key_sha256, seen):
+        _remember_entries_warned("normalised", principal_id, key_sha256, seen)
+        shown = [f"{ascii(old)} -> {ascii(new)}" for old, new in result.changed]
+        shown += [
+            f"{ascii(old)} -> nothing visible (kept as written; it names no column)"
+            for old in result.empty
+        ]
+        logger.warning(
+            "%s (id=%r): denied_columns changed by normalisation -- "
+            "whitespace and invisible Unicode characters at the start and end of "
+            "an entry are removed before it is compared with a column name: %s. Correct the "
+            "entry where it is written.",
+            source, principal_id, "; ".join(shown),
+        )
+    plain = any(isinstance(e, str) and ":" not in e and "." not in e for e in result.entries)
+    if plain and not _entries_warned("unmatched", principal_id, key_sha256, seen):
+        # The schema is only read for a key not yet checked, and a key is only
+        # marked checked once the schema was there to check it against.
+        columns = schema_column_names()
+        if columns is not None:
+            _remember_entries_warned("unmatched", principal_id, key_sha256, seen)
+            unmatched = [
+                entry for entry in unmatched_bare_entries(result.entries, columns)
+                if entry not in result.empty
+            ]
+            if unmatched:
+                logger.warning(
+                    "%s (id=%r): denied_columns entries that match no column of "
+                    "schema.yaml deny nothing -- check the spelling: %s. The "
+                    "preflight check 'Column restrictions name real columns' "
+                    "lists them.",
+                    source, principal_id, ", ".join(ascii(e) for e in unmatched),
+                )
+    return result.entries
 
 
 class _DuplicateJsonKeyError(ValueError):
@@ -401,11 +526,17 @@ def _parse_api_keys(raw_json: str, source: str = "API_KEYS_JSON") -> dict[str, P
                     source, i, principal_id,
                 )
         elif isinstance(raw_denied, list) and all(isinstance(c, str) for c in raw_denied):
-            denied_columns = tuple(raw_denied)
+            # Whitespace and invisible Unicode characters at either end are
+            # removed first (a Persian editor inserts them without showing
+            # them), so an entry means the column it looks like it names.
+            denied_columns = read_denied_columns(
+                principal_id, normalized_hash, raw_denied, source=f"{source}[{i}]",
+            )
             # Scoped (join-only) entries are checked against schema.yaml and
             # datasources.yaml here, so a typo stops the server at start-up
-            # instead of silently restricting nothing. Legacy plain names are
-            # never looked up: they keep meaning exactly what they did.
+            # instead of silently restricting nothing. A plain name is not
+            # looked up here (that would refuse a start-up that succeeds
+            # today); read_denied_columns logs one that names no column.
             try:
                 parse_column_policy(denied_columns)
             except ColumnPolicyError as exc:
@@ -733,6 +864,9 @@ def scope_key(principal: Principal, memory_used: Mapping[str, str] | None) -> st
     >>> scope_key(Principal(id="a", name="A"), memory_used=None) == \\
     ...     scope_key(Principal(id="a", name="A"), memory_used={"scope": "x"})
     False
+    >>> scope_key(Principal(id="a", name="A", denied_columns=("X\\u200f",)), memory_used=None) == \\
+    ...     scope_key(Principal(id="a", name="A", denied_columns=("X",)), memory_used=None)
+    True
     >>> scope_key(Principal(id="a", name="A"), memory_used={"scope": "x"}) == \\
     ...     scope_key(Principal(id="b", name="B"), memory_used={"scope": "x"})
     True

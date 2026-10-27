@@ -753,7 +753,27 @@ inside a `JOIN ... ON`; any other use is rejected with
 `guard.reason == "join_only_column"` (correctable: the model is re-prompted).
 Scoped entries are checked against `schema.yaml` and `datasources.yaml` when
 the keys are loaded, so a typo stops start-up instead of restricting nothing
-(see `docs/deployment-runbook.md`). Only the
+(see `docs/deployment-runbook.md`).
+
+Every entry, plain or scoped, is **normalised** before it is read, whichever
+source it came from (the key file or `API_KEYS_JSON`, a key of the admin panel,
+`PATCH /admin/keys/{key}/acl`): whitespace and Unicode format characters
+(category `Cf`: the zero-width non-joiner and joiner, the left-to-right and
+right-to-left marks, the bidi embeddings and isolates, the byte-order mark, the
+soft hyphen) are removed from the **start and the end** of the entry, repeatedly,
+and nothing else changes — characters inside an entry, format characters
+included, case and inner spaces are kept (a Persian column name may contain a
+zero-width non-joiner). `Principal.denied_columns` and the cache scope key hold
+the entries so cleaned, so `"NationalID"` and `"NationalID<RLM>"` are one
+restriction and one cache partition. For a plain entry with a format character
+inside, the guard's policy denies the entry as written and also the name without
+that character; the second name is never stored or returned. An entry with nothing left is kept as
+written and reported. A key whose entries changed gets one `WARNING` naming its
+`id` (the entries in `ascii()` form, never the key's hash). A plain entry that
+matches no column of `schema.yaml` denies nothing; it is logged as a `WARNING`
+once per key and listed by the preflight check `Column restrictions name real
+columns`, and the key still loads. `PATCH /admin/keys/{key}/acl` stores, and
+returns in `denied_columns`, the cleaned entries. Only the
 SHA-256 hex digest of a key is ever stored — never the raw key. Comparison
 is `hmac.compare_digest`, walking every configured key with no early exit
 on a prefix match. Plain SHA-256, not bcrypt/argon2, is correct here: those
@@ -847,8 +867,13 @@ falling back to the pre-Phase-8 IP-based key otherwise.
 ### 11.7 Audit
 
 `observability.audit.AuditRecord` carries `principal_id` on every query —
-the field that makes the audit trail an actual "who ran this" record. The
-existing hard rule is unchanged and unweakened: no result row values are
+the field that makes the audit trail an actual "who ran this" record. It is
+written on both paths: `/query` and `/query/stream` through `api/runner.py`, and
+every turn of `/v2/sessions` (a first turn, a follow-up, a streamed turn and the
+re-run of `PATCH .../assumptions`) through `session/engine.py`. Records written
+before 6.15.1 for the session path hold `null`; so does the note the model
+router writes when a task goes to a remote provider (`request_id` starting
+`remote-llm-`), which belongs to no one caller. The existing hard rule is unchanged and unweakened: no result row values are
 ever written to the audit log, only column names. A record also carries
 `datasource` (where the generated SQL runs) and, with more than one data
 source, `datasource_selection` (which source the model was shown, and why);
