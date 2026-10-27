@@ -47,7 +47,7 @@ import { renderTableOnly, renderExportRow, fmtCell } from "./table.js";
 
 // Formatting lives in one place now -- this module used to declare both
 // an en-US formatter and an fa-IR one and use them in adjacent tiles.
-import { fmt as faNum } from "../num.js";
+import { fmt as faNum, isIdentifierName } from "../num.js";
 const nf = { format: faNum };
 
 const FOCUS_RULE_LABEL_FA = {
@@ -648,7 +648,11 @@ function renderSplitBarChart(values) {
 export function renderChartAndTable(result) {
   const columns = result.columns;
   const rows = result.rows;
-  const measureCol = columns.find((c) => c.type === "number");
+  // The measure is the first numeric column that is not an identifier
+  // (determineShape sends no other result here). Called directly with only
+  // identifiers numeric, it takes the first numeric column as before.
+  const measureCol = columns.find((c) => c.type === "number" && !isIdentifierName(c.name))
+    ?? columns.find((c) => c.type === "number");
   const labelCol = columns.find((c) => c !== measureCol);
   const measureKey = measureCol.name;
   const labelKey = labelCol.name;

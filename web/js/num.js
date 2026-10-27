@@ -84,3 +84,49 @@ export function ms(value) {
 export function inText(formatted) {
   return `⁦${formatted}⁩`;
 }
+
+/* ── Is this number a label, not a quantity? ─────────────────────────────
+ *
+ * A numeric column whose NAME says it identifies something (`ID`, `RingID`,
+ * `broker_id`, `ringId`, `Code`, `BrokerCode`, `کد`, `شناسه`) holds numbers
+ * that are labels: adding them, ranking by them or drawing them as bars
+ * means nothing. A result of (Name, ID) once became a bar chart of the ids.
+ * The shape picker (`render/table.js`), the chart (`render/chart.js`) and the
+ * recommender (`chart-engine/recommend.js`, which keeps its own copy of this
+ * rule because it may not import) all ask this before they take a numeric
+ * column as the measure.
+ *
+ * It is decided from the name alone, on word shape, because the server tells
+ * the UI only `name` and `type`. The rule is deliberately narrow: a name that
+ * merely ENDS in the letters is not an identifier unless a word boundary says
+ * so, which is why `Paid`, `Valid`, `Width`, `Barcode` and `Postcode` stay
+ * measures while `RingID`, `ringId` and `BrokerCode` do not.
+ *
+ *   - the whole name is `id` or `code`, in any letter case;
+ *   - `id` or `code` is the last word after a space, `_`, `-` or `.`
+ *     (`ring_id`, `Broker Code`), in any letter case;
+ *   - an upper-case `ID` follows a lower-case letter or a digit (`RingID`),
+ *     or a capitalised `Id` / `Code` follows a letter or a digit (`ringId`,
+ *     `BrokerCode`, `ISOCode`). `VALID` and `PAID` in capitals are not
+ *     recognised, nor is `BROKERID`; write `BROKER_ID` for that;
+ *   - a Persian word `کد` or `شناسه` (`کد ملی`, `شناسهٔ سفارش`, `کد_کارگزار`).
+ */
+const ID_NAME_PATTERNS = [
+  /^(?:id|code)$/i,
+  /[\s_.-](?:id|code)$/i,
+  /[a-z0-9]ID$/,
+  /[A-Za-z0-9](?:Id|Code)$/,
+];
+const ID_PERSIAN_WORDS = new Set(["کد", "شناسه"]);
+
+export function isIdentifierName(name) {
+  if (typeof name !== "string") return false;
+  const text = name.trim();
+  if (!text) return false;
+  if (ID_NAME_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  const persian = text
+    .replace(/ك/g, "ک")
+    .replace(/ي/g, "ی")
+    .replace(/[ٕٔ]/g, "");
+  return persian.split(/[\s_.‌-]+/).some((word) => ID_PERSIAN_WORDS.has(word));
+}

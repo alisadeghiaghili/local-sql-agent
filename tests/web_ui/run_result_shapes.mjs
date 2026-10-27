@@ -667,4 +667,39 @@ console.log("[ok] chooseFramings rejects (never omits) pie once illegible; choos
   console.log("[ok] line chart's plotted x-axis runs left-to-right and agrees with the rising/declining headline (ascending and descending)");
 }
 
+/* ── Scenario 6: a numeric column whose name is an identifier is a label,
+ * not a measure. "All trading rings with their codes" returned (Name, ID)
+ * rows and the ids were drawn as a bar chart. The shape rule itself is
+ * covered by run_identifier_columns.mjs; this checks what is rendered. ── */
+{
+  const ringRows = Array.from({ length: 6 }, (_, i) => ({ Name: `ring${i}`, ID: i + 1 }));
+  const ringColumns = [{ name: "Name", type: "string" }, { name: "ID", type: "number" }];
+
+  const ringBlock = renderResult(result(ringColumns, ringRows));
+  assert.equal(ringBlock.dataset.shape, "table", "(Name, ID) must be a table, not a chart of the ids");
+  assert.equal(ringBlock.querySelector(".chart-block svg"), null, "(Name, ID) must not draw a chart");
+  assert.equal(ringBlock.querySelector(".story-strip"), null, "(Name, ID) must not get a story strip");
+  assert.ok(ringBlock.querySelector("table.result-table"), "(Name, ID) must render the plain table");
+
+  // The same two columns with a real measure in place of the id still chart.
+  const totalBlock = renderResult(result(
+    [{ name: "Name", type: "string" }, { name: "Total", type: "number" }],
+    ringRows.map((r) => ({ Name: r.Name, Total: r.ID * 10 })),
+  ));
+  assert.equal(totalBlock.dataset.shape, "chart", "(Name, Total) must still be a chart");
+
+  // renderChartAndTable called directly with an id and a measure plots the measure.
+  const direct = renderChartAndTable(result(
+    [{ name: "RingID", type: "number" }, { name: "Total", type: "number" }],
+    ringRows.map((r) => ({ RingID: r.ID, Total: r.ID * 10 })),
+  ));
+  assert.ok(/^Total · RingID/.test(direct.querySelector(".chart-subcap").textContent),
+    "the measure plotted is Total; RingID is the label");
+
+  // ... and, with only ids numeric, it does not throw (it keeps today's pick).
+  assert.ok(renderChartAndTable(result(ringColumns, ringRows)).querySelector(".chart-subcap"));
+
+  console.log("[ok] a numeric identifier column is not drawn as a measure: (Name, ID) renders as a table");
+}
+
 console.log("ALL_SCENARIOS_PASSED");
