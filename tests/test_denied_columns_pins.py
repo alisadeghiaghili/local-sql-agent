@@ -99,6 +99,13 @@ class TestExactEntriesReject:
     def test_an_empty_list_restricts_nothing(self):
         validate_sql(_LEAKY_SQL, denied_columns=[])
 
+    @pytest.mark.parametrize("entry", ["NoSuchColumnAnywhere", "", "  "])
+    def test_any_non_empty_list_refuses_a_star_it_cannot_resolve(self, entry):
+        star = "WITH t AS (SELECT c.Name FROM [sales].[Customer] c) SELECT TOP 5 * FROM t"
+        validate_sql(star, denied_columns=[])
+        with pytest.raises(PolicyRejection):
+            validate_sql(star, denied_columns=[entry])
+
 
 class TestFileAndEnvKeys:
     def test_clean_entries_are_kept_exactly_as_written(self):

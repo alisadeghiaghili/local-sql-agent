@@ -88,6 +88,7 @@ from appdb import key_store
 from appdb.engine import get_app_engine
 from appdb.models import access_requests, admin_api_keys
 from observability.audit import find_record_by_turn
+from security.column_policy import normalize_denied_entry
 
 
 #: The guard rejections a request can be raised from: a column denied
@@ -347,9 +348,22 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
             if key_row["revoked_at"] is not None:
                 continue  # revoked keys are never touched (module docstring)
             denied = list(json.loads(key_row["denied_columns_json"]))
-            if column_name not in denied:
+            # The request names the entry as the guard reported it (cleaned of
+            # whitespace and invisible characters); a key written before entries
+            # were cleaned may still hold the entry with them. Either spelling
+            # is the same restriction, so either is removed.
+            wanted = normalize_denied_entry(column_name)
+            index = next(
+                (
+                    i for i, entry in enumerate(denied)
+                    if entry == column_name
+                    or (wanted and isinstance(entry, str) and normalize_denied_entry(entry) == wanted)
+                ),
+                None,
+            )
+            if index is None:
                 continue
-            denied.remove(column_name)
+            del denied[index]
             key_store._write_denied_columns(conn, key_row["key_sha256"], denied, now)
             updated += 1
 

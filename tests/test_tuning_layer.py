@@ -262,6 +262,20 @@ _ALLOWED_MODULE_CONSTANTS = {
         "left side stops taking part in '=' alignment); display only"
     ),
 
+    # security/column_policy.py: the bounds of the look-alike advice of the
+    # preflight (core to what the heuristic means, not a threshold a
+    # deployment tunes). The advice never changes what a key may read, and a
+    # variable that moved them would only make two deployments advise
+    # differently about the same schema.
+    "security/column_policy.py::_LOOK_ALIKE_MIN_LENGTH": (
+        "shortest denied name, or stem plus ending, that says anything about "
+        "other columns (`ID` sits inside thousands); advice only"
+    ),
+    "security/column_policy.py::_LOOK_ALIKE_ENTRY_LIMIT": (
+        "entries examined per call, so the advice cannot slow a preflight on "
+        "a key with thousands of entries; advice only"
+    ),
+
     # ── Tuning-shaped, but with a narrower, more appropriate configuration
     # surface than a process-wide environment variable -- deliberately not
     # duplicated into Settings. See config.py's "Three layers, not two"

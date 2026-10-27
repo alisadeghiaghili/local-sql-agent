@@ -176,9 +176,9 @@ def admin_list_keys(principal: Principal = Depends(require_operations)) -> dict[
 # POST /admin/keys/{key_sha256}/disable, /enable, /revoke
 # ---------------------------------------------------------------------------
 
-def _handle_not_found(key_sha256: str, fn, *args) -> None:
+def _handle_not_found(key_sha256: str, fn, *args):
     try:
-        fn(key_sha256, *args)
+        return fn(key_sha256, *args)
     except KeyNotFoundError:
         raise HTTPException(status_code=404, detail=f"No key {key_sha256!r}")
 
@@ -231,16 +231,19 @@ def admin_update_acl(
     _maintenance: None = Depends(require_not_in_maintenance),
 ) -> dict[str, Any]:
     try:
-        _handle_not_found(key_sha256, update_denied_columns, req.denied_columns)
+        stored = _handle_not_found(key_sha256, update_denied_columns, req.denied_columns)
     except ColumnPolicyError as exc:
         # A scoped entry naming a source, table or column that does not exist
         # (or a malformed one): refused with the entry named, nothing stored.
         raise HTTPException(status_code=422, detail=str(exc))
+    # What is stored: the entries with surrounding whitespace and invisible
+    # characters removed (the same list when none had any).
+    denied_columns = stored if stored is not None else req.denied_columns
     record_admin_action(
         principal.id, SECURITY_CAPABILITY, "key.acl.update", key_sha256,
-        detail={"denied_columns": req.denied_columns},
+        detail={"denied_columns": denied_columns},
     )
-    return {"key_sha256": key_sha256, "denied_columns": req.denied_columns}
+    return {"key_sha256": key_sha256, "denied_columns": denied_columns}
 
 
 # ---------------------------------------------------------------------------

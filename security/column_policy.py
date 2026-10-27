@@ -40,6 +40,13 @@ Parsing and checking are two steps, kept apart on purpose:
   again, so a policy that was only syntax-checked (see below) still fails
   loudly the first time it is used.
 
+Every entry is normalised before it is read (:func:`normalize_denied_entry`):
+surrounding whitespace and invisible Unicode format characters (the zero-width
+non-joiner, the right-to-left mark, a BOM, the bidi embeddings and isolates a
+Persian editor inserts without showing them) are removed, because an entry
+that carries one never equals the column name it was meant to spell and
+would restrict nothing. Letters, internal spaces and case are not touched.
+
 When the schema cannot be loaded at the moment a key is parsed (a test that
 builds keys before any ``schema.yaml`` exists, a partially configured
 checkout), :func:`parse_column_policy` keeps the syntax check, logs that the
@@ -51,6 +58,7 @@ first use re-checks and refuses.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Iterable, Mapping
@@ -60,14 +68,20 @@ __all__ = [
     "ColumnPolicyError",
     "EMPTY_POLICY",
     "JoinOnlyRestrictions",
+    "NormalizedEntries",
     "ScopedColumn",
     "SchemaView",
     "cached_column_policy",
     "hidden_value_columns",
     "join_only_prompt_line",
     "load_schema_view",
+    "look_alike_columns",
+    "normalize_denied_entries",
+    "normalize_denied_entry",
     "parse_column_policy",
     "resolve_join_only",
+    "schema_column_names",
+    "unmatched_bare_entries",
     "validate_column_policy",
 ]
 
@@ -83,6 +97,135 @@ class ColumnPolicyError(ValueError):
     The message always names the offending entry and the reason. Entries are
     column and table names, never credentials, so quoting one is safe.
     """
+
+
+# ---------------------------------------------------------------------------
+# Normalising entries
+# ---------------------------------------------------------------------------
+
+
+def normalize_denied_entry(entry: str) -> str:
+    """*entry* without invisible format characters and without surrounding whitespace.
+
+    Every place that reads a ``denied_columns`` entry goes through this one
+    function: the key file and ``API_KEYS_JSON``, the keys of the admin panel
+    and the policy parser. A character of Unicode category ``Cf`` (zero-width
+    space, non-joiner and joiner, the left-to-right and right-to-left marks,
+    the bidi embeddings, overrides and isolates, the word joiner, the soft
+    hyphen, the byte-order mark) is removed wherever it stands; then leading
+    and trailing whitespace is stripped. Letters, digits, internal spaces and
+    case stay exactly as written (a column may be called ``Price List``).
+
+    Parameters
+    ----------
+    entry:
+        One raw ``denied_columns`` string.
+
+    Returns
+    -------
+    str
+        The normalised entry; ``""`` when nothing visible was left.
+
+    Examples
+    --------
+    >>> normalize_denied_entry("NationalID")
+    'NationalID'
+    >>> normalize_denied_entry("  NationalID\t")
+    'NationalID'
+    >>> normalize_denied_entry("NationalID\u200f") == "NationalID"
+    True
+    >>> normalize_denied_entry("\u200cNationalID\ufeff") == "NationalID"
+    True
+    >>> normalize_denied_entry("National\u200dID") == "NationalID"
+    True
+    >>> normalize_denied_entry("Source:\u202asales.Order.ID\u202c")
+    'Source:sales.Order.ID'
+    >>> normalize_denied_entry("Price List")
+    'Price List'
+    >>> normalize_denied_entry("nationalid")
+    'nationalid'
+    >>> normalize_denied_entry("\u200c \u200f")
+    ''
+    """
+    visible = "".join(ch for ch in entry if unicodedata.category(ch) != "Cf")
+    return visible.strip()
+
+
+@dataclass(frozen=True)
+class NormalizedEntries:
+    """The result of :func:`normalize_denied_entries`.
+
+    Attributes
+    ----------
+    entries:
+        One normalised entry for each input entry, in the same order. An
+        entry that has nothing visible left is kept as written (see
+        :func:`normalize_denied_entries`).
+    changed:
+        ``(as written, normalised)`` for each entry that normalisation
+        altered and that kept some text.
+    empty:
+        The entries, as written, that have nothing visible in them.
+    """
+
+    entries: tuple[str, ...] = ()
+    changed: tuple[tuple[str, str], ...] = ()
+    empty: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.changed or self.empty)
+
+
+def normalize_denied_entries(entries: Iterable[str]) -> NormalizedEntries:
+    """Normalise every entry of a key's ``denied_columns`` and report what changed.
+
+    An entry that is empty after :func:`normalize_denied_entry` (it held only
+    whitespace or invisible characters) is kept exactly as written. It has
+    never matched a column, so it restricts nothing, but a list holding one
+    is still a non-empty list for the guard, and rewriting it to ``""`` or
+    dropping it would change what that key does today. It is reported in
+    :attr:`~NormalizedEntries.empty` so the loader can say so. Order, repeats
+    and non-string items are left alone (a non-string is the caller's error,
+    reported by :func:`parse_column_policy`).
+
+    Parameters
+    ----------
+    entries:
+        The raw ``denied_columns`` strings of one key.
+
+    Returns
+    -------
+    NormalizedEntries
+
+    Examples
+    --------
+    >>> result = normalize_denied_entries(["NationalID", " Phone\u200f", "\u200c"])
+    >>> result.entries == ("NationalID", "Phone", "\u200c")
+    True
+    >>> result.changed
+    ((' Phone\u200f', 'Phone'),)
+    >>> result.empty
+    ('\u200c',)
+    >>> bool(normalize_denied_entries(["NationalID"]))
+    False
+    """
+    out: list[str] = []
+    changed: list[tuple[str, str]] = []
+    empty: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            out.append(entry)
+            continue
+        clean = normalize_denied_entry(entry)
+        if not clean:
+            if entry:
+                empty.append(entry)
+            out.append(entry)
+            continue
+        if clean != entry:
+            changed.append((entry, clean))
+        out.append(clean)
+    return NormalizedEntries(entries=tuple(out), changed=tuple(changed), empty=tuple(empty))
 
 
 def _entry_error(entry: str, reason: str) -> ColumnPolicyError:
@@ -106,10 +249,11 @@ class ScopedColumn:
     column:
         The column name, as written.
     entry:
-        The entry exactly as it appears in ``denied_columns``. This is what
-        a guard rejection reports as its ``subject`` and what approving an
-        access request removes from the key, so it is never rebuilt or
-        re-cased. Defaults to the rendered form of the other three fields.
+        The entry as it appears in ``denied_columns`` once normalised
+        (:func:`normalize_denied_entry`). This is what a guard rejection
+        reports as its ``subject`` and what approving an access request
+        removes from the key, so it is never rebuilt or re-cased. Defaults
+        to the rendered form of the other three fields.
 
     Examples
     --------
@@ -234,6 +378,8 @@ def parse_column_policy(
     ----------
     entries:
         The raw ``denied_columns`` strings (``None`` is no restriction).
+        Each is normalised first (:func:`normalize_denied_entry`); one with
+        nothing visible in it is read as written.
     validate:
         Check each scoped entry against ``schema.yaml`` and
         ``datasources.yaml`` as well as its syntax. When the schema cannot be
@@ -264,6 +410,9 @@ def parse_column_policy(
     ['NATIONALID']
     >>> [(s.datasource, s.table, s.column) for s in policy.join_only]
     [(None, 'sales.Order', 'ID'), ('Archive', None, 'ID')]
+    >>> parse_column_policy(["NationalID\\u200f", " sales.Order.ID "], validate=False) == \\
+    ...     parse_column_policy(["NationalID", "sales.Order.ID"], validate=False)
+    True
     >>> parse_column_policy(["a:b:c"], validate=False)
     Traceback (most recent call last):
         ...
@@ -286,6 +435,9 @@ def parse_column_policy(
             raise ColumnPolicyError(
                 f"denied_columns entries must be strings, got {type(entry).__name__}"
             )
+        # An entry with nothing visible in it stays as written (it keeps
+        # doing what it does today); every other entry is read normalised.
+        entry = normalize_denied_entry(entry) or entry
         if ":" not in entry and "." not in entry:
             denied.add(entry.upper())
             continue
@@ -618,6 +770,166 @@ def hidden_value_columns(policy: ColumnPolicy) -> frozenset[tuple[str, str]]:
         for table, columns in restrictions.by_table.items()
         for column in columns
     )
+
+
+# ---------------------------------------------------------------------------
+# Plain entries that name no column, and columns that look like a denied one
+# ---------------------------------------------------------------------------
+
+
+def _is_plain(entry: str) -> bool:
+    return ":" not in entry and "." not in entry
+
+
+def schema_column_names() -> frozenset[str] | None:
+    """Every column name of the loaded ``schema.yaml`` (lower-cased), or ``None``.
+
+    ``None`` when the schema cannot be loaded or describes no column: a
+    caller that wants to compare entries against it then has nothing to
+    compare with and says nothing (the same stance as the deferred check in
+    :func:`parse_column_policy`).
+    """
+    try:
+        view = load_schema_view()
+    except Exception:  # noqa: BLE001 - any failure to load means "not available"
+        return None
+    names = frozenset(col for cols in view.columns_by_table.values() for col in cols)
+    return names or None
+
+
+def unmatched_bare_entries(
+    entries: Iterable[str], column_names: Iterable[str],
+) -> tuple[str, ...]:
+    """The plain entries of *entries* that name no column in *column_names*.
+
+    A plain entry (no ``.`` and no ``:``) is matched against column names
+    case-insensitively, as the guard does. One that matches nothing denies
+    nothing: a typo, a name with an inner space that no column has, a column
+    that was renamed. Scoped entries are not looked at here (they are checked
+    when the key is loaded). Entries are normalised first.
+
+    Parameters
+    ----------
+    entries:
+        The raw ``denied_columns`` of one key.
+    column_names:
+        Every column name of every table of ``schema.yaml``.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The normalised unmatched entries in the order given, without repeats;
+        an entry with nothing visible in it is returned as written.
+
+    Examples
+    --------
+    >>> unmatched_bare_entries(["NationalID", "Nationalid ", "National ID", "sales.T.C"], ["NationalID", "Name"])
+    ('National ID',)
+    >>> unmatched_bare_entries([], ["Name"])
+    ()
+    """
+    known = {name.casefold() for name in column_names}
+    out: dict[str, None] = {}
+    for entry in normalize_denied_entries(entries).entries:
+        if not isinstance(entry, str) or not _is_plain(entry):
+            continue
+        if entry.casefold() not in known:
+            out.setdefault(entry, None)
+    return tuple(out)
+
+
+#: Endings that mark a column as an identifier, longest first so that
+#: ``PolicyNumber`` is read as ``Policy`` + ``Number`` and not ``Policy`` + ``ber``.
+_IDENTIFIER_SUFFIXES = ("number", "code", "num", "id", "no")
+
+#: A denied name (or a stem plus a suffix) shorter than this is too common a
+#: fragment to say anything about other columns: ``ID`` sits inside thousands.
+_LOOK_ALIKE_MIN_LENGTH = 5
+
+#: Entries examined per call; beyond it the advice is skipped, not slowed.
+_LOOK_ALIKE_ENTRY_LIMIT = 300
+
+
+def _look_alike_forms(entry: str) -> tuple[str, ...]:
+    """Lower-cased spellings that, inside a column name, suggest the same data as *entry*.
+
+    The entry itself, and its stem with each identifier ending
+    (``NationalID`` -> ``nationalid``, ``nationalcode``, ``nationalno``, ...).
+    Forms shorter than :data:`_LOOK_ALIKE_MIN_LENGTH` are left out.
+    """
+    lowered = entry.casefold()
+    forms = {lowered}
+    for suffix in _IDENTIFIER_SUFFIXES:
+        if lowered.endswith(suffix) and len(lowered) - len(suffix) >= 3:
+            stem = lowered[: -len(suffix)]
+            forms.update(stem + other for other in _IDENTIFIER_SUFFIXES)
+            break
+    return tuple(sorted(f for f in forms if len(f) >= _LOOK_ALIKE_MIN_LENGTH))
+
+
+def look_alike_columns(
+    entries: Iterable[str], column_names: Iterable[str],
+) -> dict[str, tuple[str, ...]]:
+    """For each plain denied name, the columns that probably hold the same data and are not denied.
+
+    The same personal number lives under many names in a warehouse
+    (``NationalID``, ``NationalCode``, ``CustomerNationalID``); denying one
+    leaves the others. A column is a look-alike of a denied name when its name
+    *contains* the denied name, or contains the denied name's stem with another
+    identifier ending (``ID``, ``Code``, ``No``, ``Num``, ``Number``): so
+    ``CustomerNationalID`` and ``NationalCode`` both look like ``NationalID``.
+    The denied name itself and every column the entries already deny are left
+    out. This is a guess from spelling: it is advice, never a decision.
+
+    Parameters
+    ----------
+    entries:
+        The raw ``denied_columns`` of one key; only plain entries count.
+    column_names:
+        Every column name of every table of ``schema.yaml``.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        ``{denied entry: look-alike column names}`` for the entries that have
+        any; names in the schema's spelling, sorted, without repeats.
+
+    Examples
+    --------
+    >>> columns = ["NationalID", "NationalCode", "CustomerNationalID", "Name", "ID"]
+    >>> look_alike_columns(["NationalID"], columns)
+    {'NationalID': ('CustomerNationalID', 'NationalCode')}
+    >>> look_alike_columns(["NationalID", "NationalCode"], columns)
+    {'NationalID': ('CustomerNationalID',), 'NationalCode': ('CustomerNationalID',)}
+    >>> look_alike_columns(["ID"], columns)
+    {}
+    """
+    plain = [
+        entry for entry in normalize_denied_entries(entries).entries
+        if isinstance(entry, str) and entry and _is_plain(entry)
+    ]
+    denied = {entry.casefold() for entry in plain}
+    candidates: dict[str, str] = {}
+    for name in column_names:
+        lowered = name.casefold()
+        if lowered not in denied:
+            candidates.setdefault(lowered, name)
+    found: dict[str, tuple[str, ...]] = {}
+    if not candidates:
+        return found
+    for entry in plain[:_LOOK_ALIKE_ENTRY_LIMIT]:
+        if entry in found:
+            continue
+        forms = _look_alike_forms(entry)
+        if not forms:
+            continue
+        names = sorted(
+            original for lowered, original in candidates.items()
+            if any(form in lowered for form in forms)
+        )
+        if names:
+            found[entry] = tuple(names)
+    return found
 
 
 def join_only_prompt_line(entries: Iterable[str] | None, source: str | None) -> str:

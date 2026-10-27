@@ -1667,7 +1667,9 @@ def validate_sql(
         default) to skip this check entirely. An entry containing ``.``
         or ``:`` is a scoped, join-only restriction instead (rule 10,
         :mod:`security.column_policy`); a malformed one is refused as a
-        :class:`PolicyRejection` rather than ignored.
+        :class:`PolicyRejection` rather than ignored. Surrounding
+        whitespace and invisible Unicode format characters in an entry are
+        removed before it is compared with a column name.
     dialect:
         A sqlglot dialect key (see
         :data:`security.dialects.DIALECT_PROFILES`). Defaults to
