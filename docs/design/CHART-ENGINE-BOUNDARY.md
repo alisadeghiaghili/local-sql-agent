@@ -102,6 +102,15 @@ features  ──▶  analytical job  ──▶  form
 
 The engine's real output is the middle term. The form follows from it.
 
+**Which numeric column is the measure.** The first one whose name is not an
+identifier (`web/js/num.js::isIdentifierName`: `ID`, `RingID`, `ring_id`,
+`ringId`, `BrokerCode`, the Persian word `کد` or `شناسه`). A numeric id is a
+label: a (Name, ID) result is a table, not a chart of the ids. A name that
+merely ends in the same letters (`Paid`, `Valid`, `Barcode`) is a measure. The
+engine restates the rule instead of importing it (§4.2), and
+`tests/web_ui/test_web_ui_identifier_columns.py` fails when the two copies
+disagree.
+
 **The job vocabulary** (closed set; adding to it is a decision, not an
 implementation detail):
 
