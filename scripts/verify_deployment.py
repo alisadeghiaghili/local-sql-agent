@@ -67,6 +67,9 @@ alias key that is not a ``schema.yaml`` key, two entities for one table),
 ``check_no_staging_tables``, ``check_no_sample_values_in_descriptions`` and
 ``check_no_table_in_excluded_schema`` (a listed table whose schema the setup
 tools are told never to scan: ``EXCLUDE_SCHEMAS``, a source's ``exclude_schemas:``).
+With ``FILTER_VALUE_CHECK`` on, one more advisory check is listed,
+``check_filter_value_check_has_vocabularies``: the dimension tables with
+label-like columns and no ``prefetchable_columns``, where the check cannot help.
 There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
 the exit code, the summary line and the admin card need no new state. The file
 reading lives in :mod:`core.config_doctor`.
@@ -904,6 +907,7 @@ _MAX_LISTED = 10
 #: Where the runbook explains drafting and curating ``project_config/``.
 _RUNBOOK_CURATION = "docs/deployment-runbook.md section 2.3, 2.4 and 16.3"
 _RUNBOOK_COLUMN_RESTRICTIONS = "docs/deployment-runbook.md section 2, denied_columns"
+_RUNBOOK_VALUE_CHECK = "docs/deployment-runbook.md, the filter value check"
 
 
 def _listed(items: list[str]) -> str:
@@ -1153,6 +1157,52 @@ def check_entities_match_schema_keys() -> CheckResult:
         "; ".join(parts) + " -- retrieval reads an entity's key as the table's schema.yaml key, so such a table "
         "is never found by its aliases. Rename the key to the schema.yaml key, keep one entity per table "
         f"(merge their aliases) and fix ring_aliases the same way ({_RUNBOOK_CURATION})",
+    )
+
+
+def check_filter_value_check_has_vocabularies() -> CheckResult:
+    """Advise which dimension tables the filter value check cannot help with.
+
+    Only listed while ``FILTER_VALUE_CHECK`` is on
+    (:attr:`config.Settings.filter_value_check`). The check compares a string
+    literal in a generated statement with the cached value set of the column
+    it is compared to, and those sets exist only for a table's
+    ``prefetchable_columns``. A dimension table (one ``entities.yaml`` names)
+    that has label-like columns (``Name``, ``Title``, ``Kind``, ``Status``,
+    ``Type`` ..., not a person's name) and lists no ``prefetchable_columns``
+    gets no protection: an invented value in it still runs. This never fails:
+    the PASS detail starts with ``advice:`` and lists table and column names
+    only, never a value. Add ``prefetchable_columns`` to the small ones (the
+    prefetch reads at most ``DEFAULT_TOP_N`` distinct values and a column that
+    long is not checked) and leave out tables of people or anything large.
+    File reads only. SKIP when ``schema.yaml`` or ``entities.yaml`` cannot be
+    read.
+    """
+    from core import config_doctor as doctor
+
+    name = "Filter value check has vocabularies"
+    directory = _project_config_dir()
+    view = doctor.read_schema(directory)
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    entities = doctor.read_entities(directory)
+    if entities is None:
+        return CheckResult(name, "SKIP", "entities.yaml was not found or is not a mapping -- `project_config/ loads` says why")
+    coverage = doctor.vocabulary_coverage(view, entities)
+    if not coverage.uncovered:
+        return CheckResult(
+            name, "PASS",
+            f"{coverage.covered} dimension table(s) list prefetchable_columns; "
+            "no other has a label-like column the check could use",
+        )
+    shown = _listed([f"{key} ({', '.join(columns)})" for key, columns in coverage.uncovered])
+    return CheckResult(
+        name, "PASS",
+        f"advice: {len(coverage.uncovered)} dimension table(s) have label-like columns and no "
+        f"prefetchable_columns, so an invented value in them is not caught: {shown} -- add "
+        "prefetchable_columns to the small ones in schema.yaml (a few hundred distinct values at "
+        "most) and leave out large tables and tables of people "
+        f"({_RUNBOOK_VALUE_CHECK})",
     )
 
 
@@ -1784,7 +1834,8 @@ def build_checks() -> list[Callable[[], CheckResult]]:
             per_source.extend(
                 update_wrapper(partial(check, name), check) for check in _PER_SOURCE_CHECKS
             )
-    return [check_settings_valid, check_table_datasources, *per_source, *_GLOBAL_CHECKS]
+    optional = [check_filter_value_check_has_vocabularies] if cfg.settings.filter_value_check else []
+    return [check_settings_valid, check_table_datasources, *per_source, *_GLOBAL_CHECKS, *optional]
 
 
 def main() -> int:

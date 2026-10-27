@@ -285,6 +285,8 @@ class SchemaTable:
     """Column notes: the string values of the table's ``columns`` map."""
     columns: tuple[str, ...] = ()
     """Column names: the keys of the table's ``columns`` map, as written."""
+    prefetchable: tuple[str, ...] = ()
+    """``prefetchable_columns:`` as written; ``()`` when the table lists none."""
 
 
 @dataclass(frozen=True)
@@ -411,6 +413,7 @@ def _schema_from_text(text: str) -> SchemaView:
         body = definition if isinstance(definition, dict) else {}
         schema = body.get("db_schema")
         columns = body.get("columns")
+        prefetchable = body.get("prefetchable_columns")
         description = body.get("description")
         if isinstance(schema, str) and schema.strip():
             where = schema.strip()
@@ -424,6 +427,7 @@ def _schema_from_text(text: str) -> SchemaView:
             datasource=_datasources_of(body.get("datasource")),
             notes=tuple(v for v in columns.values() if isinstance(v, str)) if isinstance(columns, dict) else (),
             columns=tuple(_plain_key(k) for k in columns) if isinstance(columns, dict) else (),
+            prefetchable=tuple(_plain_key(c) for c in prefetchable) if isinstance(prefetchable, list) else (),
         ))
     return SchemaView(present=True, parsed=True, tables=tuple(rows))
 
@@ -1215,6 +1219,71 @@ class _SchemaKeys:
             if self.identity[table.key] == (schema, name):
                 return table.key
         return ""
+
+
+@dataclass(frozen=True)
+class VocabularyCoverage:
+    """Which dimension tables the filter value check can and cannot help with."""
+
+    covered: int
+    """Dimension tables that list ``prefetchable_columns``."""
+    uncovered: tuple[tuple[str, tuple[str, ...]], ...]
+    """``(table key, label-like column names)`` of each dimension table that has such a column and lists none."""
+
+
+def vocabulary_coverage(view: SchemaView, entities: Sequence[EntityRow]) -> VocabularyCoverage:
+    """Which dimension tables list ``prefetchable_columns``, and which have label columns but none.
+
+    A dimension table is a table ``entities.yaml`` names. Its label-like
+    columns are the ones :func:`core.value_shapes.is_categorical_column`
+    accepts (``Name``, ``Title``, ``Kind``, ``Status``, ``Type``, ... but not a
+    person's name, contact data, or a column of a table of people). The
+    filter value check compares a literal with the cached value set of a
+    column; a column with no ``prefetchable_columns`` entry has none, so a
+    wrong value in it passes. Table and column names only; nothing is read
+    from a row.
+
+    Parameters
+    ----------
+    view:
+        ``schema.yaml``, from :func:`read_schema` (it must have parsed).
+    entities:
+        The entries of ``entities.yaml``.
+
+    Examples
+    --------
+    >>> view = SchemaView(parsed=True, tables=(
+    ...     SchemaTable("Ring", "ref", "Ring", "", (), (), ("ID", "Name"), ("Name",)),
+    ...     SchemaTable("Hall", "ref", "Hall", "", (), (), ("ID", "Name", "Kind")),
+    ...     SchemaTable("Customer", "sales", "Customer", "", (), (), ("ID", "Name")),
+    ...     SchemaTable("Trade", "sales", "Trade", "", (), (), ("ID", "Amount")),
+    ... ))
+    >>> rows = [EntityRow(k, k, "") for k in ("Ring", "Hall", "Customer", "Trade")]
+    >>> found = vocabulary_coverage(view, rows)
+    >>> found.covered, found.uncovered
+    (1, (('Hall', ('Name', 'Kind')),))
+    """
+    from core.value_shapes import is_categorical_column
+
+    index = _SchemaKeys(view.tables)
+    by_key = {table.key: table for table in view.tables}
+    covered = 0
+    uncovered: list[tuple[str, tuple[str, ...]]] = []
+    seen: set[str] = set()
+    for row in entities:
+        found = index.resolve(row.key)
+        key = found[0] if len(found) == 1 else index.key_for(row)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        table = by_key[key]
+        if table.prefetchable:
+            covered += 1
+            continue
+        labels = tuple(c for c in table.columns if is_categorical_column(table.name, c))
+        if labels:
+            uncovered.append((key, labels))
+    return VocabularyCoverage(covered, tuple(uncovered))
 
 
 def entity_key_findings(
