@@ -141,6 +141,9 @@ sources is one entity, and with several sources configured each entity carries
 source the schemas left out are, in order: the system schemas,
 ``EXCLUDE_SCHEMAS``, the source's ``exclude_schemas:``, ``--exclude-schemas``,
 the operator's answer; the summary counts them per rule as the inspector does.
+Tables named by ``EXCLUDE_TABLES`` or the source's ``exclude_tables:`` are left
+out too, and a schema in ``keep_staging_schemas:`` is exempt from the schema
+patterns of ``STAGING_PATTERNS``.
 Schemas left out interactively can be recorded: as that source's
 ``exclude_schemas:`` in ``datasources.yaml`` (default No; a comment-preserving
 edit after a backup, validated before the file is replaced), or, without the
@@ -239,6 +242,7 @@ from database.schema_filter import (
     RULE_CLI,
     RULE_CONFIGURED,
     RULE_SYSTEM,
+    RULE_TABLES,
     SchemaExclusion,
 )
 
@@ -1902,16 +1906,19 @@ def _split_csv(value: str | None) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
-def _is_staging(table, patterns) -> bool:
+def _is_staging(table, patterns, keep_schemas=()) -> bool:
     """Whether *table* matches a ``STAGING_PATTERNS`` pattern.
 
     Same rule as ``core.config_doctor.staging_tables``: a bare pattern is
     matched against the last part of the schema name, a ``table:`` pattern
-    against the table name, both case-insensitively.
+    against the table name, both case-insensitively. A schema matching one of
+    *keep_schemas* (the source's ``keep_staging_schemas:``) is exempt from the
+    bare patterns; the ``table:`` patterns still apply.
 
     Args:
         table: Anything with ``schema`` and ``name``.
         patterns: The result of ``core.config_doctor.parse_staging_patterns``.
+        keep_schemas: Schema patterns the bare patterns do not apply to.
 
     Returns:
         True for a staging or change-capture table.
@@ -1929,11 +1936,18 @@ def _is_staging(table, patterns) -> bool:
         True
         >>> _is_staging(NS(schema="sales", name="Trade"), pats)
         False
+        >>> _is_staging(NS(schema="Sales_Stg", name="Trade"), pats, ["sales_stg"])
+        False
+        >>> _is_staging(NS(schema="Sales_Stg", name="Trade_Inserts"), pats, ["sales_stg"])
+        True
     """
     schema = (table.schema or "").rsplit(".", 1)[-1].lower()
     name = table.name.lower()
+    kept = any(fnmatch.fnmatchcase(schema, k.lower()) for k in keep_schemas)
     return any(
-        fnmatch.fnmatchcase(name if p.on_table else schema, p.pattern) for p in patterns
+        fnmatch.fnmatchcase(name if p.on_table else schema, p.pattern)
+        for p in patterns
+        if p.on_table or not kept
     )
 
 
@@ -1984,6 +1998,11 @@ class SkipReport:
         return self._count(RULE_STAGING)
 
     @property
+    def excluded_tables(self) -> int:
+        """Tables ``EXCLUDE_TABLES`` or a source's ``exclude_tables:`` names."""
+        return self._count(RULE_TABLES)
+
+    @property
     def chosen(self) -> int:
         """Tables in schemas, or single tables, the operator left out interactively."""
         return self._count(RULE_CHOSEN)
@@ -1991,7 +2010,10 @@ class SkipReport:
     @property
     def total(self) -> int:
         """All skipped tables."""
-        return self.system + self.configured + self.excluded_schemas + self.chosen + self.staging
+        return (
+            self.system + self.configured + self.excluded_schemas + self.chosen + self.staging
+            + self.excluded_tables
+        )
 
     @classmethod
     def merged(cls, reports: Iterable["SkipReport"]) -> "SkipReport":
@@ -2042,6 +2064,10 @@ class SkipReport:
             )
         if self.excluded_schemas:
             parts.append(f"{self.excluded_schemas} in excluded schemas")
+        if self.excluded_tables:
+            parts.append(
+                f"{self.excluded_tables} named by a table pattern (EXCLUDE_TABLES or exclude_tables:)"
+            )
         if self.chosen:
             parts.append(f"{self.chosen} left out interactively")
         if self.staging:
@@ -2071,6 +2097,7 @@ class SkipReport:
             "excluded_schemas": self.excluded_schemas,
             "staging": self.staging,
             "chosen": self.chosen,
+            "excluded_tables": self.excluded_tables,
             "by_source": {
                 name: {
                     "tables": dict(skipped.tables),
@@ -2160,8 +2187,9 @@ def _skip_tables(
     *,
     chosen: bool = False,
     source: str = "",
+    exclusion: SchemaExclusion | None = None,
 ) -> None:
-    """Drop the tables in schemas matching *exclude_patterns* or matching a staging pattern.
+    """Drop the tables in schemas matching *exclude_patterns*, named by table exclusion, or matching a staging pattern.
 
     Args:
         snapshot: The schema snapshot, changed in place.
@@ -2171,6 +2199,9 @@ def _skip_tables(
             is true, else ``--exclude-schemas``).
         chosen: Whether the patterns come from the operator's interactive answer.
         source: The data source *snapshot* was read from.
+        exclusion: The source's rule; its table patterns drop a table (counted as
+            ``configured-tables``) and its ``keep_staging_schemas:`` exempt a
+            schema from the bare staging patterns.
 
     Returns:
         None.
@@ -2191,11 +2222,14 @@ def _skip_tables(
     from database.schema_inspector import schema_is_excluded
 
     rule = RULE_CHOSEN if chosen else RULE_CLI
+    keep = exclusion.keep_staging if exclusion is not None else ()
     dropped: set[tuple[str, str]] = set()
     for table in snapshot.tables:
         if exclude_patterns and schema_is_excluded(table.schema or "", exclude_patterns):
             report.add(source, rule, table.schema or "")
-        elif staging_patterns and _is_staging(table, staging_patterns):
+        elif exclusion is not None and exclusion.table_excluded(table.schema or "", table.name):
+            report.add(source, RULE_TABLES, table.schema or "")
+        elif staging_patterns and _is_staging(table, staging_patterns, keep):
             report.add(source, RULE_STAGING, table.schema or "")
         else:
             continue
@@ -2304,17 +2338,21 @@ def _plan_reading(
     schemas, ``EXCLUDE_SCHEMAS``, the source's ``exclude_schemas:`` and
     ``--exclude-schemas``) and the schemas the operator chose remove schemas,
     so a schema matching both is not read. Each skipped table is counted under
-    the first rule that skips it. A staging table is left out too: a schema
-    whose every table is staging (a bare ``STAGING_PATTERNS`` pattern matches
-    the schema name) is not read at all; a ``table:`` pattern match is passed
-    as an excluded name when no other listed table shares its bare name. One
-    whose name is shared is read and dropped afterwards (:func:`_skip_tables`),
-    so a same-named table of another schema is not lost; it is not counted here.
+    the first rule that skips it. A table named by the exclusion's table
+    patterns (``EXCLUDE_TABLES``, ``exclude_tables:``) is left out, and so is a
+    staging table (a schema in ``keep_staging_schemas:`` is exempt from the bare
+    ``STAGING_PATTERNS`` patterns): a schema whose every table is left out this
+    way (a bare staging pattern matches the schema name) is not read at all; a
+    table match is passed as an excluded name when no other listed table shares
+    its bare name. One whose name is shared is read and dropped afterwards
+    (:func:`_skip_tables`), so a same-named table of another schema is not lost;
+    it is not counted here.
 
     Args:
         listing: ``{schema: [table names]}`` from :func:`_list_engine_tables`.
         include_schemas: Schemas to read (case-insensitive), or ``None`` for all.
-        exclusion: The source's rule (``database.schema_filter.schema_exclusion``).
+        exclusion: The source's rule (``database.schema_filter.schema_exclusion``),
+            with its table patterns and ``keep_staging_schemas:``.
         staging_patterns: Parsed ``STAGING_PATTERNS``; empty keeps staging tables.
         chosen_patterns: Schema patterns the operator chose interactively.
         source: The data source the listing belongs to, for the report.
@@ -2371,19 +2409,24 @@ def _plan_reading(
         for name in names:
             name_count[name.casefold()] = name_count.get(name.casefold(), 0) + 1
 
+    def _table_rule(schema: str, name: str) -> str | None:
+        if exclusion.table_excluded(schema, name):
+            return RULE_TABLES
+        if staging_patterns and _is_staging(_Listed(schema, name), staging_patterns, exclusion.keep_staging):
+            return RULE_STAGING
+        return None
+
     for schema, names in remaining.items():
-        staged = [
-            name for name in names
-            if staging_patterns and _is_staging(_Listed(schema, name), staging_patterns)
-        ]
+        staged = [(name, rule) for name in names if (rule := _table_rule(schema, name)) is not None]
         if names and len(staged) == len(names):
-            plan.report.add(source, RULE_STAGING, schema, len(names))   # the whole schema is staging: not read
+            for _, rule in staged:   # every table is left out by a rule: the schema is not read
+                plan.report.add(source, rule, schema)
             continue
         read = len(names)
-        for name in staged:
+        for name, rule in staged:
             if name_count[name.casefold()] == 1:
                 plan.exclude_tables.append(name)
-                plan.report.add(source, RULE_STAGING, schema)
+                plan.report.add(source, rule, schema)
                 read -= 1
         plan.per_schema[schema] = read
         plan.schemas.append(schema)
@@ -3166,7 +3209,7 @@ def step2_schema(args, source, log: dict):
             finally:
                 inspector.close()
         # A staging table whose name another table shares was read; drop it now.
-        _skip_tables(found, [], staging_patterns, plan.report, source=item.name)
+        _skip_tables(found, [], staging_patterns, plan.report, source=item.name, exclusion=rules[item.name])
         parts.append((item.name, found))
     report = SkipReport.merged(plan.report for plan in plans.values())
     snapshot = _combine_snapshots(parts, sources.names)

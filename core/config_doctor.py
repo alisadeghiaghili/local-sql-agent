@@ -35,6 +35,8 @@ only, no database) and answers eight questions, each as plain data that
 * :func:`sample_value_notes`: do descriptions quote copied sample values?
 * :func:`tables_in_excluded_schemas`: does ``schema.yaml`` list a table whose
   schema the setup tools are told never to scan?
+* :func:`tables_matching_excluded_tables`: does it list a table that
+  ``EXCLUDE_TABLES`` or ``exclude_tables:`` names?
 
 Nothing here ever returns a value read from a description or a note: the
 answers are counts and table keys, so a message built from them cannot leak
@@ -74,9 +76,10 @@ raw_value_synonym_keys(keys) -> dict[str, int]
 read_entities(directory) -> tuple[EntityRow, ...] | None
 entity_key_findings(view, entities, ring_keys) -> EntityKeyFindings
 parse_staging_patterns(raw) -> list[StagingPattern]
-is_staging(schema, name, patterns) -> bool
-staging_tables(view, patterns) -> dict[str, int]
+is_staging(schema, name, patterns, keep_schemas=()) -> bool
+staging_tables(view, patterns, keep_by_source=None, default="") -> dict[str, int]
 tables_in_excluded_schemas(view, patterns_by_source, default) -> list[SchemaTable]
+tables_matching_excluded_tables(view, patterns_by_source, default) -> list[SchemaTable]
 sample_value_notes(view) -> SampleValueFindings
 sources_without_tables(view, sources, default) -> list[str]
 """
@@ -133,6 +136,7 @@ __all__ = [
     "sources_without_tables",
     "staging_tables",
     "tables_in_excluded_schemas",
+    "tables_matching_excluded_tables",
     "type_only_column_notes",
 ]
 
@@ -766,39 +770,73 @@ def parse_staging_patterns(raw: str) -> list[StagingPattern]:
     return patterns
 
 
-def is_staging(schema: str, name: str, patterns: Sequence[StagingPattern]) -> bool:
+def is_staging(
+    schema: str, name: str, patterns: Sequence[StagingPattern], keep_schemas: Sequence[str] = (),
+) -> bool:
     """Whether a staging pattern matches the table *name* in *schema*.
 
     A bare pattern is compared with the last part of the schema, a ``table:``
     pattern with the table name; both lower-cased. The inspector uses the same
     test to leave staging tables out of a draft.
 
+    *keep_schemas* (a source's ``keep_staging_schemas:``) are schema patterns
+    for which the bare patterns do not apply: the schema is scanned, while the
+    ``table:`` patterns still drop its change-capture tables.
+
     >>> patterns = parse_staging_patterns("*_Stg, table:*_Inserts")
     >>> is_staging("Sales_Stg", "Invoice", patterns), is_staging("sales", "Invoice_Inserts", patterns)
     (True, True)
     >>> is_staging("sales", "Invoice", patterns), is_staging("sales", "Invoice", [])
     (False, False)
+    >>> is_staging("Sales_Stg", "Invoice", patterns, ["sales_stg"])
+    False
+    >>> is_staging("Sales_Stg", "Invoice_Inserts", patterns, ["sales_stg"])
+    True
     """
     schema_low = schema.rsplit(".", 1)[-1].lower()
     name_low = name.lower()
+    kept = any(fnmatch.fnmatchcase(schema_low, k.lower()) for k in keep_schemas)
     return any(
         fnmatch.fnmatchcase(name_low if p.on_table else schema_low, p.pattern)
         for p in patterns
+        if p.on_table or not kept
     )
 
 
-def staging_tables(view: SchemaView, patterns: list[StagingPattern]) -> dict[str, int]:
+def staging_tables(
+    view: SchemaView,
+    patterns: list[StagingPattern],
+    keep_by_source: Mapping[str, Sequence[str]] | None = None,
+    default: str = "",
+) -> dict[str, int]:
     """Count the tables a staging pattern matches, per schema.
 
     ``{schema: count}``, a table without a schema under ``""``; a table that
     several patterns match counts once. Empty when *patterns* is empty or the
     file did not parse.
+
+    *keep_by_source* (``{source: keep_staging_schemas}``) lifts the schema
+    patterns for a table whose schema one of its sources keeps (the table's
+    ``datasource:`` line, else *default*); its ``table:`` patterns still count.
+
+    >>> view = SchemaView(parsed=True, tables=(
+    ...     SchemaTable("T", "X_Stg", "T", "", (), ()),
+    ...     SchemaTable("T_Inserts", "X_Stg", "T_Inserts", "", (), ()),
+    ... ))
+    >>> staging_tables(view, parse_staging_patterns("*_Stg, table:*_Inserts"))
+    {'X_Stg': 2}
+    >>> staging_tables(view, parse_staging_patterns("*_Stg, table:*_Inserts"), {"main": ["x_stg"]}, "main")
+    {'X_Stg': 1}
     """
     counts: Counter[str] = Counter()
     if not patterns:
         return {}
     for table in view.tables:
-        if is_staging(table.schema, table.name, patterns):
+        keep = [
+            pattern for source in (table.datasource or (default,))
+            for pattern in (keep_by_source or {}).get(source, ())
+        ]
+        if is_staging(table.schema, table.name, patterns, keep):
             counts[table.schema] += 1
     return dict(counts)
 
@@ -842,6 +880,41 @@ def tables_in_excluded_schemas(
             continue
         sources = table.datasource or (default,)
         if all(schema_is_excluded(schema, patterns_by_source.get(s, ())) for s in sources):
+            found.append(table)
+    return found
+
+
+def tables_matching_excluded_tables(
+    view: SchemaView,
+    patterns_by_source: Mapping[str, Sequence[str]],
+    default: str,
+) -> list[SchemaTable]:
+    """The ``schema.yaml`` tables that table exclusion names in every source they are in.
+
+    The counterpart of :func:`tables_in_excluded_schemas` for ``EXCLUDE_TABLES``
+    and a source's ``exclude_tables:`` (``database.schema_filter.table_is_excluded``):
+    the exclusion only decides what the setup tools *propose*, so a listed table
+    it names is a contradiction to resolve. A table belongs to the sources its
+    ``datasource:`` line names, to *default* when it has none, and counts only
+    when every one of them names it. A table whose schema is not known is
+    compared by its bare name.
+
+    >>> view = SchemaView(parsed=True, tables=(
+    ...     SchemaTable("Order", "X_Fact", "Order", "", (), ()),
+    ...     SchemaTable("Trade", "sales", "Trade", "", (), ()),
+    ... ))
+    >>> [t.key for t in tables_matching_excluded_tables(view, {"main": ["x_fact.order"]}, "main")]
+    ['Order']
+    >>> tables_matching_excluded_tables(view, {"main": []}, "main")
+    []
+    """
+    from database.schema_filter import table_is_excluded
+
+    found: list[SchemaTable] = []
+    for table in view.tables:
+        schema = table.schema.rsplit(".", 1)[-1]
+        sources = table.datasource or (default,)
+        if all(table_is_excluded(schema, table.name, patterns_by_source.get(s, ())) for s in sources):
             found.append(table)
     return found
 

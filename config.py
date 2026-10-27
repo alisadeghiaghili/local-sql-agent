@@ -642,6 +642,21 @@ class Settings:
     ``schema.yaml`` already lists is synced as before, and the preflight check
     ``No table in an excluded schema`` reports one that sits in such a schema.
     Empty (the default) excludes nothing beyond the system schemas."""
+    exclude_tables: str = field(
+        default_factory=lambda: os.getenv("EXCLUDE_TABLES", "")
+    )
+    """Database tables the setup tools never scan, for every data source:
+    comma-separated ``fnmatch`` patterns, matched case-insensitively against
+    ``schema.table`` (``*.Order`` matches ``sales.Order`` and ``ref.order``;
+    ``X_Stg.*_Delete`` matches ``x_stg.Trade_Delete``). A pattern with no ``.``
+    is matched against the table name alone, in any schema. Added to a data
+    source's own ``exclude_tables:`` list in ``datasources.yaml``, so a
+    deployment with a single ``DB_CONNECTION_URL`` has the same control as one
+    with several sources. Like ``EXCLUDE_SCHEMAS`` it decides which catalogue
+    tables the inspector drafts, the ``sync_schema.py`` report lists and
+    ``--add-tables`` adds; a table ``schema.yaml`` already lists is synced as
+    before, and the preflight check ``No table in an excluded schema`` reports
+    one that matches. Empty (the default) excludes nothing."""
     # ── query result cache ────────────────────────────────────────────────
     cache_ttl_seconds: int = field(
         default_factory=lambda: int(os.getenv("CACHE_TTL_SECONDS", "300"))

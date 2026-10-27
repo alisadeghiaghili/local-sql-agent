@@ -41,8 +41,11 @@ matching an ``add_tables`` pattern (a glob on ``schema.table``) are appended.
 A table in an *excluded* schema (the system schemas, ``EXCLUDE_SCHEMAS``, the
 source's ``exclude_schemas:``, ``--exclude-schemas``; see
 :mod:`database.schema_filter`) is neither listed nor added: the report says how
-many it skipped, per schema. Exclusion is for discovery only -- a table
-``schema.yaml`` already lists is synced exactly as before.
+many it skipped, per schema. So is a table that table exclusion names
+(``EXCLUDE_TABLES``, the source's ``exclude_tables:``: patterns on
+``schema.table``); the report lists those in a section of their own. Exclusion
+is for discovery only -- a table ``schema.yaml`` already lists is synced
+exactly as before.
 
 :func:`draft_schema_text` is the same rendering for a first install: it plans
 every table of the catalogues against an empty ``schema.yaml``, so the inspector's
@@ -68,7 +71,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from database.catalogue import ColumnInfo, TableInfo, table_location
-from database.schema_filter import SYSTEM_SCHEMAS, schema_is_excluded
+from database.schema_filter import SYSTEM_SCHEMAS, schema_is_excluded, table_is_excluded
 from schema_data.placement import (
     NOT_FOUND_COMMENT,
     Placement,
@@ -168,11 +171,18 @@ class SyncOptions:
         schemas (:data:`~database.schema_filter.SYSTEM_SCHEMAS`) are skipped
         in every source whether or not it is listed. A table already in
         ``schema.yaml`` is never affected.
+    exclude_tables:
+        ``{source: fnmatch patterns}`` on ``schema.table`` (see
+        :func:`database.schema_filter.table_exclusion_patterns` and
+        :func:`~database.schema_filter.table_is_excluded`) of tables that
+        source's catalogue is not searched for either. Same reach as
+        *exclude_schemas*; a table already in ``schema.yaml`` is never affected.
     """
 
     prune: bool = False
     add_tables: tuple[str, ...] = ()
     exclude_schemas: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    exclude_tables: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -317,6 +327,9 @@ class SyncPlan:
         ``(schema, table)`` of the database tables ``schema.yaml`` lacks that
         were left out because their schema is excluded (in every source that
         has them); neither listed nor added.
+    excluded_tables:
+        The same for tables that table exclusion names (and whose schema is not
+        excluded).
     """
 
     sources: tuple[str, ...]
@@ -326,6 +339,7 @@ class SyncPlan:
     unlisted: tuple[tuple[str, tuple[str, ...]], ...] = ()
     skipped_new: tuple[tuple[str, str], ...] = ()
     excluded: tuple[tuple[str, str], ...] = ()
+    excluded_tables: tuple[tuple[str, str], ...] = ()
 
     @property
     def multi_source(self) -> bool:
@@ -526,13 +540,13 @@ def compute_plan(
         found = [(name, catalogues[name][location]) for name in placement.found_in]
         table_plans.append(_plan_table(table, placement, found, options, placement.key in mentioned))
 
-    new_tables, unlisted, skipped, excluded = _plan_new_tables(
+    new_tables, unlisted, skipped, excluded, excluded_tables = _plan_new_tables(
         schema, sources, catalogues, in_schema, options,
     )
     return SyncPlan(
         sources=tuple(sources), default=default, tables=tuple(table_plans),
         new_tables=tuple(new_tables), unlisted=tuple(unlisted), skipped_new=tuple(skipped),
-        excluded=tuple(excluded),
+        excluded=tuple(excluded), excluded_tables=tuple(excluded_tables),
     )
 
 
@@ -612,21 +626,33 @@ def _plan_new_tables(
     options: SyncOptions,
 ) -> tuple[
     list[NewTable], list[tuple[str, tuple[str, ...]]], list[tuple[str, str]], list[tuple[str, str]],
+    list[tuple[str, str]],
 ]:
-    """Database tables ``schema.yaml`` lacks: which to add, which to list, which exclusion left out."""
+    """Database tables ``schema.yaml`` lacks: which to add, which to list, which exclusion left out.
+
+    The last two lists are the tables left out by schema exclusion and by table exclusion.
+    """
     seen: dict[tuple[str, str], list[tuple[str, TableInfo]]] = {}
     left_out: dict[tuple[str, str], TableInfo] = {}
+    left_out_tables: dict[tuple[str, str], TableInfo] = {}
     for source in sources:
         patterns = (*SYSTEM_SCHEMAS, *options.exclude_schemas.get(source, ()))
+        table_patterns = options.exclude_tables.get(source, ())
         for location, info in catalogues[source].items():
             if location in in_schema:
                 continue
             if schema_is_excluded(info.schema, patterns):
                 left_out.setdefault(location, info)
+            elif table_is_excluded(info.schema, info.name, table_patterns):
+                left_out_tables.setdefault(location, info)
             else:
                 seen.setdefault(location, []).append((source, info))
     # A table one source excludes and another does not is a candidate (from the other).
     excluded = [(info.schema, info.name) for location, info in left_out.items() if location not in seen]
+    excluded_tables = [
+        (info.schema, info.name) for location, info in left_out_tables.items()
+        if location not in seen and location not in left_out
+    ]
 
     bare_counts: dict[str, int] = {}
     for key in schema.tables:
@@ -669,7 +695,7 @@ def _plan_new_tables(
         (_display(found[0][1]), tuple(source for source, _ in found))
         for location, found in seen.items() if location not in chosen_locations
     ]
-    return new_tables, unlisted, skipped, excluded
+    return new_tables, unlisted, skipped, excluded, excluded_tables
 
 
 # ---------------------------------------------------------------------------
@@ -1057,6 +1083,7 @@ def draft_schema_text(
     catalogues: Mapping[str, SourceTables],
     header: Sequence[str] = (),
     exclude_schemas: Mapping[str, tuple[str, ...]] | None = None,
+    exclude_tables: Mapping[str, tuple[str, ...]] | None = None,
 ) -> SyncResult:
     """A first-install ``schema.yaml``: every table of the catalogues, as ``--add-tables '*'`` writes it.
 
@@ -1079,6 +1106,8 @@ def draft_schema_text(
     exclude_schemas:
         Per-source exclusion patterns (see :class:`SyncOptions`); the system
         schemas are always skipped.
+    exclude_tables:
+        Per-source table patterns on ``schema.table`` (see :class:`SyncOptions`).
 
     Returns
     -------
@@ -1107,7 +1136,9 @@ def draft_schema_text(
           ID: "int"
     """
     schema = SchemaConfig()
-    options = SyncOptions(add_tables=("*",), exclude_schemas=exclude_schemas or {})
+    options = SyncOptions(
+        add_tables=("*",), exclude_schemas=exclude_schemas or {}, exclude_tables=exclude_tables or {},
+    )
     plan = compute_plan(schema, sources, default, catalogues, options)
     lines = [*header, "tables:" if plan.new_tables else "tables: {}"]
     for table in plan.new_tables:
@@ -1243,6 +1274,18 @@ def build_report(result: SyncResult) -> str:
                 for name, count in sorted(per_schema.items(), key=lambda item: item[0].lower())
             ],
             count=len(plan.excluded),
+        )
+    if plan.excluded_tables:
+        per_schema_tables: dict[str, int] = {}
+        for schema_name, _ in plan.excluded_tables:
+            per_schema_tables[schema_name] = per_schema_tables.get(schema_name, 0) + 1
+        section(
+            "tables named by an excluded table pattern, not listed or added (EXCLUDE_TABLES, exclude_tables:)",
+            [
+                f"{name}: {count}"
+                for name, count in sorted(per_schema_tables.items(), key=lambda item: item[0].lower())
+            ],
+            count=len(plan.excluded_tables),
         )
     section(
         "tables in schema.yaml found in no data source",

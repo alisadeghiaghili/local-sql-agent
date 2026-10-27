@@ -57,6 +57,11 @@ What it changes (see :mod:`schema_data.sync` for the exact rules)
   ``datasources.yaml`` and ``--exclude-schemas`` for one run
   (:mod:`database.schema_filter`). A table ``schema.yaml`` already lists is
   synced exactly as before, in any schema.
+* The same goes for a table that table exclusion names: ``EXCLUDE_TABLES`` and
+  the data source's ``exclude_tables:`` are ``fnmatch`` patterns on
+  ``schema.table`` (``X_Fact.Order``, ``X_Stg.*_Delete``, ``*.Order``; a pattern
+  without a ``.`` is compared with the table name alone). The report lists them
+  in a section of their own.
 
 Nothing else changes: the script proves it by parsing its own output and
 comparing it with the original plus exactly the planned changes, and refuses
@@ -149,7 +154,7 @@ import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
 from core.yaml_loading import safe_load_strict  # noqa: E402
 from database.catalogue import read_catalogue  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
-from database.schema_filter import exclusion_patterns, parse_patterns  # noqa: E402
+from database.schema_filter import exclusion_patterns, parse_patterns, table_exclusion_patterns  # noqa: E402
 from knowledge.config_loader import (  # noqa: E402
     ConfigNotFoundError,
     load_system_prompt,
@@ -573,6 +578,7 @@ def main(
             prune=args.prune,
             add_tables=tuple(args.add_tables),
             exclude_schemas={name: exclusion_patterns(name, extra) for name in sources},
+            exclude_tables={name: table_exclusion_patterns(name) for name in sources},
         )
     except (UnicodeDecodeError, ValueError) as exc:
         print(f"cannot use {schema_path}: {_describe(exc)}", file=sys.stderr)

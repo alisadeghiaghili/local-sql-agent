@@ -76,6 +76,26 @@ It decides which *database* tables a tool proposes, drafts or reports. A table
 preflight reports one that sits in an excluded schema. Nothing at run time
 reads it.
 
+Tables the setup tools skip, and staging schemas they keep
+----------------------------------------------------------
+``exclude_tables:`` lists ``fnmatch`` patterns (case-insensitive) compared with
+``schema.table`` (``X_Fact.Order``, ``X_Stg.*_Delete``, ``*.Order``); a pattern
+without a ``.`` is compared with the table name alone, in any schema. It adds
+to the global ``EXCLUDE_TABLES`` setting and works exactly where
+``exclude_schemas:`` does. ``keep_staging_schemas:`` lists schemas (patterns,
+case-insensitive) that the *schema* patterns of ``STAGING_PATTERNS`` must not
+drop, so a staging schema's tables are kept while the ``table:`` patterns
+(``table:*_Inserts``) and ``exclude_tables:`` still remove its change-capture
+tables. It never overrides ``exclude_schemas:``::
+
+    datasources:
+      sales:
+        host: 10.0.0.5
+        database: SalesDW
+        exclude_schemas: [Metadata, Auditing_Stg]
+        keep_staging_schemas: [X_Stg]
+        exclude_tables: ["X_Stg.*_Insert", "X_Stg.*_Update", "X_Stg.*_Delete", "X_Fact.Order"]
+
 Without ``datasources.yaml``
 ----------------------------
 The file is optional. When it is absent the deployment has exactly one
@@ -145,6 +165,8 @@ __all__ = [
     "datasource_keywords",
     "datasource_descriptions",
     "datasource_exclude_schemas",
+    "datasource_exclude_tables",
+    "datasource_keep_staging_schemas",
     "table_datasources",
     "table_datasource_sets",
     "pick_datasource",
@@ -271,6 +293,38 @@ def _option_value(key: str, value: object) -> str:
     return text
 
 
+def _pattern_list(value: object, key: str, what: str) -> list[str]:
+    """*value* as a list of trimmed, non-empty strings, or a ``ValueError`` naming *key*.
+
+    Shared by the pattern lists of a source (``exclude_schemas``,
+    ``exclude_tables``, ``keep_staging_schemas``).
+
+    >>> _pattern_list([" *_Stg ", "Replay"], "exclude_schemas", "schema name")
+    ['*_Stg', 'Replay']
+    >>> _pattern_list("*_Stg", "exclude_tables", "table name")
+    Traceback (most recent call last):
+        ...
+    ValueError: exclude_tables must be a list of table name patterns, not str ('*_Stg')
+    """
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{key} must be a list of {what} patterns, not "
+            f"{type(value).__name__} ({value!r})"
+        )
+    cleaned: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"{key}[{index}] must be a string, not "
+                f"{type(item).__name__} ({item!r})"
+            )
+        pattern = item.strip()
+        if not pattern:
+            raise ValueError(f"{key}[{index}] must not be empty")
+        cleaned.append(pattern)
+    return cleaned
+
+
 class DataSourceDefinition(BaseModel):
     """One entry under ``datasources.yaml``'s ``datasources`` key.
 
@@ -329,6 +383,20 @@ class DataSourceDefinition(BaseModel):
         ``EXCLUDE_SCHEMAS`` setting; see :mod:`database.schema_filter`.
         Discovery only: a table ``schema.yaml`` already lists is not hidden.
         Must be a list of non-empty strings.
+    exclude_tables:
+        Optional ``fnmatch`` patterns (``["X_Fact.Order", "X_Stg.*_Delete"]``)
+        for tables the setup tools must not scan in this source, matched
+        case-insensitively against ``schema.table`` (a pattern without a ``.``
+        against the table name alone). Added to the global ``EXCLUDE_TABLES``
+        setting; discovery only, like ``exclude_schemas``. Must be a list of
+        non-empty strings.
+    keep_staging_schemas:
+        Optional schema name patterns (``["X_Stg"]``) that the schema patterns
+        of ``STAGING_PATTERNS`` (``*_Stg``, ``*stg*``, ``*staging*``) do not
+        apply to in this source, so the setup tools keep the schema's tables.
+        The ``table:`` patterns of ``STAGING_PATTERNS`` and ``exclude_tables``
+        still apply, and ``exclude_schemas`` still wins. Must be a list of
+        non-empty strings.
     nolock:
         ``true`` makes every query on this source read its tables
         ``WITH (NOLOCK)`` (:mod:`database.table_hints`, applied by
@@ -355,6 +423,10 @@ class DataSourceDefinition(BaseModel):
     ['stock', 'Stock level']
     >>> DataSourceDefinition(url_env="DB_URL_MAIN", exclude_schemas=[" *_Stg ", "Replay"]).exclude_schemas
     ['*_Stg', 'Replay']
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", exclude_tables=[" X_Fact.Order "]).exclude_tables
+    ['X_Fact.Order']
+    >>> DataSourceDefinition(url_env="DB_URL_MAIN", keep_staging_schemas=["X_Stg"]).keep_staging_schemas
+    ['X_Stg']
     """
 
     model_config = {"extra": "forbid"}
@@ -378,6 +450,8 @@ class DataSourceDefinition(BaseModel):
 
     nolock: bool = False
     exclude_schemas: list[str] = Field(default_factory=list)
+    exclude_tables: list[str] = Field(default_factory=list)
+    keep_staging_schemas: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -460,23 +534,17 @@ class DataSourceDefinition(BaseModel):
     @field_validator("exclude_schemas", mode="before")
     @classmethod
     def _exclude_schemas_are_patterns(cls, value: object) -> object:
-        if not isinstance(value, list):
-            raise ValueError(
-                "exclude_schemas must be a list of schema name patterns, not "
-                f"{type(value).__name__} ({value!r})"
-            )
-        cleaned: list[str] = []
-        for index, item in enumerate(value):
-            if not isinstance(item, str):
-                raise ValueError(
-                    f"exclude_schemas[{index}] must be a string, not "
-                    f"{type(item).__name__} ({item!r})"
-                )
-            pattern = item.strip()
-            if not pattern:
-                raise ValueError(f"exclude_schemas[{index}] must not be empty")
-            cleaned.append(pattern)
-        return cleaned
+        return _pattern_list(value, "exclude_schemas", "schema name")
+
+    @field_validator("exclude_tables", mode="before")
+    @classmethod
+    def _exclude_tables_are_patterns(cls, value: object) -> object:
+        return _pattern_list(value, "exclude_tables", "table name")
+
+    @field_validator("keep_staging_schemas", mode="before")
+    @classmethod
+    def _keep_staging_schemas_are_patterns(cls, value: object) -> object:
+        return _pattern_list(value, "keep_staging_schemas", "schema name")
 
     @field_validator("nolock", mode="before")
     @classmethod
@@ -1276,6 +1344,84 @@ def datasource_exclude_schemas(settings: "Settings | None" = None) -> dict[str, 
         return {DEFAULT_DATASOURCE: ()}
     return {
         name: tuple(config.datasources[name].exclude_schemas)
+        for name in datasource_names(settings)
+    }
+
+
+def datasource_exclude_tables(settings: "Settings | None" = None) -> dict[str, tuple[str, ...]]:
+    """Return ``{source: exclude_tables}`` for every configured source, default first.
+
+    Read from the definitions alone, like :func:`datasource_exclude_schemas`.
+    These are the source's own patterns only;
+    :func:`database.schema_filter.table_exclusion_patterns` adds the global
+    ``EXCLUDE_TABLES`` setting.
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        ``()`` for a source that lists none. The single-source fallback is
+        ``{"default": ()}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_exclude_tables()
+    {'default': ()}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ()}
+    return {
+        name: tuple(config.datasources[name].exclude_tables)
+        for name in datasource_names(settings)
+    }
+
+
+def datasource_keep_staging_schemas(settings: "Settings | None" = None) -> dict[str, tuple[str, ...]]:
+    """Return ``{source: keep_staging_schemas}`` for every configured source, default first.
+
+    The schemas whose tables the schema patterns of ``STAGING_PATTERNS`` must
+    not drop in that source (see :mod:`database.schema_filter`).
+
+    Parameters
+    ----------
+    settings:
+        See :func:`datasources_path`.
+
+    Returns
+    -------
+    dict[str, tuple[str, ...]]
+        ``()`` for a source that lists none. The single-source fallback is
+        ``{"default": ()}``.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` is invalid (see :func:`load_datasources_config`).
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent"):
+    ...     datasource_keep_staging_schemas()
+    {'default': ()}
+    """
+    config = load_datasources_config(settings)
+    if config is None:
+        return {DEFAULT_DATASOURCE: ()}
+    return {
+        name: tuple(config.datasources[name].keep_staging_schemas)
         for name in datasource_names(settings)
     }
 
