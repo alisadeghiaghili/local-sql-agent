@@ -139,8 +139,8 @@ class TestRegistration:
         assert names.count("check_web_ui_origin_allowed") == 1
         assert "check_web_ui_origin_allowed" not in _DEEP_CHECK_NAMES
 
-    def test_with_one_data_source_the_preflight_has_twenty_four_checks(self):
-        """Two leading, four per-source and eighteen global: the number the guides state."""
+    def test_with_one_data_source_the_preflight_has_twenty_five_checks(self):
+        """Two leading, four per-source and nineteen global: the number the guides state."""
         from pathlib import Path
 
         from database.datasources import reset_datasources_cache
@@ -150,4 +150,4 @@ class TestRegistration:
             reset_datasources_cache()
             count = len(build_checks())
 
-        assert count == 24
+        assert count == 25

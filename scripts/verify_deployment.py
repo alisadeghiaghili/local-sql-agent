@@ -71,6 +71,14 @@ There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
 the exit code, the summary line and the admin card need no new state. The file
 reading lives in :mod:`core.config_doctor`.
 
+``check_column_restrictions_name_real_columns`` reads the keys (the key file or
+``API_KEYS_JSON``, and the application database) and fails, naming the key id
+and the entry, when a plain ``denied_columns`` entry matches no column of
+``schema.yaml``: such an entry denies nothing. Its PASS detail also advises (it
+starts ``advice:``) which columns look like a denied name and are not denied
+(``CustomerNationalID`` and ``NationalCode`` next to ``NationalID``). It reads
+files and the key set only, so the admin panel's preflight card runs it too.
+
 ``check_web_ui_origin_allowed`` is the one check that speaks for the browser,
 which sends an ``Origin`` that this script, the CLI and ``curl`` do not: with
 ``VERIFY_UI_ORIGIN`` set to the address the web UI is opened with it PASSes when
@@ -895,6 +903,7 @@ _MAX_LISTED = 10
 
 #: Where the runbook explains drafting and curating ``project_config/``.
 _RUNBOOK_CURATION = "docs/deployment-runbook.md section 2.3, 2.4 and 16.3"
+_RUNBOOK_COLUMN_RESTRICTIONS = "docs/deployment-runbook.md section 2, denied_columns"
 
 
 def _listed(items: list[str]) -> str:
@@ -1310,6 +1319,133 @@ def check_no_table_in_excluded_schema() -> CheckResult:
     )
 
 
+def _key_ids(ids: list[str]) -> str:
+    """``"a, b"``, or ``"a, b, c and 4 more"`` when there are many."""
+    shown = ids[:3]
+    return ", ".join(shown) + (f" and {len(ids) - 3} more" if len(ids) > 3 else "")
+
+
+def check_column_restrictions_name_real_columns() -> CheckResult:
+    """Every plain ``denied_columns`` entry names a column of ``schema.yaml``.
+
+    A plain entry (no ``.`` and no ``:``) is compared with column names,
+    case-insensitively, by the SQL guard. One that matches no column of any
+    table denies nothing, and nothing in the server says so: a typo, a name
+    with an inner space, a column that was renamed. Scoped entries
+    (``Table.Column``, ``Source:Table.Column``) are checked when the key is
+    loaded and stop the server if wrong, so they are not looked at again here.
+    Entries are read after normalisation (surrounding whitespace and invisible
+    Unicode characters removed), as the guard reads them.
+
+    FAILs, naming each key id and the entry (written with :func:`ascii`, so an
+    invisible character shows), when any plain entry matches no column. The
+    server still starts: that is a choice of 6.15.1, so an installation that
+    works today keeps working, and this check is how the entries are found.
+
+    When every entry matches, the PASS detail may carry advice (it then starts
+    ``advice:``): for each plain denied name, the columns that probably hold
+    the same data and are not denied, because the same personal number lives
+    under many names in a warehouse. The test is the spelling
+    (:func:`security.column_policy.look_alike_columns`), so it never fails.
+
+    The keys are the merged set the server uses
+    (:func:`appdb.key_store.get_active_principals`), falling back to the
+    environment keys when the application database cannot be read. SKIP when
+    there is no key, when the key configuration is invalid (``API key
+    authentication`` says why), or when ``schema.yaml`` does not load or lists
+    no column.
+    """
+    from core import config_doctor as doctor
+    from security.auth import ApiKeyConfigError, api_keys_source, load_api_keys
+    from security.column_policy import look_alike_columns, unmatched_bare_entries
+
+    name = "Column restrictions name real columns"
+    try:
+        keys = load_api_keys()
+    except ApiKeyConfigError:
+        return CheckResult(name, "SKIP", "the API key configuration is invalid -- `API key authentication` says why")
+    try:
+        from appdb.key_store import get_active_principals
+
+        keys = get_active_principals()
+    except Exception:  # noqa: BLE001 - an unreadable application database degrades to the environment keys
+        pass
+    if not keys:
+        return CheckResult(
+            name, "SKIP",
+            "no API key is configured (API_KEYS_FILE, API_KEYS_JSON, application database)",
+        )
+    view = doctor.read_schema(_project_config_dir())
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    columns = [column for table in view.tables for column in table.columns]
+    if not columns:
+        return CheckResult(name, "SKIP", "schema.yaml lists no column")
+
+    principals: dict[str, tuple[str, ...]] = {}
+    for principal in keys.values():
+        principals[principal.id] = tuple(dict.fromkeys([*principals.get(principal.id, ()), *principal.denied_columns]))
+
+    unmatched_by_id = {
+        pid: unmatched_bare_entries(entries, columns) for pid, entries in sorted(principals.items())
+    }
+    unmatched_by_id = {pid: found for pid, found in unmatched_by_id.items() if found}
+    plain = sum(
+        1 for entries in principals.values() for entry in entries
+        if isinstance(entry, str) and ":" not in entry and "." not in entry
+    )
+    if unmatched_by_id:
+        groups: dict[tuple[str, ...], list[str]] = {}
+        for pid, found in unmatched_by_id.items():
+            groups.setdefault(found, []).append(pid)
+        total = sum(len(found) for found in unmatched_by_id.values())
+        listing = "; ".join(
+            f"{_key_ids(ids)}: {', '.join(ascii(entry) for entry in found)}"
+            for found, ids in groups.items()
+        )
+        return CheckResult(
+            name, "FAIL",
+            f"{total} plain denied_columns entr{'y' if total == 1 else 'ies'} of "
+            f"{len(unmatched_by_id)} key(s) match no column of schema.yaml, so they deny nothing -- "
+            f"{listing} -- correct the spelling in {api_keys_source()} (or "
+            "`PATCH /admin/keys/<key>/acl` for a key of the admin panel); the match ignores case "
+            "but not inner spaces. The server starts anyway; the entry restricts nothing until it is fixed "
+            f"({_RUNBOOK_COLUMN_RESTRICTIONS})",
+        )
+
+    alike_by_id = {pid: look_alike_columns(entries, columns) for pid, entries in sorted(principals.items())}
+    alike_by_id = {pid: found for pid, found in alike_by_id.items() if found}
+    if not alike_by_id:
+        if not plain:
+            return CheckResult(name, "PASS", f"no key of the {len(principals)} has a plain denied_columns entry to check")
+        return CheckResult(
+            name, "PASS",
+            f"all {plain} plain denied_columns entr{'y' if plain == 1 else 'ies'} of "
+            f"{len(principals)} key(s) name a column of schema.yaml",
+        )
+    groups_alike: dict[tuple[tuple[str, tuple[str, ...]], ...], list[str]] = {}
+    for pid, found in alike_by_id.items():
+        groups_alike.setdefault(tuple(sorted(found.items())), []).append(pid)
+    parts = []
+    for found, ids in list(groups_alike.items())[:3]:
+        shown = []
+        for entry, names in found[:3]:
+            more = f", +{len(names) - 5} more" if len(names) > 5 else ""
+            shown.append(f"{entry} -> {len(names)}: {', '.join(names[:5])}{more}")
+        if len(found) > 3:
+            shown.append(f"+{len(found) - 3} more name(s)")
+        parts.append(f"{_key_ids(ids)}: {'; '.join(shown)}")
+    if len(groups_alike) > 3:
+        parts.append(f"+{len(groups_alike) - 3} more group(s) of keys")
+    return CheckResult(
+        name, "PASS",
+        f"advice: all {plain} plain denied_columns entries name a column, but {len(alike_by_id)} key(s) deny a "
+        "name while columns that look like it (it appears inside their name, or the same stem ends in "
+        "ID, Code, No, Num or Number) are not denied -- the same data often lives under several names; "
+        f"check each and add the ones that hold it: {' | '.join(parts)} ({_RUNBOOK_COLUMN_RESTRICTIONS})",
+    )
+
+
 def check_rate_limit_sane_for_deployment() -> CheckResult:
     """The rate limit must not throttle legitimate use in THIS deployment's
     shape: one shared service key (or a small handful of them) fronting
@@ -1567,6 +1703,7 @@ _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_openai_model_exists,
     check_model_answers_each_prompt,
     check_api_key_authenticates,
+    check_column_restrictions_name_real_columns,
     check_audit_log_writable,
     check_session_store_writable,
     check_project_config_loads,
