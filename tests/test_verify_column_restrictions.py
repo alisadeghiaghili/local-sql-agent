@@ -100,6 +100,50 @@ class TestUnmatchedEntries:
         assert _run(_keys(**{"analyst-1": ["sales.Customer.Name"]})).status == "PASS"
 
 
+_PERSIAN = "\u06a9\u062f\u200c\u0645\u0644\u06cc"
+
+
+def _persian_schema(directory: Path) -> Path:
+    (directory / "schema.yaml").write_text(
+        "tables:\n  Customer:\n    description: d\n    columns:\n"
+        f"      ID: id\n      '{_PERSIAN}': a personal number\n      Name: name\n",
+        encoding="utf-8",
+    )
+    return directory
+
+
+class TestFormatCharactersInsideAName:
+    def test_a_persian_entry_with_a_non_joiner_matches_the_column_that_has_it(self, tmp_path):
+        result = _run(_keys(**{"analyst-1": [_PERSIAN]}), config_dir=_persian_schema(tmp_path))
+        assert result.status == "PASS" and not result.detail.startswith("advice:")
+
+    def test_the_same_entry_without_the_non_joiner_matches_no_column_that_has_it(self, tmp_path):
+        without = _PERSIAN.replace("\u200c", "")
+        result = _run(_keys(**{"analyst-1": [without]}), config_dir=_persian_schema(tmp_path))
+        assert result.status == "FAIL" and ascii(without) in result.detail
+
+    def test_an_entry_with_a_character_inside_matches_the_column_without_it(self):
+        assert _run(_keys(**{"analyst-1": ["Na\u200dme", "National\u200dID"]})).status == "PASS"
+
+    def test_an_entry_with_a_character_inside_that_matches_neither_spelling_fails(self):
+        result = _run(_keys(**{"analyst-1": ["Na\u200dmee"]}))
+        assert result.status == "FAIL" and "'Na\\u200dmee'" in result.detail
+
+    def test_the_advice_is_computed_on_the_name_without_the_character(self):
+        result = _run(_keys(**{"analyst-1": ["National\u200dID"]}))
+        assert result.status == "PASS" and result.detail.startswith("advice:")
+        assert "NationalCode" in result.detail
+
+    def test_look_alikes_of_a_name_with_a_character_inside(self):
+        found = look_alike_columns(["National\u200dID"], _COLUMNS)
+        assert found["National\u200dID"] == look_alike_columns(["NationalID"], _COLUMNS)["NationalID"]
+
+    def test_the_unmatched_helper_accepts_either_spelling(self):
+        assert unmatched_bare_entries(["Na\u200dme"], ["Name"]) == ()
+        assert unmatched_bare_entries(["Na\u200dme"], ["Na\u200dme"]) == ()
+        assert unmatched_bare_entries(["Na\u200dmee"], ["Name"]) == ("Na\u200dmee",)
+
+
 class TestPass:
     def test_every_entry_names_a_column(self):
         result = _run(_keys(**{"analyst-1": ["Name", "IsActive"], "analyst-2": ["Year"]}))

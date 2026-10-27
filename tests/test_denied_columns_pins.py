@@ -107,6 +107,40 @@ class TestExactEntriesReject:
             validate_sql(star, denied_columns=[entry])
 
 
+#: A Persian column name that really holds a zero-width non-joiner (U+200C),
+#: as Persian column names commonly do. Entries equal to it deny that column.
+_PERSIAN = "\u06a9\u062f\u200c\u0645\u0644\u06cc"
+_PERSIAN_SQL = f"SELECT [{_PERSIAN}] FROM Customer"
+
+
+class TestPersianNameWithANonJoiner:
+    def test_the_guard_rejects_the_column_named_by_an_entry_equal_to_it(self):
+        with pytest.raises(PolicyRejection):
+            validate_sql(_PERSIAN_SQL, denied_columns=(_PERSIAN,))
+
+    def test_a_key_from_the_file_denies_it_and_lists_the_entry_as_written(self):
+        principal = _principal_from([_PERSIAN])
+        assert principal.denied_columns == (_PERSIAN,)
+        with pytest.raises(PolicyRejection):
+            validate_sql(_PERSIAN_SQL, denied_columns=principal.denied_columns)
+
+    def test_a_panel_key_denies_it_and_stores_the_entry_as_written(self, app_db):
+        _, entry = issue_key("pin-persian", "Pin Persian")
+        update_denied_columns(entry["key_sha256"], [_PERSIAN, "Phone"])
+        row = next(r for r in list_keys() if r["key_sha256"] == entry["key_sha256"])
+        assert row["denied_columns"] == [_PERSIAN, "Phone"]
+        principal = get_active_principals()[entry["key_sha256"]]
+        assert principal.denied_columns == (_PERSIAN, "Phone")
+        with pytest.raises(PolicyRejection):
+            validate_sql(_PERSIAN_SQL, denied_columns=principal.denied_columns)
+
+    def test_the_cache_scope_is_that_of_the_entry_as_written(self):
+        principal = Principal(id="a", name="A", denied_columns=(_PERSIAN,))
+        assert scope_key(principal, None) == hashlib.sha256(
+            json.dumps([_PERSIAN], separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+
+
 class TestFileAndEnvKeys:
     def test_clean_entries_are_kept_exactly_as_written(self):
         entries = ["NationalID", "sales.Customer.Name", "main:sales.Order.ID", "nationalid"]

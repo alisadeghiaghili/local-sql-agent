@@ -292,8 +292,9 @@ def get_active_principals() -> dict[str, Principal]:
             id=row["principal_id"],
             name=row["name"],
             # Read as the guard reads it: stored entries that carry
-            # whitespace or invisible characters (written before entries
-            # were cleaned on the way in) are cleaned here, with one WARNING.
+            # whitespace or invisible characters at either end (written before
+            # entries were cleaned on the way in) are cleaned here, with one
+            # WARNING.
             denied_columns=auth.read_denied_columns(
                 row["principal_id"], key_hash, row["denied_columns"],
                 source="application database",
@@ -421,10 +422,11 @@ def update_denied_columns(key_sha256: str, denied_columns: list[str]) -> list[st
     (``PATCH /admin/keys/{id}/acl``). An empty list means "no column
     restriction", exactly as it does for an ``API_KEYS_JSON`` entry.
 
-    Entries are normalised before anything else: surrounding whitespace and
-    invisible Unicode format characters are removed
+    Entries are normalised before anything else: whitespace and invisible
+    Unicode format characters at the start and end of an entry are removed
     (:func:`security.column_policy.normalize_denied_entry`), so what is stored
-    is what the guard will compare with a column name. A change is logged as
+    is what the guard will compare with a column name. Characters inside an
+    entry are stored as written. A change is logged as
     one WARNING naming the key id. An entry with nothing visible in it is
     stored as written, as :func:`security.column_policy.normalize_denied_entries`
     says.

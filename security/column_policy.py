@@ -40,12 +40,18 @@ Parsing and checking are two steps, kept apart on purpose:
   again, so a policy that was only syntax-checked (see below) still fails
   loudly the first time it is used.
 
-Every entry is normalised before it is read (:func:`normalize_denied_entry`):
-surrounding whitespace and invisible Unicode format characters (the zero-width
-non-joiner, the right-to-left mark, a BOM, the bidi embeddings and isolates a
-Persian editor inserts without showing them) are removed, because an entry
-that carries one never equals the column name it was meant to spell and
-would restrict nothing. Letters, internal spaces and case are not touched.
+Every entry is cleaned at its two ends before it is read
+(:func:`normalize_denied_entry`): whitespace and invisible Unicode format
+characters (the zero-width non-joiner, the right-to-left mark, a BOM, the bidi
+embeddings and isolates a Persian editor inserts without showing them) are
+removed from the start and the end, because an entry that carries one never
+equals the column name it was meant to spell and would restrict nothing.
+Characters inside an entry are never altered: a Persian column name may
+itself hold a zero-width non-joiner, and the entry stays what the operator
+wrote. When a plain entry does hold a format character inside, the policy
+parser denies the entry as written **and** the same name without that
+character (:func:`without_format_characters`), so the restriction can only be
+wider, never narrower, than the entry says.
 
 When the schema cannot be loaded at the moment a key is parsed (a test that
 builds keys before any ``schema.yaml`` exists, a partially configured
@@ -104,17 +110,25 @@ class ColumnPolicyError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+def _is_edge_noise(char: str) -> bool:
+    return char.isspace() or unicodedata.category(char) == "Cf"
+
+
 def normalize_denied_entry(entry: str) -> str:
-    """*entry* without invisible format characters and without surrounding whitespace.
+    """*entry* without whitespace and invisible format characters at its two ends.
 
     Every place that reads a ``denied_columns`` entry goes through this one
     function: the key file and ``API_KEYS_JSON``, the keys of the admin panel
-    and the policy parser. A character of Unicode category ``Cf`` (zero-width
-    space, non-joiner and joiner, the left-to-right and right-to-left marks,
-    the bidi embeddings, overrides and isolates, the word joiner, the soft
-    hyphen, the byte-order mark) is removed wherever it stands; then leading
-    and trailing whitespace is stripped. Letters, digits, internal spaces and
-    case stay exactly as written (a column may be called ``Price List``).
+    and the policy parser. Characters are removed from the start and from the
+    end of the entry for as long as the first or last one is whitespace or of
+    Unicode category ``Cf`` (zero-width space, non-joiner and joiner, the
+    left-to-right and right-to-left marks, the bidi embeddings, overrides and
+    isolates, the word joiner, the soft hyphen, the byte-order mark), so a
+    mixed run such as a mark, a space and a non-joiner goes whole. Nothing
+    inside the entry is touched: letters, digits, inner spaces, inner format
+    characters and case stay exactly as written (a column may be called
+    ``Price List``, and a Persian column name may contain a zero-width
+    non-joiner).
 
     Parameters
     ----------
@@ -124,7 +138,7 @@ def normalize_denied_entry(entry: str) -> str:
     Returns
     -------
     str
-        The normalised entry; ``""`` when nothing visible was left.
+        The cleaned entry; ``""`` when nothing visible was left.
 
     Examples
     --------
@@ -136,19 +150,42 @@ def normalize_denied_entry(entry: str) -> str:
     True
     >>> normalize_denied_entry("\u200cNationalID\ufeff") == "NationalID"
     True
-    >>> normalize_denied_entry("National\u200dID") == "NationalID"
+    >>> normalize_denied_entry("\u200f NationalID \u200c") == "NationalID"
     True
-    >>> normalize_denied_entry("Source:\u202asales.Order.ID\u202c")
+    >>> normalize_denied_entry("\u202aSource:sales.Order.ID\u202c")
     'Source:sales.Order.ID'
     >>> normalize_denied_entry("Price List")
     'Price List'
     >>> normalize_denied_entry("nationalid")
     'nationalid'
+    >>> len(normalize_denied_entry("National\u200dID"))
+    11
     >>> normalize_denied_entry("\u200c \u200f")
     ''
     """
-    visible = "".join(ch for ch in entry if unicodedata.category(ch) != "Cf")
-    return visible.strip()
+    start, end = 0, len(entry)
+    while start < end and _is_edge_noise(entry[start]):
+        start += 1
+    while end > start and _is_edge_noise(entry[end - 1]):
+        end -= 1
+    return entry[start:end]
+
+
+def without_format_characters(text: str) -> str:
+    """*text* with every Unicode format character (category ``Cf``) removed, wherever it stands.
+
+    Used where an entry is *compared* (the policy parser's second denied name,
+    the unmatched-name check, the look-alike advice), never to rewrite what an
+    operator wrote.
+
+    Examples
+    --------
+    >>> without_format_characters("National\u200dID")
+    'NationalID'
+    >>> without_format_characters("Price List")
+    'Price List'
+    """
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
 
 
 @dataclass(frozen=True)
@@ -179,8 +216,10 @@ class NormalizedEntries:
 def normalize_denied_entries(entries: Iterable[str]) -> NormalizedEntries:
     """Normalise every entry of a key's ``denied_columns`` and report what changed.
 
-    An entry that is empty after :func:`normalize_denied_entry` (it held only
-    whitespace or invisible characters) is kept exactly as written. It has
+    Only the two ends of an entry are cleaned (:func:`normalize_denied_entry`);
+    the entry as stored and shown keeps every inner character. An entry that is
+    empty after that (it held only whitespace or invisible characters) is kept
+    exactly as written. It has
     never matched a column, so it restricts nothing, but a list holding one
     is still a non-empty list for the guard, and rewriting it to ``""`` or
     dropping it would change what that key does today. It is reported in
@@ -199,8 +238,8 @@ def normalize_denied_entries(entries: Iterable[str]) -> NormalizedEntries:
 
     Examples
     --------
-    >>> result = normalize_denied_entries(["NationalID", " Phone\u200f", "\u200c"])
-    >>> result.entries == ("NationalID", "Phone", "\u200c")
+    >>> result = normalize_denied_entries(["NationalID", " Phone\u200f", "\u200c", "Na\u200dme"])
+    >>> result.entries == ("NationalID", "Phone", "\u200c", "Na\u200dme")
     True
     >>> result.changed
     ((' Phone\u200f', 'Phone'),)
@@ -378,8 +417,10 @@ def parse_column_policy(
     ----------
     entries:
         The raw ``denied_columns`` strings (``None`` is no restriction).
-        Each is normalised first (:func:`normalize_denied_entry`); one with
-        nothing visible in it is read as written.
+        Each is cleaned at its two ends first (:func:`normalize_denied_entry`);
+        one with nothing visible in it is read as written. A plain entry with a
+        format character inside denies both its own spelling and the one
+        without that character.
     validate:
         Check each scoped entry against ``schema.yaml`` and
         ``datasources.yaml`` as well as its syntax. When the schema cannot be
@@ -437,9 +478,16 @@ def parse_column_policy(
             )
         # An entry with nothing visible in it stays as written (it keeps
         # doing what it does today); every other entry is read normalised.
-        entry = normalize_denied_entry(entry) or entry
+        cleaned = normalize_denied_entry(entry)
+        entry = cleaned or entry
         if ":" not in entry and "." not in entry:
             denied.add(entry.upper())
+            # A format character inside the name (a Persian column may hold a
+            # zero-width non-joiner) is left as written, and the name without
+            # it is denied as well: the second spelling only widens the policy.
+            plain = without_format_characters(entry) if cleaned else ""
+            if plain and plain != entry:
+                denied.add(plain.upper())
             continue
         column = _parse_scoped(entry)
         scoped.setdefault(column.key(), column)
@@ -805,20 +853,23 @@ def unmatched_bare_entries(
     A plain entry (no ``.`` and no ``:``) is matched against column names
     case-insensitively, as the guard does. One that matches nothing denies
     nothing: a typo, a name with an inner space that no column has, a column
-    that was renamed. Scoped entries are not looked at here (they are checked
-    when the key is loaded). Entries are normalised first.
+    that was renamed. An entry counts as matching when either its cleaned
+    spelling or the same spelling without any inner format character is a
+    column name, because those are the two names the policy parser denies.
+    Scoped entries are not looked at here (they are checked when the key is
+    loaded). Entries are cleaned at their ends first.
 
     Parameters
     ----------
     entries:
         The raw ``denied_columns`` of one key.
     column_names:
-        Every column name of every table of ``schema.yaml``.
+        Every column name of every table of ``schema.yaml``, as written.
 
     Returns
     -------
     tuple[str, ...]
-        The normalised unmatched entries in the order given, without repeats;
+        The cleaned unmatched entries in the order given, without repeats;
         an entry with nothing visible in it is returned as written.
 
     Examples
@@ -827,14 +878,19 @@ def unmatched_bare_entries(
     ('National ID',)
     >>> unmatched_bare_entries([], ["Name"])
     ()
+    >>> unmatched_bare_entries(["Na\u200dme"], ["Name"])
+    ()
+    >>> unmatched_bare_entries(["Na\u200dme"], ["Na\u200dme"])
+    ()
     """
     known = {name.casefold() for name in column_names}
     out: dict[str, None] = {}
     for entry in normalize_denied_entries(entries).entries:
         if not isinstance(entry, str) or not _is_plain(entry):
             continue
-        if entry.casefold() not in known:
-            out.setdefault(entry, None)
+        if entry.casefold() in known or without_format_characters(entry).casefold() in known:
+            continue
+        out.setdefault(entry, None)
     return tuple(out)
 
 
@@ -879,7 +935,8 @@ def look_alike_columns(
     identifier ending (``ID``, ``Code``, ``No``, ``Num``, ``Number``): so
     ``CustomerNationalID`` and ``NationalCode`` both look like ``NationalID``.
     The denied name itself and every column the entries already deny are left
-    out. This is a guess from spelling: it is advice, never a decision.
+    out. The spelling is compared without any format character inside it.
+    This is a guess from spelling: it is advice, never a decision.
 
     Parameters
     ----------
@@ -909,6 +966,7 @@ def look_alike_columns(
         if isinstance(entry, str) and entry and _is_plain(entry)
     ]
     denied = {entry.casefold() for entry in plain}
+    denied |= {without_format_characters(entry).casefold() for entry in plain}
     candidates: dict[str, str] = {}
     for name in column_names:
         lowered = name.casefold()
@@ -920,7 +978,7 @@ def look_alike_columns(
     for entry in plain[:_LOOK_ALIKE_ENTRY_LIMIT]:
         if entry in found:
             continue
-        forms = _look_alike_forms(entry)
+        forms = _look_alike_forms(without_format_characters(entry))
         if not forms:
             continue
         names = sorted(

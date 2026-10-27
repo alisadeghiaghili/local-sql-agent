@@ -349,8 +349,8 @@ def approve_request(request_id: int, *, actor_principal_id: str) -> tuple[dict[s
                 continue  # revoked keys are never touched (module docstring)
             denied = list(json.loads(key_row["denied_columns_json"]))
             # The request names the entry as the guard reported it (cleaned of
-            # whitespace and invisible characters); a key written before entries
-            # were cleaned may still hold the entry with them. Either spelling
+            # whitespace and invisible characters at its ends); a key written
+            # before entries were cleaned may still hold the entry with them. Either spelling
             # is the same restriction, so either is removed.
             wanted = normalize_denied_entry(column_name)
             index = next(

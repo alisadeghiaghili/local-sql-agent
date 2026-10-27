@@ -1668,8 +1668,10 @@ def validate_sql(
         or ``:`` is a scoped, join-only restriction instead (rule 10,
         :mod:`security.column_policy`); a malformed one is refused as a
         :class:`PolicyRejection` rather than ignored. Surrounding
-        whitespace and invisible Unicode format characters in an entry are
-        removed before it is compared with a column name.
+        whitespace and invisible Unicode format characters at the start and
+        end of an entry are removed before it is compared with a column
+        name; one inside a plain entry is kept, and the entry is also
+        denied without it.
     dialect:
         A sqlglot dialect key (see
         :data:`security.dialects.DIALECT_PROFILES`). Defaults to

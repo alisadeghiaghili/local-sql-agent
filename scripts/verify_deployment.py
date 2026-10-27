@@ -1334,8 +1334,10 @@ def check_column_restrictions_name_real_columns() -> CheckResult:
     with an inner space, a column that was renamed. Scoped entries
     (``Table.Column``, ``Source:Table.Column``) are checked when the key is
     loaded and stop the server if wrong, so they are not looked at again here.
-    Entries are read after normalisation (surrounding whitespace and invisible
-    Unicode characters removed), as the guard reads them.
+    Entries are read after normalisation (whitespace and invisible Unicode
+    characters removed at either end), as the guard reads them. An entry
+    matches when it, or it without any format character inside it, is a column
+    name (a Persian column name may contain a zero-width non-joiner).
 
     FAILs, naming each key id and the entry (written with :func:`ascii`, so an
     invisible character shows), when any plain entry matches no column. The

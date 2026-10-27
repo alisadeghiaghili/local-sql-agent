@@ -33,6 +33,7 @@ from security.column_policy import (
     normalize_denied_entries,
     normalize_denied_entry,
     parse_column_policy,
+    without_format_characters,
 )
 from security.sql_guard import CorrectableRejection, PolicyRejection, validate_sql
 from tests._source_fixtures import routed_sources
@@ -45,25 +46,41 @@ _LEAKY_SQL = (
     "GROUP BY c.Name, c.NationalID"
 )
 
-#: Spellings of ``NationalID`` that looked right and denied nothing.
+#: Spellings of ``NationalID`` with whitespace or an invisible character at an
+#: end: they looked right and denied nothing. They are cleaned wherever stored.
 _VARIANTS = {
     "trailing space": "NationalID ",
     "leading space": " NationalID",
     "tab and newline": "\tNationalID\n",
-    "no-break spaces": " NationalID ",
-    "right-to-left mark": "NationalID‏",
-    "left-to-right mark": "NationalID‎",
-    "zero-width non-joiner first": "‌NationalID",
-    "zero-width joiner inside": "National‍ID",
-    "zero-width space": "Nation​alID",
-    "bidi embedding": "‪NationalID‬",
-    "bidi override": "‮NationalID‬",
-    "bidi isolate": "⁦NationalID⁩",
-    "byte-order mark": "﻿NationalID",
-    "soft hyphen": "National­ID",
-    "word joiner": "National⁠ID",
+    "no-break spaces": "\u00a0NationalID\u00a0",
+    "right-to-left mark": "NationalID\u200f",
+    "left-to-right mark": "NationalID\u200e",
+    "zero-width non-joiner first": "\u200cNationalID",
+    "non-joiner then space last": "NationalID\u200c ",
+    "mark space non-joiner around": "\u200f NationalID \u200c",
+    "bidi embedding": "\u202aNationalID\u202c",
+    "bidi override": "\u202eNationalID\u202c",
+    "bidi isolate": "\u2066NationalID\u2069",
+    "byte-order mark": "\ufeffNationalID",
+    "zero-width space last": "NationalID\u200b",
+    "word joiner first": "\u2060NationalID",
 }
 _VARIANT_IDS = list(_VARIANTS)
+
+#: Spellings with a format character *inside*. They are kept as written (a
+#: Persian column name may contain a zero-width non-joiner), and the policy
+#: denies the name without the character as well.
+_INNER = {
+    "joiner inside": "National\u200dID",
+    "zero-width space inside": "Nation\u200balID",
+    "soft hyphen inside": "National\u00adID",
+    "word joiner inside": "National\u2060ID",
+    "non-joiner inside": "Nat\u200cionalID",
+}
+_INNER_IDS = list(_INNER)
+
+#: A Persian column name that really holds a zero-width non-joiner.
+_PERSIAN = "\u06a9\u062f\u200c\u0645\u0644\u06cc"
 
 _RAW_KEY = "norm-key-1"
 
@@ -109,59 +126,82 @@ class TestNormalizeEntry:
     def test_every_variant_becomes_the_plain_name(self, variant):
         assert normalize_denied_entry(variant) == "NationalID"
 
+    @pytest.mark.parametrize("inner", _INNER.values(), ids=_INNER_IDS)
+    def test_a_format_character_inside_is_left_as_written(self, inner):
+        assert normalize_denied_entry(inner) == inner
+        assert normalize_denied_entry(f" {inner}\u200f") == inner
+        assert without_format_characters(inner) == "NationalID"
+
     def test_case_letters_and_inner_spaces_are_not_touched(self):
         assert normalize_denied_entry("National ID") == "National ID"
         assert normalize_denied_entry("nationalID") == "nationalID"
         assert normalize_denied_entry("[Price List]") == "[Price List]"
         assert normalize_denied_entry("ملی") == "ملی"
+        assert normalize_denied_entry(_PERSIAN) == _PERSIAN
 
     def test_it_is_idempotent(self):
-        for variant in _VARIANTS.values():
+        for variant in [*_VARIANTS.values(), *_INNER.values(), _PERSIAN]:
             once = normalize_denied_entry(variant)
             assert normalize_denied_entry(once) == once
 
-    def test_scoped_entries_are_cleaned_too(self):
-        assert normalize_denied_entry("‏main:sales.Customer.‌NationalID ") == "main:sales.Customer.NationalID"
+    def test_scoped_entries_are_cleaned_at_their_ends_only(self):
+        assert normalize_denied_entry("\u200fmain:sales.Customer.NationalID ") == "main:sales.Customer.NationalID"
+        inner = "main:sales.Customer.Nat\u200cionalID"
+        assert normalize_denied_entry(inner) == inner
 
     def test_entries_report_what_changed_and_what_is_empty(self):
-        result = normalize_denied_entries(["Phone", " Name‏", "‌", "", "  "])
-        assert result.entries == ("Phone", "Name", "‌", "", "  ")
-        assert result.changed == ((" Name‏", "Name"),)
-        assert result.empty == ("‌", "  ")
-        assert not normalize_denied_entries(["Phone", "Name"])
+        result = normalize_denied_entries(["Phone", " Name\u200f", "\u200c", "", "  ", "Na\u200dme"])
+        assert result.entries == ("Phone", "Name", "\u200c", "", "  ", "Na\u200dme")
+        assert result.changed == ((" Name\u200f", "Name"),)
+        assert result.empty == ("\u200c", "  ")
+        assert not normalize_denied_entries(["Phone", "Name", "Na\u200dme"])
 
 
 class TestPolicyAndGuard:
     @pytest.mark.parametrize("variant", _VARIANTS.values(), ids=_VARIANT_IDS)
-    def test_the_guard_rejects_the_leaky_statement_for_every_variant(self, variant):
+    def test_the_guard_rejects_the_leaky_statement_for_every_edge_variant(self, variant):
         with pytest.raises(PolicyRejection) as excinfo:
             validate_sql(_LEAKY_SQL, denied_columns=(variant,))
         assert excinfo.value.subject == "NationalID"
 
     @pytest.mark.parametrize("variant", _VARIANTS.values(), ids=_VARIANT_IDS)
-    def test_the_parsed_policy_is_the_one_of_the_plain_name(self, variant):
+    def test_the_parsed_policy_of_an_edge_variant_is_the_one_of_the_plain_name(self, variant):
         assert parse_column_policy([variant]) == parse_column_policy(["NationalID"])
         assert cached_column_policy([variant]).denied == frozenset({"NATIONALID"})
 
+    @pytest.mark.parametrize("inner", _INNER.values(), ids=_INNER_IDS)
+    def test_a_format_character_inside_a_name_denies_the_name_without_it_as_well(self, inner):
+        with pytest.raises(PolicyRejection) as excinfo:
+            validate_sql(_LEAKY_SQL, denied_columns=(inner,))
+        assert excinfo.value.subject == "NationalID"
+        assert cached_column_policy([inner]).denied == frozenset({inner.upper(), "NATIONALID"})
+
+    def test_a_persian_name_with_a_non_joiner_is_denied_as_written_and_without_it(self):
+        policy = cached_column_policy([_PERSIAN])
+        assert policy.denied == frozenset({_PERSIAN.upper(), without_format_characters(_PERSIAN).upper()})
+        sql = f"SELECT [{_PERSIAN}] FROM Customer"
+        with pytest.raises(PolicyRejection):
+            validate_sql(sql, denied_columns=(_PERSIAN,))
+
     @pytest.mark.parametrize("variant", [
-        "sales.Customer.NationalID‏", " sales.Customer.NationalID", "sales.‌Customer.NationalID",
-        "⁦sales.Customer.NationalID⁩",
+        "sales.Customer.NationalID\u200f", " sales.Customer.NationalID", "\u2066sales.Customer.NationalID\u2069",
+        "\u200f sales.Customer.NationalID \u200c",
     ])
-    def test_a_scoped_entry_with_invisible_characters_is_join_only_as_written(self, variant):
+    def test_a_scoped_entry_with_invisible_characters_at_an_end_is_join_only(self, variant):
         with pytest.raises(CorrectableRejection) as excinfo:
             validate_sql(_LEAKY_SQL, denied_columns=(variant,))
         # The subject is the cleaned entry, what an access request removes.
         assert excinfo.value.subject == "sales.Customer.NationalID"
 
-    def test_a_source_scoped_entry_with_invisible_characters(self):
+    def test_a_source_scoped_entry_with_invisible_characters_at_an_end(self):
         with routed_sources({"Order": ("main",), "Customer": ("main",)}):
-            policy = parse_column_policy(["main:‏sales.Customer.NationalID "])
+            policy = parse_column_policy(["\u200fmain:sales.Customer.NationalID "])
         assert [s.entry for s in policy.join_only] == ["main:sales.Customer.NationalID"]
 
     def test_an_inner_space_is_not_repaired(self):
         validate_sql(_LEAKY_SQL, denied_columns=("National ID",))  # still denies nothing, as written
 
-    @pytest.mark.parametrize("entry", ["", "  ", "\u200c", "\u200f \u200e"])
+    @pytest.mark.parametrize("entry", ["", "  ", "\u200c", "\u200f \u200e", "\u200c \u200f"])
     def test_an_entry_with_nothing_visible_does_what_it_has_always_done(self, entry):
         # Any non-empty list turns on the check of a `*` that cannot be
         # resolved to a table; an entry with nothing in it keeps doing that,
@@ -170,6 +210,7 @@ class TestPolicyAndGuard:
         validate_sql(star, denied_columns=[])
         with pytest.raises(PolicyRejection):
             validate_sql(star, denied_columns=[entry])
+        assert cached_column_policy([entry]).denied == frozenset({entry.upper()})
 
 
 class TestFileAndEnvKeys:
@@ -201,15 +242,27 @@ class TestFileAndEnvKeys:
         (principal,) = _parse_api_keys(text).values()
         assert principal.denied_columns == ("NationalID",)
 
+    @pytest.mark.parametrize("inner", _INNER.values(), ids=_INNER_IDS)
+    def test_an_entry_with_a_character_inside_is_stored_as_written_and_still_restricts(self, inner):
+        principal = _file_principal([inner, "Phone"])
+        assert principal.denied_columns == (inner, "Phone")
+        _rejects(principal)
+
+    def test_a_persian_name_with_a_non_joiner_is_stored_as_written_and_restricts(self):
+        principal = _file_principal([_PERSIAN])
+        assert principal.denied_columns == (_PERSIAN,)
+        with pytest.raises(PolicyRejection):
+            validate_sql(f"SELECT [{_PERSIAN}] FROM Customer", denied_columns=principal.denied_columns)
+
     def test_a_scoped_entry_is_cleaned_and_checked_against_the_schema(self):
-        principal = _file_principal(["sales.Customer.‏NationalID "])
+        principal = _file_principal(["\u200fsales.Customer.NationalID "])
         assert principal.denied_columns == ("sales.Customer.NationalID",)
 
     def test_a_scoped_entry_that_names_nothing_still_stops_the_load(self):
         from security.auth import ApiKeyConfigError
 
         with pytest.raises(ApiKeyConfigError, match="NoSuchTable"):
-            _file_principal(["sales.‏NoSuchTable.ID"])
+            _file_principal(["sales.\u200fNoSuchTable.ID"])  # inside the entry: left as written, so it names nothing
 
     def test_the_cache_scope_of_an_entry_and_its_cleaned_twin_is_the_same(self):
         for variant in _VARIANTS.values():
@@ -217,8 +270,17 @@ class TestFileAndEnvKeys:
             clean = Principal(id="b", name="B", denied_columns=("NationalID",))
             assert scope_key(dirty, None) == scope_key(clean, None)
 
+    def test_the_cache_scope_of_an_entry_with_a_character_inside_is_that_of_the_entry_as_written(self):
+        for inner in [*_INNER.values(), _PERSIAN]:
+            assert scope_key(_file_principal([inner]), None) == scope_key(
+                Principal(id="b", name="B", denied_columns=(inner,)), None,
+            )
+            assert scope_key(_file_principal([inner]), None) != scope_key(
+                Principal(id="b", name="B", denied_columns=(without_format_characters(inner),)), None,
+            )
+
     def test_a_principal_built_by_hand_is_cleaned_too(self):
-        principal = Principal(id="a", name="A", denied_columns=("NationalID‏", "Phone"))
+        principal = Principal(id="a", name="A", denied_columns=("NationalID\u200f", "Phone"))
         assert principal.denied_columns == ("NationalID", "Phone")
         assert principal.column_policy.denied == frozenset({"NATIONALID", "PHONE"})
 
@@ -230,29 +292,29 @@ class TestFileAndEnvKeys:
 class TestWarnings:
     def test_one_warning_per_key_names_the_id_and_shows_the_characters(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
-            _file_principal(["NationalID‏", " Phone", "Name"])
+            _file_principal(["NationalID\u200f", " Phone", "Name"])
         (message,) = [m for m in _warnings(caplog) if "normalisation" in m]
         assert "analyst-1" in message
         assert "'NationalID\\u200f' -> 'NationalID'" in message
         assert "' Phone' -> 'Phone'" in message
         assert "Name" not in message.replace("NationalID", "")  # an unchanged entry is not listed
-        assert "‏" not in message  # ascii(), never the raw character
+        assert "\u200f" not in message  # ascii(), never the raw character
 
     def test_the_key_hash_is_never_logged(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
-            _file_principal(["NationalID‏", "NoSuchColumnAnywhere"])
+            _file_principal(["NationalID\u200f", "NoSuchColumnAnywhere"])
         assert _sha256(_RAW_KEY) not in "\n".join(_warnings(caplog))
 
     def test_it_is_logged_once_per_process_not_per_parse(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
-            _file_principal(["NationalID‏"])
-            _file_principal(["NationalID‏"])
+            _file_principal(["NationalID\u200f"])
+            _file_principal(["NationalID\u200f"])
         assert len([m for m in _warnings(caplog) if "normalisation" in m]) == 1
 
     def test_an_edited_list_warns_again(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
-            _file_principal(["NationalID‏"])
-            _file_principal(["Phone‏"])
+            _file_principal(["NationalID\u200f"])
+            _file_principal(["Phone\u200f"])
         assert len([m for m in _warnings(caplog) if "normalisation" in m]) == 2
 
     def test_a_clean_key_logs_nothing(self, caplog):
@@ -262,13 +324,13 @@ class TestWarnings:
 
     def test_an_entry_with_nothing_visible_is_kept_and_reported(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
-            principal = _file_principal(["NationalID", "‌"])
-        assert principal.denied_columns == ("NationalID", "‌")
+            principal = _file_principal(["NationalID", "\u200c"])
+        assert principal.denied_columns == ("NationalID", "\u200c")
         (message,) = [m for m in _warnings(caplog) if "normalisation" in m]
         assert "'\\u200c' -> nothing visible" in message
 
     def test_the_load_does_not_fail_for_an_empty_entry(self):
-        assert _file_principal(["", " ", "‏"]).id == "analyst-1"
+        assert _file_principal(["", " ", "\u200f"]).id == "analyst-1"
 
 
 class TestUnmatchedEntriesAtLoad:
@@ -289,8 +351,21 @@ class TestUnmatchedEntriesAtLoad:
 
     def test_a_cleaned_entry_is_compared_after_cleaning(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
-            _file_principal(["NationalID‏"])
+            _file_principal(["NationalID\u200f"])
         assert [m for m in _warnings(caplog) if "match no column" in m] == []
+
+    @pytest.mark.parametrize("inner", _INNER.values(), ids=_INNER_IDS)
+    def test_a_name_with_a_character_inside_matches_the_column_without_it(self, caplog, inner):
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            principal = _file_principal([inner])
+        assert principal.denied_columns == (inner,)
+        assert [m for m in _warnings(caplog) if "match no column" in m] == []
+
+    def test_a_name_with_a_character_inside_that_matches_nothing_is_still_reported(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="security.auth"):
+            _file_principal(["Nat\u200cioanlID"])
+        (message,) = [m for m in _warnings(caplog) if "match no column" in m]
+        assert "'Nat\\u200cioanlID'" in message
 
     def test_scoped_entries_are_not_compared(self, caplog):
         with caplog.at_level(logging.WARNING, logger="security.auth"):
@@ -319,19 +394,30 @@ class TestPanelKeys:
 
     def test_a_scoped_entry_is_cleaned_and_validated_by_the_writer(self, app_db):
         _, entry = issue_key("panel-2", "Panel Two")
-        stored = update_denied_columns(entry["key_sha256"], ["sales.Customer.‏NationalID "])
+        stored = update_denied_columns(entry["key_sha256"], ["\u200fsales.Customer.NationalID "])
         assert stored == ["sales.Customer.NationalID"]
+
+    @pytest.mark.parametrize("inner", [*_INNER.values(), _PERSIAN], ids=[*_INNER_IDS, "persian"])
+    def test_the_writer_keeps_a_character_inside_an_entry_and_the_key_still_restricts(self, app_db, inner):
+        _, entry = issue_key("panel-8", "Panel Eight")
+        assert update_denied_columns(entry["key_sha256"], [inner, " Phone"]) == [inner, "Phone"]
+        row = next(r for r in list_keys() if r["key_sha256"] == entry["key_sha256"])
+        assert row["denied_columns"] == [inner, "Phone"]
+        principal = get_active_principals()[entry["key_sha256"]]
+        assert principal.denied_columns == (inner, "Phone")
+        with pytest.raises(PolicyRejection):
+            validate_sql(f"SELECT [{inner}] FROM Customer", denied_columns=principal.denied_columns)
 
     def test_a_bad_scoped_entry_is_still_refused_with_the_entry_named(self, app_db):
         from security.column_policy import ColumnPolicyError
 
         _, entry = issue_key("panel-3", "Panel Three")
         with pytest.raises(ColumnPolicyError, match="NoSuchTable"):
-            update_denied_columns(entry["key_sha256"], ["sales.‏NoSuchTable.ID"])
+            update_denied_columns(entry["key_sha256"], ["sales.\u200fNoSuchTable.ID"])
 
     def test_the_writer_keeps_an_entry_with_nothing_visible_as_written(self, app_db):
         _, entry = issue_key("panel-4", "Panel Four")
-        assert update_denied_columns(entry["key_sha256"], ["Phone", "‌"]) == ["Phone", "‌"]
+        assert update_denied_columns(entry["key_sha256"], ["Phone", "\u200c"]) == ["Phone", "\u200c"]
 
     @pytest.mark.parametrize("variant", _VARIANTS.values(), ids=_VARIANT_IDS)
     def test_a_row_stored_before_the_cleaning_existed_is_read_cleaned(self, app_db, variant, caplog):
@@ -384,7 +470,7 @@ class TestPanelKeys:
             _, entry = issue_key("panel-6", "Panel Six")
             resp = client.patch(
                 f"/admin/keys/{entry['key_sha256']}/acl",
-                json={"denied_columns": ["NationalID‏", " Phone"]},
+                json={"denied_columns": ["NationalID\u200f", " Phone"]},
                 headers={"Authorization": f"Bearer {raw_security}"},
             )
         assert resp.status_code == 200
@@ -402,7 +488,7 @@ class TestPanelKeys:
             conn.execute(
                 update(admin_api_keys)
                 .where(admin_api_keys.c.key_sha256 == entry["key_sha256"])
-                .values(denied_columns_json=json.dumps(["NationalID‏", "Phone"]))
+                .values(denied_columns_json=json.dumps(["NationalID\u200f", "Phone"]))
             )
         invalidate_cache()
         with get_app_engine().begin() as conn:

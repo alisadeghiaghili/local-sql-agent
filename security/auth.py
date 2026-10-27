@@ -128,11 +128,14 @@ class Principal:
         ``Source:sales.Order.ID``, ``Source:ID`` -- see
         :mod:`security.column_policy`): the column may then be used only as
         a ``JOIN ... ON`` key. :attr:`column_policy` is the parsed form.
-        Entries are held normalised: surrounding whitespace and invisible
-        Unicode format characters are removed on construction
+        Entries are held cleaned at their two ends: surrounding whitespace
+        and invisible Unicode format characters are removed on construction
         (:func:`~security.column_policy.normalize_denied_entry`), so
         ``"NationalID<RLM>"`` and ``"NationalID"`` are one restriction and one
-        cache partition. A list that needs no cleaning is kept as it came.
+        cache partition. Characters inside an entry are never changed (a
+        Persian column name may hold a zero-width non-joiner); the policy
+        parser denies such a name both as written and without the inner
+        format character. A list that needs no cleaning is kept as it came.
         Fed into two
         independent places, both HTTP-only (the CLI/REPL paths --
         ``app.py``, ``llm/wizard_llm.py`` -- have no ``Principal`` and
@@ -172,8 +175,9 @@ class Principal:
     def __post_init__(self) -> None:
         # Whatever built this principal (the key file, the application
         # database, a test), its entries are read the way the guard reads
-        # them: without surrounding whitespace or invisible format
-        # characters. A list that needs no cleaning is left as it came.
+        # them: without whitespace or invisible format characters at either
+        # end (never inside an entry). A list that needs no cleaning is left
+        # as it came.
         entries = self.denied_columns
         if not entries or isinstance(entries, str):
             return
@@ -310,8 +314,8 @@ def read_denied_columns(
     logged, each once per key per process (loading repeats on every
     key-cache refresh):
 
-    * entries that normalisation changed (surrounding whitespace, invisible
-      Unicode format characters), or that held nothing visible at all;
+    * entries that normalisation changed (whitespace or invisible Unicode
+      format characters at either end), or that held nothing visible at all;
     * plain entries that name no column of ``schema.yaml``, which therefore
       deny nothing.
 
@@ -354,8 +358,8 @@ def read_denied_columns(
         ]
         logger.warning(
             "%s (id=%r): denied_columns changed by normalisation -- "
-            "surrounding whitespace and invisible Unicode characters are removed "
-            "before an entry is compared with a column name: %s. Correct the "
+            "whitespace and invisible Unicode characters at the start and end of "
+            "an entry are removed before it is compared with a column name: %s. Correct the "
             "entry where it is written.",
             source, principal_id, "; ".join(shown),
         )
@@ -522,9 +526,9 @@ def _parse_api_keys(raw_json: str, source: str = "API_KEYS_JSON") -> dict[str, P
                     source, i, principal_id,
                 )
         elif isinstance(raw_denied, list) and all(isinstance(c, str) for c in raw_denied):
-            # Whitespace and invisible Unicode characters are removed first
-            # (a Persian editor inserts them without showing them), so an
-            # entry means the column it looks like it names.
+            # Whitespace and invisible Unicode characters at either end are
+            # removed first (a Persian editor inserts them without showing
+            # them), so an entry means the column it looks like it names.
             denied_columns = read_denied_columns(
                 principal_id, normalized_hash, raw_denied, source=f"{source}[{i}]",
             )
