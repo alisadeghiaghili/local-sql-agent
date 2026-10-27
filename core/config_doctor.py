@@ -37,6 +37,9 @@ only, no database) and answers eight questions, each as plain data that
   schema the setup tools are told never to scan?
 * :func:`tables_matching_excluded_tables`: does it list a table that
   ``EXCLUDE_TABLES`` or ``exclude_tables:`` names?
+* :func:`resolve_table_keys` and :func:`column_of`: which ``schema.yaml`` table
+  and column does a configured name stand for? (``core.policy_values`` asks it
+  about the dimension the session and memory policies are written for.)
 
 Nothing here ever returns a value read from a description or a note: the
 answers are counts and table keys, so a message built from them cannot leak
@@ -82,6 +85,8 @@ tables_in_excluded_schemas(view, patterns_by_source, default) -> list[SchemaTabl
 tables_matching_excluded_tables(view, patterns_by_source, default) -> list[SchemaTable]
 sample_value_notes(view) -> SampleValueFindings
 sources_without_tables(view, sources, default) -> list[str]
+resolve_table_keys(view, ref) -> tuple[str, ...]
+column_of(table, column) -> str
 """
 
 from __future__ import annotations
@@ -116,6 +121,7 @@ __all__ = [
     "SchemaTable",
     "SchemaView",
     "StagingPattern",
+    "column_of",
     "entity_key_findings",
     "find_draft_header_kinds",
     "find_draft_headers",
@@ -132,6 +138,7 @@ __all__ = [
     "read_entities",
     "read_schema",
     "read_schema_text",
+    "resolve_table_keys",
     "sample_value_notes",
     "sources_without_tables",
     "staging_tables",
@@ -1355,3 +1362,73 @@ def entity_key_findings(
         match = [t for t in named if not schema or index.identity[t.key][0] == schema]
         findings.unknown_rings.append((key, match[0].key if len(match) == 1 else ""))
     return findings
+
+
+# ---------------------------------------------------------------------------
+# 8. A configured table and column name against schema.yaml
+# ---------------------------------------------------------------------------
+
+def resolve_table_keys(view: SchemaView, ref: str) -> tuple[str, ...]:
+    """The ``schema.yaml`` keys a configured table name can mean.
+
+    The rule is the application's own (``retrieval.table_keys.resolve_table_ref``):
+    an exact key (brackets and case ignored) is itself; otherwise the keys that
+    have that bare name, narrowed by the qualifier the reference writes. So
+    ``Customer`` finds ``sales.Customer`` when that is the only table of the
+    name, and ``Dim.Customer`` finds ``Warehouse.Dim.Customer``.
+
+    Parameters
+    ----------
+    view:
+        ``schema.yaml``, from :func:`read_schema` (it must have parsed).
+    ref:
+        A table as a configuration file writes it.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The keys as written in ``schema.yaml``, in file order; empty when *ref*
+        names no table.
+
+    Examples
+    --------
+    >>> view = SchemaView(parsed=True, tables=(
+    ...     SchemaTable("sales.Region", "sales", "Region", "", (), ()),
+    ...     SchemaTable("ref.Region", "ref", "Region", "", (), ()),
+    ...     SchemaTable("Branch", "ref", "Branch", "", (), ()),
+    ... ))
+    >>> resolve_table_keys(view, "Branch"), resolve_table_keys(view, "[ref].[region]")
+    (('Branch',), ('ref.Region',))
+    >>> resolve_table_keys(view, "Region"), resolve_table_keys(view, "Nothing")
+    (('sales.Region', 'ref.Region'), ())
+    """
+    return _SchemaKeys(view.tables).resolve(ref)
+
+
+def column_of(table: SchemaTable, column: str) -> str:
+    """The column of *table* that *column* names, spelled as ``schema.yaml`` spells it.
+
+    The match ignores letter case, as the database does for its default
+    collation and as the SQL guard does for a column name.
+
+    Parameters
+    ----------
+    table:
+        One table of the view.
+    column:
+        A column name from a configuration file.
+
+    Returns
+    -------
+    str
+        The column as written in ``schema.yaml``; ``""`` when the table has no
+        such column (or lists no column at all).
+
+    Examples
+    --------
+    >>> table = SchemaTable("Region", "ref", "Region", "", (), (), ("ID", "Name"))
+    >>> column_of(table, "name"), column_of(table, "Title")
+    ('Name', '')
+    """
+    wanted = column.strip().casefold()
+    return next((name for name in table.columns if name.casefold() == wanted), "")

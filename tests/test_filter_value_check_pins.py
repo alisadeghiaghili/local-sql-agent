@@ -342,6 +342,7 @@ def test_the_preflight_check_list_is_unchanged():
         "check_no_table_in_excluded_schema",
         "check_aliases_hold_no_raw_values",
         "check_entities_match_schema_keys",
+        "check_policies_use_real_values",
         "check_rate_limit_sane_for_deployment",
         "check_web_ui_origin_allowed",
     ]

@@ -74,6 +74,15 @@ There is no WARN status: advice is a PASS whose detail starts ``advice:``, so
 the exit code, the summary line and the admin card need no new state. The file
 reading lives in :mod:`core.config_doctor`.
 
+``check_policies_use_real_values`` (file reads only, so the admin card runs it too)
+fails when ``session_policy.yaml`` or ``memory_policy.yaml`` still holds the sample
+options of ``project_config.example/``, or names a table or a column ``schema.yaml``
+does not have: on a first install no setup tool writes them, so every real value an
+analyst tries to pin would be refused. It points to ``scripts/draft_policies.py``, and
+its PASS detail advises how many options are not among the dimension values the
+running application has cached, as counts only. The shipped example is not compared
+with itself.
+
 ``check_column_restrictions_name_real_columns`` reads the keys (the key file or
 ``API_KEYS_JSON``, and the application database) and fails, naming the key id
 and the entry, when a plain ``denied_columns`` entry matches no column of
@@ -907,6 +916,7 @@ _MAX_LISTED = 10
 #: Where the runbook explains drafting and curating ``project_config/``.
 _RUNBOOK_CURATION = "docs/deployment-runbook.md section 2.3, 2.4 and 16.3"
 _RUNBOOK_COLUMN_RESTRICTIONS = "docs/deployment-runbook.md section 2, denied_columns"
+_RUNBOOK_POLICIES = "docs/deployment-runbook.md section 2.5"
 _RUNBOOK_VALUE_CHECK = "docs/deployment-runbook.md, the filter value check"
 
 
@@ -1158,6 +1168,91 @@ def check_entities_match_schema_keys() -> CheckResult:
         "is never found by its aliases. Rename the key to the schema.yaml key, keep one entity per table "
         f"(merge their aliases) and fix ring_aliases the same way ({_RUNBOOK_CURATION})",
     )
+
+
+def _cached_dimension_values(table: str, column: str) -> list[str] | None:
+    """The dimension values the running application has cached for ``table.column``, or ``None``.
+
+    A cache read only. The cache lives in the process that serves questions, so
+    this is empty in the command line and has values in the admin panel's card;
+    it is read only when the application's module is already imported, never
+    imported (and never queried) for the sake of an advice.
+    """
+    import sys
+
+    module = sys.modules.get("retrieval.dimension_vocabulary")
+    if module is None:
+        return None
+    try:
+        return module.get_cached_vocabulary(table, column)
+    except Exception:  # noqa: BLE001 - an advice is never worth a failure
+        return None
+
+
+def check_policies_use_real_values() -> CheckResult:
+    """The session and memory policies must name a real table and column, and real values.
+
+    ``session_policy.yaml`` (``default_scope``: the scope a ranking question gets
+    when it names none, and the options its clarification offers) and
+    ``memory_policy.yaml`` (the closed set of values an analyst may pin) are
+    among the ten required files, and no setup tool wrote them: on a first
+    install they are the shipped template, whose options are made-up samples.
+    The application still starts and memory still "works", but every real value
+    an analyst tries to pin is outside the closed set and refused, and the
+    clarification offers values the warehouse does not have.
+
+    FAILs, naming the file and the key (never a value), when a ``filter_key``
+    names no table of ``schema.yaml`` (resolved as the application resolves a
+    configured table name: a key, or a bare name), when a memory key's
+    ``column`` is not a column of that table, or when the options of a file are
+    exactly the sample values of the shipped ``project_config.example/`` (a set
+    that differs by one value is not flagged). The detail points to
+    ``python scripts/draft_policies.py``. The template directory itself is not
+    compared with itself, so the shipped example passes its own preflight.
+
+    The PASS detail may carry advice (it then starts ``advice:``): when the
+    application has cached the dimension's values (the admin panel's card, in
+    the running server; the command line has no cache), the number of options
+    that are not among them, as counts only. File reads only. SKIP when
+    ``schema.yaml`` or a policy file does not load.
+    """
+    from core import config_doctor as doctor
+    from core import policy_values as values
+
+    name = "Session and memory policies use real values"
+    directory = _project_config_dir()
+    view = doctor.read_schema(directory)
+    if not view.parsed:
+        return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
+    try:
+        policies = values.read_policies(directory)
+    except ValueError as exc:
+        return CheckResult(name, "SKIP", f"{exc} -- `project_config/ loads` says why")
+    shipped = None if values.is_shipped_directory(directory) else values.shipped_policies()
+    findings = values.policy_findings(policies, view, shipped)
+    if findings.problems:
+        return CheckResult(
+            name, "FAIL",
+            "; ".join(findings.problems) + " -- an analyst can pin only the options of memory_policy.yaml, and a "
+            "ranking question that names no scope is offered the options of session_policy.yaml: with sample "
+            "values, or a table the warehouse does not have, every real value is refused and the clarification "
+            "offers values that do not exist. Draft the real ones with `python scripts/draft_policies.py` "
+            "(it reads the distinct values of one small dimension and writes project_config_draft/), read "
+            f"them, and copy the two files into project_config/ ({_RUNBOOK_POLICIES})",
+        )
+    detail = f"{len(findings.sites)} place(s) name a table and column of schema.yaml and none holds the template's sample values"
+    gaps = values.vocabulary_gaps(policies, view, _cached_dimension_values)
+    if gaps:
+        shown = _listed([
+            f"{gap.site.label}: {gap.missing} of {gap.options} option(s) not among the {gap.cached} cached "
+            f"value(s) of {gap.table}.{gap.column}"
+            for gap in gaps
+        ])
+        detail += (
+            f"; advice: {shown} -- such an option matches no row; draft the options again with "
+            f"`python scripts/draft_policies.py` ({_RUNBOOK_POLICIES})"
+        )
+    return CheckResult(name, "PASS", detail)
 
 
 def check_filter_value_check_has_vocabularies() -> CheckResult:
@@ -1795,6 +1890,7 @@ _GLOBAL_CHECKS: list[Callable[[], CheckResult]] = [
     check_no_table_in_excluded_schema,
     check_aliases_hold_no_raw_values,
     check_entities_match_schema_keys,
+    check_policies_use_real_values,
     check_rate_limit_sane_for_deployment,
     check_web_ui_origin_allowed,
 ]
