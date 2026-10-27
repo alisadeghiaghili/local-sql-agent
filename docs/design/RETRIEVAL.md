@@ -326,3 +326,58 @@ Source accuracy is unchanged except one case on seed 23. No other slice of §5
 changes. The benchmark cannot show the main fix of §8.1, because its
 configuration names every table by its full key; that is why a real set was
 needed.
+
+
+## 9. Checking the values the model filters on (`FILTER_VALUE_CHECK`)
+
+`retrieval/dimension_vocabulary.py` caches, for a table's
+`prefetchable_columns`, the whole distinct value set of each column, and until
+now used it in one direction only: to find a value in the question. The model
+also writes values (`WHERE r.[Name] = N'Ring'`), and a value that is in no row
+returns an empty or wrong answer the guard has no reason to refuse.
+`retrieval/filter_values.py` reads the same cache in the other direction, on the
+statement the guard accepted.
+
+**Decisions, and why.**
+
+- **Off by default, and byte for byte absent when off.** The owner's constraint is
+  that nothing that works may break. With the setting off the new code is not
+  reached; `tests/test_filter_value_check_pins.py` pins the prompts, the executed
+  statement, the correction texts, the audit line's keys and the guard's decisions
+  of `/query` and of a session turn, and was written before the code.
+- **The cache only.** A check that waited on a database read would put the
+  warehouse on the request path, which the vocabulary module was built to avoid. A
+  column with no cached values is not checked; a stale list is used; a list that
+  has the length of the prefetch cap (`SELECT DISTINCT TOP (DEFAULT_TOP_N)`) may be
+  cut short and is not used.
+- **Resolve the column the way the guard does.** The literal is only meaningful
+  against the column it is compared to, so `security.sql_guard.column_origins`
+  follows an alias, a CTE or a derived table to the stored column (a plain copy
+  only; `UPPER(r.Name)` is not a stored column). A name two tables share is known if
+  either has the value and is not checked unless both have a vocabulary. The
+  function is new and called by nothing in `validate_sql`.
+- **Same normaliser as the question.** `core.persian.normalize_for_matching`: a
+  value the question could have found is a value the statement may use.
+- **`<>` and `NOT IN` are checked.** An invented value in an exclusion does nothing,
+  which is as wrong as one in an inclusion, and the same message fits both.
+- **One round, outside the budget, never a refusal.** The correction is a
+  side-step in the loop: the corrected statement replaces the original only if it is
+  accepted by the guard, has no unknown literal (in a session turn, also drops no
+  filter the question named) and runs; every other outcome runs the original
+  through the unchanged loop. It adds at most one model call, and none when
+  `MAX_CORRECTION_ATTEMPTS` is `0`. A real value that is not cached yet (a new ring)
+  costs that call and runs as written; the message says the list may lag and tells
+  the model to keep a value the question names that is not listed.
+- **The prompt layout is the correction layout.** The text is appended to the
+  question segment, the static prefix is not touched, and the real values are fenced
+  as warehouse data (`prompt_engine/untrusted.py`). They are the nearest five by
+  character trigrams of the normalised forms: the sets are small by design.
+- **The audit log keeps names, never values.** The block has the column, a hash and
+  the length of each unknown literal, and flags; a block with any other key or type
+  is refused when the record is built. The literal is in `generated_sql` when the
+  original ran, as it always was; the real values the model was shown are warehouse
+  data and are not written.
+
+**Not covered.** Mode `sql` (no correction loop), the `_prev` refinement of a
+session turn (its inner statement is the previous turn's), a column that is not in
+`prefetchable_columns`, `LIKE`, and a column inside an expression.
