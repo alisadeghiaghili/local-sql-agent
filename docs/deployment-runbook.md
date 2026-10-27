@@ -1890,6 +1890,25 @@ you have already written.
 only by this script; nothing reads it at run time, so the prompt and the guard's
 allowlist are unchanged.
 
+`column_units:` is another optional per-table map, `{column: rial | none}`, which
+you write by hand. It says whether a number in a column is money, for one thing
+only: the wording of the answer summary (`interpret`). The summary writes
+Rial/ریال on money and on nothing else (not a count, a quantity, a volume, a
+percentage, an id, a code or a date), and the prompt tells the model, per numeric
+result column, which side each is on. A column you list is decided by you (`rial`
+money, `none` not money). One you do not list is decided from its name: `price`,
+`value`, `amount`, `cost`, `fee`, `ارزش`, `قیمت`, `مبلغ`, `کارمزد` and the like are
+money; `count`, `quantity`, `volume`, `weight`, `percent`, `id`, `code`, `date`,
+`حجم`, `تعداد`, `درصد`, `کد` and the like are not (a name with both, such as
+`FeeCount`, is not money); when the name says nothing the model decides. The
+lookup is by the column's name in the result, so a column you rename in a query
+(`AS TotalVolume`) is judged by that name; if two tables give the same name
+different units the name is not looked up. Keys must be columns of the table's
+`columns:`; write `none`, not `no` (YAML reads `no` as false). The sync leaves the
+map alone, except that `--prune` removes the entry of a column it removes. A
+deployment that writes no `column_units:` changes only in this: the summary no
+longer puts Rial/ریال on a volume or a count.
+
 It also writes `relationships.proposed.yaml` next to `schema.yaml`: every
 declared foreign key between two tables of `schema.yaml`, plus relationships
 guessed from column names (`Order.CustomerID` to `Customer.ID`, `Order.OrderDate_ID`
