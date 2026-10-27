@@ -1605,6 +1605,26 @@ class Settings:
     against a value whose distinctive words are scattered through an
     unrelated question."""
 
+    filter_value_check: bool = field(
+        default_factory=lambda: os.getenv("FILTER_VALUE_CHECK", "false").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, a statement the guard accepted is checked once, before it
+    runs, for string literals compared to a column whose whole value set is
+    cached (a table's ``prefetchable_columns``,
+    ``retrieval.dimension_vocabulary``) that are not in that set. If there
+    are any, the model gets one correction message that names the column,
+    says the value does not exist and lists the nearest real values. The
+    corrected statement runs only if every checked literal in it is known;
+    otherwise the original statement runs exactly as it would have without
+    this setting. The check reads the cache only (it never waits on a
+    database read), a column with no cached vocabulary is not checked, and
+    it can add one model call to a request but never refuse one. See
+    ``retrieval.filter_values`` and the runbook's section on it.
+
+    Defaults to ``False``: with it off no request, prompt, statement, audit
+    record or response differs from a deployment that never had the check."""
+
     # ── Evaluation harness: golden-set regression gate (see eval/baseline.py) ─
     eval_max_accuracy_drop_pct: float = field(
         default_factory=lambda: float(os.getenv("EVAL_MAX_ACCURACY_DROP_PCT", "5.0"))
