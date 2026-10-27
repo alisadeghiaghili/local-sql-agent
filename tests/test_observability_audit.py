@@ -247,3 +247,63 @@ class TestResolvedColumnsNeverCarryRowValues:
     def test_defaults_to_none_when_no_resolution_happened(self):
         d = _record().as_dict()
         assert d["resolved_columns"] is None
+
+
+_BLOCK = {
+    "checked": 2,
+    "unknown": [{"column": "Ring.Name", "value_sha256": "0123456789abcdef", "length": 10}],
+    "corrected": False,
+    "fallback": True,
+}
+
+
+class TestValueCheck:
+    """The filter value check's block: additive, and never a value."""
+
+    def test_no_key_at_all_when_unset_so_a_line_is_what_it_always_was(self):
+        assert "value_check" not in _record().as_dict()
+        assert list(_record().as_dict())[-1] == "datasource_selection"
+
+    def test_written_after_the_existing_keys_when_set(self):
+        d = _record(value_check=_BLOCK).as_dict()
+
+        assert list(d)[-1] == "value_check"
+        assert d["value_check"] == _BLOCK
+
+    def test_round_trips_through_the_file(self, tmp_path):
+        path = tmp_path / "audit_log.jsonl"
+        with patch("observability.audit._AUDIT_LOG_FILE", str(path)):
+            save_audit_record(_record(value_check=_BLOCK))
+            save_audit_record(_record(request_id="r_old"))
+
+        first, second = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert first["value_check"] == _BLOCK
+        assert "value_check" not in second
+
+    def test_a_line_written_before_the_field_existed_is_read_as_before(self, tmp_path):
+        from scripts.analyze_audit_log import iter_records
+
+        path = tmp_path / "audit_log.jsonl"
+        old_line = _record().as_dict()
+        path.write_text(json.dumps(old_line, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        (record,) = list(iter_records([path]))
+        assert record.get("value_check") is None
+        assert record["generated_sql"] == "SELECT COUNT(*) FROM [Dim].[Customer]"
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {**_BLOCK, "unknown": [{"column": "Ring.Name", "value_sha256": "0" * 16, "length": 3, "value": "Gamma"}]},
+            {**_BLOCK, "unknown": [{"column": "Ring.Name", "value_sha256": "0" * 16}]},
+            {**_BLOCK, "unknown": [{"column": "Ring.Name", "value_sha256": "0" * 16, "length": "Gamma"}]},
+            {**_BLOCK, "nearest": ["Alpha Hall"]},
+            {k: v for k, v in _BLOCK.items() if k != "fallback"},
+            {**_BLOCK, "checked": "2"},
+            {**_BLOCK, "unknown": ["Gamma"]},
+        ],
+        ids=["literal-key", "missing-key", "wrong-type", "extra-key", "missing-flag", "count-as-text", "bare-value"],
+    )
+    def test_a_block_that_could_hold_a_value_is_rejected_not_stored(self, block):
+        with pytest.raises(TypeError, match="value_check"):
+            _record(value_check=block)
