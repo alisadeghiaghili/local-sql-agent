@@ -393,8 +393,9 @@ def correction_text(sql: str, check: ValueCheck) -> str:
     Per value: the column, that the value does not exist, and the nearest
     real values (or a few that exist, when none is near), in the fence
     :mod:`prompt_engine.untrusted` puts around warehouse data; then what to
-    do: use the real value the question names, or, if it names no specific
-    value of the column, remove the filter. The caller appends it to the
+    do: use the real value the question means, keep a value it names that is
+    not listed (the cache lags behind the database), or, if it names no
+    specific value of the column, remove the filter. The caller appends it to the
     question segment, exactly as it does the text of any other correction.
 
     Parameters
@@ -440,10 +441,11 @@ def correction_text(sql: str, check: ValueCheck) -> str:
     parts += [
         "",
         "--- INSTRUCTIONS ---",
-        "For each value above: if the question names a specific value of that column, use the nearest "
-        "real value exactly as it is written. If the question does not name a specific value of this "
-        "column, remove this filter. Do not change anything else about the query. "
-        "Return only the corrected SQL statement.",
+        "For each value above: if the question names a specific value of that column, use the real "
+        "value it means, written exactly as listed; the list was read a little while ago, so if the "
+        "question names a value that is not listed, keep it as you wrote it. If the question does not "
+        "name a specific value of this column, remove this filter. Do not change anything else about "
+        "the query. Return only the corrected SQL statement.",
         "",
         "SQL:",
         "",
