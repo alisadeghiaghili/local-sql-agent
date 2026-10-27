@@ -1067,6 +1067,213 @@ def _resolve_star_tables(
 
 
 # ---------------------------------------------------------------------------
+# Where a column reference reads from
+# ---------------------------------------------------------------------------
+#
+# Used by callers that look at an already validated statement (the filter
+# value check); nothing in ``validate_sql`` calls it, so it decides nothing the
+# guard allows or refuses. It reads the same sources the join-only check does:
+# the ``FROM``/``JOIN`` sources of the nearest enclosing select, then the outer
+# select for a correlated reference.
+
+#: One stored column a reference can read: ``(table key, lower-cased column name)``.
+ColumnOrigin = tuple[str, str]
+
+
+def _source_label(source: exp.Expression) -> str:
+    """The lower-cased name a ``FROM``/``JOIN`` *source* is addressed by (its alias, else its name)."""
+    if isinstance(source, exp.Table):
+        return (source.alias or source.name or "").lower()
+    return (getattr(source, "alias", "") or "").lower()
+
+
+def _source_origins(
+    source: exp.Expression,
+    name: str,
+    ctes: dict[str, exp.Expression],
+    depth: int,
+) -> list[ColumnOrigin] | None:
+    """The stored columns column *name* of one ``FROM``/``JOIN`` *source* is, or ``None`` when unknown."""
+    if isinstance(source, exp.Table):
+        table_name, qualifier = _table_ref_name_and_qualifier(source)
+        if not qualifier and table_name.lower() in ctes:
+            return _body_origins(ctes[table_name.lower()], name, ctes, depth + 1)
+        canonical = _resolve_table_name(source, frozenset(ctes))
+        if canonical is None:
+            return None
+        return [(canonical, name)] if name in _COLUMNS_BY_TABLE[canonical] else []
+    if isinstance(source, exp.Subquery):
+        return _body_origins(source.this, name, ctes, depth + 1)
+    return None
+
+
+def _scope_origins(
+    select: exp.Select | None,
+    qualifier: str,
+    name: str,
+    ctes: dict[str, exp.Expression],
+    depth: int,
+    *,
+    outward: bool,
+) -> list[ColumnOrigin] | None:
+    """Stored columns column *name* (written with *qualifier*, ``""`` for none) is, seen from *select*.
+
+    A qualified name is looked up in the sources of *select* addressed by that
+    qualifier; an unqualified one in every source of *select*, and the answer
+    is every table that has a column of that name. With *outward* the search
+    moves to the enclosing select when this one has nothing to say (a
+    correlated reference); the body of a derived table or CTE never reaches
+    outside itself. ``None`` is "cannot tell" (a table-valued function, an
+    expression, recursion too deep), ``[]`` is "no stored column".
+    """
+    if depth > 6:
+        return None
+    scope = select
+    while scope is not None:
+        sources = _direct_from_sources(scope)
+        chosen = [s for s in sources if _source_label(s) == qualifier] if qualifier else sources
+        if chosen:
+            origins: list[ColumnOrigin] = []
+            for source in chosen:
+                found = _source_origins(source, name, ctes, depth)
+                if found is None:
+                    return None
+                origins.extend(found)
+            if origins or qualifier:
+                return origins
+        if not outward:
+            return []
+        scope = _enclosing_select(scope)
+    return []
+
+
+def _is_star(projection: exp.Expression) -> bool:
+    return isinstance(projection, exp.Star) or (
+        isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star)
+    )
+
+
+def _select_output_origins(
+    select: exp.Select, name: str, ctes: dict[str, exp.Expression], depth: int,
+) -> list[ColumnOrigin] | None:
+    """Stored columns the output column *name* of *select* is a plain copy of, or ``None``."""
+    stars = [p for p in select.expressions if _is_star(p)]
+    origins: list[ColumnOrigin] = []
+    matched = False
+    for projection in select.expressions:
+        if _is_star(projection) or (projection.alias_or_name or "").lower() != name:
+            continue
+        matched = True
+        inner = projection.unalias()
+        if not isinstance(inner, exp.Column) or not inner.name or _is_star(inner):
+            return None
+        found = _scope_origins(
+            select, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
+        )
+        if found is None:
+            return None
+        origins.extend(found)
+    if matched:
+        return origins
+    for star in stars:
+        qualifier = (star.table or "").lower() if isinstance(star, exp.Column) else ""
+        found = _scope_origins(select, qualifier, name, ctes, depth + 1, outward=False)
+        if found is None:
+            return None
+        origins.extend(found)
+    return origins
+
+
+def _body_origins(
+    body: exp.Expression, name: str, ctes: dict[str, exp.Expression], depth: int,
+) -> list[ColumnOrigin] | None:
+    """Stored columns the output column *name* of a derived table or CTE *body* is, or ``None``."""
+    if depth > 6:
+        return None
+    while isinstance(body, (exp.Subquery, exp.Paren)):
+        body = body.this
+    if isinstance(body, exp.Select):
+        return _select_output_origins(body, name, ctes, depth)
+    branches = _setop_branches(body)
+    if len(branches) < 2 or not all(isinstance(b, exp.Select) for b in branches):
+        return None
+    first = branches[0]
+    if any(_is_star(p) for p in first.expressions):
+        by_name = [_select_output_origins(b, name, ctes, depth) for b in branches]
+        return None if any(found is None for found in by_name) else [o for f in by_name for o in f]
+    names = [(p.alias_or_name or "").lower() for p in first.expressions]
+    if name not in names:
+        return []
+    position = names.index(name)
+    origins: list[ColumnOrigin] = []
+    for branch in branches:
+        if len(branch.expressions) <= position or _is_star(branch.expressions[position]):
+            return None
+        inner = branch.expressions[position].unalias()
+        if not isinstance(inner, exp.Column) or not inner.name:
+            return None
+        found = _scope_origins(
+            branch, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
+        )
+        if found is None:
+            return None
+        origins.extend(found)
+    return origins
+
+
+def column_origins(column: exp.Column, tree: exp.Expression) -> tuple[ColumnOrigin, ...]:
+    """The stored columns *column* reads, as ``(table key, lower-cased column)`` pairs.
+
+    The question the guard asks of a reference when it checks a denied or
+    join-only column, answered for a caller that needs the table too: the
+    qualifier is looked up through table aliases, then through the derived
+    tables and CTEs of the enclosing selects down to the table they copy the
+    column from (a plain copy only: ``r.Name`` or ``r.Name AS Label``, ``*``
+    or ``t.*``; a column computed by an expression is not a stored column). An
+    unqualified name is every table of its select that has a column of that
+    name, so a name two tables share gives both. The table key is the
+    ``schema.yaml`` key, as :func:`resolve_table_key` gives it.
+
+    Parameters
+    ----------
+    column:
+        A column reference inside *tree*.
+    tree:
+        The statement containing *column*.
+
+    Returns
+    -------
+    tuple[tuple[str, str], ...]
+        The stored columns, without repeats and in the order found; empty when
+        the reference is not (or cannot be shown to be) a plain read of a
+        stored column of a ``schema.yaml`` table.
+
+    Examples
+    --------
+    >>> tree = sqlglot.parse_one(
+    ...     "SELECT 1 FROM [sales].[Customer] AS c WHERE c.[Name] = 'x'", read="tsql")
+    >>> column_origins(next(tree.find_all(exp.Column)), tree)
+    (('Customer', 'name'),)
+    >>> tree = sqlglot.parse_one(
+    ...     "WITH c AS (SELECT * FROM [sales].[Customer]) SELECT 1 FROM c WHERE c.Name = 'x'",
+    ...     read="tsql")
+    >>> column_origins(list(tree.find_all(exp.Column))[-1], tree)
+    (('Customer', 'name'),)
+    >>> tree = sqlglot.parse_one("SELECT 1 FROM (SELECT 'x' AS Name) AS d WHERE d.Name = 'x'", read="tsql")
+    >>> column_origins(list(tree.find_all(exp.Column))[-1], tree)
+    ()
+    """
+    name = (column.name or "").lower()
+    if not name or _is_star(column):
+        return ()
+    ctes = {cte.alias.lower(): cte.this for cte in tree.find_all(exp.CTE) if cte.alias}
+    found = _scope_origins(
+        _enclosing_select(column), (column.table or "").lower(), name, ctes, 0, outward=True,
+    )
+    return tuple(dict.fromkeys(found or ()))
+
+
+# ---------------------------------------------------------------------------
 # Join-only columns (scoped entries of ``denied_columns``)
 # ---------------------------------------------------------------------------
 #
