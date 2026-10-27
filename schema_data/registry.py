@@ -106,6 +106,8 @@ __all__ = [
     "validate_schema_yaml_text",
     "get_table_descriptions",
     "get_table_columns",
+    "get_column_units",
+    "COLUMN_UNITS",
     "get_relationships_map",
     "get_table_schema_qualifiers",
     "get_table_datasource_names",
@@ -498,6 +500,12 @@ def normalise_datasource_names(value: Any) -> tuple[str, ...]:
 # its own five configs (a validated model per YAML file).
 # ---------------------------------------------------------------------------
 
+#: The values ``column_units`` accepts: ``rial`` (a number in the column is an
+#: amount of money in Iranian Rials) and ``none`` (it is not money: a count,
+#: a volume, a percentage, an identifier).
+COLUMN_UNITS: frozenset[str] = frozenset({"rial", "none"})
+
+
 class TableDefinition(BaseModel):
     """One entry under ``schema.yaml``'s ``tables`` key.
 
@@ -529,11 +537,22 @@ class TableDefinition(BaseModel):
     module docstring's "Per-table schema qualifier and
     resolver/prefetch flags" section, and :class:`SchemaConfig`'s validator
     for the consistency rule tying them to ``columns``.
+
+    ``column_units`` says, for the columns that need it, whether a number
+    in them is money: ``{column: "rial" | "none"}``. Optional and never
+    written by the sync. It only steers the wording of the answer summary
+    (:mod:`llm.column_units`); the prompt's schema block and the guard's
+    allowlist do not read it. ``columns`` stays a plain ``{name:
+    description}`` map on purpose (every reader and the sync's line editor
+    rely on that shape), so the unit sits in a map of its own beside
+    ``column_types``, may name only columns of ``columns`` (see
+    :class:`SchemaConfig`) and is spelled in lower case after loading.
     """
 
     description: str = ""
     columns: dict[str, str] | None = None
     column_types: dict[str, str] = Field(default_factory=dict)
+    column_units: dict[str, str] = Field(default_factory=dict)
     db_schema: str = ""
     datasource: tuple[str, ...] = ()
     resolvable_columns: tuple[str, ...] = Field(default_factory=tuple)
@@ -544,6 +563,30 @@ class TableDefinition(BaseModel):
     def _datasource_is_a_name_or_a_list_of_names(cls, value: Any) -> tuple[str, ...]:
         """Accept ``datasource: Name`` or ``datasource: [A, B]``; store a tuple."""
         return normalise_datasource_names(value)
+
+    @field_validator("column_units", mode="before")
+    @classmethod
+    def _units_are_known_words(cls, value: Any) -> dict[str, str]:
+        """Accept ``rial`` or ``none`` (any letter case) per column; store lower case.
+
+        An empty ``column_units:`` line (``None``) is an empty map, which is
+        what the sync leaves behind when it prunes the last entry.
+        """
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"column_units must be a map of column -> unit, not {type(value).__name__}"
+            )
+        units: dict[str, str] = {}
+        for column, unit in value.items():
+            word = unit.strip().lower() if isinstance(unit, str) else unit
+            if word not in COLUMN_UNITS:
+                raise ValueError(
+                    f"column_units[{column!r}] must be one of {sorted(COLUMN_UNITS)}, got {unit!r}"
+                )
+            units[column] = word
+        return units
 
 
 class RelationshipDefinition(BaseModel):
@@ -595,14 +638,20 @@ class SchemaConfig(BaseModel):
         see :func:`security.dialects.quote_tsql_qualifier`, which renders it.
 
         A fourth rule, also for every table: every key of ``column_types``
-        must be a key of ``columns`` (the types describe columns the
-        table declares; they never add one).
+        and of ``column_units`` must be a key of ``columns`` (they describe
+        columns the table declares; they never add one).
         """
         for name, table in self.tables.items():
             unknown_types = sorted(set(table.column_types) - set(table.columns or {}))
             if unknown_types:
                 raise ValueError(
                     f"table '{name}': column_types names column(s) {unknown_types} "
+                    f"that are not in this table's `columns` map"
+                )
+            unknown_units = sorted(set(table.column_units) - set(table.columns or {}))
+            if unknown_units:
+                raise ValueError(
+                    f"table '{name}': column_units names column(s) {unknown_units} "
                     f"that are not in this table's `columns` map"
                 )
             if table.db_schema:
@@ -797,6 +846,32 @@ def validate_schema_yaml_text(text: str) -> SchemaConfig:
 _cache: dict[str, Any] = {}
 
 
+def _merged_column_units(config: SchemaConfig) -> dict[str, str]:
+    """``{column name in lower case: unit}`` over every table that declares one.
+
+    A result column carries its alias, not the table it came from, so the
+    unit is looked up by name alone. Two tables that give the same name
+    different units cannot be told apart that way; the name is then left out
+    and the summary falls back to the column name (:mod:`llm.column_units`).
+
+    >>> config = validate_schema_yaml_text(
+    ...     "tables:\\n"
+    ...     "  A: {columns: {Qty: q, Price: p}, column_units: {Qty: none, Price: rial}}\\n"
+    ...     "  B: {columns: {Qty: q, Price: p}, column_units: {Qty: none, Price: none}}\\n"
+    ... )
+    >>> _merged_column_units(config)
+    {'qty': 'none'}
+    """
+    seen: dict[str, str] = {}
+    conflicting: set[str] = set()
+    for table in config.tables.values():
+        for column, unit in table.column_units.items():
+            key = column.lower()
+            if seen.setdefault(key, unit) != unit:
+                conflicting.add(key)
+    return {column: unit for column, unit in seen.items() if column not in conflicting}
+
+
 def _cache_entries(config: SchemaConfig) -> dict[str, Any]:
     """The process-lifetime cache's content for *config* (``_loaded`` included)."""
     return {
@@ -808,6 +883,7 @@ def _cache_entries(config: SchemaConfig) -> dict[str, Any]:
             for name, table in config.tables.items()
             if table.columns
         },
+        "column_units": _merged_column_units(config),
         "relationships": {
             f"{rel.from_table} -> {rel.to_table}": rel.join_sql
             for rel in config.relationships
@@ -945,6 +1021,16 @@ def get_table_columns() -> dict[str, dict[str, str]]:
     allowlist (see :data:`schema_data.columns.TABLE_COLUMNS`).
     """
     return _schema_cache()["table_columns"]
+
+
+def get_column_units() -> dict[str, str]:
+    """Return ``{column name in lower case: "rial" | "none"}`` from ``column_units:``.
+
+    Only columns a table declares a unit for; a name declared with different
+    units in different tables is absent. Used for the wording of the answer
+    summary (:mod:`llm.column_units`) and nothing else.
+    """
+    return _schema_cache()["column_units"]
 
 
 def get_relationships_map() -> dict[str, str]:

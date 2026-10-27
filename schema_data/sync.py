@@ -831,7 +831,7 @@ def _column_edits(
     lines: Sequence[str], block: TableBlock, table: TableDefinition, table_plan: TablePlan,
     unit: int, cr: str, stats: RenderStats,
 ) -> list[Edit]:
-    """Line edits for one table's columns and ``column_types:``."""
+    """Line edits for one table's columns, ``column_types:`` and (when pruning) ``column_units:``."""
     span = child_span(lines, block, "columns")
     if span is None:
         raise LayoutError(f"table {table_plan.key!r}: cannot find its `columns:` block")
@@ -869,6 +869,14 @@ def _column_edits(
     ]
     if appended:
         edits.append((stop, stop, appended))
+
+    # A pruned column takes its hand-written unit with it: `column_units:` may
+    # name only columns the table still has.
+    units_span = child_span(lines, block, "column_units")
+    if units_span is not None and pruned:
+        for entry in parse_entries(lines, *units_span):
+            if entry.name in pruned:
+                edits.append((entry.line, entry.stop, []))
 
     types_span = child_span(lines, block, "column_types")
     new_types = [*table_plan.recorded, *((a.name, a.data_type) for a in table_plan.adds)]
@@ -943,6 +951,7 @@ def expected_tables(
             pruned = set(table_plan.pruned)
             columns = {c: d for c, d in data["columns"].items() if c not in pruned}
             types = {c: t for c, t in data["column_types"].items() if c not in pruned}
+            data["column_units"] = {c: u for c, u in data["column_units"].items() if c not in pruned}
             for name, data_type in table_plan.recorded:
                 types[name] = data_type
             for change in table_plan.changed:
