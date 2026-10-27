@@ -1216,7 +1216,9 @@ def check_no_staging_tables() -> CheckResult:
     PASS detail starts with ``advice:`` and lists the tables per schema, never
     a value. The patterns are the ``STAGING_PATTERNS`` setting
     (:attr:`config.Settings.staging_patterns`); empty switches the check off.
-    File reads only. SKIP when ``schema.yaml`` does not load.
+    A schema in a source's ``keep_staging_schemas:`` is not counted for the
+    schema patterns (the operator chose to keep it); its ``table:`` matches
+    still are. File reads only. SKIP when ``schema.yaml`` does not load.
     """
     from core import config_doctor as doctor
 
@@ -1227,7 +1229,16 @@ def check_no_staging_tables() -> CheckResult:
     view = doctor.read_schema(_project_config_dir())
     if not view.parsed:
         return CheckResult(name, "SKIP", "schema.yaml did not load -- `project_config/ loads` says why")
-    counts = doctor.staging_tables(view, patterns)
+    keep: dict[str, tuple[str, ...]] = {}
+    default = ""
+    try:
+        from database.datasources import datasource_keep_staging_schemas, default_datasource_name
+
+        keep = datasource_keep_staging_schemas()
+        default = default_datasource_name()
+    except Exception:  # noqa: BLE001 - an unreadable datasources.yaml is another check's finding
+        keep = {}
+    counts = doctor.staging_tables(view, patterns, keep, default)
     if not counts:
         return CheckResult(name, "PASS", f"none of the {len(view.tables)} table(s) matches STAGING_PATTERNS")
     total = sum(counts.values())
@@ -1276,23 +1287,30 @@ def check_no_sample_values_in_descriptions() -> CheckResult:
 
 
 def check_no_table_in_excluded_schema() -> CheckResult:
-    """Advise when ``schema.yaml`` lists a table in a schema the setup tools do not scan.
+    """Advise when ``schema.yaml`` lists a table the setup tools do not scan.
 
     The exclusion (:mod:`database.schema_filter`: the system schemas, the
-    ``EXCLUDE_SCHEMAS`` setting and a source's ``exclude_schemas:``) decides
+    ``EXCLUDE_SCHEMAS`` setting and a source's ``exclude_schemas:``, and the
+    ``EXCLUDE_TABLES`` setting and a source's ``exclude_tables:``) decides
     which database tables the inspector drafts and ``sync_schema.py`` proposes;
     it never removes a table ``schema.yaml`` already lists. A listed table whose
-    schema every one of its sources excludes is a contradiction: either the
-    exclusion was added after the table, or the table was copied in from a
-    draft. This never fails (the PASS detail starts with ``advice:``); it
-    counts the tables, lists the first keys and names the two fixes: remove the
-    table, or narrow the exclusion. SKIP when no exclusion is configured beyond
-    the system schemas and no table matches, or when ``schema.yaml`` or
+    schema every one of its sources excludes, or that table patterns name in
+    every one of its sources, is a contradiction: either the exclusion was
+    added after the table, or the table was copied in from a draft. This never
+    fails (the PASS detail starts with ``advice:``); it counts the tables,
+    lists the first keys and names the two fixes: remove the table, or narrow
+    the exclusion. SKIP when no exclusion is configured beyond the system
+    schemas and no table matches, or when ``schema.yaml`` or
     ``datasources.yaml`` does not load. File reads only.
     """
     from core import config_doctor as doctor
-    from database.datasources import datasource_exclude_schemas, datasource_names, default_datasource_name
-    from database.schema_filter import exclusion_patterns
+    from database.datasources import (
+        datasource_exclude_schemas,
+        datasource_exclude_tables,
+        datasource_names,
+        default_datasource_name,
+    )
+    from database.schema_filter import exclusion_patterns, table_exclusion_patterns
 
     name = "No table in an excluded schema"
     view = doctor.read_schema(_project_config_dir())
@@ -1302,19 +1320,29 @@ def check_no_table_in_excluded_schema() -> CheckResult:
         sources = datasource_names()
         default = default_datasource_name()
         patterns = {source: exclusion_patterns(source) for source in sources}
+        table_patterns = {source: table_exclusion_patterns(source) for source in sources}
         configured = bool(cfg.settings.exclude_schemas.strip()) or any(datasource_exclude_schemas().values())
+        tables_configured = bool(cfg.settings.exclude_tables.strip()) or any(datasource_exclude_tables().values())
     except Exception as exc:  # noqa: BLE001
         return CheckResult(name, "SKIP", f"datasources.yaml did not load ({type(exc).__name__}) -- `Tables map to data sources` says why")
     found = doctor.tables_in_excluded_schemas(view, patterns, default)
+    named = [t for t in doctor.tables_matching_excluded_tables(view, table_patterns, default) if t not in found]
+    found = [*found, *named]
     if not found:
-        if not configured:
+        if not (configured or tables_configured):
             return CheckResult(name, "SKIP", "no schema is excluded beyond the system schemas (EXCLUDE_SCHEMAS and exclude_schemas: are empty)")
-        return CheckResult(name, "PASS", f"none of the {len(view.tables)} table(s) is in an excluded schema")
+        tail = " or named by an excluded table pattern" if tables_configured else ""
+        return CheckResult(name, "PASS", f"none of the {len(view.tables)} table(s) is in an excluded schema{tail}")
+    scope = "in a schema the setup tools are told not to scan"
+    fixes = "(EXCLUDE_SCHEMAS in .env, exclude_schemas: in datasources.yaml)"
+    if named:
+        scope += ", or named by a table pattern"
+        fixes = "(EXCLUDE_SCHEMAS / EXCLUDE_TABLES in .env, exclude_schemas: / exclude_tables: in datasources.yaml)"
     return CheckResult(
         name, "PASS",
-        f"advice: {len(found)} of {len(view.tables)} table(s) are in a schema the setup tools are told not to scan: "
+        f"advice: {len(found)} of {len(view.tables)} table(s) are {scope}: "
         f"{_listed([t.key for t in found])} -- remove them from schema.yaml, or narrow the exclusion "
-        "(EXCLUDE_SCHEMAS in .env, exclude_schemas: in datasources.yaml). "
+        f"{fixes}. "
         "The exclusion only limits what the inspector and sync_schema.py propose; these tables are still synced",
     )
 

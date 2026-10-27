@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import re
 
+from llm.column_units import column_hints, declared_units
 from llm.router import LLMRouter, RemoteProviderNotAllowedError, TaskType
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,11 @@ The database returned these results (up to 20 rows shown):
 
 Write a concise one-paragraph summary in the same language as the question.
 Do not repeat column names literally — describe findings in plain language.
-All monetary values are in Iranian Rials (ریال): always express amounts with
-the unit Rial/ریال and never use toman/تومان.
-If the result is empty, say so clearly.
+Money is in Iranian Rials (ریال): write a money amount with the unit Rial/ریال
+and never use toman/تومان. Use Rial/ریال ONLY for a value that is money; never
+attach it, or any other currency, to counts, quantities, volumes, weights,
+percentages, ids, codes or dates.
+{column_units}If the result is empty, say so clearly.
 """
 
 #: space, NBSP, NNBSP, thin space, ٬
@@ -127,7 +130,11 @@ def interpret_rows(router: LLMRouter, question: str, rows: list[dict]) -> str:
         the prose did not come back would trade something for nothing.
     """
     preview_text = "\n".join(str(r) for r in rows[:MAX_PREVIEW_ROWS]) or "(empty result set)"
-    prompt = INTERPRET_TEMPLATE.format(question=question, rows=preview_text)
+    preview = rows[:MAX_PREVIEW_ROWS]
+    prompt = INTERPRET_TEMPLATE.format(
+        question=question, rows=preview_text,
+        column_units=column_hints(preview, declared_units()),
+    )
     try:
         route_result = router.generate_text_for_task(TaskType.INTERPRETATION, prompt)
     except RemoteProviderNotAllowedError as exc:

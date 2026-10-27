@@ -39,8 +39,14 @@ order, and counted under the first that applies (:class:`Skipped`):
     The schema is not in ``--include-schemas``.
 ``exclude-tables``
     The table is named by ``--exclude-tables``.
+``configured-tables``
+    ``EXCLUDE_TABLES`` or the source's ``exclude_tables:`` matches
+    ``schema.table`` (:func:`database.schema_filter.table_is_excluded`).
 ``staging``
-    ``STAGING_PATTERNS`` matches (unless ``--include-staging``).
+    ``STAGING_PATTERNS`` matches (unless ``--include-staging``). A schema in the
+    source's ``keep_staging_schemas:`` is exempt from the *schema* patterns, so
+    its tables are kept apart from those the ``table:`` patterns or
+    ``exclude_tables:`` drop.
 
 Relationships
 -------------
@@ -66,6 +72,7 @@ from database.schema_filter import (
     RULE_CLI,
     RULE_CONFIGURED,
     RULE_SYSTEM,
+    RULE_TABLES,
     SchemaExclusion,
 )
 from database.schema_inspector import (
@@ -126,7 +133,7 @@ SAMPLE_REVIEW_FILENAME = "sample_values.review.yaml"
 
 _RULE_ORDER = (
     RULE_SYSTEM, RULE_CONFIGURED, RULE_CLI, RULE_CHOSEN, RULE_NOT_INCLUDED, RULE_EXCLUDE_TABLES,
-    RULE_STAGING,
+    RULE_TABLES, RULE_STAGING,
 )
 
 _RULE_LABELS = {
@@ -136,6 +143,7 @@ _RULE_LABELS = {
     RULE_CHOSEN: "left out interactively",
     RULE_NOT_INCLUDED: "outside --include-schemas",
     RULE_EXCLUDE_TABLES: "--exclude-tables",
+    RULE_TABLES: "configured table exclusion (EXCLUDE_TABLES / exclude_tables:)",
     RULE_STAGING: "staging (STAGING_PATTERNS; --include-staging keeps them)",
 }
 
@@ -286,7 +294,9 @@ def select_tables(
             rule = RULE_NOT_INCLUDED
         if rule is None and info.name.lower() in dropped:
             rule = RULE_EXCLUDE_TABLES
-        if rule is None and doctor.is_staging(info.schema, info.name, staging):
+        if rule is None and exclusion.table_excluded(info.schema, info.name):
+            rule = RULE_TABLES
+        if rule is None and doctor.is_staging(info.schema, info.name, staging, exclusion.keep_staging):
             rule = RULE_STAGING
         if rule is None:
             kept[location] = info

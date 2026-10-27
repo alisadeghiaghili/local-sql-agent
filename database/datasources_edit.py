@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BUSL-1.1
 # Copyright (c) 2024-2026 Ali Sadeghi Aghili
-"""Recording schema exclusions in ``datasources.yaml`` without touching anything else.
+"""Recording schema and table exclusions in ``datasources.yaml`` without touching anything else.
 
 ``datasources.yaml`` is written by hand and documented in place: the header,
 the commented-out alternatives and the note above each source all carry
@@ -26,6 +26,9 @@ A layout it cannot edit safely (a source written inline as ``name: {...}``, a
 flow list that runs over several lines) is refused with
 :class:`DatasourcesEditError`; the caller then shows :func:`exclude_schemas_snippet`
 for the operator to paste.
+
+:func:`add_exclude_tables` does the same for the ``exclude_tables:`` list
+(patterns on ``schema.table``), with the same layouts and the same refusals.
 
 The result is validated twice before anything is replaced: it must pass
 :func:`database.datasources.validate_datasources_yaml_text`, and the parsed
@@ -58,12 +61,17 @@ __all__ = [
     "DatasourcesEditError",
     "Recorded",
     "add_exclude_schemas",
+    "add_exclude_tables",
     "exclude_schemas_snippet",
+    "exclude_tables_snippet",
     "record_exclude_schemas",
+    "record_exclude_tables",
 ]
 
-#: The key this module edits.
+#: The key :func:`add_exclude_schemas` edits.
 _KEY = "exclude_schemas"
+#: The key :func:`add_exclude_tables` edits.
+_TABLES_KEY = "exclude_tables"
 
 _DATASOURCES_LINE = re.compile(r"^datasources:[ \t]*(?:#.*)?\r?$")
 
@@ -95,6 +103,28 @@ class Recorded:
     added: Mapping[str, tuple[str, ...]]
 
 
+def _snippet(additions: Mapping[str, Sequence[str]], key: str) -> str:
+    """The ``datasources:`` fragment that adds *additions* under *key*."""
+    lines = ["datasources:"]
+    for source, patterns in additions.items():
+        lines.append(f"  {yaml_key(source)}:")
+        lines.append(f"    {key}: [{', '.join(quote(p) for p in patterns)}]")
+    return "\n".join(lines)
+
+
+def exclude_tables_snippet(additions: Mapping[str, Sequence[str]]) -> str:
+    """The lines to add to ``datasources.yaml`` by hand for ``exclude_tables:``.
+
+    Examples
+    --------
+    >>> print(exclude_tables_snippet({"sales": ["X_Fact.Order", "X_Stg.*_Delete"]}))
+    datasources:
+      sales:
+        exclude_tables: ["X_Fact.Order", "X_Stg.*_Delete"]
+    """
+    return _snippet(additions, _TABLES_KEY)
+
+
 def exclude_schemas_snippet(additions: Mapping[str, Sequence[str]]) -> str:
     """The lines to add to ``datasources.yaml`` by hand.
 
@@ -116,14 +146,10 @@ def exclude_schemas_snippet(additions: Mapping[str, Sequence[str]]) -> str:
       sales:
         exclude_schemas: ["Scratch", "*_Tmp"]
     """
-    lines = ["datasources:"]
-    for source, patterns in additions.items():
-        lines.append(f"  {yaml_key(source)}:")
-        lines.append(f"    {_KEY}: [{', '.join(quote(p) for p in patterns)}]")
-    return "\n".join(lines)
+    return _snippet(additions, _KEY)
 
 
-def _flow_end(rest: str) -> tuple[int, int]:
+def _flow_end(rest: str, key: str = _KEY) -> tuple[int, int]:
     """Where the one-line flow list in *rest* ends: ``(index of "]", items in it)``.
 
     Raises
@@ -145,16 +171,16 @@ def _flow_end(rest: str) -> tuple[int, int]:
                 items += 1
     except yaml.YAMLError as exc:
         raise DatasourcesEditError(
-            f"`{_KEY}:` is a flow list that does not end on its own line, so it cannot be edited"
+            f"`{key}:` is a flow list that does not end on its own line, so it cannot be edited"
         ) from exc
     raise DatasourcesEditError(
-        f"`{_KEY}:` is a flow list that does not end on its own line, so it cannot be edited"
+        f"`{key}:` is a flow list that does not end on its own line, so it cannot be edited"
     )
 
 
-def _extend_flow(rest: str, items: Sequence[str]) -> str:
+def _extend_flow(rest: str, items: Sequence[str], key: str = _KEY) -> str:
     """*rest* (the text after ``exclude_schemas:``) with *items* added inside its brackets."""
-    close, existing = _flow_end(rest)
+    close, existing = _flow_end(rest, key)
     base = rest[:close].rstrip()
     separator = "" if not existing else " " if base.endswith(",") else ", "
     return base + separator + ", ".join(quote(p) for p in items) + rest[close:]
@@ -198,24 +224,25 @@ def _source_regions(lines: Sequence[str], first: int, stop: int) -> dict[str, tu
 
 def _edit_source(
     lines: Sequence[str], name: str, head: int, end: int, patterns: Sequence[str], eol: str,
+    key: str = _KEY,
 ) -> tuple[int, int, list[str]]:
     """The line edit that adds *patterns* to source *name*, whose region is ``lines[head:end]``."""
     inner = [i for i in range(head + 1, end) if not is_blank_or_comment(lines[i])]
     if not inner:
         raise DatasourcesEditError(f"data source {name!r} has no settings written under its name")
     child = indent_of(lines[inner[0]])
-    pattern = re.compile(rf"^(?P<head> {{{child}}}{_KEY}[ \t]*:)(?P<rest>.*)$")
+    pattern = re.compile(rf"^(?P<head> {{{child}}}{key}[ \t]*:)(?P<rest>.*)$")
     found = [(i, m) for i in inner if indent_of(lines[i]) == child and (m := pattern.match(lines[i].rstrip("\r")))]
     if not found:
         value = ", ".join(quote(p) for p in patterns)
-        return inner[-1] + 1, inner[-1] + 1, [f"{' ' * child}{_KEY}: [{value}]{eol}"]
+        return inner[-1] + 1, inner[-1] + 1, [f"{' ' * child}{key}: [{value}]{eol}"]
 
     entry, match = found[0]
     rest = match.group("rest")
     if rest.strip().startswith("["):
-        return entry, entry + 1, [match.group("head") + _extend_flow(rest, patterns) + eol]
+        return entry, entry + 1, [match.group("head") + _extend_flow(rest, patterns, key) + eol]
     if rest.strip() and not rest.strip().startswith("#"):
-        raise DatasourcesEditError(f"data source {name!r}: `{_KEY}:` is not a list")
+        raise DatasourcesEditError(f"data source {name!r}: `{key}:` is not a list")
 
     # A block list: the items are the lines below that start with a dash.
     last = item_indent = None
@@ -230,8 +257,81 @@ def _edit_source(
         else:
             break
     if last is None or item_indent is None:
-        raise DatasourcesEditError(f"data source {name!r}: `{_KEY}:` has no list items to extend")
+        raise DatasourcesEditError(f"data source {name!r}: `{key}:` has no list items to extend")
     return last + 1, last + 1, [f"{' ' * item_indent}- {quote(p)}{eol}" for p in patterns]
+
+
+def _add_patterns(
+    text: str, additions: Mapping[str, Sequence[str]], key: str,
+) -> tuple[str, dict[str, tuple[str, ...]]]:
+    """The body of :func:`add_exclude_schemas` and :func:`add_exclude_tables`, for the list *key*."""
+    try:
+        before = validate_datasources_yaml_text(text)
+    except ValueError as exc:
+        raise DatasourcesEditError(f"datasources.yaml is not valid as it stands: {exc}") from exc
+
+    wanted: dict[str, list[str]] = {}
+    for source, patterns in additions.items():
+        if source not in before.datasources:
+            raise DatasourcesEditError(f"unknown data source {source!r}")
+        listed = {p.lower() for p in getattr(before.datasources[source], key)}
+        fresh: list[str] = []
+        for pattern in (p.strip() for p in patterns):
+            if pattern and pattern.lower() not in listed:
+                listed.add(pattern.lower())
+                fresh.append(pattern)
+        if fresh:
+            wanted[source] = fresh
+    if not wanted:
+        return text, {}
+
+    lines = text.split("\n")
+    eol = "\r" if "\r\n" in text else ""
+    first, stop = _sources_block(lines)
+    regions = _source_regions(lines, first, stop)
+    edits = []
+    for source, patterns in wanted.items():
+        if source not in regions:
+            raise DatasourcesEditError(
+                f"data source {source!r} is not written as a `{source}:` block, so it cannot be edited"
+            )
+        head, end = regions[source]
+        edits.append(_edit_source(lines, source, head, end, patterns, eol, key))
+    new = "\n".join(apply_edits(lines, edits))
+
+    try:
+        after = validate_datasources_yaml_text(new)
+    except ValueError as exc:
+        raise DatasourcesEditError(f"the edited file would not be valid: {exc}") from exc
+    expected = before.model_dump()
+    for source, patterns in wanted.items():
+        expected["datasources"][source][key] = [*getattr(before.datasources[source], key), *patterns]
+    if after.model_dump() != expected:
+        raise DatasourcesEditError(f"the edit would change more than the {key} lists")
+    return new, {source: tuple(patterns) for source, patterns in wanted.items()}
+
+
+def add_exclude_tables(
+    text: str, additions: Mapping[str, Sequence[str]],
+) -> tuple[str, dict[str, tuple[str, ...]]]:
+    """*text* with *additions* added to the sources' ``exclude_tables:`` lists.
+
+    The same edit as :func:`add_exclude_schemas`, for the list of table
+    patterns (``schema.table``, ``fnmatch``).
+
+    Examples
+    --------
+    >>> text = "datasources:\\n  sales:\\n    url_env: DB_URL_SALES\\n"
+    >>> new, added = add_exclude_tables(text, {"sales": ["X_Fact.Order", "X_Stg.*_Delete"]})
+    >>> print(new, end="")
+    datasources:
+      sales:
+        url_env: DB_URL_SALES
+        exclude_tables: ["X_Fact.Order", "X_Stg.*_Delete"]
+    >>> added
+    {'sales': ('X_Fact.Order', 'X_Stg.*_Delete')}
+    """
+    return _add_patterns(text, additions, _TABLES_KEY)
 
 
 def add_exclude_schemas(
@@ -283,52 +383,47 @@ def add_exclude_schemas(
     >>> again == new, none
     (True, {})
     """
+    return _add_patterns(text, additions, _KEY)
+
+
+def _record(
+    path: Path, additions: Mapping[str, Sequence[str]], stamp: str, key: str,
+) -> Recorded:
+    """The body of :func:`record_exclude_schemas` and :func:`record_exclude_tables`."""
     try:
-        before = validate_datasources_yaml_text(text)
-    except ValueError as exc:
-        raise DatasourcesEditError(f"datasources.yaml is not valid as it stands: {exc}") from exc
-
-    wanted: dict[str, list[str]] = {}
-    for source, patterns in additions.items():
-        if source not in before.datasources:
-            raise DatasourcesEditError(f"unknown data source {source!r}")
-        listed = {p.lower() for p in before.datasources[source].exclude_schemas}
-        fresh: list[str] = []
-        for pattern in (p.strip() for p in patterns):
-            if pattern and pattern.lower() not in listed:
-                listed.add(pattern.lower())
-                fresh.append(pattern)
-        if fresh:
-            wanted[source] = fresh
-    if not wanted:
-        return text, {}
-
-    lines = text.split("\n")
-    eol = "\r" if "\r\n" in text else ""
-    first, stop = _sources_block(lines)
-    regions = _source_regions(lines, first, stop)
-    edits = []
-    for source, patterns in wanted.items():
-        if source not in regions:
-            raise DatasourcesEditError(
-                f"data source {source!r} is not written as a `{source}:` block, so it cannot be edited"
-            )
-        head, end = regions[source]
-        edits.append(_edit_source(lines, source, head, end, patterns, eol))
-    new = "\n".join(apply_edits(lines, edits))
-
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DatasourcesEditError(f"cannot read {path}: {exc}") from exc
+    new, added = _add_patterns(text, additions, key)
+    if not added:
+        return Recorded(path, None, {})
+    temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}")
     try:
-        after = validate_datasources_yaml_text(new)
-    except ValueError as exc:
-        raise DatasourcesEditError(f"the edited file would not be valid: {exc}") from exc
-    expected = before.model_dump()
-    for source, patterns in wanted.items():
-        expected["datasources"][source]["exclude_schemas"] = [
-            *before.datasources[source].exclude_schemas, *patterns,
-        ]
-    if after.model_dump() != expected:
-        raise DatasourcesEditError("the edit would change more than the exclude_schemas lists")
-    return new, {source: tuple(patterns) for source, patterns in wanted.items()}
+        (backup,) = back_up([path], stamp)
+        temporary.write_bytes(new.encode("utf-8"))
+        shutil.copymode(path, temporary)
+        os.replace(temporary, path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise DatasourcesEditError(f"cannot write {path}: {exc}") from exc
+    return Recorded(path, backup, added)
+
+
+def record_exclude_tables(
+    path: Path, additions: Mapping[str, Sequence[str]], *, stamp: str,
+) -> Recorded:
+    """Add *additions* to the ``exclude_tables:`` lists of the file at *path*.
+
+    The same careful write as :func:`record_exclude_schemas`: validated first,
+    backed up to ``<name>.bak-<stamp>``, replaced atomically, line endings kept.
+
+    Raises
+    ------
+    DatasourcesEditError
+        If the file cannot be edited, or read, copied or written; it is
+        untouched then.
+    """
+    return _record(path, additions, stamp, _TABLES_KEY)
 
 
 def record_exclude_schemas(
@@ -361,20 +456,4 @@ def record_exclude_schemas(
         If the file cannot be edited, or read, copied or written; it is
         untouched then (the backup, if already made, is kept).
     """
-    try:
-        text = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise DatasourcesEditError(f"cannot read {path}: {exc}") from exc
-    new, added = add_exclude_schemas(text, additions)
-    if not added:
-        return Recorded(path, None, {})
-    temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    try:
-        (backup,) = back_up([path], stamp)
-        temporary.write_bytes(new.encode("utf-8"))
-        shutil.copymode(path, temporary)
-        os.replace(temporary, path)
-    except OSError as exc:
-        temporary.unlink(missing_ok=True)
-        raise DatasourcesEditError(f"cannot write {path}: {exc}") from exc
-    return Recorded(path, backup, added)
+    return _record(path, additions, stamp, _KEY)

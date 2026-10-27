@@ -15,11 +15,16 @@
  *   many numeric columns / many rows -> table
  *   non-numeric only                 -> table
  *   0 rows                           -> empty     (see renderEmptyResult)
+ *
+ * A numeric column whose name is an identifier (`ID`, `RingID`, `کد` ...,
+ * see `isIdentifierName` in ../num.js) is a label, not a measure: a
+ * (Name, ID) result is a table, never a chart of the ids. Only the chart row
+ * above is affected; a 1 x 1 or one-row result keeps its shape.
  */
 
 "use strict";
 
-import { fmt } from "../num.js";
+import { fmt, isIdentifierName } from "../num.js";
 import { icon as svgIcon } from "../icons.js";
 
 import { renderChartAndTable } from "./chart.js";
@@ -77,7 +82,10 @@ export function determineShape(result) {
   if (rows.length === 1 && columns.length > 1) {
     return SHAPE.RECORD;
   }
-  if (columns.length === 2 && numericCols.length === 1 && rows.length >= 2 && rows.length <= CHART_MAX_ROWS) {
+  if (
+    columns.length === 2 && numericCols.length === 1 && !isIdentifierName(numericCols[0].name) &&
+    rows.length >= 2 && rows.length <= CHART_MAX_ROWS
+  ) {
     return SHAPE.CHART;
   }
   return SHAPE.TABLE;

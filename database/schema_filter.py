@@ -20,13 +20,34 @@ setup wizard. A schema is excluded when its name matches any of these
    (:attr:`database.datasources.DataSourceDefinition.exclude_schemas`).
 4. Patterns given for one run (``--exclude-schemas`` of a command line).
 
+Tables, and staging schemas that are kept
+-----------------------------------------
+A schema is often wanted as a whole except for a few tables, or the other way
+round, so two more lists sit beside the schema patterns:
+
+* ``EXCLUDE_TABLES`` (:attr:`config.Settings.exclude_tables`) and the source's
+  ``exclude_tables:`` are ``fnmatch`` patterns compared, case-insensitively,
+  with ``schema.table`` (:func:`table_is_excluded`): ``X_Fact.Order`` is one
+  table, ``X_Stg.*_Delete`` the change-capture tables of one schema,
+  ``*.Order`` a table of that name anywhere. A pattern with no ``.`` is
+  compared with the table name alone. They are used by the same tools, in the
+  same places, as the schema patterns, and are reported the same way.
+* ``keep_staging_schemas:`` of a source names schemas that the schema patterns
+  of ``STAGING_PATTERNS`` (``*_Stg``, ``*stg*``, ``*staging*``) must not drop,
+  so a staging schema can be scanned while its change-capture tables are still
+  left out by the ``table:`` patterns of ``STAGING_PATTERNS`` or by
+  ``exclude_tables:`` (:meth:`SchemaExclusion.keeps_staging`). A schema in
+  ``exclude_schemas`` stays excluded: the keep list only lifts the staging rule.
+
 Discovery only
 --------------
 The exclusion decides which catalogue tables a tool *proposes, drafts or
 reports*. It never hides a table that ``schema.yaml`` already lists: those are
 synced exactly as before, and the deployment preflight reports one that sits in
-an excluded schema (:func:`core.config_doctor.tables_in_excluded_schemas`) so
-the contradiction is visible instead of silent.
+an excluded schema or matches an excluded table
+(:func:`core.config_doctor.tables_in_excluded_schemas`,
+:func:`core.config_doctor.tables_matching_excluded_tables`) so the
+contradiction is visible instead of silent.
 
 Why it is recorded
 ------------------
@@ -51,15 +72,19 @@ __all__ = [
     "RULE_CLI",
     "RULE_CONFIGURED",
     "RULE_SYSTEM",
+    "RULE_TABLES",
     "SYSTEM_SCHEMAS",
     "SchemaExclusion",
     "exclude_schemas_env_line",
+    "exclude_tables_env_line",
     "exclusion_patterns",
     "is_system_schema",
     "make_schema_filter",
     "parse_patterns",
     "schema_exclusion",
     "schema_is_excluded",
+    "table_exclusion_patterns",
+    "table_is_excluded",
 ]
 
 #: Schemas no tool ever scans, as ``fnmatch`` patterns compared without regard
@@ -90,6 +115,8 @@ SYSTEM_SCHEMAS: tuple[str, ...] = (
 RULE_SYSTEM = "system"
 RULE_CONFIGURED = "configured"
 RULE_CLI = "cli"
+#: What :func:`SchemaExclusion.table_reason` returns: ``EXCLUDE_TABLES`` or the source's ``exclude_tables:``.
+RULE_TABLES = "configured-tables"
 
 
 def schema_is_excluded(schema: str, patterns: Iterable[str] | None) -> bool:
@@ -112,6 +139,38 @@ def schema_is_excluded(schema: str, patterns: Iterable[str] | None) -> bool:
     """
     name = schema.lower()
     return any(fnmatch.fnmatchcase(name, p.lower()) for p in patterns or ())
+
+
+def table_is_excluded(schema: str, table: str, patterns: Iterable[str] | None) -> bool:
+    """Whether the table *table* of *schema* matches any ``fnmatch`` pattern in *patterns*.
+
+    A pattern with a ``.`` is compared with ``schema.table``; one without is
+    compared with the table name alone, so ``Order`` and ``*_Delete`` apply in
+    every schema. Comparison is case-insensitive and does not depend on the
+    operating system. A table with no schema (``""``) is compared as its bare name.
+
+    Examples
+    --------
+    >>> table_is_excluded("X_Fact", "Order", ["X_Fact.Order"])
+    True
+    >>> table_is_excluded("x_stg", "Trade_Delete", ["X_Stg.*_Delete"])
+    True
+    >>> table_is_excluded("sales", "Order", ["X_Fact.Order"])
+    False
+    >>> table_is_excluded("sales", "Order", ["*.Order"]), table_is_excluded("ref", "order", ["Order"])
+    (True, True)
+    >>> table_is_excluded("sales", "Order_Lines", ["Order"]), table_is_excluded("sales", "Order", None)
+    (False, False)
+    >>> table_is_excluded("", "Order", ["Order", "x.Order"])
+    True
+    """
+    bare = table.lower()
+    qualified = f"{schema}.{table}".lower() if schema else bare
+    for pattern in patterns or ():
+        low = pattern.lower()
+        if fnmatch.fnmatchcase(qualified if "." in low else bare, low):
+            return True
+    return False
 
 
 def is_system_schema(schema: str) -> bool:
@@ -167,6 +226,62 @@ def _configured_patterns(source: str | None, settings: "Settings | None") -> tup
     return tuple(patterns)
 
 
+def table_exclusion_patterns(
+    source: str | None,
+    settings: "Settings | None" = None,
+) -> tuple[str, ...]:
+    """The table patterns that keep a table out of discovery for *source*.
+
+    The ``EXCLUDE_TABLES`` setting followed by *source*'s ``exclude_tables:``,
+    without repeats (compared in lower case).
+
+    Parameters
+    ----------
+    source:
+        A data source name; ``None`` for tools that read no particular source
+        (only the global setting applies).
+    settings:
+        The settings to read ``EXCLUDE_TABLES`` and ``PROJECT_CONFIG_DIR``
+        from; the process-wide ones when ``None``.
+
+    Returns
+    -------
+    tuple[str, ...]
+        ``fnmatch`` patterns, see :func:`table_is_excluded`.
+
+    Raises
+    ------
+    ValueError
+        If ``datasources.yaml`` exists but is invalid.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(project_config_dir="/nonexistent", exclude_tables="*.Order, X_Stg.*_Delete"):
+    ...     table_exclusion_patterns(None)
+    ('*.Order', 'X_Stg.*_Delete')
+    """
+    import config as cfg
+    from database.datasources import datasource_exclude_tables
+
+    active = cfg.settings if settings is None else settings
+    patterns = list(parse_patterns(active.exclude_tables))
+    if source is not None:
+        patterns.extend(datasource_exclude_tables(active).get(source, ()))
+    return _distinct(patterns)
+
+
+def _keep_staging_patterns(source: str | None, settings: "Settings | None") -> tuple[str, ...]:
+    """*source*'s ``keep_staging_schemas:`` (none without a source)."""
+    import config as cfg
+    from database.datasources import datasource_keep_staging_schemas
+
+    if source is None:
+        return ()
+    active = cfg.settings if settings is None else settings
+    return _distinct(datasource_keep_staging_schemas(active).get(source, ()))
+
+
 def exclusion_patterns(
     source: str | None,
     extra: Sequence[str] = (),
@@ -220,6 +335,12 @@ class SchemaExclusion:
         ``EXCLUDE_SCHEMAS`` plus the source's ``exclude_schemas:``.
     cli:
         Patterns given for this run.
+    tables:
+        ``EXCLUDE_TABLES`` plus the source's ``exclude_tables:``: patterns on
+        ``schema.table`` (:func:`table_is_excluded`).
+    keep_staging:
+        The source's ``keep_staging_schemas:``: schemas the schema patterns of
+        ``STAGING_PATTERNS`` do not apply to.
 
     Examples
     --------
@@ -228,10 +349,17 @@ class SchemaExclusion:
     ('system', 'configured', 'cli')
     >>> rule.reason("sales") is None, rule.excludes("sales")
     (True, False)
+    >>> rule = SchemaExclusion(tables=("X_Stg.*_Delete",), keep_staging=("X_Stg",))
+    >>> rule.table_excluded("x_stg", "Trade_Delete"), rule.table_excluded("x_stg", "Trade")
+    (True, False)
+    >>> rule.keeps_staging("X_STG"), rule.keeps_staging("Y_Stg")
+    (True, False)
     """
 
     configured: tuple[str, ...] = ()
     cli: tuple[str, ...] = ()
+    tables: tuple[str, ...] = ()
+    keep_staging: tuple[str, ...] = ()
 
     def reason(self, schema: str) -> str | None:
         """Which rule skips *schema*: ``system``, ``configured`` or ``cli`` (``None`` for none).
@@ -249,6 +377,14 @@ class SchemaExclusion:
     def excludes(self, schema: str) -> bool:
         """Whether *schema* is skipped by any rule."""
         return self.reason(schema) is not None
+
+    def table_excluded(self, schema: str, table: str) -> bool:
+        """Whether the configured table patterns (:attr:`tables`) skip *table* of *schema*."""
+        return table_is_excluded(schema, table, self.tables)
+
+    def keeps_staging(self, schema: str) -> bool:
+        """Whether *schema* is one the schema patterns of ``STAGING_PATTERNS`` must not drop."""
+        return schema_is_excluded(schema.rsplit(".", 1)[-1], self.keep_staging)
 
     @property
     def patterns(self) -> tuple[str, ...]:
@@ -270,10 +406,14 @@ def schema_exclusion(
     ...     rule = schema_exclusion(None, ["*_Tmp"])
     >>> rule.configured, rule.cli
     (('Scratch*',), ('*_Tmp',))
+    >>> rule.tables, rule.keep_staging
+    ((), ())
     """
     return SchemaExclusion(
         configured=_distinct(_configured_patterns(source, settings)),
         cli=_distinct(extra),
+        tables=table_exclusion_patterns(source, settings),
+        keep_staging=_keep_staging_patterns(source, settings),
     )
 
 
@@ -336,3 +476,43 @@ def exclude_schemas_env_line(
     active = cfg.settings if settings is None else settings
     patterns = _distinct([*parse_patterns(active.exclude_schemas), *extra])
     return "EXCLUDE_SCHEMAS=" + ",".join(patterns)
+
+
+def exclude_tables_env_line(
+    extra: Sequence[str],
+    settings: "Settings | None" = None,
+) -> str:
+    """The ``.env`` line that records *extra* next to the current ``EXCLUDE_TABLES``.
+
+    The counterpart of :func:`exclude_schemas_env_line` for a deployment
+    without ``datasources.yaml``: the patterns already set come first, then
+    *extra*, without repeats (compared in lower case).
+
+    Parameters
+    ----------
+    extra:
+        Patterns to add.
+    settings:
+        The settings to read ``EXCLUDE_TABLES`` from; the process-wide ones
+        when ``None``.
+
+    Returns
+    -------
+    str
+        ``EXCLUDE_TABLES=a,b,c``, ready to paste.
+
+    Examples
+    --------
+    >>> import config as cfg
+    >>> with cfg.override_settings(exclude_tables="*.Order"):
+    ...     exclude_tables_env_line(["X_Stg.*_Delete", "*.order"])
+    'EXCLUDE_TABLES=*.Order,X_Stg.*_Delete'
+    >>> with cfg.override_settings(exclude_tables=""):
+    ...     exclude_tables_env_line(["Order"])
+    'EXCLUDE_TABLES=Order'
+    """
+    import config as cfg
+
+    active = cfg.settings if settings is None else settings
+    patterns = _distinct([*parse_patterns(active.exclude_tables), *extra])
+    return "EXCLUDE_TABLES=" + ",".join(patterns)

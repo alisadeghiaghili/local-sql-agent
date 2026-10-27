@@ -382,6 +382,18 @@ The default port is 1433 and the default driver is `ODBC Driver 18 for SQL Serve
 
 **Schemas the setup tools leave out.** The wizard, the inspector and `sync_schema.py` share one rule for the schemas of a database they do not scan, and a deployment with one database has it too. A schema is left out when it matches any of these, listed in the order the reports count them under: the system schemas, always (`sys`, `INFORMATION_SCHEMA`, `guest`, `cdc` and the fixed `db_*` role schemas); `EXCLUDE_SCHEMAS` in `.env` (for example `EXCLUDE_SCHEMAS=*_Stg,Replay`), for every source; the `exclude_schemas:` of that source in `datasources.yaml`; and `--exclude-schemas` on the command line, for one run (the wizard also asks, interactively). Patterns are `fnmatch`, compared without regard to case. The rules add up: none of them can bring back a schema another one left out, and exclusion wins over `--include-schemas`. Record a rule you want kept in `.env` or `datasources.yaml` rather than in a flag you must remember each time. It governs only what a tool *proposes* from the databases: a table `schema.yaml` already lists is never hidden by it (the preflight check `No table in an excluded schema`, section 0.4, tells you about one that sits in an excluded schema), and nothing reads it when questions are answered. The detail is in section 2.3 of `docs/deployment-runbook.md`.
 
+**Single tables, and a staging schema you want to scan.** `exclude_tables:` in `datasources.yaml` (or `EXCLUDE_TABLES=` in `.env`, for every source) lists `fnmatch` patterns compared, without regard to case, with `schema.table`: `X_Fact.Order` is one table, `X_Stg.*_Delete` the delete tables of one schema, `*.Order` a table of that name in any schema (a pattern with no `.` is compared with the table name alone). Tools apply it exactly where they apply `exclude_schemas:`, and count what it skipped as `configured table exclusion`. `STAGING_PATTERNS` drops a staging schema and its change-capture tables together; to scan a staging schema and still leave out its change-capture tables, name it in the source's `keep_staging_schemas:` and list the tables in `exclude_tables:`:
+
+```yaml
+datasources:
+  main:
+    exclude_schemas: [Meta, Audit_Stg, Old, dbo]
+    keep_staging_schemas: [X_Stg]
+    exclude_tables: ["X_Stg.*_Insert", "X_Stg.*_Update", "X_Stg.*_Delete", "X_Fact.Order"]
+```
+
+The default `STAGING_PATTERNS` know `_Inserts`, `_Updates` and `_Deletes` only; for the singular names use `exclude_tables:` as above, or add `table:*_Insert,table:*_Update,table:*_Delete` to `STAGING_PATTERNS` in `.env`. `exclude_schemas:` always wins over `keep_staging_schemas:`. A table `schema.yaml` already lists is never hidden by any of these.
+
 2. **Sync `schema.yaml` with the databases and write each table's `datasource:`.** A table without this key runs on the default source; a table that has the same structure in several sources (for example a repeated date table) takes a list: `datasource: [sales, inventory]` (the names spelled exactly as in `datasources.yaml`). `schema.yaml` also falls behind the database in other ways: a new column, a removed column, a type that changed. Do not hunt for them by hand; run this once from the project root:
 
 ```powershell
@@ -401,6 +413,8 @@ It only reads each source's structure (three `INFORMATION_SCHEMA` queries per so
 | A table without a `columns:` key | Left alone (described only, deliberately not queryable) |
 
 `column_types:` is a new optional map for each table, `{column: SQL type}`, which only this script writes; nothing reads it at run time, so the prompt and the guard's allowlist do not change.
+
+`column_units:` is another optional map for each table, `{column: rial | none}`, which you write by hand. It says whether a number in a column is money, and it only changes the wording of the answer summary: the summary puts Rial/ریال on money and on nothing else (not a count, a quantity, a volume, a percentage, an id, a code or a date). A column you do not list is judged by its name (`price`, `value`, `amount`, `cost`, `fee`, `ارزش`, `قیمت`, `مبلغ`, `کارمزد` are money; `count`, `quantity`, `volume`, `weight`, `percent`, `id`, `code`, `date`, `حجم`, `تعداد`, `درصد`, `کد` are not), and when the name says nothing the model decides. List only the columns whose name misleads. Keys must be columns of the table's `columns:`; write `none`, not `no` (YAML reads a bare `no` as false). The sync keeps the map, and `--prune` removes the entry of a column it removes.
 
 It also writes `relationships.proposed.yaml` next to `schema.yaml`: every foreign key defined between two tables of `schema.yaml`, and the relationships it guesses from column names (`Order.CustomerID` to `Customer.ID`, `Order.OrderDate_ID` to `Date.ID`; the same schema is preferred, the two tables must share a source, and a guess is dropped when the target has a composite key, no key, a different column type, or several candidates). Each entry has `basis:` (a constraint or a naming rule) and `confidence:`. Nothing reads this file and `relationships.yaml` is never touched: review each entry and copy the correct ones by hand. `--no-relationships` does not create it.
 

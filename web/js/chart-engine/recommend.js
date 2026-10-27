@@ -220,7 +220,7 @@ function focusFor(values, formId) {
 function buildContext(input) {
   const columns = Array.isArray(input.columns) ? input.columns : [];
   const rows = Array.isArray(input.rows) ? input.rows : [];
-  const measureCol = columns.find((c) => c && c.type === "number");
+  const measureCol = columns.find((c) => c && c.type === "number" && !isIdentifierName(c.name));
   const labelCol = columns.find((c) => c && c !== measureCol);
   if (!measureCol || !labelCol || rows.length === 0) return null;
 
@@ -240,6 +240,37 @@ function buildContext(input) {
     sqlRanks: sqlStatesDescendingOrder(input.sql),
     truncated: input.truncated === true,
   };
+}
+
+/* ── An identifier is a label, never the measure ──────────────────────
+ * The rule of `web/js/num.js::isIdentifierName`, restated here for the same
+ * reason `isSequenceLabel` is (this module imports nothing): a numeric
+ * column named `ID`, `RingID`, `ring_id`, `ringId`, `BrokerCode` or with the
+ * Persian word `کد` / `شناسه` holds labels, so ranking or plotting it says
+ * nothing. `tests/web_ui/test_web_ui_identifier_columns.py` runs both copies
+ * over one list of names and fails when they disagree.
+ *
+ * Narrow on purpose: a name that merely ENDS in the letters (`Paid`,
+ * `Valid`, `Width`, `Barcode`) is not an identifier. See num.js for the
+ * word-boundary rules. */
+const IDENTIFIER_NAME_PATTERNS = [
+  /^(?:id|code)$/i,
+  /[\s_.-](?:id|code)$/i,
+  /[a-z0-9]ID$/,
+  /[A-Za-z0-9](?:Id|Code)$/,
+];
+const IDENTIFIER_PERSIAN_WORDS = new Set(["کد", "شناسه"]);
+
+function isIdentifierName(name) {
+  if (typeof name !== "string") return false;
+  const text = name.trim();
+  if (!text) return false;
+  if (IDENTIFIER_NAME_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  const persian = text
+    .replace(/ك/g, "ک")
+    .replace(/ي/g, "ی")
+    .replace(/[ٕٔ]/g, "");
+  return persian.split(/[\s_.‌-]+/).some((word) => IDENTIFIER_PERSIAN_WORDS.has(word));
 }
 
 /* ── §5.1: one evaluator per form id in today's vocabulary ─────────────

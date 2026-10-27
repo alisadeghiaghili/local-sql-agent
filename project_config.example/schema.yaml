@@ -88,6 +88,21 @@
 #                   with the rest of the structure (schema.synced.yaml,
 #                   for review); scripts/assign_datasources.py writes
 #                   only these lines.
+#     column_units : (optional) map of column name -> `rial` or `none`, for
+#                   the columns whose answer-summary wording the column name
+#                   alone does not settle. `rial` says a number in the column
+#                   is an amount of money (the summary writes it with the
+#                   unit Rial/ریال); `none` says it is not (a count, a
+#                   volume, a percentage, an identifier: no currency unit).
+#                   A column not listed is judged from its name (price,
+#                   value, amount, cost, fee, ارزش, قیمت, مبلغ, کارمزد ... are
+#                   money; count, quantity, volume, weight, percent, id, code,
+#                   date, حجم, تعداد, درصد, کد ... are not) and, when the name
+#                   says nothing, by the model. Keys must be columns of
+#                   `columns`. Used only for the wording of the summary;
+#                   the sync leaves it alone (`--prune` removes the entry of
+#                   a column it removes). Write `none`, not `no`: YAML reads
+#                   a bare `no` as false.
 #     resolvable_columns  : (optional) subset of `columns`' keys that
 #                   retrieval.value_resolver.resolve_value is allowed to
 #                   query -- name-bearing dimension columns a free-text
@@ -131,6 +146,9 @@ tables:
       RingID: "FK → ref.Ring — sales channel the order was placed through"
       BrokerID: "FK → ref.Broker — selling agent for the order"
       SymbolID: "FK → ref.Symbol — product symbol the order is for"
+    # Optional: which numbers are money, for the wording of the answer summary.
+    column_units:
+      TotalAmount: rial
 
   # Example 2: a dimension table
   #

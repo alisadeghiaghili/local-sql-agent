@@ -128,6 +128,23 @@ question that might touch either one.
   holds what the application's login can query and not what a wider
   administrative login would show.
 
+- Two more keys follow the same pattern. `exclude_tables:` lists `fnmatch`
+  patterns, compared without regard to case with `schema.table` (a pattern with
+  no `.` with the table name alone), for single tables the setup tools must not
+  scan; it joins the global `EXCLUDE_TABLES` setting
+  (`config.Settings.exclude_tables`) in
+  `database.schema_filter.table_exclusion_patterns(source)` and is carried, with
+  `exclude_schemas:`, by `SchemaExclusion`, so the inspector, `sync_schema.py` and
+  the wizard apply it in the same places and report it as its own rule
+  (`configured-tables`). `keep_staging_schemas:` lists schemas the *schema*
+  patterns of `STAGING_PATTERNS` do not apply to in that source
+  (`SchemaExclusion.keeps_staging`), so a staging schema is scanned while the
+  `table:` patterns and `exclude_tables:` still remove its change-capture tables;
+  it never overrides `exclude_schemas:`. Both are validated as lists of non-empty
+  strings, both are discovery-only, and `STAGING_PATTERNS` itself is unchanged: its
+  default knows `_Inserts` / `_Updates` / `_Deletes` and not the singular names,
+  because changing it would change which tables an existing run proposes.
+
 ## Tables that live in several sources
 
 A real warehouse pair shares at least one table: a date dimension

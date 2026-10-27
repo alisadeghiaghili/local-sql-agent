@@ -120,6 +120,30 @@
 #                           table in an excluded schema" reports one that sits
 #                           in an excluded schema. A list of non-empty strings;
 #                           anything else is refused at start-up.
+#     exclude_tables      : (optional) a list of fnmatch patterns, matched
+#                           case-insensitively against "schema.table", for
+#                           tables of THIS source that the setup tools must
+#                           not scan: "X_Fact.Order" is one table,
+#                           "X_Stg.*_Delete" the delete tables of one schema,
+#                           "*.Order" a table of that name in any schema. A
+#                           pattern with no "." is compared with the table
+#                           name alone. Same tools and same reach as
+#                           exclude_schemas, added to the global EXCLUDE_TABLES
+#                           setting in .env; a table schema.yaml already lists
+#                           is synced as before. A list of non-empty strings.
+#     keep_staging_schemas: (optional) a list of schema name patterns that the
+#                           SCHEMA patterns of STAGING_PATTERNS (*_Stg, *stg*,
+#                           *staging*) must not drop in THIS source, so the
+#                           first-install inspector and the wizard keep that
+#                           staging schema's tables. The "table:" patterns of
+#                           STAGING_PATTERNS (table:*_Inserts, _Updates,
+#                           _Deletes) and exclude_tables still remove its
+#                           change-capture tables, and exclude_schemas still
+#                           wins. The default STAGING_PATTERNS know the plural
+#                           names only; for _Insert / _Update / _Delete add
+#                           exclude_tables: ["X_Stg.*_Insert", ...] or extend
+#                           STAGING_PATTERNS in .env with table:*_Insert,
+#                           table:*_Update, table:*_Delete.
 #     nolock              : (optional, true/false, default false) true makes
 #                           every query on this source read its tables
 #                           WITH (NOLOCK): the executor inserts the hint after
@@ -167,6 +191,8 @@ datasources:
       TrustServerCertificate: true        # rendered as TrustServerCertificate=yes
       # APP: local-sql-agent              # program_name in sys.dm_exec_sessions
     # exclude_schemas: ["*_Stg", Replay]   # staging and change-capture schemas: never drafted
+    # keep_staging_schemas: [Sales_Stg]    # ... except this staging schema, which is scanned
+    # exclude_tables: ["Sales_Stg.*_Insert", "Sales_Stg.*_Update", "Sales_Stg.*_Delete", "Sales_Fact.Order"]
     # nolock: true                        # read every table WITH (NOLOCK): dirty reads
 
   # A second database on the same server: its own source, its own pool.

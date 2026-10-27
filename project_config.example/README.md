@@ -103,6 +103,9 @@ without touching anything you wrote (descriptions, flags, comments):
 - records every column's SQL type in an optional per-table `column_types:`
   map (`{column: type}`, written only by this script, read by nothing at
   run time) and corrects it when the database changes;
+- keeps an optional, hand-written per-table `column_units:` map (`{column: rial | none}`,
+  whether a number is money, for the wording of the answer summary only) and, with
+  `--prune`, removes the entry of a column it removes;
 - marks a column the database lacks with `# not in database (sync_schema.py)`
   and a table found nowhere with `# not found in any data source`; `--prune`
   removes them instead;

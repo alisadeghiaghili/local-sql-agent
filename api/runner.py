@@ -107,7 +107,7 @@ from llm.router import LLMRouter, TaskType, build_prompt_segments
 from llm.source_routing import SourceRouting, generate_with_source_fallback
 from llm.sql_agent import SQLAgent
 from observability.audit import AuditRecord, save_audit_record
-from llm.interpret import format_numbers, interpret_rows
+from llm.interpret import INTERPRET_TEMPLATE, format_numbers, interpret_rows
 from observability.llm_status import (
     build_llm_status,
     finish_reason_from_meta,
@@ -188,21 +188,9 @@ def _reset_agent_for_testing(new_agent: SQLAgent | None = None) -> None:
 # Helpers that need the agent
 # ---------------------------------------------------------------------------
 
-_INTERPRET_TEMPLATE = """
-You are a helpful data analyst. The user asked:
-
-{question}
-
-The database returned these results (up to 20 rows shown):
-
-{rows}
-
-Write a concise one-paragraph summary in the same language as the question.
-Do not repeat column names literally — describe findings in plain language.
-All monetary values are in Iranian Rials (ریال): always express amounts with
-the unit Rial/ریال and never use toman/تومان.
-If the result is empty, say so clearly.
-"""
+# The summary prompt lives in llm/interpret.py (the conversational engine
+# shares it); the name stays so anything importing it from here keeps working.
+_INTERPRET_TEMPLATE = INTERPRET_TEMPLATE
 
 # NLQErrors that mean the SQL guard itself rejected the (cleaned) SQL the
 # model produced — as opposed to a transport failure, an out-of-scope

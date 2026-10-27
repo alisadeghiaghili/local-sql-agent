@@ -39,9 +39,13 @@ System schemas (``sys``, ``INFORMATION_SCHEMA``, ``guest``, ``cdc``, the fixed
 ``db_*`` role schemas, ``pg_*``), the ``EXCLUDE_SCHEMAS`` setting and a source's
 ``exclude_schemas:`` (:mod:`database.schema_filter`), ``--exclude-schemas``
 (comma-separated ``fnmatch`` patterns, case-insensitive), schemas outside
-``--include-schemas``, ``--exclude-tables``, and staging or change-capture
-tables (``STAGING_PATTERNS``) unless ``--include-staging``. The end-of-run
-summary says how many tables and schemas each rule skipped.
+``--include-schemas``, ``--exclude-tables``, the tables ``EXCLUDE_TABLES`` and
+the source's ``exclude_tables:`` name (``fnmatch`` on ``schema.table``), and
+staging or change-capture tables (``STAGING_PATTERNS``) unless
+``--include-staging``. A schema in the source's ``keep_staging_schemas:`` is
+exempt from the *schema* patterns of ``STAGING_PATTERNS``, so its tables are
+drafted without those the ``table:`` patterns or ``exclude_tables:`` drop. The
+end-of-run summary says how many tables and schemas each rule skipped.
 
 Sample values
 -------------

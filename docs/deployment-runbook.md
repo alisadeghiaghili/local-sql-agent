@@ -884,6 +884,7 @@ schemas each rule skipped:
 |---|---|---|
 | system | `sys`, `INFORMATION_SCHEMA`, `guest`, `cdc`, the nine fixed `db_*` role schemas (`db_owner`, `db_datareader`, ...), `pg_catalog`, `pg_toast`, `pg_*`; any letter case | always |
 | configured exclusion | schemas matching `EXCLUDE_SCHEMAS` (every source) or the source's `exclude_schemas:` | `.env`, `datasources.yaml` |
+| configured table exclusion | tables whose `schema.table` matches `EXCLUDE_TABLES` (every source) or the source's `exclude_tables:` | `.env`, `datasources.yaml` |
 | `--exclude-schemas` | schemas matching these comma-separated patterns, for this run | the command line |
 | outside `--include-schemas` | schemas not in this comma-separated list | the command line |
 | `--exclude-tables` | tables with these names, in any schema | the command line |
@@ -913,6 +914,45 @@ same rule for its report and `--add-tables`). It never hides a table that
 `schema.yaml` already lists, and the preflight check
 `No table in an excluded schema` (§3.1) tells you about a listed table that sits
 in one.
+
+**Single tables, and a staging schema you want.** `exclude_schemas:` skips a whole
+schema. To skip single tables, list `fnmatch` patterns in the source's
+`exclude_tables:` (or in `EXCLUDE_TABLES=` in `.env`, for every source). A pattern
+is compared, without regard to case, with `schema.table`: `X_Fact.Order` is one
+table, `X_Stg.*_Delete` the delete tables of one schema, `*.Order` a table of that
+name in any schema; a pattern with no `.` is compared with the table name alone
+(`Order`, `*_Delete`). The staging rule (`STAGING_PATTERNS`, §3.1) drops a staging
+schema (`*_Stg`, `*stg*`, `*staging*`) and its change-capture tables
+(`table:*_Inserts`, `table:*_Updates`, `table:*_Deletes`) together, and
+`--include-staging` keeps both. To scan a staging schema but still leave out its
+change-capture tables, name the schema in the source's `keep_staging_schemas:`:
+the schema patterns of `STAGING_PATTERNS` no longer apply to it, while its
+`table:` patterns and `exclude_tables:` still do. It never overrides
+`exclude_schemas:`. For example, one database where the schemas `Meta`, `Audit_Stg`,
+`Old` and `dbo` are not scanned, the staging schema `X_Stg` is, without the tables
+ending `_Insert`, `_Update` or `_Delete`, and the table `X_Fact.Order` is not:
+
+```yaml
+datasources:
+  main:
+    ...
+    exclude_schemas: [Meta, Audit_Stg, Old, dbo]
+    keep_staging_schemas: [X_Stg]
+    exclude_tables: ["X_Stg.*_Insert", "X_Stg.*_Update", "X_Stg.*_Delete", "X_Fact.Order"]
+```
+
+The default `STAGING_PATTERNS` know the plural names only (`_Inserts`, `_Updates`,
+`_Deletes`), and they are left as they are so that no run proposes different
+tables after an upgrade. For the singular names use `exclude_tables:` as above, or
+add `table:*_Insert,table:*_Update,table:*_Delete` to `STAGING_PATTERNS` in `.env`
+(the whole value is replaced, so keep the patterns you still want). A deployment
+with one database and no `datasources.yaml` has `EXCLUDE_TABLES=`; for
+`keep_staging_schemas:` it writes `datasources.yaml` for its one source (§16.2), or
+edits `STAGING_PATTERNS` to drop the schema patterns it does not want. The end-of-run
+summary counts the tables the new rule skipped as `configured table exclusion
+(EXCLUDE_TABLES / exclude_tables:)`. `database/datasources_edit.py` can record
+`exclude_tables:` in `datasources.yaml` (a comment-preserving edit after a backup,
+like `exclude_schemas:`); the wizard does not ask for it.
 
 **Real values.** No value read from a row is written to `schema.yaml`,
 `entities.yaml` or `aliases.yaml` any more (the application reads no
@@ -1798,7 +1838,9 @@ needs tables of two sources is refused (§16.10).
    the setup tools (the inspector, §2.3, and `sync_schema.py`, §16.3) must not
    scan, on top of the system schemas and the `EXCLUDE_SCHEMAS` setting that
    applies to every source. A list of non-empty strings; anything else is
-   refused at start-up. Nothing at run time reads it.
+   refused at start-up. Nothing at run time reads it. `exclude_tables:` (patterns on
+   `schema.table`) and `keep_staging_schemas:` work the same way for single tables
+   and for a staging schema to keep (§2.3).
    For Windows authentication write `trusted_connection: true` and leave out
    the login and `password_env`; `username_env` names a variable that holds the
    login instead. The file is versioned like `schema.yaml`, so it must never
@@ -1878,6 +1920,17 @@ number of tables skipped, per schema. This is for discovery only: a table
 is, and an excluded table does not make `--check` fail. The preflight check
 `No table in an excluded schema` (§3.1) lists a table of `schema.yaml` that sits
 in an excluded schema, so the two do not silently disagree.
+
+**Excluded tables.** `EXCLUDE_TABLES` (every source) and the source's `exclude_tables:`
+(patterns on `schema.table`, §2.3) are applied in the same two places. A table they
+name is neither listed nor added, and the report has its own section, `tables named
+by an excluded table pattern, not listed or added`, with the count per schema. A
+table whose schema is excluded is counted under the schema section only. The
+staging rule is not part of the sync: `--add-tables 'X_Stg.*'` adds a staging
+schema's tables whatever `STAGING_PATTERNS` says, so use `exclude_tables:` to keep
+its change-capture tables out. A table `schema.yaml` already lists is synced as
+before; the preflight check `No table in an excluded schema` also lists a listed
+table that a pattern names.
 `scripts/assign_datasources.py` only reads the tables `schema.yaml` lists, so it
 has nothing to exclude and ignores the setting.
 
@@ -1889,6 +1942,25 @@ you have already written.
 `column_types:` is a new optional map per table, `{column: SQL type}`, written
 only by this script; nothing reads it at run time, so the prompt and the guard's
 allowlist are unchanged.
+
+`column_units:` is another optional per-table map, `{column: rial | none}`, which
+you write by hand. It says whether a number in a column is money, for one thing
+only: the wording of the answer summary (`interpret`). The summary writes
+Rial/ریال on money and on nothing else (not a count, a quantity, a volume, a
+percentage, an id, a code or a date), and the prompt tells the model, per numeric
+result column, which side each is on. A column you list is decided by you (`rial`
+money, `none` not money). One you do not list is decided from its name: `price`,
+`value`, `amount`, `cost`, `fee`, `ارزش`, `قیمت`, `مبلغ`, `کارمزد` and the like are
+money; `count`, `quantity`, `volume`, `weight`, `percent`, `id`, `code`, `date`,
+`حجم`, `تعداد`, `درصد`, `کد` and the like are not (a name with both, such as
+`FeeCount`, is not money); when the name says nothing the model decides. The
+lookup is by the column's name in the result, so a column you rename in a query
+(`AS TotalVolume`) is judged by that name; if two tables give the same name
+different units the name is not looked up. Keys must be columns of the table's
+`columns:`; write `none`, not `no` (YAML reads `no` as false). The sync leaves the
+map alone, except that `--prune` removes the entry of a column it removes. A
+deployment that writes no `column_units:` changes only in this: the summary no
+longer puts Rial/ریال on a volume or a count.
 
 It also writes `relationships.proposed.yaml` next to `schema.yaml`: every
 declared foreign key between two tables of `schema.yaml`, plus relationships
