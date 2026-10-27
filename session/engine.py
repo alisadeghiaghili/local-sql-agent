@@ -388,6 +388,7 @@ class TurnEngine:
         memory_entries: dict[str, MemoryEntry] | None = None,
         on_stage: Callable[[str, str], None] | None = None,
         interpret: bool = False,
+        principal_id: str | None = None,
     ) -> Turn:
         """Answer *question* in the context of *record*, and record one audit entry.
 
@@ -424,6 +425,11 @@ class TurnEngine:
             :func:`session.memory.apply_memory_to_assumptions` unless
             ``cfg.settings.memory_enabled`` is ``False``, in which case it
             is ignored entirely. ``None`` (the default) applies nothing.
+        principal_id:
+            The caller's :attr:`~security.auth.Principal.id`, written to the
+            turn's audit record as ``principal_id`` (as ``api.runner.run_query``
+            does for ``/query``), so the audit log says which key asked what.
+            ``None`` (the default) leaves the field empty, as before.
 
         Returns
         -------
@@ -608,7 +614,7 @@ class TurnEngine:
         record.turns.append(turn)
         record.memory[turn_id] = memory
 
-        self._write_audit(req_id, turn, outcome.datasource_selection)
+        self._write_audit(req_id, turn, outcome.datasource_selection, principal_id)
         return turn
 
     # ------------------------------------------------------------------
@@ -1276,12 +1282,14 @@ class TurnEngine:
     def _write_audit(
         self, request_id: str, turn: Turn,
         datasource_selection: dict[str, Any] | None = None,
+        principal_id: str | None = None,
     ) -> None:
         """Build and persist exactly one :class:`AuditRecord` for *turn*.
 
         *datasource_selection* is the turn's :mod:`llm.source_routing`
         block (``None`` with one data source, and for a turn that never
-        reached generation).
+        reached generation). *principal_id* is the caller's id, as in
+        ``api.runner._write_audit``.
 
         Never raises — mirrors ``api.runner._write_audit``.
         """
@@ -1310,6 +1318,7 @@ class TurnEngine:
                 columns=columns,
                 session_id=turn.session_id,
                 turn_id=turn.turn_id,
+                principal_id=principal_id,
                 config_version_id=self._active_config_version_id_or_none(),
                 assumptions=assumptions,
                 datasource=target_datasource_or_none(turn.sql, cfg.settings.sql_dialect),
