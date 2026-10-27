@@ -324,6 +324,9 @@ def run_query(
     # How the data source was chosen (several sources only); set from the
     # result, or from the exception that ended the request.
     audit_selection: dict[str, Any] | None = None
+    # What the filter value check found (FILTER_VALUE_CHECK, off by default);
+    # stays None (and the record then has no such key) unless it ran.
+    audit_value_check: dict[str, Any] | None = None
     # Where mode="sql" reports its selection (see _safe_generate_sql_only),
     # including when it raises.
     selection_sink: dict[str, Any] = {}
@@ -396,6 +399,7 @@ def run_query(
         rows: list[dict] = df.to_dict(orient="records")
 
         audit_selection = _selection_or_none(getattr(result, "datasource_selection", None))
+        audit_value_check = _selection_or_none(getattr(result, "value_check", None))
         audit_sql = result.sql
         audit_row_count = len(rows)
         audit_columns = [str(c) for c in df.columns]
@@ -468,6 +472,7 @@ def run_query(
             _selection_or_none(getattr(exc, "datasource_selection", None))
             or _selection_or_none(selection_sink.get("selection"))
         )
+        audit_value_check = _selection_or_none(getattr(exc, "value_check", None))
         audit_llm = _llm_status_block_for_error(
             exc, _agent._backend, finish_reason,
             static_prefix_tokens=_prefix_tokens_for(
@@ -511,6 +516,7 @@ def run_query(
             principal_id=principal.id if principal is not None else None,
             datasource=target_datasource_or_none(audit_sql, cfg.settings.sql_dialect),
             datasource_selection=audit_selection,
+            value_check=audit_value_check,
         )
 
 
@@ -722,8 +728,14 @@ def _carry_exception_meta(src: Exception, dst: NLQError) -> None:
         several data sources are configured -- how the source was chosen
         and whether the request retried on another, so the audit record of
         a failed request still says which source's tables the model saw.
+    ``value_check``
+        Set by ``SQLAgent.run`` when the filter value check ran
+        (``FILTER_VALUE_CHECK``): what it found, for the audit record of a
+        request that failed afterwards.
     """
-    for attr in ("llm_meta", "candidate_sql", "injected_top", "attempt", "datasource_selection"):
+    for attr in (
+        "llm_meta", "candidate_sql", "injected_top", "attempt", "datasource_selection", "value_check",
+    ):
         value = getattr(src, attr, None)
         if value is not None:
             setattr(dst, attr, value)
@@ -745,6 +757,7 @@ def _write_audit(
     principal_id: str | None = None,
     datasource: str | None = None,
     datasource_selection: dict[str, Any] | None = None,
+    value_check: dict[str, Any] | None = None,
 ) -> None:
     """Build and persist one :class:`~observability.audit.AuditRecord`.
 
@@ -781,6 +794,7 @@ def _write_audit(
             principal_id=principal_id,
             datasource=datasource,
             datasource_selection=datasource_selection,
+            value_check=value_check,
         )
         save_audit_record(record)
     except Exception:  # noqa: BLE001 — auditing must never fail a user's query

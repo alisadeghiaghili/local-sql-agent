@@ -66,6 +66,13 @@ class SQLGenerationResult:
     Set by :meth:`~llm.sql_agent.SQLAgent.run` and consumed by
     ``api/runner.py`` for the audit record."""
 
+    value_check: dict[str, Any] | None = None
+    """What the filter value check (``FILTER_VALUE_CHECK``, see
+    :mod:`retrieval.filter_values`) found, as
+    :func:`~retrieval.filter_values.audit_block` writes it for the audit
+    record; ``None`` with the setting off, and when no literal could be
+    checked."""
+
 
 class LLMBackend(ABC):
     """Contract every LLM backend must satisfy.

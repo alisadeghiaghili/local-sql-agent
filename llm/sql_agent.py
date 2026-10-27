@@ -89,6 +89,23 @@ this runs. The selection is returned on
 :attr:`~llm.base.SQLGenerationResult.datasource_selection`, and attached
 to a raised exception as ``datasource_selection``, for the audit record.
 
+A filter value that does not exist (opt-in, ``FILTER_VALUE_CHECK``)
+-----------------------------------------------------------------
+With :data:`config.Settings.filter_value_check` on, a statement the guard
+accepted is read once more before it runs
+(:func:`retrieval.filter_values.check_filter_values`): a string literal it
+compares to a column whose whole value set is cached and that is not in that
+set gets ONE correction message through the same prompt layout as any other
+correction (the static prefix untouched, the text appended to the question
+segment). It is the one thing that can add a model call beyond the correction
+budget: at most one per request, and only when ``max_corrections`` is not
+zero. The corrected statement runs only if it passes the guard, keeps no
+unknown literal and executes; every other outcome (the model keeps the
+value, a guard rejection, an error from the model or the database) runs the
+original statement as it would have run without the check, through the loop
+below as ever. The check never refuses a request. With the setting off none
+of this code is reached.
+
 Design notes
 ------------
 * ``SQLAgent`` depends on ``LLMBackend``/``LLMRouter`` (abstract), not on
@@ -148,6 +165,7 @@ from llm.router import LLMRouter, PromptSegments, TaskType, build_prompt_segment
 from llm.source_routing import SourceRouting, generate_with_source_fallback
 from observability.timing import StageTimer
 from retrieval.context_retriever import ContextRetriever
+from retrieval.filter_values import audit_block, check_filter_values, correction_text
 from security.sql_guard import (
     PolicyRejection,
     clean_sql,
@@ -196,6 +214,15 @@ def _default_execute(sql: str) -> pd.DataFrame:
     """
     import database.executor as _executor_mod
     return _executor_mod.execute_query(sql)
+
+
+@dataclasses.dataclass(frozen=True)
+class _ValueRound:
+    """What :meth:`SQLAgent._filter_value_round` found and did."""
+
+    audit: dict[str, Any] | None = None
+    prompt: str | None = None
+    executed: tuple[pd.DataFrame, str, str, dict[str, Any], int | None] | None = None
 
 
 class SQLAgent:
@@ -419,6 +446,12 @@ class SQLAgent:
         llm_meta: dict[str, Any] = {}
         injected_top: int | None = None
         attempt = 1
+        # The filter value check (see the module docstring): at most one
+        # extra model call per request, outside the correction budget.
+        value_checked = False
+        value_audit: dict[str, Any] | None = None
+        value_prompts: list[str] = []
+        extra_round = 0
 
         for correction_round in range(self._max_corrections + 1):
             segments = initial_segments
@@ -526,7 +559,9 @@ class SQLAgent:
                 # caller further up (api/runner.py's audit trail) can
                 # report the honest count instead of implying the full
                 # budget was spent chasing an unfixable rejection.
-                exc.attempt = attempt  # type: ignore[attr-defined]
+                exc.attempt = attempt + extra_round  # type: ignore[attr-defined]
+                if value_audit is not None:
+                    exc.value_check = value_audit  # type: ignore[attr-defined]
                 raise
             except ValueError as exc:
                 last_error = str(exc)
@@ -538,11 +573,36 @@ class SQLAgent:
                 )
                 if correction_round == self._max_corrections:
                     exc.llm_meta = llm_meta  # type: ignore[attr-defined]
-                    exc.attempt = attempt  # type: ignore[attr-defined]
+                    exc.attempt = attempt + extra_round  # type: ignore[attr-defined]
+                    if value_audit is not None:
+                        exc.value_check = value_audit  # type: ignore[attr-defined]
                     # _clean_validate_cap already attached candidate_sql
                     # (see its docstring) -- nothing further to add here.
                     raise
                 continue
+
+            if cfg.settings.filter_value_check and not value_checked:
+                value_checked = True
+                value_round = self._filter_value_round(
+                    sql, initial_segments, correction_prompts,
+                    timer=timer, sql_cache_lookup=sql_cache_lookup, denied_columns=denied_columns,
+                )
+                value_audit = value_round.audit
+                if value_round.prompt is not None:
+                    value_prompts = [value_round.prompt]
+                    extra_round = 1
+                if value_round.executed is not None:
+                    df, sql, raw, llm_meta, injected_top = value_round.executed
+                    logger.info("Filter value correction used: %.120s", sql)
+                    return df, SQLGenerationResult(
+                        sql=sql,
+                        raw_response=raw,
+                        attempt=attempt + extra_round,
+                        correction_prompts=correction_prompts + value_prompts,
+                        llm_meta=llm_meta,
+                        injected_top=injected_top,
+                        value_check=value_audit,
+                    )
 
             try:
                 with _stage(timer, "execute"):
@@ -554,10 +614,11 @@ class SQLAgent:
                 result = SQLGenerationResult(
                     sql=sql,
                     raw_response=raw,
-                    attempt=attempt,
-                    correction_prompts=correction_prompts,
+                    attempt=attempt + extra_round,
+                    correction_prompts=correction_prompts + value_prompts if value_prompts else correction_prompts,
                     llm_meta=llm_meta,
                     injected_top=injected_top,
+                    value_check=value_audit,
                 )
                 if attempt > 1:
                     logger.info(
@@ -583,6 +644,10 @@ class SQLAgent:
                     # cap that was actually applied) for the audit trail.
                     exc.candidate_sql = sql  # type: ignore[attr-defined]
                     exc.injected_top = injected_top  # type: ignore[attr-defined]
+                    if extra_round:
+                        exc.attempt = attempt + extra_round  # type: ignore[attr-defined]
+                    if value_audit is not None:
+                        exc.value_check = value_audit  # type: ignore[attr-defined]
                     raise
 
         # unreachable
@@ -591,6 +656,67 @@ class SQLAgent:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _filter_value_round(
+        self,
+        sql: str,
+        initial_segments: PromptSegments,
+        correction_prompts: list[str],
+        *,
+        timer: StageTimer | None,
+        sql_cache_lookup: Callable[[str], pd.DataFrame | None] | None,
+        denied_columns: Iterable[str] | None,
+    ) -> _ValueRound:
+        """Check the literals of *sql* and, if some do not exist, try one corrected statement.
+
+        See the module docstring ("A filter value that does not exist").
+        Never raises. ``executed`` is set only when the corrected statement
+        passed the guard, has no unknown literal and ran; otherwise the
+        caller runs the original *sql*.
+
+        Returns
+        -------
+        _ValueRound
+            ``audit`` for the audit record (``None`` when nothing could be
+            checked), ``prompt`` the message sent (``None`` when no model call
+            was made), ``executed`` the corrected statement's
+            ``(df, sql, raw, llm_meta, injected_top)`` when it ran.
+        """
+        dialect = cfg.settings.sql_dialect
+        check = check_filter_values(sql, denied_columns=denied_columns, dialect=dialect)
+        if not check.unknown:
+            return _ValueRound(audit_block(check, corrected=False, fallback=False))
+        if self._max_corrections <= 0:
+            return _ValueRound(audit_block(check, corrected=False, fallback=True))
+
+        prompt = "\n" + correction_text(sql, check)
+        segments = PromptSegments(
+            static_prefix=initial_segments.static_prefix,
+            session_context=initial_segments.session_context,
+            question=initial_segments.question + "".join(correction_prompts) + prompt,
+        )
+        try:
+            with _stage(timer, "llm"):
+                route_result = self._router.generate_for_task(TaskType.SQL_GENERATION, segments)
+            raw = route_result.text or ""
+            with _stage(timer, "guard"):
+                new_sql, new_top = self._clean_validate_cap(raw, denied_columns=denied_columns)
+                again = check_filter_values(new_sql, denied_columns=denied_columns, dialect=dialect)
+            if again.unknown:
+                raise ValueError("the corrected statement keeps a value that does not exist")
+            with _stage(timer, "execute"):
+                df = None
+                if sql_cache_lookup is not None:
+                    df = sql_cache_lookup(new_sql)
+                if df is None:
+                    df = self._execute(new_sql)
+        except Exception as exc:  # noqa: BLE001 - whatever goes wrong, the original statement runs
+            logger.info("Filter value correction not used (%s): %.120s", type(exc).__name__, exc)
+            return _ValueRound(audit_block(check, corrected=False, fallback=True), prompt)
+        return _ValueRound(
+            audit_block(check, corrected=True, fallback=False), prompt,
+            (df, new_sql, raw, route_result.meta, new_top),
+        )
 
     def _clean_validate_cap(
         self, raw: str, *, denied_columns: Iterable[str] | None = None,
