@@ -254,6 +254,8 @@ class TestEveryOtherOutcomeRunsTheOriginal:
         assert backend.segments[2].question == backend.segments[0].question + ordinary
         assert executed == [UNKNOWN_SQL, CORRECTED_SQL]
         assert turn.sql == CORRECTED_SQL
+        # the value round and the ordinary round are both counted
+        assert turn.llm["corrections"] == 2
 
     def test_even_at_the_last_round_it_adds_one_call_and_never_a_refusal(self):
         backend, executed, turn, _records = _ask(

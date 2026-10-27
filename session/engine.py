@@ -1106,7 +1106,7 @@ class TurnEngine:
                 static_prefix_tokens = static_prefix_token_estimate(system_prompt, routing.current)
 
             raw = route_result.text or ""
-            llm_status = status_of(route_result, correction_round)
+            llm_status = status_of(route_result, correction_round + extra_round)
 
             if not raw.strip():
                 # A completion cut off at the token cap before it emitted
