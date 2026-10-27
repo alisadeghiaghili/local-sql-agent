@@ -70,6 +70,16 @@ class TestSettings:
         with patch.dict(os.environ, {"DIMENSION_VOCABULARY_TOKEN_FALLBACK_ENABLED": "false"}):
             assert Settings().dimension_vocabulary_token_fallback_enabled is False
 
+    def test_filter_value_check_is_off_by_default(self):
+        with patch.dict(os.environ):
+            os.environ.pop("FILTER_VALUE_CHECK", None)
+            assert Settings().filter_value_check is False
+
+    @pytest.mark.parametrize("raw, expected", [("true", True), ("1", True), ("yes", True), ("false", False), ("no", False), ("", False)])
+    def test_filter_value_check_env_override(self, raw, expected):
+        with patch.dict(os.environ, {"FILTER_VALUE_CHECK": raw}):
+            assert Settings().filter_value_check is expected
+
     def test_validate_passes(self):
         Settings(
             openai_model="gpt-oss-20b",

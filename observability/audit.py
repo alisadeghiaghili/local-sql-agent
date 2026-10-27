@@ -141,6 +141,39 @@ def _audit_log_file() -> str:
     return os.path.join(cfg.settings.log_dir, "audit_log.jsonl")
 
 
+#: The only keys of :attr:`AuditRecord.value_check` and of each of its
+#: ``unknown`` entries, and what each holds: counts, flags, a column
+#: identifier, a digest and a length -- no field that could hold a value.
+_VALUE_CHECK_KEYS: dict[str, type] = {"checked": int, "unknown": list, "corrected": bool, "fallback": bool}
+_VALUE_CHECK_UNKNOWN_KEYS: dict[str, type] = {"column": str, "value_sha256": str, "length": int}
+
+
+def _check_value_check_shape(block: dict[str, Any]) -> None:
+    """Raise ``TypeError`` unless *block* has exactly the shape :attr:`AuditRecord.value_check` documents.
+
+    The same structural guard ``columns`` and ``resolved_columns`` have: the
+    record cannot be given a filter literal, or a real value of a column, to
+    write, because there is no key for it.
+    """
+    if not isinstance(block, dict) or set(block) != set(_VALUE_CHECK_KEYS):
+        raise TypeError(
+            "AuditRecord.value_check must hold exactly "
+            f"{sorted(_VALUE_CHECK_KEYS)}; got {sorted(block) if isinstance(block, dict) else type(block).__name__}"
+        )
+    for key, kind in _VALUE_CHECK_KEYS.items():
+        if not isinstance(block[key], kind):
+            raise TypeError(f"AuditRecord.value_check[{key!r}] must be {kind.__name__}")
+    for i, item in enumerate(block["unknown"]):
+        if not isinstance(item, dict) or set(item) != set(_VALUE_CHECK_UNKNOWN_KEYS):
+            raise TypeError(
+                "AuditRecord.value_check['unknown'] entries must hold exactly "
+                f"{sorted(_VALUE_CHECK_UNKNOWN_KEYS)}, never a value; entry {i} does not"
+            )
+        for key, kind in _VALUE_CHECK_UNKNOWN_KEYS.items():
+            if not isinstance(item[key], kind):
+                raise TypeError(f"AuditRecord.value_check['unknown'][{i}][{key!r}] must be {kind.__name__}")
+
+
 @dataclass(slots=True)
 class AuditRecord:
     """One structured, compliance-grade record per API query.
@@ -273,12 +306,31 @@ class AuditRecord:
         the *generated SQL* routes: the two differ when the model wrote a
         statement over tables the guard routes elsewhere, and the guard
         and router are authoritative. Additive, like :attr:`datasource`.
+    value_check:
+        What the filter value check found (``FILTER_VALUE_CHECK``, off by
+        default; :mod:`retrieval.filter_values`): ``{"checked": int,
+        "unknown": [{"column", "value_sha256", "length"}, ...], "corrected":
+        bool, "fallback": bool}``. *checked* is how many filter literals
+        had a cached vocabulary to be compared with, *unknown* those that
+        were not in it, as the column (``Table.Column``, an identifier like
+        :attr:`resolved_columns`), the first 16 hex digits of the SHA-256 of
+        the normalised literal and its length. The literal is not written,
+        and neither are the real values offered to the model (they are
+        warehouse data): this record has always kept names and never
+        values. *corrected* is true when the statement that ran is the
+        corrected one; *fallback* when there were unknown literals and the
+        original statement ran (the model kept the value, the corrected
+        statement failed, or no correction was possible). ``None`` when the
+        setting is off or nothing could be checked, and then **the key is
+        not written at all**, so a record is byte for byte what it was
+        before the field existed; a reader treats a missing key as ``None``.
 
     Raises
     ------
     TypeError
         From :meth:`__post_init__` if ``columns`` contains anything
-        other than plain strings.
+        other than plain strings, or ``value_check`` has any key or type
+        other than the ones documented above.
 
     Examples
     --------
@@ -335,6 +387,7 @@ class AuditRecord:
     assumptions: list[dict[str, Any]] | None = None
     datasource: str | None = None
     datasource_selection: dict[str, Any] | None = None
+    value_check: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -353,10 +406,16 @@ class AuditRecord:
                         "'Table.Column' identifier strings only, never "
                         f"resolved values; got {type(col).__name__} at index {i}"
                     )
+        if self.value_check is not None:
+            _check_value_check_shape(self.value_check)
 
     def as_dict(self) -> dict[str, Any]:
-        """Return a JSON-serialisable dict (timestamp as ISO string)."""
-        return {
+        """Return a JSON-serialisable dict (timestamp as ISO string).
+
+        ``value_check`` is written only when it is set, so a deployment that
+        never turns the check on writes the same lines it always did.
+        """
+        data = {
             "timestamp":      self.timestamp.isoformat(),
             "request_id":     self.request_id,
             "question":       self.question,
@@ -378,6 +437,9 @@ class AuditRecord:
             "datasource":     self.datasource,
             "datasource_selection": self.datasource_selection,
         }
+        if self.value_check is not None:
+            data["value_check"] = self.value_check
+        return data
 
 
 def save_audit_record(record: AuditRecord) -> None:

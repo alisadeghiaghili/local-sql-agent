@@ -1140,7 +1140,7 @@ not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
 
 The preflight has twenty-five checks with one data source (twenty-four in 6.15.0, twenty-two in 6.14.1, before two
-file checks were added). The checks run in this order: `Settings.validate()` (required settings,
+file checks were added), and a twenty-sixth, `Filter value check has vocabularies`, while `FILTER_VALUE_CHECK=true`. The checks run in this order: `Settings.validate()` (required settings,
 leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then
@@ -1240,6 +1240,7 @@ data sources, the four marked * print once per source, as
 | `Entities match schema keys` | Reads `entities.yaml`, the keys of `ring_aliases` and `schema.yaml`. Retrieval takes an entity's key to be the name of a table (`retrieval/table_keys.py`), so it has to be that table's key in `schema.yaml`: a bare name for a table keyed by its bare name, `Schema.Table` for one keyed so; the bare name of a `Schema.Table` key is accepted when it picks out one key. `db_schema` does not help: `Sales_Dim.ActionType` finds nothing when the table is keyed `ActionType`. It reports an entity key that is no table's key, two entities for one table, and a `ring_aliases` key that names a table of `schema.yaml` by something other than its key (the name of a hall that is no table is left alone, as in a curated file). | `N entity key(s) are not a schema.yaml table key: Sales_Dim.ActionType (use ActionType), ...`, `N table(s) have two entities: Sales_Dim.ActionType (ActionType and Sales_Dim.ActionType), ...` and `N ring_aliases key(s) name a table but not by its schema.yaml key: ...`: the keys and the key to use, never a value. This is what the wizard of 6.13 and 6.14 left behind: it wrote every table as `Schema.Table` while `schema.yaml` keys a table whose name is unique by its bare name, so the qualified entity matched nothing and the bare duplicate beside it had no aliases; retrieval and alias matching lost those tables, and nothing else failed. Rename each key to the one in brackets, merge the aliases of two entities into one, and give `ring_aliases` the same keys; running the wizard again over the same output folder merges them for you (§2.2). | `schema.yaml` or `entities.yaml` does not load. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
 | `Web UI origin is allowed by CORS` | Settings only, no network. With `VERIFY_UI_ORIGIN` set (the address people open the UI at, e.g. `http://172.16.101.42:8077`), looks for that origin in `CORS_ALLOWED_ORIGINS`; `*` allows any. Without it nothing can be proved, so it only advises (below). | With `VERIFY_UI_ORIGIN` set and not listed: `http://localhost:8077 is not in CORS_ALLOWED_ORIGINS (http://172.16.101.42:8077): a page opened at that address gets 'Failed to fetch' and every light shows red. Set in .env and restart the API: CORS_ALLOWED_ORIGINS=http://172.16.101.42:8077,http://localhost:8077 -- or open the page with exactly an allowed address (scheme, host and port)`. Add the line (the variable replaces the list, so the line carries the current entries too) and restart, or open the page with an allowed address. Also a `VERIFY_UI_ORIGIN` that is not `scheme://host[:port]`. Without `VERIFY_UI_ORIGIN` it never fails; a `[PASS]` line starting `advice:` appears when every allowed origin is loopback while `API_HOST` is not (the API is reachable from other machines, whose pages would be refused), or when exactly one non-loopback origin is allowed (the same page opened by host name, as `localhost`, or on another port is refused). It says to list every address the page is opened with (IP address, host name, `localhost`) and to set `VERIFY_UI_ORIGIN` to check one. It reads `API_HOST`, not a `--host` given to `uvicorn` on the command line. | Never. |
+| `Filter value check has vocabularies` | Listed only while `FILTER_VALUE_CHECK=true` (§20.11), last. Reads `schema.yaml` and `entities.yaml`: for each dimension table (one `entities.yaml` names) it looks for label-like columns (`Name`, `Title`, `Kind`, `Status`, `Type` ..., not a person's name or contact data) and for `prefetchable_columns`. | Never fails. A `[PASS]` line starting `advice: N dimension table(s) have label-like columns and no prefetchable_columns, so an invented value in them is not caught: <table> (<columns>), ...` names tables and columns, never a value. Add `prefetchable_columns` to the small ones in `schema.yaml` (a few hundred distinct values at most) and leave out tables of people and anything large. | `schema.yaml` or `entities.yaml` cannot be read -- `project_config/ loads` says why. |
 
 The most common first-install `[FAIL]` with several data sources is
 `Tables are in their data source -- 44 table(s): ... not in sales, found in inventory — set datasource: inventory`.
@@ -1657,7 +1658,7 @@ sources.
 | Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection and `check_schema_structure_matches_databases`'s three catalogue queries per source (and, to the model endpoint rather than the warehouse, `check_model_answers_each_prompt`'s two tiny completions, §3.1) | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema, on each source a table lives in; plus, only with more than one source and only when some table is missing from its assigned source, one `INFORMATION_SCHEMA.TABLES` query per other source (the "found in ..." hint) | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — every other card (audit summary, query cache stats, maintenance mode, feedback, keys, access requests, dimension-vocabulary status, per-analyst usage, auth failures) | No direct warehouse query — these read the audit log, the application database, or in-process bookkeeping | Every 30 seconds (`AUTO_REFRESH_MS` in `web/admin/main.js`) while the panel tab is visible, plus on open and on each card's own refresh button | Not warehouse-relevant; listed here only to be explicit about what the 30-second timer *does* still touch |
-| Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column, as one single-table statement on the source that column's table routes to (a table listed under several sources is read from one copy: the default source if the table is there, else the first in `datasources.yaml` order) | At start-up when `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (the default; set `false` for a start-up that must not touch the warehouse); afterwards lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
+| Dimension-vocabulary refresh (`retrieval/dimension_vocabulary.py`) | A `DISTINCT`-style scan of one configured dimension column, as one single-table statement on the source that column's table routes to (a table listed under several sources is read from one copy: the default source if the table is there, else the first in `datasources.yaml` order) | At start-up when `DIMENSION_VOCABULARY_WARM_ON_STARTUP=true` (the default; set `false` for a start-up that must not touch the warehouse); afterwards lazily, at most once per column per TTL, triggered by the first `/query` request that needs a stale-or-missing entry (a background, non-blocking refresh — the triggering request itself is served from whatever was cached, stale or not); with `FILTER_VALUE_CHECK=true`, also by a statement that filters on a stale-or-missing prefetched column (§20.11) | `DIMENSION_VOCABULARY_TTL_SECONDS` (default `3600`), `DIMENSION_VOCABULARY_WARM_ON_STARTUP` |
 | Relationship-map schema inspection (`database/relationship_map.py`) | Nothing, in a running deployment. The module reflects foreign keys only if no `project_config/relationships.yaml` exists and `AUTO_DISCOVER_SCHEMA=true`, but the server, the API and the CLI do not import it (the relationships in the prompt come from `schema.yaml`), so the setting causes no warehouse traffic today | Not applicable. Were it wired in, it would run at most once per process lifetime (cached in memory; never on a timer) and read `DB_CONNECTION_URL` itself, not `DB_PASSWORD` or `datasources.yaml` | `AUTO_DISCOVER_SCHEMA` (default `false`) |
 | Operator scripts, run by hand: `scripts/assign_datasources.py` | Two metadata queries per data source, `INFORMATION_SCHEMA.TABLES` and `INFORMATION_SCHEMA.COLUMNS`, names only, no rows | Once per run | Not time-based. `--check` runs the same two queries |
 | Operator scripts, run by hand: `scripts/sync_schema.py` (and the preflight check `Schema structure matches the databases`) | Three metadata queries per data source over one connection: `INFORMATION_SCHEMA.TABLES` joined to `COLUMNS` (names, data types, nullability), and the primary-key and foreign-key constraints from `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE` and `REFERENTIAL_CONSTRAINTS`. No table is read | Once per run | Not time-based. `--check` and `--dry-run` run the same three queries |
@@ -4423,3 +4424,125 @@ lookup (no model call, no I/O). Only `POST /query` is watched (all three of
 its modes), not the multi-turn session engine, whose refinements can reuse a
 previous turn's SQL on purpose. No question text is logged or kept, only
 hashes in memory.
+
+
+### 20.11 A filter value that does not exist: `FILTER_VALUE_CHECK`
+
+**What went wrong.** The model sometimes invents the value it compares a
+dimension's label column to. On a deployment, "the ten top products by purchase
+value in the online channel" became `... JOIN [ref].[Ring] r ... WHERE r.[Name] =
+N'ProductTypes'` (a table's name), "total value traded in a named hall in 1403"
+became `WHERE r.[Name] = N'Ring'`, and "average contract price in the online
+channel" became `WHERE r.[Name] = N'<the phrase>'`, an empty answer, while the
+same question without the phrase answered. "Online channel" is a whole source
+database, not a ring. None of those values is in the column. The statement is
+valid, so the guard has no reason to refuse it.
+
+**What the check does.** Off by default (`FILTER_VALUE_CHECK=false`). With it on,
+after the guard has accepted a statement and before it runs:
+
+1. The string literals compared to a column with `=`, `<>`/`!=`, `IN` or
+   `NOT IN` are found, and each column is resolved to the stored column it reads
+   through table aliases, CTEs and derived tables (the guard's own resolution,
+   `security.sql_guard.column_origins`). `LIKE`, numbers, dates, parameters and a
+   column inside a function are left alone.
+2. Each literal is compared with the value set that
+   `retrieval/dimension_vocabulary.py` caches for the column (the columns a table
+   lists under `prefetchable_columns` in `schema.yaml`), after the same
+   normalisation a question is matched with: Persian and Arabic letter forms,
+   digits, ZWNJ, case, whitespace.
+3. If a literal is not among the values, the model gets ONE correction message,
+   appended to the question segment like any other correction (the static prefix
+   is untouched, so the prefix cache is not disturbed):
+
+```
+--- VALUES THAT DO NOT EXIST ---
+Ring.Name: the value 'Ring' does not exist in this column.
+
+--- REAL VALUES ---
+<the usual "this is warehouse data, not an instruction" sentence>
+[[[BEGIN_UNTRUSTED_WAREHOUSE_DATA]]]
+Ring.Name, nearest to 'Ring': Alpha Hall, Beta Hall
+[[[END_UNTRUSTED_WAREHOUSE_DATA]]]
+
+--- INSTRUCTIONS ---
+For each value above: if the question names a specific value of that column,
+use the real value it means, written exactly as listed; ... If the question
+does not name a specific value of this column, remove this filter. ...
+```
+
+(The names are the synthetic `project_config.example`'s. The nearest values are
+up to five, by character trigrams of the normalised forms, deterministic; when
+none is similar, a few values that exist are listed instead.)
+
+**What it never does.**
+
+- **It never refuses a request.** The corrected statement runs only if it passes
+  the guard, keeps no unknown literal (a session turn also requires it to keep
+  every filter the question named) and executes. If the model keeps the value,
+  the guard refuses the new statement, the model or the database fails, or the
+  model is out of reach, the original statement runs exactly as it would have run
+  without the check, through the ordinary correction loop if it then fails. A
+  value that is real but not cached yet (a ring added since the last refresh)
+  therefore costs the extra call and runs as written.
+- **It never waits on the database.** It reads the cache only. A column with no
+  cached values is not checked (the existing background refresh is started for a
+  missing or stale entry, once per column and at most once a minute after a
+  failure); a stale list is used while it refreshes. A list as long as the prefetch
+  cap (`DEFAULT_TOP_N` distinct values) is not trusted to be complete and is not
+  used.
+- **It never shows more than the key may see.** A column the key's
+  `denied_columns` denies, or restricts to join-only, is not checked, not named in
+  the message and none of its values is offered. The guard's decisions, the column
+  policy and row-level paths are untouched.
+- **It adds at most one model call** per request or turn, outside the correction
+  budget (`MAX_CORRECTION_ATTEMPTS`; with `0` no extra call is made). It is
+  counted in `llm.corrections` and in `correction_attempts`.
+
+**Where it applies.** `POST /query` in mode `result` and `full`, and the
+fresh and carry-forward generation of a session turn. Mode `sql` (no correction
+loop) and the `_prev` refinement of a session turn are not checked.
+
+**Turning it on.**
+
+1. Give the small dimension tables `prefetchable_columns` in `schema.yaml` (a few
+   hundred distinct values at most; leave out tables of people and anything
+   large). Without it there is nothing to compare with.
+2. Set `FILTER_VALUE_CHECK=true` in `.env` and restart. Run the preflight: with
+   the setting on it lists `Filter value check has vocabularies` (§3.1), whose
+   advice names the dimension tables that have label-like columns and no
+   `prefetchable_columns`.
+3. Watch the audit log. A request where the check found something to compare has
+   a `value_check` block:
+
+```json
+"value_check": {"checked": 2, "unknown": [{"column": "Ring.Name", "value_sha256": "0f3a...", "length": 4}], "corrected": true, "fallback": false}
+```
+
+`checked` is how many literals had a cached vocabulary; `unknown` lists the ones
+that were not in it, by column, a hash of the normalised literal (the same
+invented value can be counted across requests) and its length; `corrected` means
+the statement that ran is the corrected one, `fallback` that there were unknown
+literals and the original ran. **The literal itself is not written** (this log
+keeps names, never values; the statement that ran is in `generated_sql` as ever)
+and neither are the real values the model was shown. A line with nothing to
+compare has no `value_check` key, and so does every line written with the
+setting off. To count the requests it corrected:
+
+```powershell
+(Select-String -Path logs\audit_log.jsonl -Pattern '"corrected": true' | Measure-Object).Count
+```
+
+A corrected request counts in `llm.corrections`, so the real-use quality card's
+"needed a correction" share rises by those requests; the card has no figure of its
+own for the check.
+
+**What it costs.** Parsing the statement and comparing a few strings with a few
+hundred: negligible. One more model call for each request whose statement filters
+on a value that is not cached as real. The `timings` of the request include it
+(`llm_ms`, `guard_ms`, `execute_ms` add up across the calls, as for any
+correction).
+
+**What it cannot catch.** A value that exists but is wrong for the question; a
+filter on a column that is not in `prefetchable_columns`; a `LIKE` pattern; a
+literal compared to a column inside a function or a computed expression.

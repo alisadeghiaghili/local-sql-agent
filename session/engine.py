@@ -74,6 +74,7 @@ from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
 from retrieval.context_retriever import ContextRetriever
+from retrieval.filter_values import audit_block, check_filter_values, correction_text
 from security.sql_guard import (
     PolicyRejection,
     clean_sql,
@@ -271,6 +272,24 @@ class _GenOutcome:
     datasource_selection: dict[str, Any] | None = None
     """How the data source was chosen (several sources only) -- the audit
     record's ``datasource_selection``; see :mod:`llm.source_routing`."""
+    value_check: dict[str, Any] | None = None
+    """What the filter value check found (``FILTER_VALUE_CHECK``) -- the
+    audit record's ``value_check``; ``None`` with the setting off."""
+
+
+@dataclass(frozen=True)
+class _ValueRound:
+    """What :meth:`TurnEngine._filter_value_round` found and did.
+
+    ``audit`` is the audit record's ``value_check`` (``None`` when nothing
+    could be checked); ``prompt`` the message sent (``None`` when no model
+    call was made); ``executed`` the corrected statement's
+    ``(df, sql, injected_top, llm_status, missing_filters)`` when it ran.
+    """
+
+    audit: dict[str, Any] | None = None
+    prompt: str | None = None
+    executed: tuple[pd.DataFrame, str, int | None, dict[str, Any], dict[str, str]] | None = None
 
 
 def _infer_type(series: "pd.Series") -> str:
@@ -614,7 +633,7 @@ class TurnEngine:
         record.turns.append(turn)
         record.memory[turn_id] = memory
 
-        self._write_audit(req_id, turn, outcome.datasource_selection, principal_id)
+        self._write_audit(req_id, turn, outcome.datasource_selection, principal_id, outcome.value_check)
         return turn
 
     # ------------------------------------------------------------------
@@ -958,11 +977,13 @@ class TurnEngine:
             )
         )
 
+        value_sink: dict[str, Any] = {}
         outcome = self._generate_validate_execute(
             segments, system_prompt, timer, denied_columns=denied_columns,
             filters_to_enforce=filters_to_enforce, token_tier_filters=token_tier_filters,
-            routing=routing,
+            routing=routing, value_sink=value_sink,
         )
+        outcome.value_check = value_sink.get("block")
         if routing is not None:
             outcome.datasource_selection = routing.audit()
         return outcome, resolved_question, ambiguity_block, merged_filters, mem_warnings
@@ -973,6 +994,7 @@ class TurnEngine:
         filters_to_enforce: dict[str, str] | None = None,
         token_tier_filters: dict[str, tuple[str, ...]] | None = None,
         routing: SourceRouting | None = None,
+        value_sink: dict[str, Any] | None = None,
     ) -> _GenOutcome:
         """Generate, validate and execute, correcting within the retry budget.
 
@@ -981,6 +1003,20 @@ class TurnEngine:
         once on the next candidate source -- one extra model call outside
         the correction budget, dropping the correction history, which
         describes the other source's tables. See :mod:`llm.source_routing`.
+
+        With :data:`config.Settings.filter_value_check` on, the statement
+        the guard accepted is checked once, before it runs, for a string
+        literal that is not a value of the cached dimension column it is
+        compared to (:func:`retrieval.filter_values.check_filter_values`).
+        There is then ONE correction message, through the same prompt layout
+        as any other correction, and it is the one thing that can add a model
+        call beyond the correction budget (only when ``max_corrections`` is
+        not zero). The corrected statement runs only if it passes the guard,
+        keeps no unknown literal, drops no filter the statement had and
+        executes; every other outcome runs the original statement as it
+        would have run without the check. The check never refuses a turn.
+        *value_sink*, when given, receives the audit block as
+        ``value_sink["block"]``.
         """
         static_prefix_tokens = static_prefix_token_estimate(system_prompt)
         last_error: str | None = None
@@ -998,6 +1034,28 @@ class TurnEngine:
         # model has already been shown in this turn (llm/correction_hints.py).
         last_exception: BaseException | None = None
         seen_hints: set[str] = set()
+        # The filter value check (see the docstring): at most one extra model
+        # call per turn, outside the correction budget.
+        value_checked = False
+        extra_round = 0
+
+        def status_of(result: Any, corrections: int) -> dict[str, Any]:
+            return build_llm_status(
+                result.meta.get("raw"), model=result.provider,
+                endpoint=result.meta.get("endpoint"),
+                trusted=bool(result.meta.get("trusted", False)),
+                endpoint_status=result.meta.get("endpoint_status", 200),
+                attempts=result.meta.get("attempts", 1),
+                finish_reason=finish_reason_from_meta(result.meta),
+                structured_output=bool(result.meta.get("structured_output", False)),
+                static_prefix_tokens=static_prefix_tokens,
+                temperature=cfg.settings.llm_temperature, seed=cfg.settings.llm_seed,
+                total_ms=result.meta.get("total_ms"),
+                corrections=corrections,
+                provider=result.provider, fallback_used=result.fallback_used,
+                reasoning_detected=bool(result.meta.get("reasoning_detected", False)),
+                **latency_fields_from_meta(result.meta),
+            )
 
         for correction_round in range(self._max_corrections + 1):
             gen_segments = segments
@@ -1048,22 +1106,7 @@ class TurnEngine:
                 static_prefix_tokens = static_prefix_token_estimate(system_prompt, routing.current)
 
             raw = route_result.text or ""
-            llm_status = build_llm_status(
-                route_result.meta.get("raw"), model=route_result.provider,
-                endpoint=route_result.meta.get("endpoint"),
-                trusted=bool(route_result.meta.get("trusted", False)),
-                endpoint_status=route_result.meta.get("endpoint_status", 200),
-                attempts=route_result.meta.get("attempts", 1),
-                finish_reason=finish_reason_from_meta(route_result.meta),
-                structured_output=bool(route_result.meta.get("structured_output", False)),
-                static_prefix_tokens=static_prefix_tokens,
-                temperature=cfg.settings.llm_temperature, seed=cfg.settings.llm_seed,
-                total_ms=route_result.meta.get("total_ms"),
-                corrections=correction_round,
-                provider=route_result.provider, fallback_used=route_result.fallback_used,
-                reasoning_detected=bool(route_result.meta.get("reasoning_detected", False)),
-                **latency_fields_from_meta(route_result.meta),
-            )
+            llm_status = status_of(route_result, correction_round + extra_round)
 
             if not raw.strip():
                 # A completion cut off at the token cap before it emitted
@@ -1193,9 +1236,32 @@ class TurnEngine:
                 pending_filter_correction = list(missing_filters.values())
                 continue
 
+            # The filter value check (off by default): a literal this
+            # statement compares to a cached dimension column that is not one
+            # of its values gets one correction message. See the docstring.
+            value_df: pd.DataFrame | None = None
+            if cfg.settings.filter_value_check and not value_checked:
+                value_checked = True
+                value_round = self._filter_value_round(
+                    capped, gen_segments, timer=timer, status_of=status_of,
+                    correction_round=correction_round, denied_columns=denied_columns,
+                    filters_to_enforce=filters_to_enforce, token_tier_filters=token_tier_filters,
+                    missing_filters=missing_filters,
+                )
+                if value_sink is not None:
+                    value_sink["block"] = value_round.audit
+                if value_round.prompt is not None:
+                    extra_round = 1
+                    # The original statement keeps its own call's status, with
+                    # the round counted: the corrected one carries its own.
+                    llm_status = {**llm_status, "corrections": correction_round + 1}
+                if value_round.executed is not None:
+                    value_df, capped, injected_top, llm_status, missing_filters = value_round.executed
+                    last_sql = capped
+
             try:
                 with timer.stage("execute"):
-                    df = self._execute(capped)
+                    df = value_df if value_df is not None else self._execute(capped)
             except Exception as exc:  # noqa: BLE001
                 # `last_error` keeps the raw text -- it feeds the next
                 # correction round's prompt (line ~781), which is a
@@ -1246,11 +1312,75 @@ class TurnEngine:
                 ),
                 warnings=filter_warnings,
                 llm_status=llm_status,
-                corrections=correction_round,
+                corrections=correction_round + extra_round,
                 result_columns=columns,
             )
 
         raise RuntimeError("TurnEngine generation loop exited unexpectedly")  # pragma: no cover
+
+    def _filter_value_round(
+        self,
+        capped: str,
+        gen_segments: PromptSegments,
+        *,
+        timer: StageTimer,
+        status_of: Callable[[Any, int], dict[str, Any]],
+        correction_round: int,
+        denied_columns: tuple[str, ...] | None,
+        filters_to_enforce: dict[str, str],
+        token_tier_filters: dict[str, tuple[str, ...]],
+        missing_filters: dict[str, str],
+    ) -> _ValueRound:
+        """Check the literals of *capped* and, if some do not exist, try one corrected statement.
+
+        See :meth:`_generate_validate_execute`. Never raises. The corrected
+        statement is used only when it passes the guard (the same steps as the
+        loop's), keeps no unknown literal, leaves no filter unreferenced that
+        *capped* referenced (*missing_filters* is what *capped* leaves out),
+        and executes; anything else, including an error from the model, gives
+        a round with no ``executed``, and the caller runs *capped*.
+        """
+        dialect = cfg.settings.sql_dialect
+        check = check_filter_values(capped, denied_columns=denied_columns, dialect=dialect)
+        if not check.unknown:
+            return _ValueRound(audit_block(check, corrected=False, fallback=False))
+        if self._max_corrections <= 0:
+            return _ValueRound(audit_block(check, corrected=False, fallback=True))
+
+        prompt = "\n\n" + correction_text(capped, check)
+        segments = PromptSegments(
+            static_prefix=gen_segments.static_prefix,
+            session_context=gen_segments.session_context,
+            question=gen_segments.question + prompt,
+        )
+        try:
+            with timer.stage("llm"):
+                route_result = self._router.generate_for_task(TaskType.SQL_GENERATION, segments)
+            with timer.stage("guard"):
+                cleaned = clean_sql(route_result.text or "")
+                validate_sql(cleaned, denied_columns=denied_columns)
+                new_sql = ensure_top(cleaned, cfg.settings.default_top_n)
+                new_top = cfg.settings.default_top_n if new_sql != cleaned else None
+                new_sql = transpile_and_revalidate(
+                    new_sql, target_dialect=dialect, denied_columns=denied_columns,
+                )
+                if check_filter_values(new_sql, denied_columns=denied_columns, dialect=dialect).unknown:
+                    raise ValueError("the corrected statement keeps a value that does not exist")
+                new_missing = (
+                    _missing_dimension_filters(new_sql, filters_to_enforce, token_tier_filters, dialect)
+                    if filters_to_enforce else {}
+                )
+                if set(new_missing) - set(missing_filters):
+                    raise ValueError("the corrected statement drops a filter the question named")
+            with timer.stage("execute"):
+                df = self._execute(new_sql)
+        except Exception as exc:  # noqa: BLE001 - whatever goes wrong, the original statement runs
+            logger.info("Filter value correction not used (%s): %.120s", type(exc).__name__, exc)
+            return _ValueRound(audit_block(check, corrected=False, fallback=True), prompt)
+        return _ValueRound(
+            audit_block(check, corrected=True, fallback=False), prompt,
+            (df, new_sql, new_top, status_of(route_result, correction_round + 1), new_missing),
+        )
 
     # ------------------------------------------------------------------
     # Audit
@@ -1283,13 +1413,15 @@ class TurnEngine:
         self, request_id: str, turn: Turn,
         datasource_selection: dict[str, Any] | None = None,
         principal_id: str | None = None,
+        value_check: dict[str, Any] | None = None,
     ) -> None:
         """Build and persist exactly one :class:`AuditRecord` for *turn*.
 
         *datasource_selection* is the turn's :mod:`llm.source_routing`
         block (``None`` with one data source, and for a turn that never
         reached generation). *principal_id* is the caller's id, as in
-        ``api.runner._write_audit``.
+        ``api.runner._write_audit``. *value_check* is what the filter value
+        check found (``FILTER_VALUE_CHECK``), ``None`` with the setting off.
 
         Never raises — mirrors ``api.runner._write_audit``.
         """
@@ -1323,6 +1455,7 @@ class TurnEngine:
                 assumptions=assumptions,
                 datasource=target_datasource_or_none(turn.sql, cfg.settings.sql_dialect),
                 datasource_selection=datasource_selection,
+                value_check=value_check,
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn

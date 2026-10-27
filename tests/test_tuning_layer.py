@@ -276,6 +276,22 @@ _ALLOWED_MODULE_CONSTANTS = {
         "a key with thousands of entries; advice only"
     ),
 
+    # retrieval/filter_values.py: how the filter value check words its one
+    # correction message. They decide what the model is TOLD, never what runs
+    # or whether a request is answered, so a deployment has nothing to tune.
+    "retrieval/filter_values.py::NEAREST_LIMIT": (
+        "how many real values the correction message offers per unknown "
+        "literal (a prompt-size bound; the message is advice to the model)"
+    ),
+    "retrieval/filter_values.py::_MIN_SIMILARITY": (
+        "trigram similarity below which a value is not offered as near; it "
+        "changes which hints the message carries, never what runs"
+    ),
+    "retrieval/filter_values.py::_QUOTED_MAX": (
+        "longest literal quoted in the correction message (a prompt-size "
+        "bound)"
+    ),
+
     # ── Tuning-shaped, but with a narrower, more appropriate configuration
     # surface than a process-wide environment variable -- deliberately not
     # duplicated into Settings. See config.py's "Three layers, not two"
