@@ -757,13 +757,17 @@ the keys are loaded, so a typo stops start-up instead of restricting nothing
 
 Every entry, plain or scoped, is **normalised** before it is read, whichever
 source it came from (the key file or `API_KEYS_JSON`, a key of the admin panel,
-`PATCH /admin/keys/{key}/acl`): surrounding whitespace and every Unicode format
-character (category `Cf`: the zero-width non-joiner and joiner, the left-to-right
-and right-to-left marks, the bidi embeddings and isolates, the byte-order mark,
-the soft hyphen) are removed wherever they stand, and nothing else changes — case
-and inner spaces are kept. `Principal.denied_columns` and the cache scope key hold
-the cleaned entries, so `"NationalID"` and `"NationalID<RLM>"` are one
-restriction and one cache partition. An entry with nothing left is kept as
+`PATCH /admin/keys/{key}/acl`): whitespace and Unicode format characters
+(category `Cf`: the zero-width non-joiner and joiner, the left-to-right and
+right-to-left marks, the bidi embeddings and isolates, the byte-order mark, the
+soft hyphen) are removed from the **start and the end** of the entry, repeatedly,
+and nothing else changes — characters inside an entry, format characters
+included, case and inner spaces are kept (a Persian column name may contain a
+zero-width non-joiner). `Principal.denied_columns` and the cache scope key hold
+the entries so cleaned, so `"NationalID"` and `"NationalID<RLM>"` are one
+restriction and one cache partition. For a plain entry with a format character
+inside, the guard's policy denies the entry as written and also the name without
+that character; the second name is never stored or returned. An entry with nothing left is kept as
 written and reported. A key whose entries changed gets one `WARNING` naming its
 `id` (the entries in `ascii()` form, never the key's hash). A plain entry that
 matches no column of `schema.yaml` denies nothing; it is logged as a `WARNING`
