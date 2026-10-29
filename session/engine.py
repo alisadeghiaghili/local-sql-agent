@@ -74,6 +74,7 @@ from observability.timing import StageTimer
 from prompt_engine.static_prefix import prefix_version as _prefix_version_of
 from prompt_engine.static_prefix import static_prefix_token_estimate
 from retrieval.context_retriever import ContextRetriever
+from retrieval.filter_spelling import respell_filters
 from retrieval.filter_values import audit_block, check_filter_values, correction_text
 from security.sql_guard import (
     PolicyRejection,
@@ -275,6 +276,10 @@ class _GenOutcome:
     value_check: dict[str, Any] | None = None
     """What the filter value check found (``FILTER_VALUE_CHECK``) -- the
     audit record's ``value_check``; ``None`` with the setting off."""
+    value_spelling: dict[str, Any] | None = None
+    """What the filter value spelling fix did (``FILTER_VALUE_SPELLING``) --
+    the audit record's ``value_spelling``; ``None`` with the setting off and
+    when no literal was rewritten."""
 
 
 @dataclass(frozen=True)
@@ -284,12 +289,15 @@ class _ValueRound:
     ``audit`` is the audit record's ``value_check`` (``None`` when nothing
     could be checked); ``prompt`` the message sent (``None`` when no model
     call was made); ``executed`` the corrected statement's
-    ``(df, sql, injected_top, llm_status, missing_filters)`` when it ran.
+    ``(df, sql, injected_top, llm_status, missing_filters)`` when it ran;
+    ``spelling`` what the spelling fix did to that statement (it is respelled
+    like any other before it runs).
     """
 
     audit: dict[str, Any] | None = None
     prompt: str | None = None
     executed: tuple[pd.DataFrame, str, int | None, dict[str, Any], dict[str, str]] | None = None
+    spelling: dict[str, Any] | None = None
 
 
 def _infer_type(series: "pd.Series") -> str:
@@ -633,7 +641,10 @@ class TurnEngine:
         record.turns.append(turn)
         record.memory[turn_id] = memory
 
-        self._write_audit(req_id, turn, outcome.datasource_selection, principal_id, outcome.value_check)
+        self._write_audit(
+            req_id, turn, outcome.datasource_selection, principal_id, outcome.value_check,
+            outcome.value_spelling,
+        )
         return turn
 
     # ------------------------------------------------------------------
@@ -984,6 +995,7 @@ class TurnEngine:
             routing=routing, value_sink=value_sink,
         )
         outcome.value_check = value_sink.get("block")
+        outcome.value_spelling = value_sink.get("spelling")
         if routing is not None:
             outcome.datasource_selection = routing.audit()
         return outcome, resolved_question, ambiguity_block, merged_filters, mem_warnings
@@ -1017,6 +1029,16 @@ class TurnEngine:
         would have run without the check. The check never refuses a turn.
         *value_sink*, when given, receives the audit block as
         ``value_sink["block"]``.
+
+        With :data:`config.Settings.filter_value_spelling` on (the default), the
+        statement the guard accepted, and the corrected one of the check above,
+        is first spelled the way its columns store their values
+        (:func:`retrieval.filter_spelling.respell_filters`): a deterministic
+        rewrite of a filter literal, no model call, checked by the guard again.
+        It runs before the filter value check, so a fixed literal is a known
+        value; the statement that runs, and that the turn reports, is the
+        rewritten one. *value_sink* receives what it did as
+        ``value_sink["spelling"]``.
         """
         static_prefix_tokens = static_prefix_token_estimate(system_prompt)
         last_error: str | None = None
@@ -1058,6 +1080,8 @@ class TurnEngine:
             )
 
         for correction_round in range(self._max_corrections + 1):
+            if value_sink is not None:
+                value_sink.pop("spelling", None)
             gen_segments = segments
             if pending_filter_correction is not None:
                 gen_segments = PromptSegments(
@@ -1236,6 +1260,17 @@ class TurnEngine:
                 pending_filter_correction = list(missing_filters.values())
                 continue
 
+            # The filter value spelling fix: a literal spelled with other
+            # Arabic/Persian letter forms than the column stores becomes the
+            # stored value. See the docstring.
+            if cfg.settings.filter_value_spelling:
+                capped, spelling_audit = respell_filters(
+                    capped, denied_columns=denied_columns, dialect=cfg.settings.sql_dialect,
+                )
+                last_sql = capped
+                if value_sink is not None:
+                    value_sink["spelling"] = spelling_audit
+
             # The filter value check (off by default): a literal this
             # statement compares to a cached dimension column that is not one
             # of its values gets one correction message. See the docstring.
@@ -1258,6 +1293,8 @@ class TurnEngine:
                 if value_round.executed is not None:
                     value_df, capped, injected_top, llm_status, missing_filters = value_round.executed
                     last_sql = capped
+                    if value_sink is not None:
+                        value_sink["spelling"] = value_round.spelling
 
             try:
                 with timer.stage("execute"):
@@ -1364,6 +1401,9 @@ class TurnEngine:
                 new_sql = transpile_and_revalidate(
                     new_sql, target_dialect=dialect, denied_columns=denied_columns,
                 )
+                spelling = None
+                if cfg.settings.filter_value_spelling:
+                    new_sql, spelling = respell_filters(new_sql, denied_columns=denied_columns, dialect=dialect)
                 if check_filter_values(new_sql, denied_columns=denied_columns, dialect=dialect).unknown:
                     raise ValueError("the corrected statement keeps a value that does not exist")
                 new_missing = (
@@ -1380,6 +1420,7 @@ class TurnEngine:
         return _ValueRound(
             audit_block(check, corrected=True, fallback=False), prompt,
             (df, new_sql, new_top, status_of(route_result, correction_round + 1), new_missing),
+            spelling,
         )
 
     # ------------------------------------------------------------------
@@ -1414,6 +1455,7 @@ class TurnEngine:
         datasource_selection: dict[str, Any] | None = None,
         principal_id: str | None = None,
         value_check: dict[str, Any] | None = None,
+        value_spelling: dict[str, Any] | None = None,
     ) -> None:
         """Build and persist exactly one :class:`AuditRecord` for *turn*.
 
@@ -1421,7 +1463,9 @@ class TurnEngine:
         block (``None`` with one data source, and for a turn that never
         reached generation). *principal_id* is the caller's id, as in
         ``api.runner._write_audit``. *value_check* is what the filter value
-        check found (``FILTER_VALUE_CHECK``), ``None`` with the setting off.
+        check found (``FILTER_VALUE_CHECK``), ``None`` with the setting off;
+        *value_spelling* what the spelling fix did (``FILTER_VALUE_SPELLING``),
+        ``None`` when it rewrote nothing.
 
         Never raises — mirrors ``api.runner._write_audit``.
         """
@@ -1456,6 +1500,7 @@ class TurnEngine:
                 datasource=target_datasource_or_none(turn.sql, cfg.settings.sql_dialect),
                 datasource_selection=datasource_selection,
                 value_check=value_check,
+                value_spelling=value_spelling,
             )
             save_audit_record(record)
         except Exception:  # noqa: BLE001 - auditing must never fail a user's turn

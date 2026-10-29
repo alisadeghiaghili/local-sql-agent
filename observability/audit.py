@@ -174,6 +174,34 @@ def _check_value_check_shape(block: dict[str, Any]) -> None:
                 raise TypeError(f"AuditRecord.value_check['unknown'][{i}][{key!r}] must be {kind.__name__}")
 
 
+#: The only keys of :attr:`AuditRecord.value_spelling`: a count and column
+#: identifiers, no field that could hold a value.
+_VALUE_SPELLING_KEYS: dict[str, type] = {"fixed": int, "columns": list}
+
+
+def _check_value_spelling_shape(block: dict[str, Any]) -> None:
+    """Raise ``TypeError`` unless *block* has exactly the shape :attr:`AuditRecord.value_spelling` documents.
+
+    The structural guard ``value_check`` has too: the record cannot be given a
+    filter literal, or the stored value it was changed to, because there is no
+    key for it.
+    """
+    if not isinstance(block, dict) or set(block) != set(_VALUE_SPELLING_KEYS):
+        raise TypeError(
+            "AuditRecord.value_spelling must hold exactly "
+            f"{sorted(_VALUE_SPELLING_KEYS)}; got {sorted(block) if isinstance(block, dict) else type(block).__name__}"
+        )
+    for key, kind in _VALUE_SPELLING_KEYS.items():
+        if not isinstance(block[key], kind) or isinstance(block[key], bool):
+            raise TypeError(f"AuditRecord.value_spelling[{key!r}] must be {kind.__name__}")
+    for i, column in enumerate(block["columns"]):
+        if not isinstance(column, str):
+            raise TypeError(
+                "AuditRecord.value_spelling['columns'] must contain 'Table.Column' identifier strings "
+                f"only, never values; got {type(column).__name__} at index {i}"
+            )
+
+
 @dataclass(slots=True)
 class AuditRecord:
     """One structured, compliance-grade record per API query.
@@ -324,13 +352,26 @@ class AuditRecord:
         setting is off or nothing could be checked, and then **the key is
         not written at all**, so a record is byte for byte what it was
         before the field existed; a reader treats a missing key as ``None``.
+    value_spelling:
+        What the filter value spelling fix did (``FILTER_VALUE_SPELLING``, on by
+        default; :mod:`retrieval.filter_spelling`): ``{"fixed": int, "columns":
+        ["Table.Column", ...]}``. *fixed* is how many string literals of the
+        statement that ran were rewritten to the way the column stores them
+        (Arabic/Persian letter forms), *columns* the columns they are compared
+        to, as identifiers like :attr:`resolved_columns`. Neither the literal
+        nor the stored value it became is written (the latter is warehouse
+        data): names, never values. ``None`` when the setting is off or nothing
+        was rewritten, and then **the key is not written at all**, so a record
+        is byte for byte what it was before the field existed; a reader treats
+        a missing key as ``None``. A line written before the field existed
+        loads as it always did.
 
     Raises
     ------
     TypeError
         From :meth:`__post_init__` if ``columns`` contains anything
-        other than plain strings, or ``value_check`` has any key or type
-        other than the ones documented above.
+        other than plain strings, or ``value_check`` or ``value_spelling`` has
+        any key or type other than the ones documented above.
 
     Examples
     --------
@@ -388,6 +429,7 @@ class AuditRecord:
     datasource: str | None = None
     datasource_selection: dict[str, Any] | None = None
     value_check: dict[str, Any] | None = None
+    value_spelling: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.columns is not None:
@@ -408,12 +450,15 @@ class AuditRecord:
                     )
         if self.value_check is not None:
             _check_value_check_shape(self.value_check)
+        if self.value_spelling is not None:
+            _check_value_spelling_shape(self.value_spelling)
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable dict (timestamp as ISO string).
 
-        ``value_check`` is written only when it is set, so a deployment that
-        never turns the check on writes the same lines it always did.
+        ``value_check`` and ``value_spelling`` are written only when they are
+        set, so a deployment where neither ran writes the same lines it always
+        did.
         """
         data = {
             "timestamp":      self.timestamp.isoformat(),
@@ -439,6 +484,8 @@ class AuditRecord:
         }
         if self.value_check is not None:
             data["value_check"] = self.value_check
+        if self.value_spelling is not None:
+            data["value_spelling"] = self.value_spelling
         return data
 
 

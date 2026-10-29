@@ -73,6 +73,14 @@ class SQLGenerationResult:
     record; ``None`` with the setting off, and when no literal could be
     checked."""
 
+    value_spelling: dict[str, Any] | None = None
+    """What the filter value spelling fix (``FILTER_VALUE_SPELLING``, see
+    :mod:`retrieval.filter_spelling`) did to the statement that ran, as
+    :func:`~retrieval.filter_spelling.audit_block` writes it for the audit
+    record; ``None`` with the setting off, and when no literal was rewritten.
+    ``sql`` is then the rewritten statement, ``raw_response`` still the model's
+    own text."""
+
 
 class LLMBackend(ABC):
     """Contract every LLM backend must satisfy.
