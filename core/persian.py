@@ -63,6 +63,20 @@ Arabic presentation forms and ligatures -- see the ordering note on
 further coverage (e.g. diacritic stripping) -- that is a separate
 decision with its own tradeoffs.
 
+Helpers that are not normalisation
+-----------------------------------
+Two later helpers live here because they are about Persian text, but they are
+**not** part of :func:`normalize_for_matching` and change none of its output
+(so :data:`NORMALIZER_VERSION` and the query cache's keys are untouched):
+
+* :func:`letter_form_key` folds only the letter variants a stored value can
+  differ from a typed one by (Arabic ي/ى/ك, presentation forms, ZWNJ), for
+  deciding which stored value a filter literal was meant to be
+  (:mod:`retrieval.filter_spelling`). It never folds case, digits or spaces.
+* :func:`strip_plural_suffix` reduces a word written with an attached plural
+  (تالارها) to its stem, for matching a question against aliases and trigger
+  phrases. Callers use the stem *in addition to* the word, never instead.
+
 Cache-key version
 ------------------
 :data:`NORMALIZER_VERSION` is bumped whenever this module's OUTPUT changes
@@ -77,6 +91,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 
 #: Persian digits (U+06F0-06F9) and Arabic-Indic digits (U+0660-0669)
 #: mapped to ASCII 0-9, so "۱۴۰۲", "١٤٠٢", and "1402" all fold alike.
@@ -191,3 +206,160 @@ def normalize_compact(text: str) -> str:
     True
     """
     return _WHITESPACE_RE.sub("", normalize_for_matching(text))
+
+
+#: The letters a stored value and a typed one can differ by, one tuple per
+#: letter, the Persian form first. ي (U+064A) and ى (U+0649, alef maksura) for
+#: ی (U+06CC); ك (U+0643) for ک (U+06A9). Deliberately short: ة/ه, ۀ/هٔ and the
+#: alefs are different letters or optional marks, not two spellings of one
+#: letter, and a digit script is a separate decision
+#: (:mod:`retrieval.filter_spelling` explains each exclusion).
+LETTER_FORM_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("\u06cc", "\u064a", "\u0649"),
+    ("\u06a9", "\u0643"),
+)
+
+_LETTER_FORM_TABLE = str.maketrans({
+    variant: group[0] for group in LETTER_FORM_GROUPS for variant in group[1:]
+})
+
+#: Arabic Presentation Forms-A (U+FB50-FDFF) and -B (U+FE70-FEFF): what text
+#: pasted out of a PDF or an old Windows application contains.
+PRESENTATION_FORMS_RE = re.compile("[\ufb50-\ufdff\ufe70-\ufeff]")
+
+
+def letter_form_key(text: str) -> str:
+    """The key under which two spellings of one stored value are equal.
+
+    Folds, and only folds: Arabic presentation forms and ligatures to their
+    base letters (NFKC, applied to those characters alone, so nothing else in
+    the text is rewritten), canonical composition (NFC), ي/ى -> ی and ك -> ک
+    (:data:`LETTER_FORM_GROUPS`), and ZWNJ removed. Case, digits, whitespace and
+    every other character are kept as they are, which is what makes this
+    narrower than :func:`normalize_for_matching`: two texts with the same key
+    are the same words spelled with other letter forms, nothing more.
+
+    Parameters
+    ----------
+    text:
+        A stored value or a typed literal.
+
+    Returns
+    -------
+    str
+        The key. Equal keys mean "the same text up to letter form".
+
+    Examples
+    --------
+    >>> letter_form_key("علي") == letter_form_key("علی")
+    True
+    >>> letter_form_key("كتاب") == letter_form_key("کتاب")
+    True
+    >>> letter_form_key("می\u200cخواهم") == letter_form_key("میخواهم")
+    True
+    >>> letter_form_key("\ufef1") == letter_form_key("ی")
+    True
+
+    Nothing else is folded:
+
+    >>> letter_form_key("Ali") == letter_form_key("ali")
+    False
+    >>> letter_form_key("۱۴۰۲") == letter_form_key("1402")
+    False
+    >>> letter_form_key("تالار ها") == letter_form_key("تالارها")
+    False
+    >>> letter_form_key("ة") == letter_form_key("ه")
+    False
+    """
+    text = PRESENTATION_FORMS_RE.sub(lambda m: unicodedata.normalize("NFKC", m.group()), text)
+    text = unicodedata.normalize("NFC", text)
+    return text.translate(_LETTER_FORM_TABLE).replace(_ZWNJ, "")
+
+
+#: Attached plural endings, longest first: the plural alone, the plural with
+#: the indefinite or the ezafe ی, and the plural with a possessive pronoun.
+_PLURAL_SUFFIXES = (
+    "هایشان", "هایمان", "هایتان", "هایش", "هایم", "هایت", "هایی", "های", "ها",
+)
+
+#: A stem shorter than this is not a word the suffix was attached to.
+_MIN_STEM = 3
+
+
+def strip_plural_suffix(token: str) -> str:
+    """The stem of a word written with an attached Persian plural, else *token* itself.
+
+    For a word of the **normalised** text (the half-space is already gone, so
+    ``تالار‌ها`` arrives as ``تالارها``). Strips one ending,
+    ``ها``, ``های``, ``هایی`` or ``ها`` with a possessive pronoun (``هایم``,
+    ``هایت``, ``هایش``, ``هایمان``, ``هایتان``, ``هایشان``), and only when
+    what is left is at least three characters, all of them letters. Not stripped, on purpose:
+    ``ان`` and ``ات``, which end names and ordinary words that are no plural
+    (``تهران``, ``ایران``, ``حیات``), and anything in Latin script. A word that
+    ends in ``ها`` without being a plural but has a long enough stem is
+    reduced all the same (``انتها`` -> ``انت``); that is why the stem is only
+    ever used **in addition to** the word, where an extra token that matches
+    nothing costs nothing.
+
+    Parameters
+    ----------
+    token:
+        One word, already normalised (:func:`normalize_for_matching`).
+
+    Returns
+    -------
+    str
+        The stem, or *token* unchanged when no rule applies.
+
+    Examples
+    --------
+    >>> [strip_plural_suffix(t) for t in ("تالارها", "تالارهای", "تالارهایی", "تالارهایش", "تالارهایشان")]
+    ['تالار', 'تالار', 'تالار', 'تالار', 'تالار']
+
+    The half-space form is the same word once normalised:
+
+    >>> strip_plural_suffix(normalize_for_matching("تالار\u200cها"))
+    'تالار'
+
+    A word that is not a plural, a stem too short to be a word, and Latin script
+    are left alone:
+
+    >>> [strip_plural_suffix(t) for t in ("تالار", "تهران", "ایران", "حیات", "ها", "بها", "های", "tables", "ها1")]
+    ['تالار', 'تهران', 'ایران', 'حیات', 'ها', 'بها', 'های', 'tables', 'ها1']
+    """
+    if token.isascii():
+        return token
+    for suffix in _PLURAL_SUFFIXES:
+        if token.endswith(suffix):
+            stem = token[: -len(suffix)]
+            return stem if len(stem) >= _MIN_STEM and stem.isalpha() else token
+    return token
+
+
+def strip_plural_suffixes(tokens: Iterable[str]) -> list[str]:
+    """Each of *tokens* reduced by :func:`strip_plural_suffix`, in order.
+
+    The result has as many words as *tokens* and equals it when no word
+    carries an attached plural, so a caller can compare the two and add the
+    second only when they differ. Phrases of several words keep their
+    adjacency (``تالارهای کالا`` -> ``تالار کالا``), which is what a bigram or a
+    phrase match needs.
+
+    Parameters
+    ----------
+    tokens:
+        Words of the normalised text.
+
+    Returns
+    -------
+    list[str]
+        The stems, same length and order.
+
+    Examples
+    --------
+    >>> strip_plural_suffixes(["تالارهای", "صادراتی", "تهران"])
+    ['تالار', 'صادراتی', 'تهران']
+    >>> strip_plural_suffixes(["total", "sales"])
+    ['total', 'sales']
+    """
+    return [strip_plural_suffix(token) for token in tokens]

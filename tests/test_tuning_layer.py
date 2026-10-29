@@ -483,6 +483,13 @@ _ALLOWED_MODULE_CONSTANTS = {
         "It shapes terminal output only and never reaches a query, the "
         "prompt or the guard, so it is not a deployment tuning knob"
     ),
+    "core/persian.py::_MIN_STEM": (
+        "invariant -- the shortest stem the plural-suffix rule accepts is part "
+        "of the rule's definition (the endings, this length, letters only), "
+        "documented with its examples and pinned by tests; lowering it would "
+        "make 'ها' and one- or two-letter words that end in it match as "
+        "plurals, so it is not something a deployment tunes"
+    ),
 }
 
 

@@ -106,6 +106,21 @@ original statement as it would have run without the check, through the loop
 below as ever. The check never refuses a request. With the setting off none
 of this code is reached.
 
+A filter literal spelled with other letters (``FILTER_VALUE_SPELLING``)
+----------------------------------------------------------------------
+With :data:`config.Settings.filter_value_spelling` on (the default), every
+statement the guard accepted is read once before it runs
+(:func:`retrieval.filter_spelling.respell_filters`): a string literal compared
+to a column whose whole value set is cached that is not one of its values, but
+is exactly one of them up to Arabic/Persian letter forms (``ي`` for ``ی``,
+``ك`` for ``ک``), is replaced by that stored value, and a ``LIKE`` pattern gets
+the form the column stores. No model call and no database read; the guard
+checks the rewritten statement again and the original runs if it refuses it. It
+runs ahead of the filter value check, so a fixed literal is a known value and
+costs no correction round, and the executed statement
+(:attr:`~llm.base.SQLGenerationResult.sql`) is the rewritten one. With the
+setting off none of this code is reached.
+
 Design notes
 ------------
 * ``SQLAgent`` depends on ``LLMBackend``/``LLMRouter`` (abstract), not on
@@ -165,6 +180,7 @@ from llm.router import LLMRouter, PromptSegments, TaskType, build_prompt_segment
 from llm.source_routing import SourceRouting, generate_with_source_fallback
 from observability.timing import StageTimer
 from retrieval.context_retriever import ContextRetriever
+from retrieval.filter_spelling import respell_filters
 from retrieval.filter_values import audit_block, check_filter_values, correction_text
 from security.sql_guard import (
     PolicyRejection,
@@ -223,6 +239,8 @@ class _ValueRound:
     audit: dict[str, Any] | None = None
     prompt: str | None = None
     executed: tuple[pd.DataFrame, str, str, dict[str, Any], int | None] | None = None
+    spelling: dict[str, Any] | None = None
+    """What the spelling fix did to the corrected statement in ``executed``."""
 
 
 class SQLAgent:
@@ -452,8 +470,12 @@ class SQLAgent:
         value_audit: dict[str, Any] | None = None
         value_prompts: list[str] = []
         extra_round = 0
+        # The filter value spelling fix (see the module docstring): what it did
+        # to the statement of the current round, if it reached execution.
+        spelling_audit: dict[str, Any] | None = None
 
         for correction_round in range(self._max_corrections + 1):
+            spelling_audit = None
             segments = initial_segments
             if correction_round > 0:
                 # What exists, when the error is a name that does not
@@ -581,6 +603,11 @@ class SQLAgent:
                     raise
                 continue
 
+            if cfg.settings.filter_value_spelling:
+                sql, spelling_audit = respell_filters(
+                    sql, denied_columns=denied_columns, dialect=cfg.settings.sql_dialect,
+                )
+
             if cfg.settings.filter_value_check and not value_checked:
                 value_checked = True
                 value_round = self._filter_value_round(
@@ -602,6 +629,7 @@ class SQLAgent:
                         llm_meta=llm_meta,
                         injected_top=injected_top,
                         value_check=value_audit,
+                        value_spelling=value_round.spelling,
                     )
 
             try:
@@ -619,6 +647,7 @@ class SQLAgent:
                     llm_meta=llm_meta,
                     injected_top=injected_top,
                     value_check=value_audit,
+                    value_spelling=spelling_audit,
                 )
                 if attempt > 1:
                     logger.info(
@@ -648,6 +677,8 @@ class SQLAgent:
                         exc.attempt = attempt + extra_round  # type: ignore[attr-defined]
                     if value_audit is not None:
                         exc.value_check = value_audit  # type: ignore[attr-defined]
+                    if spelling_audit is not None:
+                        exc.value_spelling = spelling_audit  # type: ignore[attr-defined]
                     raise
 
         # unreachable
@@ -680,7 +711,9 @@ class SQLAgent:
             ``audit`` for the audit record (``None`` when nothing could be
             checked), ``prompt`` the message sent (``None`` when no model call
             was made), ``executed`` the corrected statement's
-            ``(df, sql, raw, llm_meta, injected_top)`` when it ran.
+            ``(df, sql, raw, llm_meta, injected_top)`` when it ran, ``spelling``
+            what the spelling fix did to that statement (the corrected
+            statement is respelled like any other before it runs).
         """
         dialect = cfg.settings.sql_dialect
         check = check_filter_values(sql, denied_columns=denied_columns, dialect=dialect)
@@ -701,6 +734,9 @@ class SQLAgent:
             raw = route_result.text or ""
             with _stage(timer, "guard"):
                 new_sql, new_top = self._clean_validate_cap(raw, denied_columns=denied_columns)
+                spelling = None
+                if cfg.settings.filter_value_spelling:
+                    new_sql, spelling = respell_filters(new_sql, denied_columns=denied_columns, dialect=dialect)
                 again = check_filter_values(new_sql, denied_columns=denied_columns, dialect=dialect)
             if again.unknown:
                 raise ValueError("the corrected statement keeps a value that does not exist")
@@ -715,7 +751,7 @@ class SQLAgent:
             return _ValueRound(audit_block(check, corrected=False, fallback=True), prompt)
         return _ValueRound(
             audit_block(check, corrected=True, fallback=False), prompt,
-            (df, new_sql, raw, route_result.meta, new_top),
+            (df, new_sql, raw, route_result.meta, new_top), spelling,
         )
 
     def _clean_validate_cap(

@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,9 +80,12 @@ __all__ = [
     "ValueCheck",
     "audit_block",
     "check_filter_values",
+    "comparison_literals",
     "correction_text",
+    "like_patterns",
     "nearest_values",
     "string_comparisons",
+    "usable_vocabularies",
 ]
 
 #: How many real values a correction message offers per unknown literal.
@@ -218,27 +221,88 @@ def string_comparisons(sql: str, dialect: str = "tsql") -> list[StringComparison
         return []
 
     found: list[StringComparison] = []
+    for column, literals, operator in comparison_literals(tree):
+        origins = column_origins(column, tree)
+        found.extend(StringComparison(origins, text, operator) for _node, text in literals)
+    return found
+
+
+def comparison_literals(
+    tree: exp.Expression,
+) -> Iterator[tuple[exp.Column, list[tuple[exp.Expression, str]], str]]:
+    """The string literals of *tree* that a column is compared to by ``=``, ``<>``, ``IN`` or ``NOT IN``.
+
+    The walk :func:`string_comparisons` is built on, with the literal's node
+    kept, for a caller that rewrites the statement
+    (:mod:`retrieval.filter_spelling`). One item per comparison, in the order
+    the statement is written: the column, its ``(node, text)`` literals (the
+    non-literal members of an ``IN`` list are left out) and the operator.
+    A comparison with no string literal gives nothing.
+
+    Parameters
+    ----------
+    tree:
+        A parsed statement.
+
+    Returns
+    -------
+    Iterator[tuple[exp.Column, list[tuple[exp.Expression, str]], str]]
+        ``(column, [(literal node, text), ...], operator)``.
+
+    Examples
+    --------
+    >>> tree = sqlglot.parse_one("SELECT 1 FROM Ring r WHERE r.Name IN (N'a', N'b', 3)", read="tsql")
+    >>> [(c.name, [t for _n, t in lits], op) for c, lits, op in comparison_literals(tree)]
+    [('Name', ['a', 'b'], 'IN')]
+    """
     for node in tree.find_all(exp.EQ, exp.NEQ, exp.In, bfs=False):
         if isinstance(node, exp.In):
-            column, texts = _unparen(node.this), [_literal_text(e) for e in node.expressions]
+            column, texts = _unparen(node.this), [(_unparen(e), _literal_text(e)) for e in node.expressions]
             operator = "NOT IN" if isinstance(node.parent, exp.Not) else "IN"
         else:
             left, right = _unparen(node.this), _unparen(node.expression)
             if isinstance(left, exp.Column):
-                column, texts = left, [_literal_text(right)]
+                column, texts = left, [(right, _literal_text(right))]
             elif isinstance(right, exp.Column):
-                column, texts = right, [_literal_text(left)]
+                column, texts = right, [(left, _literal_text(left))]
             else:
                 continue
             operator = "=" if isinstance(node, exp.EQ) else "<>"
         if not isinstance(column, exp.Column):
             continue
-        values = [text for text in texts if text is not None]
-        if not values:
+        literals = [(n, text) for n, text in texts if n is not None and text is not None]
+        if literals:
+            yield column, literals, operator
+
+
+def like_patterns(tree: exp.Expression) -> Iterator[tuple[exp.Column, exp.Expression, str, bool]]:
+    """The string patterns of *tree* that a column is matched against by ``LIKE`` or ``NOT LIKE``.
+
+    Parameters
+    ----------
+    tree:
+        A parsed statement.
+
+    Returns
+    -------
+    Iterator[tuple[exp.Column, exp.Expression, str, bool]]
+        ``(column, literal node, pattern text, negated)`` in the order the
+        statement is written. A pattern that is not a string literal, and a
+        literal on the left of ``LIKE``, give nothing.
+
+    Examples
+    --------
+    >>> tree = sqlglot.parse_one(
+    ...     "SELECT 1 FROM Ring r WHERE r.Name LIKE N'%a%' AND r.Code NOT LIKE 'b%'", read="tsql")
+    >>> [(c.name, text, negated) for c, _n, text, negated in like_patterns(tree)]
+    [('Name', '%a%', False), ('Code', 'b%', True)]
+    """
+    for node in tree.find_all(exp.Like, bfs=False):
+        column, text = _unparen(node.this), _literal_text(node.expression)
+        if not isinstance(column, exp.Column) or text is None:
             continue
-        origins = column_origins(column, tree)
-        found.extend(StringComparison(origins, text, operator) for text in values)
-    return found
+        negated = bool(node.args.get("negate")) or isinstance(node.parent, exp.Not)
+        yield column, _unparen(node.expression), text, negated
 
 
 def _trigrams(text: str) -> frozenset[str]:
@@ -297,12 +361,90 @@ def _configured_column(table: str, column_lower: str) -> str | None:
     return None
 
 
-def _usable_vocabulary(table: str, column: str) -> list[str] | None:
-    """The cached values of ``table.column`` when they can be relied on to be all of them, else ``None``."""
-    values = dv.get_vocabulary_for_check(table, column)
+def _usable_vocabulary(table: str, column: str, *, refresh: bool = True) -> list[str] | None:
+    """The cached values of ``table.column`` when they can be relied on to be all of them, else ``None``.
+
+    With *refresh* off the cache is only read
+    (:func:`retrieval.dimension_vocabulary.get_cached_vocabulary`): a column
+    never cached, or stale, starts no background refresh.
+    """
+    values = (
+        dv.get_vocabulary_for_check(table, column) if refresh
+        else dv.get_cached_vocabulary(table, column)
+    )
     if not values or len(values) >= cfg.settings.default_top_n:
         return None
     return values
+
+
+def usable_vocabularies(
+    origins: Iterable[tuple[str, str]],
+    denied: Iterable[str],
+    hidden: Iterable[tuple[str, str]],
+    *,
+    refresh: bool = True,
+) -> list[tuple[str, str, list[str]]]:
+    """The cached vocabularies of the columns a comparison reads, when every one can be relied on.
+
+    The rule the filter value check and the spelling fix
+    (:mod:`retrieval.filter_spelling`) share: the compared column must read
+    stored columns only, each of them a ``prefetchable_columns`` entry the
+    caller may see, with a cached vocabulary that is present, not empty and not
+    possibly cut short (:func:`_usable_vocabulary`). One column that fails any
+    of these makes the whole comparison unchecked: nothing is known about it.
+    A column never cached, or stale, starts the background refresh the question
+    matching starts too, unless *refresh* is off (the spelling fix reads the
+    cache and nothing else).
+
+    Parameters
+    ----------
+    origins:
+        ``(table key, lower-cased column)`` pairs, as
+        :func:`security.sql_guard.column_origins` gives them.
+    denied:
+        The upper-cased names of the columns the caller may not use
+        (``ColumnPolicy.denied``).
+    hidden:
+        The ``(table key, lower-cased column)`` pairs of the join-only
+        columns (:func:`security.column_policy.hidden_value_columns`).
+    refresh:
+        Whether reading a missing or stale vocabulary may start a background
+        refresh (the default, as for the filter value check).
+
+    Returns
+    -------
+    list[tuple[str, str, list[str]]]
+        ``(table, column as schema.yaml spells it, values)`` for each origin;
+        empty when the comparison cannot be checked. Issues no query on the
+        calling thread.
+
+    Examples
+    --------
+    >>> dv.clear_vocabulary_cache()
+    >>> usable_vocabularies([("Ring", "name")], set(), set())
+    []
+    >>> import pandas as pd
+    >>> _ = dv.refresh_vocabulary(
+    ...     "Ring", "Name", execute_fn=lambda sql, params: pd.DataFrame({"Name": ["Alpha Hall"]}))
+    >>> usable_vocabularies([("Ring", "name")], set(), set())
+    [('Ring', 'Name', ['Alpha Hall'])]
+    >>> usable_vocabularies([("Ring", "name")], {"NAME"}, set())
+    []
+    >>> usable_vocabularies([("Ring", "name")], set(), {("Ring", "name")})
+    []
+    >>> dv.clear_vocabulary_cache()
+    """
+    hidden = set(hidden)
+    found: list[tuple[str, str, list[str]]] = []
+    for table, column_lower in origins:
+        column = _configured_column(table, column_lower)
+        if column is None or column.upper() in denied or (table, column_lower) in hidden:
+            return []
+        values = _usable_vocabulary(table, column, refresh=refresh)
+        if values is None:
+            return []
+        found.append((table, column, values))
+    return found
 
 
 def check_filter_values(
@@ -361,21 +503,7 @@ def check_filter_values(
                 continue
             seen.add(key)
 
-            vocabularies: list[tuple[str, str, list[str]]] = []
-            for table, column_lower in comparison.origins:
-                column = _configured_column(table, column_lower)
-                if (
-                    column is None
-                    or column.upper() in policy.denied
-                    or (table, column_lower) in hidden
-                ):
-                    vocabularies = []
-                    break
-                values = _usable_vocabulary(table, column)
-                if values is None:
-                    vocabularies = []
-                    break
-                vocabularies.append((table, column, values))
+            vocabularies = usable_vocabularies(comparison.origins, policy.denied, hidden)
             if not vocabularies:
                 continue
 

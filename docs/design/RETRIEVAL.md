@@ -380,4 +380,109 @@ statement the guard accepted.
 
 **Not covered.** Mode `sql` (no correction loop), the `_prev` refinement of a
 session turn (its inner statement is the previous turn's), a column that is not in
-`prefetchable_columns`, `LIKE`, and a column inside an expression.
+`prefetchable_columns`, `LIKE`, and a column inside an expression. (§11 adds a
+spelling fix that does read the letters of a `LIKE` pattern.)
+
+
+## 10. A Persian plural written attached to its word
+
+`تالارها`, `تالار‌های` (the normaliser removes the half-space, so this is the same
+text) and `تالارهایی` are one token to the lexical matchers, and no description,
+trigger phrase, synonym or data-source keyword holds that token; `تالار ها` (with
+a space) puts `تالار` in a token of its own and matched. The alias substring test
+(`retrieval/table_evidence.py`) already found a one-word alias inside the longer
+token, so the table an alias names was usually found; what failed was everything
+that compares tokens: the TF-IDF scorer, the `always_include` phrases of several
+words, the synonyms, the column evidence for the endings its old stem rule did not
+know, the alias of several words, and the data-source `keywords:` (a whole-word
+match, so `تالار` never matched `تالارها`, and a question could be routed to the
+wrong source or none).
+
+**The rule.** `core.persian.strip_plural_suffix` gives the stem of a normalised word
+that ends in `ها`, `های`, `هایی` or `ها` with a possessive pronoun (`هایم هایت هایش
+هایمان هایتان هایشان`), when the stem is at least three characters and all of them
+letters. Not stripped, on purpose: `ان` (`تهران`, `ایران`, `مشتریان`) and `ات`
+(`حیات`, `امکانات`), which end names and ordinary words as often as plurals; a word
+in Latin script (the English plural has its own rule in `schema_data/retriever.py`);
+`ها` and `های` alone (no stem). A word that ends in `ها` without being a plural, with
+a long enough stem, is reduced all the same (`انتها` gives `انت`); that is harmless
+only because of the next point.
+
+**Additive.** The stem is an extra term, never a replacement: the scorer adds the
+terms and bigrams of the stemmed question to the question's own, the triggers try
+the stemmed question as well, a synonym is looked up under the word and under its
+stem, the alias of several words is compared a second time with its words and the
+question's reduced, and a data-source keyword is looked for in the text as written
+and in the text with every such word reduced. A question without such a word takes
+the same code path as before and scores the same (`tests/test_plural_matching_pins.py`
+pins numbers on a Persian corpus, and `tests/test_plural_matching.py` checks every
+change against the matching with the stems switched off); with one, every table that
+scored still scores and no lower, so what can change is the order, and with more than
+six candidates the top-six cut.
+
+**Not changed: the vocabulary matcher.** `retrieval/dimension_vocabulary.py` compares
+the question with the values of a column by substring, which finds `تالار` inside
+`تالارها` already, and its token fallback splits the normalised text on spaces, not
+with this tokenizer. An extra term there could make two values tie on score and turn
+a clear match into a clarification.
+
+**Measured.** `python -m eval.benchmarks.retrieval_synth run --seed N`, 480 questions,
+the Persian half inflected with `-ها` with and without the half-space; mean recall of
+the Persian questions, before and after: seed 7 0.965 and 0.977, seed 11 0.956 and
+0.978, seed 23 0.973 and 0.985. The English half is identical on all three seeds, and
+mean precision does not drop (seed 7 0.678 and 0.681, seed 11 0.679 and 0.687, seed 23
+0.655 and 0.663). The generator is the same as in §2; the numbers show the mechanism,
+not a prediction for a given warehouse.
+
+## 11. A filter literal written with other letter forms (`FILTER_VALUE_SPELLING`)
+
+The warehouse stores some values with the Arabic `ي`/`ك`; the model writes the
+Persian `ی`/`ک`. Under the deployment's collation they are different strings, so
+`WHERE r.[Name] = N'<Persian spelling>'` returns nothing while the Arabic one
+returns rows, and §9's check, which compares normalised forms, calls the Persian
+spelling a known value. `retrieval/filter_spelling.py` fixes the statement itself,
+with no model call, from the same cached vocabularies and the same column
+resolution as §9 (`usable_vocabularies`, `security.sql_guard.column_origins`).
+
+**Decisions, and why.**
+
+- **On by default; one switch.** It acts only when a literal is not a stored value
+  and exactly one stored value is its spelling variant, and it writes the stored
+  value, so it is the same filter the model meant, spelled as the column has it.
+  `FILTER_VALUE_SPELLING=false` makes everything byte for byte as before
+  (`tests/test_filter_spelling_pins.py`, written before the code).
+- **The cache is read, nothing starts.** No query, and not even the background
+  refresh §9's check starts for a cold or stale column: a deployment that never
+  turned the check on gets no read it did not have. A stale list is used; a value
+  added since the last refresh is simply not known, and a literal that does not
+  match one stored value stays as written. A list as long as the prefetch cap is not
+  trusted. A denied or join-only column is never read.
+- **A narrow fold.** `core.persian.letter_form_key`: `ي ى` with `ی`, `ك` with `ک`,
+  presentation forms and ligatures by NFKC (applied to those characters only), NFC,
+  and ZWNJ with none. Not `ة`/`ه` (different letters, and `ه` is in nearly every
+  word), not `ۀ`/`هٔ` (a letter and an optional mark), not the alefs, not digits (a
+  year or a code is not a spelling), not case or spaces. `normalize_for_matching` is
+  unchanged, so the query cache keys are.
+- **Exactly one candidate.** Two stored values that fold to the same key leave the
+  literal alone, and so does another stored value that only differs from the literal
+  by what `normalize_for_matching` folds (a trailing space, case): the comparison may
+  already find it.
+- **`LIKE` is rewritten by group, not expanded.** For each group (`ی ي ى`, `ک ك`),
+  when every stored value that holds a letter of the group holds the same one, the
+  pattern's letters of the group become that one. A column that stores both forms is
+  left alone: finding every row would take an `OR` of patterns at that place of the
+  condition (inside `NOT`, under `OR`, one copy per letter), which changes the shape
+  of the statement; that case stays the model's and §9's.
+- **The edit is a splice, checked twice.** The literal's token is found through the
+  position sqlglot records on the node, only that span is replaced (prefix and quoting
+  kept, a quote in the value doubled), and the result is parsed again and must read as
+  the original with just those literals changed. Then the guard validates it again in
+  the dialect it runs in. Either refusal runs the original statement.
+- **First, so the check sees the fixed statement.** With `FILTER_VALUE_CHECK` on, the
+  fix runs before it: a spelling difference is a known value and costs no correction
+  round, and the corrected statement of §9 is respelled before it runs too.
+- **The audit log keeps names, never values.** `value_spelling`: `{"fixed": n,
+  "columns": ["Table.Column"]}`, absent when nothing was rewritten.
+
+**Not covered.** The same cases as §9: mode `sql`, the `_prev` refinement, a column
+that is not in `prefetchable_columns`, and a column inside an expression.

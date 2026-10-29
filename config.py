@@ -1625,6 +1625,30 @@ class Settings:
     Defaults to ``False``: with it off no request, prompt, statement, audit
     record or response differs from a deployment that never had the check."""
 
+    filter_value_spelling: bool = field(
+        default_factory=lambda: os.getenv("FILTER_VALUE_SPELLING", "true").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, a statement the guard accepted has its string-literal
+    filters spelled the way the column stores them, before it runs: a literal
+    compared to a column whose whole value set is cached (a table's
+    ``prefetchable_columns``) that is not one of its values, but equals exactly
+    one of them up to Arabic/Persian letter forms (``ي``/``ى`` for ``ی``,
+    ``ك`` for ``ک``, presentation forms, ZWNJ), is replaced by that stored
+    value; a ``LIKE`` pattern over a column that stores one form of those
+    letters gets that form. There is no model call, no database read (the cache
+    only), and a statement the guard refuses after the rewrite runs as it was
+    written. It runs ahead of ``FILTER_VALUE_CHECK``, so a fixed literal is a
+    known value and costs no correction round. See ``retrieval.filter_spelling``
+    and the runbook's section on it.
+
+    Defaults to ``True``: the fix acts only on a statement that would
+    otherwise compare with a value the column does not contain (it returns
+    nothing under a collation that tells the two spellings apart), and the value
+    it writes is the column's own, so it cannot match less than the literal did.
+    Set it to ``false`` and no request, statement, audit record or response
+    differs from one made before the setting existed."""
+
     # ── Evaluation harness: golden-set regression gate (see eval/baseline.py) ─
     eval_max_accuracy_drop_pct: float = field(
         default_factory=lambda: float(os.getenv("EVAL_MAX_ACCURACY_DROP_PCT", "5.0"))

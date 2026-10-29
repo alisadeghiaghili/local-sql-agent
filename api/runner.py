@@ -327,6 +327,9 @@ def run_query(
     # What the filter value check found (FILTER_VALUE_CHECK, off by default);
     # stays None (and the record then has no such key) unless it ran.
     audit_value_check: dict[str, Any] | None = None
+    # What the filter value spelling fix did (FILTER_VALUE_SPELLING); stays None
+    # (and the record then has no such key) unless it rewrote a literal.
+    audit_value_spelling: dict[str, Any] | None = None
     # Where mode="sql" reports its selection (see _safe_generate_sql_only),
     # including when it raises.
     selection_sink: dict[str, Any] = {}
@@ -400,6 +403,7 @@ def run_query(
 
         audit_selection = _selection_or_none(getattr(result, "datasource_selection", None))
         audit_value_check = _selection_or_none(getattr(result, "value_check", None))
+        audit_value_spelling = _selection_or_none(getattr(result, "value_spelling", None))
         audit_sql = result.sql
         audit_row_count = len(rows)
         audit_columns = [str(c) for c in df.columns]
@@ -473,6 +477,7 @@ def run_query(
             or _selection_or_none(selection_sink.get("selection"))
         )
         audit_value_check = _selection_or_none(getattr(exc, "value_check", None))
+        audit_value_spelling = _selection_or_none(getattr(exc, "value_spelling", None))
         audit_llm = _llm_status_block_for_error(
             exc, _agent._backend, finish_reason,
             static_prefix_tokens=_prefix_tokens_for(
@@ -517,6 +522,7 @@ def run_query(
             datasource=target_datasource_or_none(audit_sql, cfg.settings.sql_dialect),
             datasource_selection=audit_selection,
             value_check=audit_value_check,
+            value_spelling=audit_value_spelling,
         )
 
 
@@ -732,9 +738,14 @@ def _carry_exception_meta(src: Exception, dst: NLQError) -> None:
         Set by ``SQLAgent.run`` when the filter value check ran
         (``FILTER_VALUE_CHECK``): what it found, for the audit record of a
         request that failed afterwards.
+    ``value_spelling``
+        Set by ``SQLAgent.run`` when the spelling fix rewrote a literal of
+        the statement that then failed to execute
+        (``FILTER_VALUE_SPELLING``).
     """
     for attr in (
         "llm_meta", "candidate_sql", "injected_top", "attempt", "datasource_selection", "value_check",
+        "value_spelling",
     ):
         value = getattr(src, attr, None)
         if value is not None:
@@ -758,6 +769,7 @@ def _write_audit(
     datasource: str | None = None,
     datasource_selection: dict[str, Any] | None = None,
     value_check: dict[str, Any] | None = None,
+    value_spelling: dict[str, Any] | None = None,
 ) -> None:
     """Build and persist one :class:`~observability.audit.AuditRecord`.
 
@@ -795,6 +807,7 @@ def _write_audit(
             datasource=datasource,
             datasource_selection=datasource_selection,
             value_check=value_check,
+            value_spelling=value_spelling,
         )
         save_audit_record(record)
     except Exception:  # noqa: BLE001 — auditing must never fail a user's query

@@ -17,8 +17,11 @@ The signals, strongest first; the first that picks a winner decides:
    :func:`core.persian.normalize_for_matching` applies to every other
    comparison in this code base (Arabic ``ي``/``ك`` to ``ی``/``ک``,
    digits to ASCII, ZWNJ removed, case folded). ``stock`` does not match
-   inside ``stockholder``. A source with more distinct matching phrases
-   than every other source wins (reason ``keyword``).
+   inside ``stockholder``. A Persian word written with an attached plural
+   (``تالارها``) matches as its stem too (``تالار``): the question is tried as
+   written and with such words reduced
+   (:func:`core.persian.strip_plural_suffix`). A source with more distinct
+   matching phrases than every other source wins (reason ``keyword``).
 2. **Session continuity.** A follow-up turn in a conversation stays on the
    previous turn's source unless the keywords point elsewhere (reason
    ``session``).
@@ -47,7 +50,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
-from core.persian import normalize_for_matching
+from core.persian import normalize_for_matching, strip_plural_suffix
 
 __all__ = [
     "REASON_DEFAULT",
@@ -144,6 +147,10 @@ class SourceSelection:
         }
 
 
+#: A word of normalised text: letters and digits of any script, and ``_``.
+_WORD_RE = re.compile(r"\w+")
+
+
 @lru_cache(maxsize=256)
 def _phrase_pattern(phrase: str) -> re.Pattern[str] | None:
     """Compile *phrase* into a whole-word pattern over normalised text.
@@ -192,14 +199,28 @@ def keyword_hits(
     {'sales': 1}
     >>> keyword_hits("می‌خواهم", {"sales": ["میخواهم"]})
     {'sales': 1}
+
+    A Persian word written with an attached plural also matches as its stem,
+    whatever the ending, and inside a phrase; a word that is not a plural does not:
+
+    >>> keyword_hits("تالارها", {"sales": ["تالار"]})
+    {'sales': 1}
+    >>> keyword_hits("حجم تالارهای صادراتی", {"sales": ["تالار صادراتی"]})
+    {'sales': 1}
+    >>> keyword_hits("تهران", {"sales": ["تهر"]})
+    {'sales': 0}
     """
     text = normalize_for_matching(question)
+    # the same text with every word that carries an attached plural reduced to
+    # its stem: a phrase is looked for in the text as written and in this one
+    stemmed = _WORD_RE.sub(lambda match: strip_plural_suffix(match.group()), text)
+    texts = (text,) if stemmed == text else (text, stemmed)
     hits: dict[str, int] = {}
     for source, phrases in keywords.items():
         count = 0
         for phrase in phrases:
             pattern = _phrase_pattern(phrase)
-            if pattern is not None and pattern.search(text):
+            if pattern is not None and any(pattern.search(candidate) for candidate in texts):
                 count += 1
         hits[source] = count
     return hits

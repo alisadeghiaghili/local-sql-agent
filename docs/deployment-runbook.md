@@ -3515,6 +3515,24 @@ The previous selection (before 6.9.0) is `RETRIEVAL_PRUNE=false`,
 are read from `.env` like the others; the same table, with the measured effect
 of each part, is in `docs/design/RETRIEVAL.md` §6.
 
+**A plural written attached to its word.** `تالارها`, `تالار‌های` (the half-space
+is removed when the question is normalised) and `تالارهایی` used to be one token
+that no description, trigger phrase, synonym or data-source keyword contained,
+while `تالار ها` (with a space) matched `تالار`. Wherever the question's tokens are
+compared with configuration (the TF-IDF scorer, the phrases of `always_include`,
+the synonyms of `aliases.yaml`, column-name evidence, an alias of several words in
+`entities.yaml` or `fact_patterns`, and the `keywords:` of a data source in
+`datasources.yaml`), the word is now also tried as its stem
+(`core.persian.strip_plural_suffix`). The endings are `ها`, `های`, `هایی` and `ها`
+with a possessive pronoun (`هایش`, `هایشان`, ...), the stem must be at least three
+letters, and `ان` and `ات` are never stripped (`تهران`, `ایران`, `حیات`). The stem
+is added, never substituted: a question without such a word is matched and scored
+exactly as before, and with one every table that scored still scores. There is
+no setting. `retrieval/dimension_vocabulary.py` (the stored values of a column) is
+not changed. To check a question you rely on, run `eval.cli recall` (§18.4) with the
+plural written attached; the measured effect on the synthetic benchmark is in
+`docs/design/RETRIEVAL.md` §10.
+
 ### 18.6 Accuracy rounds with a reviewer
 
 The model and the warehouse exist only on your server, so whoever reviews the
@@ -4702,5 +4720,85 @@ on a value that is not cached as real. The `timings` of the request include it
 correction).
 
 **What it cannot catch.** A value that exists but is wrong for the question; a
-filter on a column that is not in `prefetchable_columns`; a `LIKE` pattern; a
-literal compared to a column inside a function or a computed expression.
+filter on a column that is not in `prefetchable_columns`; a `LIKE` pattern (the
+spelling fix below rewrites the letters of one, nothing more); a literal compared
+to a column inside a function or a computed expression.
+
+#### The same value in other letters: `FILTER_VALUE_SPELLING`
+
+**What went wrong.** The warehouse stores some values with the Arabic letters
+`ي`/`ك`; the model always writes the Persian `ی`/`ک`. Under the deployment's
+collation they are different strings, so `... JOIN [Dim].[Ring] r ... WHERE r.[Name] =
+N'<the value with Arabic YEH>'` returned rows and the same statement with the Persian
+YEH returned nothing. The check above does not help: it compares the normalised forms,
+so it counts the Persian spelling as a known value.
+
+**What the fix does.** On by default (`FILTER_VALUE_SPELLING=true`), whether or not
+`FILTER_VALUE_CHECK` is on, after the guard has accepted a statement and before it
+runs (and for the corrected statement of the check, before it runs). It uses the
+same cached value sets, the same column resolution and the same rules as the check:
+only a column in `prefetchable_columns`, with a cached list that is present, not
+empty and shorter than the prefetch cap; never a column the key denies or restricts
+to join-only; a column inside a function is left alone.
+
+1. For `=`, `<>`/`!=`, `IN` and `NOT IN`: a string literal that is **not byte-equal to
+   any stored value**, but equals **exactly one** of them up to letter form, is
+   replaced by that stored value, character for character. Letter form means `ي`
+   and `ى` with `ی`, `ك` with `ک`, Arabic presentation forms and ligatures, and a
+   ZWNJ with none. Not folded: `ة`/`ه`, `ۀ`/`هٔ`, the alefs, digits, case, spaces.
+   Two or more candidates, none, or another stored value that differs from the
+   literal only by what the question matching folds (a trailing space, case): the
+   literal stays as written.
+2. For `LIKE` and `NOT LIKE`: for each of the two letter groups, when every stored
+   value that holds a letter of the group holds the same one, the pattern's letters
+   of the group are written as that one. A column that stores both forms, and a
+   column with an Arabic presentation form in it, are left alone (an `OR` of
+   patterns would change the shape of the statement).
+3. Only the literal's own characters are replaced (`N` prefix and quoting kept, the
+   rest of the statement byte for byte); the result is parsed again and must read
+   as the original with just those literals changed, and the guard checks it again
+   in the dialect it runs in. If either refuses, the original statement runs.
+
+**What it never does.** It never calls the model, and never reads the database: it
+reads the cache and nothing else, not even the background refresh a cold or stale
+column starts for the check, so a deployment that never turned the check on gets no
+read it did not have. A stale list is used as is: a value added since the last
+refresh is not known to it. It never changes a statement whose literal is a stored
+value, whose column has no usable list, or whose literal two stored values could
+mean. It never refuses a request.
+
+**Where it applies.** The same places as the check: `POST /query` in mode `result`
+and `full`, and the fresh and carry-forward generation of a session turn; not mode
+`sql` and not the `_prev` refinement. The statement that runs, the SQL the UI shows
+and `generated_sql` in the audit record are the rewritten one.
+
+**Turning it off.** `FILTER_VALUE_SPELLING=false` in `.env` and a restart: every
+statement then runs exactly as the model wrote it, and every audit line is as before.
+
+**Audit.** A request where a literal was rewritten has a `value_spelling` block:
+
+```json
+"value_spelling": {"fixed": 1, "columns": ["Ring.Name"]}
+```
+
+`fixed` is how many literals were rewritten and `columns` the columns they are
+compared to. **Neither the literal nor the stored value is written** (this log keeps
+names, never values). A line where nothing was rewritten has no `value_spelling`
+key, and so does every line written with the setting off or before the field
+existed. To count the requests it fixed:
+
+```powershell
+(Select-String -Path logs\audit_log.jsonl -Pattern '"value_spelling"' | Measure-Object).Count
+```
+
+A request it fixed spends no correction round, so it does not raise the "needed a
+correction" share of the quality card. With `FILTER_VALUE_CHECK` on, the fix runs
+first: a spelling difference is a known value and costs no model call.
+
+**What it costs.** Parsing the statement once and comparing a few strings with the
+cached lists: negligible, and no call to the model or the database.
+
+**What it cannot catch.** A value that is not cached or a column that is not in
+`prefetchable_columns`; a digit written in another script; `ة` for `ه`; a literal
+two stored values could mean (the check above, with `FILTER_VALUE_CHECK`, can ask
+the model instead).
