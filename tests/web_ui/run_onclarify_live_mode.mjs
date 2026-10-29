@@ -161,4 +161,33 @@ function noticeMentionsLocalSimulation() {
   console.log("[ok] live mode: onEditAssumption is unchanged and still sends the PATCH");
 }
 
+/* ── Scenario 5: the server answers with a NEW turn (#219). A PATCH re-asks
+ * the question and TurnEngine.ask appends the answer under its own
+ * turn_id; the turn that was re-asked keeps its card, so it keeps its
+ * record, and the new turn is added after it and rendered. ──────────── */
+{
+  state.mode = "live";
+  state.sessionId = "sess-live-5";
+  resetCalls();
+  const asked = seedTurn("t5", "ring", "تالار قدیم");
+
+  const serverTurn = {
+    turn_id: "t6",
+    ambiguity: { assumptions: [{ field: "ring", value: "تالار سیمان", source: "question" }] },
+  };
+  setPatchAssumptionsImpl(async () => serverTurn);
+
+  const ctx = turnCtx();
+  ctx.onClarify("t5", "ring", "تالار سیمان");
+  await flush();
+
+  assert.equal(state.turns.length, 2, "the new turn is added, not written over the one that was re-asked");
+  assert.equal(state.turns[0], asked, "the re-asked turn keeps its record (its card is still on the page)");
+  assert.equal(state.turns[1], serverTurn);
+  assert.equal(calls.rerenderTurn.length, 1);
+  assert.equal(calls.rerenderTurn[0], serverTurn, "the new turn is rendered");
+  assert.equal(calls.handleLiveError.length, 0);
+  console.log("[ok] live mode: a new turn from the server is appended after the re-asked one");
+}
+
 console.log("ALL_SCENARIOS_PASSED");

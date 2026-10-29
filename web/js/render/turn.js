@@ -301,6 +301,7 @@ export function createTurnCard(turn, ctx) {
   // later action wins); each control mirrors that in the UI through these.
   let confirmation = null;
   let feedback = null;
+  let flagShortcut = null;
   if (!turn.error && !isGuardRejected(turn)) {
     const resultCard = el("div", "card");
     resultCard.appendChild(el("div", "card-title", "نتیجه"));
@@ -313,14 +314,24 @@ export function createTurnCard(turn, ctx) {
     // table or chart -- not in the collapsed section further down, where a
     // one-click confirmation would barely be used. The page (main.js) builds the
     // control, which owns the request and the confirmed-turns record, and
-    // returns null for a turn that is not a successful answer, so the
-    // footer exists only then.
+    // returns null for a turn that is not a successful answer. The footer
+    // exists when it holds this control or the one below.
     confirmation = ctx.renderConfirmation
-      ? ctx.renderConfirmation(turn, { onReplacedFlag: () => { if (feedback) feedback.reopen(); } })
+      ? ctx.renderConfirmation(turn, {
+        onReplacedFlag: () => {
+          if (feedback) feedback.reopen();
+          if (flagShortcut) flagShortcut.setFlagged(false);
+        },
+      })
       : null;
-    if (confirmation) {
+    // «پاسخ نادرست است»: the wrong-answer twin of the toggle, on the answer
+    // too. It sends nothing itself; it opens the flag form further down the
+    // card (openFlagForm, under "9."), which keeps its category and note.
+    if (turn.result && ctx.onFlag) flagShortcut = renderFlagShortcut(() => openFlagForm());
+    if (confirmation || flagShortcut) {
       const footer = el("div", "result-footer");
-      footer.appendChild(confirmation);
+      if (confirmation) footer.appendChild(confirmation);
+      if (flagShortcut) footer.appendChild(flagShortcut);
       resultCard.appendChild(footer);
     }
     body.appendChild(tagLate(resultCard));
@@ -368,6 +379,7 @@ export function createTurnCard(turn, ctx) {
     feedback = renderFeedbackControl(turn, async (category, note) => {
       await ctx.onFlag(turn.turn_id, category, note);
       if (confirmation) confirmation.setConfirmed(false);
+      if (flagShortcut) flagShortcut.setFlagged(true);
     });
     flagWrap.appendChild(feedback);
     drawerBody.appendChild(flagWrap);
@@ -375,6 +387,15 @@ export function createTurnCard(turn, ctx) {
 
   drawer.appendChild(drawerBody);
   body.appendChild(tagLate(drawer));
+
+  /** What «پاسخ نادرست است» on the answer does: open the drawer, expand
+   * the flag form in it and bring the form into view. */
+  function openFlagForm() {
+    if (!feedback) return;
+    drawer.open = true;
+    feedback.openForm();
+    if (typeof feedback.scrollIntoView === "function") feedback.scrollIntoView({ block: "nearest" });
+  }
 
   collapseBtn.addEventListener("click", () => {
     const collapsed = root.classList.toggle("collapsed");
@@ -409,6 +430,29 @@ export function createTurnCard(turn, ctx) {
  * and "returned nothing" must never look the same. */
 function isGuardRejected(turn) {
   return !!(turn.guard && turn.guard.verdict === "rejected");
+}
+
+/**
+ * The «پاسخ نادرست است» button in the result footer, beside «پاسخ درست
+ * است». Pressing it calls *onOpen*, which opens the flag form further down
+ * the card; the report itself is still sent from that form. Once a report is sent
+ * the button says so with a check mark (text, not colour alone); a later
+ * confirmation that replaces the report clears it again.
+ *
+ * @param {() => void} onOpen
+ * @returns {HTMLButtonElement} carrying `setFlagged(boolean)`.
+ */
+function renderFlagShortcut(onOpen) {
+  const button = el("button", "flag-shortcut");
+  button.type = "button";
+  function setFlagged(flagged) {
+    button.className = flagged ? "flag-shortcut is-flagged" : "flag-shortcut";
+    button.textContent = flagged ? "✓ گزارش شد" : "پاسخ نادرست است";
+  }
+  button.addEventListener("click", () => onOpen());
+  setFlagged(false);
+  button.setFlagged = setFlagged;
+  return button;
 }
 
 /**

@@ -1217,6 +1217,12 @@ function rerenderTurn(turn) {
   } else {
     clearTranscriptEmptyState();
     $("transcript").appendChild(card.el);
+    // A turn with no card yet lands at the foot of the transcript: in live
+    // mode, answering a clarification or editing an assumption re-asks the
+    // question and the server returns it as a NEW turn (TurnEngine.ask
+    // appends it with its own turn_id). Bring the analyst to its answer,
+    // as a streamed answer does once it settles (#219).
+    scrollSettledResultAboveComposer(card.result || card.el);
   }
 }
 
@@ -1429,8 +1435,13 @@ async function askLive(q) {
 async function patchLiveAssumption(turnId, field, value) {
   try {
     const updated = await api.patchAssumptions(state.sessionId, turnId, [{ field, value }]);
-    const idx = state.turns.findIndex((t) => t.turn_id === turnId);
+    // The server re-asks the question and answers with a new turn (a new
+    // turn_id, appended to the session); the turn it re-asked keeps its
+    // card, so it keeps its record too. A reply under the same turn_id
+    // still replaces that turn in place.
+    const idx = state.turns.findIndex((t) => t.turn_id === updated.turn_id);
     if (idx >= 0) state.turns[idx] = updated;
+    else state.turns.push(updated);
     rerenderTurn(updated);
   } catch (err) {
     handleLiveError(err);
