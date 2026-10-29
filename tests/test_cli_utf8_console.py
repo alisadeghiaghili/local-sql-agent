@@ -299,6 +299,15 @@ CASES: tuple[Case, ...] = (
         FA_CONFIG_NAME,
     ),
     Case(
+        "scripts/draft_policies.py",
+        # --dry-run: nothing is written; it prints the configuration path (Persian here) before the
+        # read of the template's dimension, which the empty SQLite database cannot answer (exit 2).
+        lambda c: ["scripts/draft_policies.py", "--dry-run"],
+        FA_CONFIG_NAME,
+        returncodes=(0, 2),
+        env=_sqlite_env,
+    ),
+    Case(
         "scripts/golden_sheet.py",
         lambda c: ["scripts/golden_sheet.py", "export", "--cases", str(c.candidates),
                    "--out", str(c.fa_dir / "بازبینی.csv")],
