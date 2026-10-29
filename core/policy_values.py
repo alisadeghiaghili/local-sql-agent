@@ -41,6 +41,7 @@ is_shipped_directory(directory, shipped_directory) -> bool
 policy_sites(policies) -> tuple[PolicySite, ...]
 policy_findings(policies, view, shipped) -> PolicyFindings
 vocabulary_gaps(policies, view, lookup) -> list[VocabularyGap]
+cached_dimension(policies, view, lookup) -> tuple[str, str, Sequence[str]] | None
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ __all__ = [
     "PolicyFindings",
     "PolicySite",
     "VocabularyGap",
+    "cached_dimension",
     "is_shipped_directory",
     "policy_findings",
     "policy_sites",
@@ -371,3 +373,57 @@ def vocabulary_gaps(
                 gaps.append(VocabularyGap(site, key, column, missing, len(options), len(known)))
             break
     return gaps
+
+
+def cached_dimension(
+    policies: Policies,
+    view: doctor.SchemaView,
+    lookup: VocabularyLookup,
+) -> tuple[str, str, Sequence[str]] | None:
+    """The table, column and cached values of the dimension the policies are written for.
+
+    The same resolution as :func:`vocabulary_gaps` (the first place that names a
+    table of *view* whose column the application has cached), for a caller that
+    compares something other than the policies' options with the values: the
+    keys of ``aliases.yaml`` ``ring_aliases``.
+
+    Parameters
+    ----------
+    policies:
+        From :func:`read_policies`.
+    view:
+        ``schema.yaml`` (it must have parsed).
+    lookup:
+        ``(table key, column) -> cached values``; ``None`` when nothing is cached.
+        It must not query anything.
+
+    Returns
+    -------
+    tuple[str, str, Sequence[str]] | None
+        ``(table key, column, values)``; ``None`` when no dimension is cached.
+
+    Examples
+    --------
+    >>> policies = read_policies(SHIPPED_DIRECTORY)
+    >>> view = doctor.read_schema(SHIPPED_DIRECTORY)
+    >>> cached_dimension(policies, view, lambda table, column: ["Ring A"])
+    ('Ring', 'Name', ['Ring A'])
+    >>> cached_dimension(policies, view, lambda table, column: None) is None
+    True
+    """
+    by_key = {table.key: table for table in view.tables}
+    sites = policy_sites(policies)
+    column_for_table: dict[str, str] = {}
+    for site in sites:
+        if site.column:
+            for key in doctor.resolve_table_keys(view, site.filter_key):
+                column_for_table.setdefault(key, site.column)
+    for site in sites:
+        for key in doctor.resolve_table_keys(view, site.filter_key):
+            wanted = site.column or column_for_table.get(key, "")
+            column = doctor.column_of(by_key[key], wanted) if wanted else ""
+            cached = lookup(key, column) if column else None
+            if cached is not None:
+                return key, column, cached
+            break
+    return None
