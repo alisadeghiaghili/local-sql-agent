@@ -391,6 +391,7 @@ and fails if a warehouse name reappears in an executable literal.
 
 ```yaml
 # project_config/aliases.yaml — a new trading-hall alias
+# (the key is the exact value the hall's name column stores, never a table name)
 ring_aliases:
   "<canonical hall name>": ["<synonym>", "<synonym>", "<synonym>"]
 

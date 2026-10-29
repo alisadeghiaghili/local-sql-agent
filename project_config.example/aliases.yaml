@@ -3,6 +3,10 @@
 # ring_aliases: maps a canonical hall/ring name to the surface forms users
 #   might type in a natural-language question.
 #   Format:  "Canonical Name": ["form1", "form2", ...]
+#   The key is the exact value the ring dimension's name column stores (the
+#   filter is WHERE ... = N'<key>'). It is not a table name: an entry whose
+#   key is a key of schema.yaml's tables is ignored. A table's own aliases
+#   belong in entities.yaml.
 #
 # synonyms: maps a surface-form word to canonical tokens used in table
 #   descriptions, enabling TF-IDF retrieval to find the right table.

@@ -622,6 +622,8 @@ ring_aliases:
     - "industrial ring"
 ```
 
+The key must be the exact value the hall's name column stores (the question's hall becomes the filter `WHERE r.[Name] = N'Hall Industrial'`), and the list holds the forms people type for it. It is not the name of a table, and a table's own aliases do not go here: they belong in `entities.yaml`. A key that is also a key of `schema.yaml`'s `tables` is ignored when the file loads (the application logs one `WARNING` naming them), and the preflight check `Aliases are curated` fails on it; the setup wizard of 6.13 to 6.16.2 wrote such entries, one per table, and the wizard now drops them when it merges into an earlier file. To draft real entries from the stored values, run `python scripts/draft_policies.py --ring-aliases`.
+
 ---
 
 ## 10. Adding few-shot examples
