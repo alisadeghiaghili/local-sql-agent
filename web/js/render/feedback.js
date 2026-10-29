@@ -115,5 +115,16 @@ export function renderFeedbackControl(turn, onFlag) {
     status.className = "feedback-status";
   };
 
+  /** Expand the form and move focus into it -- what the «پاسخ نادرست است»
+   * button on the answer does (render/turn.js), so the analyst need not
+   * find this control in the drawer first. After a report was sent the
+   * form is disabled; focus then goes to the toggle, whose text says so. */
+  root.openForm = () => {
+    form.hidden = false;
+    toggle.setAttribute("aria-expanded", "true");
+    const target = select.disabled ? toggle : select;
+    if (typeof target.focus === "function") target.focus();
+  };
+
   return root;
 }

@@ -784,10 +784,29 @@ table.result-table tbody tr:hover { background: var(--teal-l); }
 .result-footer {
   margin-block-start: 12px; padding-block-start: 10px;
   border-block-start: 1px solid var(--border);
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
 }
 .confirmation-control {
   display: flex; align-items: center; gap: 4px 12px;
   min-block-size: 34px;
+  flex: 1 1 16rem; min-inline-size: 0;
+}
+/* «پاسخ نادرست است»: the wrong-answer twin of the toggle. It opens
+ * the flag form in the drawer and sends nothing itself, so it is a plain
+ * button, not a toggle; once a report is sent its text gains a check mark
+ * and its border turns critical (text and border, not colour alone). */
+.flag-shortcut {
+  border: 1px solid var(--border); background: var(--card-2); color: var(--ink);
+  border-radius: 8px; padding: 5px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: inherit; min-inline-size: 9.5rem; text-align: center; flex: 0 0 auto;
+  box-sizing: border-box; min-block-size: 32px;
+}
+.flag-shortcut:hover { border-color: var(--status-critical); }
+.flag-shortcut:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.flag-shortcut.is-flagged {
+  border-width: 2px; padding-block: 4px; padding-inline: 12px;
+  border-color: var(--status-critical);
+  background: var(--status-critical-bg); color: var(--ink);
 }
 .confirm-toggle {
   border: 1px solid var(--border); background: var(--card-2); color: var(--ink);

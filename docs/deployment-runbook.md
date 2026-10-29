@@ -3344,8 +3344,11 @@ that is why a golden set tends not to get built. The web UI now lets them
 build it without one. Every answer whose query ran and returned a result
 carries a toggle, **«پاسخ درست است»** ("this answer is correct"), in a footer
 right under the result table or chart: visible on the answer, with nothing to
-open first. (The wrong-answer flag «این عدد درست نیست؟» stays in the
-collapsed «جزئیات» drawer.) The toggle is absent on an answer that was
+open first. Beside it, **«پاسخ نادرست است»** ("this answer is incorrect")
+sends nothing itself: it opens the collapsed «جزئیات» drawer and the
+wrong-answer flag's form («این عدد درست نیست؟», a category and an optional
+note), and the report is sent from there; once sent, the button reads
+«✓ گزارش شد». The toggle is absent on an answer that was
 rejected, declined as out of scope or failed. One click stores a
 confirmation; pressing it again withdraws it. A confirmation holds
 identifiers only (session, turn, the confirming principal, the request id
