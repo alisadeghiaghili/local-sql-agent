@@ -531,6 +531,12 @@ FILTER_VALUE_CHECK=true
 
 What you will see: the audit log gets a `value_check` block on the requests where something was compared, with the column, a hash and the length of each value that was not found, and whether the corrected query ran (`corrected`) or the original did (`fallback`). The value itself is not written. A corrected question counts as one correction. The full description is section 20.11 of `docs/deployment-runbook.md`.
 
+**A related fix that is on by default (`FILTER_VALUE_SPELLING`).** The warehouse may store a name with the Arabic letters `ي` and `ك` while the model, like the question, writes the Persian `ی` and `ک`. The query is valid, but under the database's collation the two spellings are different strings, so it returns nothing. Before a query runs, the server now looks at each text value it compares with a column listed under `prefetchable_columns` (the cache only: no database read, and `FILTER_VALUE_CHECK` need not be on). If the value is not stored as written but exactly one stored value is the same text spelled with the other letters (`ي`, `ى`, `ك`, an Arabic presentation form, a half-space that is there or not), that stored value takes its place. In a `LIKE` pattern the letters are written the way the column stores them, but only when the column uses a single form. Nothing else is changed, nothing is changed when two stored values could be meant, the guard checks the new query again, and no call goes to the model. The audit log gets a `value_spelling` block (a count and the column, never the value). To turn it off:
+
+```
+FILTER_VALUE_SPELLING=false
+```
+
 ### 0.4 The preflight test
 
 ```powershell
@@ -1577,6 +1583,8 @@ Eleven `RETRIEVAL_*` settings (6.9.0) decide which tables the retrieval path put
 | `RETRIEVAL_PRUNE_CORROBORATE` | `true` | Two weak candidates that are connected to each other keep each other. |
 
 The selection from before 6.9.0 comes back with `RETRIEVAL_PRUNE=false`, `RETRIEVAL_JOIN_EXPANSION=false` and `RETRIEVAL_EXTRA_TABLES=0`. This same table, with the measured effect of each part, is in `docs/design/RETRIEVAL.md` section 6.
+
+A Persian word written with an attached plural (`تالارها`, `تالارهای`, `تالارهایی`) is compared with its stem (`تالار`) as well as with itself, wherever the question is compared with aliases, `always_include` phrases, synonyms, table descriptions and the `keywords:` of the data sources; a question without such a word is matched exactly as before. `ان` is not stripped (`تهران`, `ایران`). There is nothing to set. Section 18.5 of `docs/deployment-runbook.md` and section 10 of `docs/design/RETRIEVAL.md` give the rules and the measured effect.
 
 ### 5.5 Accuracy rounds with a reviewer
 
