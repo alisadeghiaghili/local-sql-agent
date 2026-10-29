@@ -267,15 +267,29 @@ is a product regression dressed as IA cleanup.
 ### 5.3 Admin
 
 ```
-┌ sticky section nav ─────────────────────────────────┐
-│  overview │ maintenance │ checks │ audit │ feedback │
-│  cache │ config │ keys │ schema │ usage │ auth      │
-└─────────────────────────────────────────────────────┘
-  [ health summary rail — always first ]
-  [ sections … ]
+┌ sticky nav ─────────────────────────────────────────────────────────┐
+│ (status│quality & use│access & keys│data & config│all)  links of view │
+└─────────────────────────────────────────────────────────────────────┘
+  [ health summary rail — always first, in every view ]
+  [ the sections of the chosen view … ]
 ```
 
-- Sticky jump nav (one line, horizontal scroll on narrow).
+- **Grouped views** (`web/admin/views.js`): the sticky nav opens with a
+  segmented control, one button per view; only the chosen view's sections
+  are shown and the jump links after the control list only those. Views:
+  status (maintenance, checks), quality and use (audit, feedback, quality,
+  usage), access and keys (access requests, keys, failed authentication),
+  data and configuration (cache, config, schema drift, vocabulary), and
+  «همه», the whole page. Every section is in exactly one named view.
+- The default view is status; the last one chosen is remembered per
+  browser. A `#sec-*` link opens the view that holds it, so bookmarks and
+  the summary rail's items (each opens its section) keep working. A view
+  that needs attention (a failed check, maintenance on, open feedback) has
+  a dot on its button plus screen-reader text.
+- Sections are hidden, never moved or unloaded: every card loads and
+  auto-refreshes as before, so switching views never shows a stale card.
+  If setting the views up fails, every section stays shown.
+- Sticky nav: one line, horizontal scroll on narrow.
 - **Health summary rail** at top: N failed checks · open feedback · maintenance on/off · last refresh.
 - Per-section refresh replaced by **global auto-refresh (30s) + last-updated**; manual ↻ only on the rail.
 - Severity stripes stay.

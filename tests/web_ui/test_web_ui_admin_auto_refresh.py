@@ -54,6 +54,8 @@ _GRAPH = {
     "admin/main.mjs": _MAIN_JS,
     "admin/admin.mjs": _ADMIN_DIR / "admin.js",
     "admin/access-requests.mjs": _ADMIN_DIR / "access-requests.js",
+    # main.js shows one view of the panel at a time (views.js).
+    "admin/views.mjs": _ADMIN_DIR / "views.js",
     "js/apikey.mjs": _JS_DIR / "apikey.js",
     "js/state.mjs": _JS_DIR / "state.js",
     # main.js now also resolves its backend-address default from

@@ -35,6 +35,9 @@
 
 import { AdminApi, AdminUnauthorizedError, AdminForbiddenError, AdminApiError } from "./admin.js";
 import { renderAccessRequestsList } from "./access-requests.js";
+import {
+  applyView, initialView, markAttention, readRememberedView, rememberView, renderViewSwitch, viewForSection,
+} from "./views.js";
 import { getApiKey, setApiKey, clearApiKey, hasApiKey } from "../js/apikey.js";
 import {
   state, loadPersisted, persistTheme, persistBaseUrl, applyTheme,
@@ -327,6 +330,12 @@ function updateSummaryRail() {
   setRailItem("rail-checks", _rail.health);
   setRailItem("rail-feedback", _rail.feedback);
   setRailItem("rail-cache", _rail.cache);
+  // The same facts mark the view buttons (views.js), so a failed check or
+  // open feedback is seen from any view, not only from the rail.
+  markAttention(document, {
+    status: ["rail-maintenance", "rail-checks"].some((id) => $(id)?.classList.contains("crit")),
+    quality: Boolean($("rail-feedback")?.classList.contains("warn")),
+  });
 }
 
 function setRailItem(id, data) {
@@ -388,6 +397,62 @@ setInterval(() => {
   if (document.hidden) return;
   refreshMany(AUTO_REFRESH_CARDS);
 }, AUTO_REFRESH_MS);
+
+/* Grouped views (views.js): the nav opens with one button per view and
+ * only that view's sections are shown. A link to a section in another view
+ * (a bookmark, a summary-rail item) switches to that view first. */
+const RAIL_TARGETS = {
+  "rail-maintenance": "sec-maintenance",
+  "rail-checks": "sec-health",
+  "rail-feedback": "sec-feedback",
+  "rail-cache": "sec-cache",
+};
+(function wireViews() {
+  // The views are a convenience: if setting them up fails for any reason
+  // (a page without the nav, an older browser), every section stays shown
+  // -- the page as it was -- and the rest of the panel is unaffected.
+  try {
+    wireViewsUnguarded();
+  } catch {
+    try { applyView(document, "all"); } catch { /* sections were never hidden */ }
+  }
+})();
+
+function wireViewsUnguarded() {
+  const nav = $("admin-jump");
+  if (!nav || typeof document.querySelectorAll !== "function") return;
+  let storage = null;
+  try { storage = globalThis.localStorage || null; } catch { storage = null; }
+  const hash = () => String((globalThis.location && globalThis.location.hash) || "");
+  const select = (viewId) => rememberView(storage, applyView(document, viewId));
+  const goTo = (id) => {
+    const target = document.getElementById(id);
+    if (!target) return;
+    const owner = viewForSection(id);
+    if (owner && target.hidden) select(owner);
+    if (typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
+  };
+  renderViewSwitch(nav, (viewId) => {
+    select(viewId);
+    if (typeof globalThis.scrollTo === "function") globalThis.scrollTo({ top: 0 });
+  });
+  applyView(document, initialView(hash(), readRememberedView(storage)));
+  if (hash().length > 1) goTo(hash().slice(1));
+  if (typeof globalThis.addEventListener === "function") {
+    globalThis.addEventListener("hashchange", () => goTo(hash().slice(1)));
+  }
+  for (const [railId, sectionId] of Object.entries(RAIL_TARGETS)) {
+    const item = $(railId);
+    if (!item) continue;
+    item.setAttribute("role", "link");
+    item.tabIndex = 0;
+    item.classList.add("is-link");
+    item.addEventListener("click", () => goTo(sectionId));
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goTo(sectionId); }
+    });
+  }
+}
 
 /* Scroll-spy for the sticky jump nav so the active section is obvious
  * while scrolling ten cards. IntersectionObserver, not a scroll handler. */
