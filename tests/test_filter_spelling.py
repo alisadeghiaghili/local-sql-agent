@@ -237,6 +237,20 @@ class TestEquality:
         sql = f"{HEAD}r.[Name] = N'{HALL}'"
         assert fix_filter_spelling(sql) == SpellingFix(sql)
 
+    def test_a_cold_column_starts_no_background_refresh(self):
+        sql = f"{HEAD}r.[Name] = N'{HALL}'"
+        with patch("retrieval.dimension_vocabulary._trigger_background_refresh") as trigger:
+            assert fix_filter_spelling(sql) == SpellingFix(sql)
+        trigger.assert_not_called()
+
+    def test_a_stale_vocabulary_is_used_and_starts_no_background_refresh(self):
+        sql = f"{HEAD}r.[Name] = N'{HALL}'"
+        with patch.object(dv._cache, "get_with_state", return_value=([STORED, OTHER], False)), patch(
+            "retrieval.dimension_vocabulary._trigger_background_refresh",
+        ) as trigger:
+            assert fix_filter_spelling(sql).sql == f"{HEAD}r.[Name] = N'{STORED}'"
+        trigger.assert_not_called()
+
     def test_a_vocabulary_cached_for_another_column_is_not_this_columns(self):
         seed([STORED, OTHER], column="Code")
         sql = f"{HEAD}r.[Name] = N'{HALL}'"

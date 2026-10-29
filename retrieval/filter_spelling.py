@@ -17,10 +17,15 @@ make by looking at the column.
 What it rewrites
 ----------------
 For a statement the guard accepted, on a column whose whole vocabulary is
-cached (the rules of :func:`retrieval.filter_values.usable_vocabularies`:
-cache only, never a database read; a missing, empty or possibly truncated
-vocabulary, a denied or join-only column, a column that is not a plain read of
-a stored one: nothing is known, nothing is changed):
+cached (the rules of :func:`retrieval.filter_values.usable_vocabularies`: a
+missing, empty or possibly truncated vocabulary, a denied or join-only column, a
+column that is not a plain read of a stored one: nothing is known, nothing is
+changed). The cache is only read: no query, and not even the background refresh
+a cold or stale column would start for the filter value check, so a deployment
+that never asked for value checking issues no read it did not before. A stale
+list is used as the filter value check uses it; a value added to the column
+since the last refresh is simply not known, and a literal that is not known to
+mean a stored value stays as written.
 
 * ``=``, ``<>``/``!=``, ``IN`` and ``NOT IN`` with a string literal that is
   **not byte-equal to any stored value**: when exactly one distinct stored value
@@ -311,7 +316,7 @@ def _fix(sql: str, denied_columns: Iterable[str] | None, dialect: str) -> Spelli
         origins = column_origins(column, tree)
         if not origins:
             return None
-        vocabularies = usable_vocabularies(origins, policy.denied, hidden)
+        vocabularies = usable_vocabularies(origins, policy.denied, hidden, refresh=False)
         if not vocabularies:
             return None
         return (

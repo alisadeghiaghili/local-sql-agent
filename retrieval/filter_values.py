@@ -361,9 +361,17 @@ def _configured_column(table: str, column_lower: str) -> str | None:
     return None
 
 
-def _usable_vocabulary(table: str, column: str) -> list[str] | None:
-    """The cached values of ``table.column`` when they can be relied on to be all of them, else ``None``."""
-    values = dv.get_vocabulary_for_check(table, column)
+def _usable_vocabulary(table: str, column: str, *, refresh: bool = True) -> list[str] | None:
+    """The cached values of ``table.column`` when they can be relied on to be all of them, else ``None``.
+
+    With *refresh* off the cache is only read
+    (:func:`retrieval.dimension_vocabulary.get_cached_vocabulary`): a column
+    never cached, or stale, starts no background refresh.
+    """
+    values = (
+        dv.get_vocabulary_for_check(table, column) if refresh
+        else dv.get_cached_vocabulary(table, column)
+    )
     if not values or len(values) >= cfg.settings.default_top_n:
         return None
     return values
@@ -373,6 +381,8 @@ def usable_vocabularies(
     origins: Iterable[tuple[str, str]],
     denied: Iterable[str],
     hidden: Iterable[tuple[str, str]],
+    *,
+    refresh: bool = True,
 ) -> list[tuple[str, str, list[str]]]:
     """The cached vocabularies of the columns a comparison reads, when every one can be relied on.
 
@@ -382,6 +392,9 @@ def usable_vocabularies(
     caller may see, with a cached vocabulary that is present, not empty and not
     possibly cut short (:func:`_usable_vocabulary`). One column that fails any
     of these makes the whole comparison unchecked: nothing is known about it.
+    A column never cached, or stale, starts the background refresh the question
+    matching starts too, unless *refresh* is off (the spelling fix reads the
+    cache and nothing else).
 
     Parameters
     ----------
@@ -394,12 +407,16 @@ def usable_vocabularies(
     hidden:
         The ``(table key, lower-cased column)`` pairs of the join-only
         columns (:func:`security.column_policy.hidden_value_columns`).
+    refresh:
+        Whether reading a missing or stale vocabulary may start a background
+        refresh (the default, as for the filter value check).
 
     Returns
     -------
     list[tuple[str, str, list[str]]]
         ``(table, column as schema.yaml spells it, values)`` for each origin;
-        empty when the comparison cannot be checked. Reads the cache only.
+        empty when the comparison cannot be checked. Issues no query on the
+        calling thread.
 
     Examples
     --------
@@ -423,7 +440,7 @@ def usable_vocabularies(
         column = _configured_column(table, column_lower)
         if column is None or column.upper() in denied or (table, column_lower) in hidden:
             return []
-        values = _usable_vocabulary(table, column)
+        values = _usable_vocabulary(table, column, refresh=refresh)
         if values is None:
             return []
         found.append((table, column, values))
