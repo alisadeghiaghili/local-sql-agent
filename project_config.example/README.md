@@ -38,6 +38,13 @@ to it, each drafted line ending in `# REVIEW` and the file starting with a draft
 header the preflight fails on until you have read it and deleted that line
 (`docs/deployment-runbook.md` §2.4).
 
+A fourth drafts the values of `session_policy.yaml` and `memory_policy.yaml`, which
+no other tool writes, so that a first install does not keep the made-up options of
+these templates: `python scripts/draft_policies.py` reads the distinct values of one
+small dimension column and writes both files into `project_config_draft/`; the
+preflight check `Session and memory policies use real values` fails until you have
+copied them across (`docs/deployment-runbook.md` §2.5).
+
 ## Files
 
 | File | Purpose | Exposed variable |
@@ -52,8 +59,8 @@ header the preflight fails on until you have read it and deleted that line
 | `api_keys.example.json` | **Optional**, and *not* loaded under this name — template for `project_config/api_keys.json`, the file `API_KEYS_FILE` names: the API key array with every field an entry accepts (`id`, `name`, `key_sha256`, `denied_columns`, `admin`, `operations`, `security`). Copy it, then replace each `key_sha256` with the digest `scripts/issue_api_key.py` prints; the server refuses to start while a placeholder digest is left in. See `docs/deployment-runbook.md` | `API_KEYS_FILE` |
 | `relationships.yaml` | Optional explicit join paths between tables, for `database.relationship_map`. Nothing in the server, the API or the CLI imports that module today (only its tests do), so the prompt's relationships come from `schema.yaml` | (loaded directly, not through `knowledge.config_loader`) |
 | `retrieval_hints.yaml` | Retrieval-ranking overrides (always-include terms, boosts) | consumed by `schema_data.retriever` |
-| `memory_policy.yaml` | Session-memory retention policy | consumed by `session.*` |
-| `session_policy.yaml` | Session/turn composition policy | consumed by `session.*` |
+| `memory_policy.yaml` | The closed set of values an analyst may pin (`options`), the column they constrain and a length cap. Its options here are made-up samples; `python scripts/draft_policies.py` drafts the real ones | consumed by `session.*` |
+| `session_policy.yaml` | The scope a ranking question gets when it names none (`default_scope`) and the options its clarification offers. Its options here are made-up samples; `python scripts/draft_policies.py` drafts the real ones | consumed by `session.*` |
 | `system_prompt.md` | The system prompt sent to the LLM — plain text/Markdown, not YAML | `knowledge.config_loader.load_system_prompt()` |
 | `_test_fixtures/` | Optional, deployment-owned test fixture files (real expected values for a handful of tests) — see `_test_fixtures/README.md` | (test-only; nothing in the application reads this) |
 
