@@ -17,17 +17,26 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from functools import lru_cache
 
-from core.persian import normalize_for_matching
+from core.persian import normalize_for_matching, strip_plural_suffixes
 
 __all__ = ["alias_hits", "named_tables", "scored_extras"]
 
 
 @lru_cache(maxsize=8192)
-def _alias_form(form: str) -> tuple[str, tuple[str, ...]]:
-    """An alias folded for matching, and its stemmed words (both empty for a blank alias)."""
+def _alias_form(form: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """An alias folded for matching, its stemmed words, and those with attached plurals stripped.
+
+    All empty for a blank alias. The third part equals the second for an alias with
+    no word that carries an attached plural.
+    """
     from schema_data.retriever import _stem, _tokenize
 
-    return normalize_for_matching(form), tuple(_stem(t) for t in _tokenize(form))
+    tokens = _tokenize(form)
+    return (
+        normalize_for_matching(form),
+        tuple(_stem(t) for t in tokens),
+        tuple(_stem(t) for t in strip_plural_suffixes(tokens)),
+    )
 
 
 def alias_hits(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]:
@@ -38,8 +47,9 @@ def alias_hits(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]
     digits, ZWNJ, case), so ``تأمین‌کننده`` typed without its half-space still
     hits. A substring match is kept on purpose: it is what lets the alias
     ``مشتری`` find ``مشتریان``. Beside it, whole words are compared after
-    plural stemming (:func:`schema_data.retriever._stem`), which finds the
-    inflections a substring cannot (``city`` in ``cities``). An alias of
+    plural stemming (:func:`schema_data.retriever._stem`, and
+    :func:`core.persian.strip_plural_suffix` for the Persian endings it does not
+    know), which finds the inflections a substring cannot (``city`` in ``cities``). An alias of
     several words also matches when all of them occur in the question in any
     order (``gear tooth pitch`` in "pitch of each tooth on the gear"): a question seldom repeats a configured phrase word for word.
 
@@ -78,28 +88,50 @@ def alias_hits(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]
     ['Part']
     >>> alias_hits("gear pitch only", {"Part": ["gear tooth pitch"]})
     []
+
+    A Persian word written with an attached plural ending (``ها``, ``های``,
+    ``هایی``, with a possessive) also counts as its stem, so an alias of several
+    words is found whichever way the plural is written:
+
+    >>> alias_hits("تالارهایی کالا",
+    ...            {"Hall": ["تالار کالا"]})
+    ['Hall']
     """
     text = normalize_for_matching(question)
     from schema_data.retriever import _stem, _tokenize
 
-    q_stems = [_stem(t) for t in _tokenize(question)]
-    words = f" {' '.join(q_stems)} "
-    bag = set(q_stems)
+    tokens = _tokenize(question)
+    q_stems = [_stem(t) for t in tokens]
+    # a word with an attached plural also counts as its stem: the question and
+    # the alias are compared a second time with such words reduced
+    q_plural = [_stem(t) for t in strip_plural_suffixes(tokens)]
+    plain = (f" {' '.join(q_stems)} ", set(q_stems))
+    plural = (f" {' '.join(q_plural)} ", set(q_plural)) if q_plural != q_stems else None
     hits: list[str] = []
     for table, forms in aliases.items():
         for form in forms:
-            folded, form_stems = _alias_form(form)
+            folded, form_stems, form_plural = _alias_form(form)
             if not folded:
                 continue
-            stems = " ".join(form_stems)
             if (
                 folded in text
-                or (stems and f" {stems} " in words)
-                or (len(form_stems) > 1 and bag.issuperset(form_stems))
+                or _words_match(form_stems, *plain)
+                or (form_plural != form_stems and _words_match(form_plural, *plain))
+                or (plural is not None and _words_match(form_plural, *plural))
             ):
                 hits.append(table)
                 break
     return hits
+
+
+def _words_match(form_stems: tuple[str, ...], words: str, bag: set[str]) -> bool:
+    """Whether the words of an alias are the question's: next to each other, or (several) in any order.
+
+    *words* is the question's stemmed words joined by single spaces and padded with one
+    at each end, *bag* the same words as a set.
+    """
+    stems = " ".join(form_stems)
+    return bool((stems and f" {stems} " in words) or (len(form_stems) > 1 and bag.issuperset(form_stems)))
 
 
 def named_tables(question: str, aliases: Mapping[str, Iterable[str]]) -> list[str]:

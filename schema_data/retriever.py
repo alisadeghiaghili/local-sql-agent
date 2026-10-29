@@ -4,6 +4,15 @@
 
 This module is the canonical TF-IDF fallback engine used by EntityRetriever
 and FactRetriever when alias/pattern matching returns no results.
+
+A Persian word written with an attached plural (تالارها, تالارهای) is a different
+token from تالار, which a description or a trigger phrase holds; written with a
+space (تالار ها) it is not. So every place below that compares the question's
+tokens with something configured also tries the question with such words reduced
+to their stem (:func:`core.persian.strip_plural_suffix`), **in addition to** the
+question as written: the word itself stays, the stem is an extra term, so a
+question can only gain matches, and a question without such a word is scored
+exactly as before.
 """
 
 from __future__ import annotations
@@ -12,7 +21,7 @@ import math
 import re
 from functools import lru_cache
 
-from core.persian import normalize_for_matching
+from core.persian import normalize_for_matching, strip_plural_suffix, strip_plural_suffixes
 from knowledge.aliases import SYNONYMS
 from knowledge.retrieval_hints import ALWAYS_INCLUDE
 from schema_data.columns import TABLE_COLUMNS
@@ -152,12 +161,22 @@ def _expand(question: str) -> str:
     ['year', '\u0633\u0627\u0644']
     >>> _expand("totals in 15 days")
     'totals in 15 days'
+
+    A synonym key is found under the stem of a word that carries an attached
+    plural, too:
+
+    >>> from unittest.mock import patch
+    >>> with patch.dict(SYNONYMS, {"بازار": ["market"]}):
+    ...     _expand("بازارها")
+    'بازارها market'
     """
     tokens = _tokenize(question)
     extra: list[str] = []
     for token in tokens:
-        if token in SYNONYMS:
-            extra.extend(SYNONYMS[token])
+        # the word itself, and -- for a word with an attached plural -- its stem
+        for key in dict.fromkeys((token, strip_plural_suffix(token))):
+            if key in SYNONYMS:
+                extra.extend(SYNONYMS[key])
     if any(is_year_literal(t) for t in tokens):
         extra.extend(_YEAR_WORDS)
     return question + (" " + " ".join(extra) if extra else "")
@@ -299,6 +318,10 @@ def _column_scores(q_tokens: list[str]) -> dict[str, float]:
     terms, weight = _column_index()
     stems = [_stem(t) for t in q_tokens]
     wanted = set(stems) | set(_ngrams(stems, 2))
+    # a word with an attached plural also counts as its stem (see the module docstring)
+    plural_stems = [_stem(t) for t in strip_plural_suffixes(q_tokens)]
+    if plural_stems != stems:
+        wanted |= set(plural_stems) | set(_ngrams(plural_stems, 2))
     wanted = {t for t in wanted if weight.get(t, 0.0) >= _COLUMN_MIN_WEIGHT}
     if not wanted:
         return {}
@@ -348,12 +371,20 @@ def _forced_tables(q_tokens: list[str]) -> set[str]:
 
     q_token_set = set(q_tokens)
     q_joined = " ".join(q_tokens)
+    # a word with an attached plural also counts as its stem (see the module docstring)
+    q_stems = strip_plural_suffixes(q_tokens)
+    q_stems_joined = " ".join(q_stems) if q_stems != q_tokens else ""
+    q_token_set.update(q_stems)
     forced: set[str] = set()
     for table_name, signals in _ALWAYS_INCLUDE_NORMALISED.items():
         for sig in signals:
             if not sig:
                 continue
-            if all(t in q_token_set for t in sig.split()) or sig in q_joined:
+            if (
+                all(t in q_token_set for t in sig.split())
+                or sig in q_joined
+                or (q_stems_joined and sig in q_stems_joined)
+            ):
                 # the configuration may write a bare name for a qualified key
                 forced.update(resolve_table_ref(table_name, q_joined) or (table_name,))
                 break
@@ -381,15 +412,22 @@ def rank_tables(question: str) -> list[tuple[str, float]]:
     expanded = _expand(question)
     q_tokens = _tokenize(expanded)
     q_bigrams = _ngrams(q_tokens, 2)
+    # a word with an attached plural also counts as its stem (see the module
+    # docstring): the stemmed question's terms are added to the question's own
+    q_stems = strip_plural_suffixes(q_tokens)
     idf = _build_idf()
     forced = _forced_tables(q_tokens)
 
     scores: dict[str, float] = {table: _FORCED_SCORE for table in forced}
 
+    score_tokens, score_bigrams = q_tokens, q_bigrams
+    if q_stems != q_tokens:
+        score_tokens, score_bigrams = q_tokens + q_stems, q_bigrams + _ngrams(q_stems, 2)
+
     columns = _column_scores(q_tokens)
     for table_name, info in TABLES.items():
         desc = info if isinstance(info, str) else info.get("description", "")
-        s = _score_table(q_tokens, q_bigrams, idf, desc) + columns.get(table_name, 0.0)
+        s = _score_table(score_tokens, score_bigrams, idf, desc) + columns.get(table_name, 0.0)
         if s >= _MIN_SCORE:
             scores[table_name] = max(scores.get(table_name, 0.0), s)
 
