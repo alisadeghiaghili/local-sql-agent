@@ -7,15 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [6.16.4] — 2026-10-29
+
 **Issues fixed:** #223 (an «incorrect» button beside «پاسخ درست است»); #219 part 2 (after a clarification is answered, the page stays where it was while the new answer appears at the foot of the conversation). #219 part 1 (`Ring A`, `Ring B` offered as halls) is the template `session_policy.yaml`; `python scripts/draft_policies.py` (6.16.1) fills it from the real values.
 
 ### Added
 
-- **«پاسخ نادرست است» on the answer, beside «پاسخ درست است» (`web/js/render/turn.js`, `web/js/render/feedback.js`, `web/styles/style.css`).** The wrong-answer flag («این عدد درست نیست؟») was only in the collapsed «جزئیات» drawer, so it was not found next to the confirmation. The new button in the result footer sends nothing itself: it opens the drawer and the flag form, puts focus on the category list and brings the form into view; the report is sent from that form, with the same categories, note and endpoint as before. Once sent, the button reads «✓ گزارش شد» (text and a critical border, not colour alone), and a later confirmation that replaces the report clears it, as it already reopened the form. It appears on every answer that has a result and a flag control (the confirmation's own rule is unchanged); on a narrow screen the two buttons wrap. The drawer's control is where it was.
+- **«پاسخ نادرست است» on the answer, beside «پاسخ درست است» (`web/js/render/turn.js`, `web/js/render/feedback.js`, `web/styles/style.css`) (PR #230).** The wrong-answer flag («این عدد درست نیست؟») was only in the collapsed «جزئیات» drawer, so it was not found next to the confirmation. The new button in the result footer sends nothing itself: it opens the drawer and the flag form, puts focus on the category list and brings the form into view; the report is sent from that form, with the same categories, note and endpoint as before. Once sent, the button reads «✓ گزارش شد» (text and a critical border, not colour alone), and a later confirmation that replaces the report clears it, as it already reopened the form. It appears on every answer that has a result and a flag control (the confirmation's own rule is unchanged); on a narrow screen the two buttons wrap. The drawer's control is where it was.
 
 ### Fixed
 
-- **After a clarification is answered (or an assumption edited) in live mode, the page moves to the new answer (`web/js/main.js`).** `PATCH .../assumptions` re-asks the question and the server answers with a new turn under its own `turn_id`; the page appended its card at the foot of the conversation but did not scroll, so the answer appeared out of sight. `rerenderTurn` now scrolls to the new card's result (to the card when it has none), as a streamed answer does once it settles. A turn that already has a card is still replaced in place, without a scroll. The page also keeps the record of the turn that was re-asked (its card stays on the page) and adds the new turn after it; before, the new turn was written over it.
+- **After a clarification is answered (or an assumption edited) in live mode, the page moves to the new answer (`web/js/main.js`) (PR #230).** `PATCH .../assumptions` re-asks the question and the server answers with a new turn under its own `turn_id`; the page appended its card at the foot of the conversation but did not scroll, so the answer appeared out of sight. `rerenderTurn` now scrolls to the new card's result (to the card when it has none), as a streamed answer does once it settles. A turn that already has a card is still replaced in place, without a scroll. The page also keeps the record of the turn that was re-asked (its card stays on the page) and adds the new turn after it; before, the new turn was written over it.
+
+### Upgrading
+
+- **Reload the page after the upgrade (PR #230).** The web interface's script and stylesheet are not versioned, so a browser that cached them keeps the old ones until a hard reload (Ctrl+F5). Nothing else changes: no setting is renamed or added, no endpoint or file format changes, `requirements.lock` has no new pin, and the preflight has the same number of checks.
 
 ## [6.16.3] — 2026-10-29
 
