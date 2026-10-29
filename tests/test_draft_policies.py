@@ -14,6 +14,7 @@ value is printed without ``--show-values``.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -174,7 +175,9 @@ class TestTheDrafts:
 
     def test_text_that_cannot_be_edited_safely_is_refused_not_guessed(self, config_dir):
         template = read_policies(_EXAMPLE)
-        broken = template.memory_text.replace("options:\n", "options: [\n", 1)
+        # The example is checked out with CRLF line endings on Windows.
+        broken, replaced = re.subn(r"options:(\r?\n)", r"options: [\1", template.memory_text, count=1)
+        assert replaced == 1
         flow = type(template)(broken, template.session_text, template.memory, template.session)
 
         with pytest.raises(ValueError):
