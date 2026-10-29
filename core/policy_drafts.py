@@ -434,7 +434,7 @@ def draft_policies(
     >>> drafted = draft_policies(read_policies(SHIPPED_DIRECTORY), ["North", "South"], "Zone", "Title")
     >>> drafted.memory_keys, drafted.changed_dimension
     (('scope',), True)
-    >>> print(drafted.session_text.split("options:")[1].split("clarification")[0].strip())
+    >>> print(drafted.session_text.replace(chr(13), "").split("options:")[1].split("clarification")[0].strip())
     - "All rings"
         - "North"
         - "South"
