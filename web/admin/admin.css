@@ -54,6 +54,23 @@
 .admin-jump a.on { background: var(--navy); color: #fff; }
 .admin-jump a:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
+/* The backend address in the top bar. Its rules left style.css with the
+ * analyst page's copy of the field, which left this one in the browser's
+ * default look; these match the key controls beside it. */
+.live-base-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.live-base-input {
+  min-width: 0; flex: 1 1 160px; width: 200px; max-width: 100%;
+  font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); color: #fff;
+}
+.live-base-input:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.live-base-connect {
+  font: inherit; border: 1px solid rgba(255, 255, 255, .3); border-radius: 8px;
+  background: transparent; color: #e2e8f0; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.live-base-connect:hover { background: rgba(255, 255, 255, .12); }
+.live-base-connect:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
 /* Grouped views (views.js): a segmented control at the start of the
  * sticky nav. The pressed view is a filled navy pill (aria-pressed), the
  * jump links after it list only that view's sections. A view that needs
@@ -289,6 +306,22 @@
 }
 
 .admin-check.pass { border-inline-start-color: var(--status-good); }
+
+/* The passed checks, folded into one line under the ones that need
+ * reading (renderHealth). Spans the whole grid; opens to the same cards. */
+.admin-checks-passed { grid-column: 1 / -1; }
+/* The cache-age and deep-check notes are lines of the card, not cards: in
+ * the checks grid each took a whole cell and pushed the first card along. */
+.admin-rail > .admin-cache-age { grid-column: 1 / -1; }
+.admin-checks-passed > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--status-good);
+  padding: 6px 0;
+}
+.admin-checks-passed > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: 6px; }
+.admin-checks-passed > .admin-rail { margin-top: 6px; }
 .admin-check.fail {
   border-inline-start-color: var(--status-critical);
   background: var(--status-critical-bg);

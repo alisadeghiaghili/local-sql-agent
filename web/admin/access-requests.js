@@ -25,6 +25,8 @@
 
 "use strict";
 
+import { formatWhen } from "./time.js";
+
 const STATUS_LABELS = { open: "باز", approved: "تأیید شده", denied: "رد شده" };
 const STATUS_CLASS = { open: "skip", approved: "pass", denied: "fail" };
 
@@ -98,8 +100,10 @@ function renderRow(row, handlers) {
 
   const createdLine = document.createElement("p");
   createdLine.className = "admin-check-detail";
-  createdLine.setAttribute("dir", "ltr");
-  createdLine.textContent = row.created_at || "";
+  // A readable date (time.js); the original ISO string stays in the title.
+  const created = formatWhen(row.created_at);
+  createdLine.textContent = created.text;
+  if (created.title) createdLine.title = created.title;
   body.appendChild(createdLine);
 
   if (row.status === "denied" && row.resolution_note) {

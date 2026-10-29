@@ -35,6 +35,7 @@
 
 import { AdminApi, AdminUnauthorizedError, AdminForbiddenError, AdminApiError } from "./admin.js";
 import { renderAccessRequestsList } from "./access-requests.js";
+import { formatWhen } from "./time.js";
 import {
   applyView, initialView, markAttention, readRememberedView, rememberView, renderViewSwitch, viewForSection,
 } from "./views.js";
@@ -357,18 +358,20 @@ function setRailItem(id, data) {
   } else if (id === "rail-checks") {
     const checks = data.checks || [];
     const failed = checks.filter((c) => c.status === "FAIL").length;
-    val.textContent = failed ? `${failed} / ${checks.length}` : `${checks.length}`;
-    sub.textContent = failed ? `${failed} ناموفق` : "همه موفق";
+    // "N از M", not "N / M": with Persian text around it, a slash between
+    // two numbers was laid out right to left and read as "21 / 2".
+    val.textContent = failed ? `${fmtNum(failed)} از ${fmtNum(checks.length)}` : fmtNum(checks.length);
+    sub.textContent = failed ? "بررسی ناموفق" : "همه موفق";
     el.classList.add(failed ? "crit" : "good");
   } else if (id === "rail-feedback") {
     const open = data.open ?? data.total_open ?? (data.stats && data.stats.open) ?? null;
     const n = open === null ? (Array.isArray(data.feedback) ? data.feedback.length : "—") : open;
-    val.textContent = String(n);
+    val.textContent = n === "—" ? n : fmtNum(n);
     sub.textContent = "باز";
     el.classList.add(Number(n) > 0 ? "warn" : "good");
   } else if (id === "rail-cache") {
     const size = data.size ?? data.entries ?? "—";
-    val.textContent = String(size);
+    val.textContent = size === "—" ? size : fmtNum(size);
     sub.textContent = "ورودی";
     el.classList.add("good");
   }
@@ -712,7 +715,7 @@ function renderSummary(report) {
   const range = report.time_range || {};
   if (range.start || range.end) {
     out.push(
-      `<p class="admin-loading" dir="ltr">${escapeHtml(range.start ?? "—")} → ${escapeHtml(range.end ?? "—")}</p>`,
+      `<p class="admin-loading">از ${whenHtml(range.start)} تا ${whenHtml(range.end)}</p>`,
     );
   }
 
@@ -732,6 +735,14 @@ function renderSummary(report) {
 
 function fmtNum(n) {
   return Number(n).toLocaleString("fa-IR");
+}
+
+/** An escaped HTML fragment for a server timestamp: the readable Persian
+ * date (time.js) with the original ISO string as its title. */
+function whenHtml(value) {
+  const { text, title } = formatWhen(value);
+  if (!title) return escapeHtml(text || "—");
+  return `<span title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
 }
 
 function twoColumnTable(headA, headB, entries) {
@@ -791,7 +802,7 @@ function renderHealth(payload) {
     (a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3),
   );
 
-  const cards = sorted.map((c) => {
+  const card = (c) => {
     const cls = c.status === "PASS" ? "pass" : c.status === "FAIL" ? "fail" : "skip";
     const mark = c.status === "PASS" ? "✓" : c.status === "FAIL" ? "✕" : "–";
     const detail = c.detail
@@ -805,14 +816,25 @@ function renderHealth(payload) {
       detail +
       "</span></div>"
     );
-  });
+  };
+
+  // What needs reading (FAIL, then SKIP) is shown as cards; the passed
+  // checks, usually most of them, fold into one line that opens to the
+  // same cards. Nothing is dropped: a PASS detail (an `advice:`) is one
+  // click away.
+  const attention = sorted.filter((c) => c.status !== "PASS").map(card);
+  const passedCards = sorted.filter((c) => c.status === "PASS").map(card);
+  const passedBlock = passedCards.length
+    ? '<details class="admin-checks-passed">' +
+      `<summary>${fmtNum(passed)} بررسی موفق</summary>` +
+      `<div class="admin-rail">${passedCards.join("")}</div></details>`
+    : "";
 
   const deepNote = payload.deep
     ? '<p class="admin-cache-age">شامل بررسی‌های عمیق (DDL/WAITFOR)</p>'
     : "";
 
-  body.innerHTML = summary + formatCacheAge(payload.cache) + deepNote + cards.join("");
-  void passed;
+  body.innerHTML = summary + formatCacheAge(payload.cache) + deepNote + attention.join("") + passedBlock;
 }
 
 /** Admin panel phase 6 §5: the panel must show what clearing will cost
@@ -905,7 +927,7 @@ function renderFeedback(stats, rows) {
     tiles.push(statTile({
       label: "دقت آخرین baseline",
       value: Number(stats.baseline.accuracy_pct).toFixed(1), unit: "٪",
-      sub: `${escapeHtml(stats.baseline.mode)} · ${escapeHtml(stats.baseline.generated_at || "")}`,
+      sub: `${escapeHtml(stats.baseline.mode)} · ${escapeHtml(formatWhen(stats.baseline.generated_at || "").text)}`,
     }));
   } else {
     tiles.push(statTile({ label: "دقت آخرین baseline", value: "—", sub: "هنوز baseline ثبت نشده" }));
@@ -1161,7 +1183,7 @@ function renderVocabulary(payload) {
       `<td dir="ltr">${escapeHtml(c.table)}.${escapeHtml(c.column)}</td>` +
       `<td><span class="admin-status-pill admin-status-${freshCls}">${escapeHtml(freshLabel)}</span> ${failureNote}</td>` +
       `<td class="num">${c.value_count === null ? "—" : escapeHtml(fmtNum(c.value_count))}</td>` +
-      `<td dir="ltr">${escapeHtml(c.fetched_at || "—")}</td>`;
+      `<td>${whenHtml(c.fetched_at)}</td>`;
 
     const actionTd = document.createElement("td");
     const btn = document.createElement("button");

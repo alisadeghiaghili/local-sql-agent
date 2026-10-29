@@ -56,6 +56,8 @@ _GRAPH = {
     "admin/access-requests.mjs": _ADMIN_DIR / "access-requests.js",
     # main.js shows one view of the panel at a time (views.js).
     "admin/views.mjs": _ADMIN_DIR / "views.js",
+    # Readable dates for the cards (time.js), also imported by access-requests.js.
+    "admin/time.mjs": _ADMIN_DIR / "time.js",
     "js/apikey.mjs": _JS_DIR / "apikey.js",
     "js/state.mjs": _JS_DIR / "state.js",
     # main.js now also resolves its backend-address default from

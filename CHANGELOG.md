@@ -11,6 +11,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The admin panel shows one view at a time (`web/admin/views.js`, `web/admin/main.js`, `web/admin/admin.css`).** Thirteen sections and the summary rail made one page about 6,800 px tall on a laptop screen. The sticky nav now opens with five buttons: «وضعیت» (maintenance, deployment checks), «کیفیت و استفاده» (audit, feedback, quality, usage), «دسترسی و کلیدها» (access requests, keys, failed authentication), «داده و پیکربندی» (cache, configuration, schema drift, vocabulary) and «همه», the page as it was. Only the chosen view's sections and jump links are shown; the summary rail is shown in every view. The panel opens on «وضعیت» and then on the view last chosen in that browser. A link to a section (`#sec-keys`, a bookmark) opens the view that holds it, and each summary-rail item now opens its section. A view that needs attention (a failed check, maintenance on, open feedback) has a dot on its button and the words «نیاز به توجه» for screen readers. Sections are hidden, not moved or unloaded, so every card loads and refreshes exactly as before; if setting the views up fails, every section stays shown.
 
+### Changed
+
+- **Admin dates are Persian calendar dates (`web/admin/time.js`, `web/admin/main.js`, `web/admin/access-requests.js`).** The audit range, the baseline date, the vocabulary card's `fetched_at` and an access request's creation time were printed as raw ISO strings (`2026-10-27T10:46:31.435668 → …`); they now read «از ۵ آبان ۱۴۰۵، ۱۰:۴۶ تا …», and the exact ISO string is the element's title (shown on hover). A string without an offset, as the audit log writes it, is shown on the browser's clock, which is the server's when the panel is opened where it runs. A value that is not a date is shown unchanged.
+- **The deployment-checks card leads with what needs reading (`web/admin/main.js`, `web/admin/admin.css`).** FAIL and SKIP checks are cards, as before; the passed checks, usually most of them, fold into one line («۱۷ بررسی موفق») that opens to the same cards, so a PASS detail such as an `advice:` is one click away. The cache-age line no longer takes a cell of the card grid.
+- **The summary rail writes «۲ از ۲۱» (`web/admin/main.js`).** «2 / 21» was laid out right to left in the Persian card and read as «21 / 2»; every rail figure now uses Persian digits, like the rest of the panel.
+
+### Fixed
+
+- **The admin top bar's backend-address field has its style back (`web/admin/admin.css`).** Its rules left `style.css` together with the analyst page's copy of the field, so the admin field and its «اتصال» button showed in the browser's default look; they now match the key controls beside them.
+
 ## [6.16.4] — 2026-10-29
 
 **Issues fixed:** #223 (an «incorrect» button beside «پاسخ درست است»); #219 part 2 (after a clarification is answered, the page stays where it was while the new answer appears at the foot of the conversation). #219 part 1 (`Ring A`, `Ring B` offered as halls) is the template `session_policy.yaml`; `python scripts/draft_policies.py` (6.16.1) fills it from the real values.
