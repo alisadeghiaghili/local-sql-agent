@@ -34,8 +34,8 @@ is a value of a row: keys of ``ring_aliases`` are configuration.
 
 Public API
 ----------
-RING_KEYS_LISTED, listed(keys, limit) -> str
-    How many keys a message names before ``and N more``, and the text.
+listed(keys, limit=10) -> str
+    ``a, b, c`` with at most *limit* keys, then ``and N more``: how a message names keys.
 table_keyed_ring_keys(ring_keys, table_keys) -> list[str]
 without_table_keys(ring_aliases, table_keys) -> tuple[Mapping, list[str]]
 schema_table_keys(directory) -> frozenset[str]
@@ -56,7 +56,6 @@ from core import config_doctor as doctor
 from core.persian import normalize_for_matching
 
 __all__ = [
-    "RING_KEYS_LISTED",
     "guard_ring_aliases",
     "listed",
     "ring_keys_naming_tables",
@@ -69,9 +68,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: How many keys a log line or a preflight detail names before ``and N more``.
-RING_KEYS_LISTED = 10
-
 _V = TypeVar("_V")
 
 
@@ -79,7 +75,7 @@ def _fold(text: str) -> str:
     return text.strip().casefold()
 
 
-def listed(keys: Sequence[str], limit: int = RING_KEYS_LISTED) -> str:
+def listed(keys: Sequence[str], limit: int = 10) -> str:
     """``a, b, c`` with at most *limit* keys, then ``and N more``.
 
     Examples
@@ -165,7 +161,7 @@ def guard_ring_aliases(ring_aliases: Mapping[str, _V], directory: Path) -> Mappi
     """*ring_aliases* without the entries named like a table of ``directory/schema.yaml``.
 
     The loader's guard (see the module docstring). One WARNING names how many
-    entries were ignored and which (at most :data:`RING_KEYS_LISTED`). Without
+    entries were ignored and which (at most ten). Without
     a readable ``schema.yaml`` nothing is ignored: today's behaviour. The same
     mapping is returned when no key is a table key.
 

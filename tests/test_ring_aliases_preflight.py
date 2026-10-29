@@ -143,7 +143,8 @@ class TestKeysOutsideTheCachedRingVocabulary:
     @pytest.fixture()
     def configured(self, project):
         for name in ("session_policy.yaml", "memory_policy.yaml"):
-            _write(project, name, (_EXAMPLE / name).read_bytes().decode("utf-8"))
+            # a checkout may hold CRLF lines: take the text with LF so _write adds them once
+            _write(project, name, (_EXAMPLE / name).read_bytes().decode("utf-8").replace("\r\n", "\n"))
         _write(project, "schema.yaml", SCHEMA_TEXT.replace("  Region:", "  Ring:"))
         return project
 

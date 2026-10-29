@@ -1048,7 +1048,7 @@ def check_aliases_are_curated() -> CheckResult:
     a table filtered the ring by the table's name. FAIL when a key is, as a
     whole and ignoring letter case, a key of ``schema.yaml`` (the entries the
     application ignores, with a WARNING at load; ``core.ring_names``); the
-    detail has the count and up to :data:`core.ring_names.RING_KEYS_LISTED` keys.
+    detail has the count and up to ten keys.
     The PASS detail may carry advice (it then starts ``advice:``): when the
     application has cached the ring dimension's values (the admin panel's card,
     in the running server; the command line has no cache), the number of keys
@@ -1229,7 +1229,7 @@ def check_entities_match_schema_keys() -> CheckResult:
         name, "FAIL",
         "; ".join(parts) + " -- retrieval reads an entity's key as the table's schema.yaml key, so such a table "
         "is never found by its aliases. Rename the key to the schema.yaml key, keep one entity per table "
-        f"(merge their aliases) and fix ring_aliases the same way ({_RUNBOOK_CURATION})",
+        f"(merge their aliases) and drop the ring_aliases entries that name a table, since a key there is a ring's name ({_RUNBOOK_CURATION})",
     )
 
 
