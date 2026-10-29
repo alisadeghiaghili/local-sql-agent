@@ -17,7 +17,10 @@ order, with the same step numbers:
 3. ``schema.yaml`` is drafted (the inspector);
 4. its structure is checked (``sync_schema.py --check``);
 5. the descriptions are drafted (``scripts/draft_descriptions.py``);
-6. the wizard drafts entities, aliases, rules and examples (``setup_project.py``);
+6. the wizard drafts entities, aliases, rules and examples (``setup_project.py``),
+   and, in the same step, ``scripts/draft_policies.py`` drafts the values of
+   ``session_policy.yaml`` and ``memory_policy.yaml`` (it is part of that step, not
+   a step of its own, so the numbers every other step is cited by stay as they are);
 7. the first admin key is issued (``issue_api_key``);
 8. the preflight is run (``verify_deployment``).
 
@@ -58,6 +61,9 @@ LANDMARKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("issue the first key", re.compile(r"python -m scripts\.issue_api_key")),
     ("run the preflight", re.compile(r"verify_deployment")),
 )
+
+#: The command that drafts the scope values; it must sit in the wizard's step.
+POLICIES_COMMAND = re.compile(r"python scripts/draft_policies\.py")
 
 _STEP = re.compile(r"^\s{0,3}(\d+)\.\s+\S", re.MULTILINE)
 
@@ -149,6 +155,16 @@ def test_the_three_checklists_put_every_landmark_at_the_same_step(lists) -> None
     landmarks = {which: landmark_steps(steps) for which, steps in lists.items()}
     assert landmarks["en"] == landmarks["fa"] == landmarks["runbook"], landmarks
     assert sorted(lists["en"]) == sorted(lists["fa"]) == sorted(lists["runbook"])
+
+
+@pytest.mark.parametrize("which", ["en", "fa", "runbook"])
+def test_the_scope_values_are_drafted_in_the_wizards_step_before_the_first_key(lists, which) -> None:
+    steps = lists[which]
+    found = landmark_steps(steps)
+    number = next((n for n in sorted(steps) if POLICIES_COMMAND.search(steps[n])), None)
+    assert number is not None, f"no step of the {which} checklist has draft_policies.py"
+    assert number == found["run the wizard"]
+    assert number < found["issue the first key"] < found["run the preflight"]
 
 
 @pytest.mark.parametrize("which", ["en", "fa", "runbook"])

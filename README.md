@@ -244,6 +244,11 @@ python scripts/sync_schema.py --check  # CHECK OK, exit code 0
 # (names, types and keys only; no row), review them, replace schema.yaml and delete
 # the draft header on the first line (docs/deployment-runbook.md §2.4):
 python scripts/draft_descriptions.py   # writes project_config/schema.described.yaml
+# The two policy files (what an analyst may pin, what a clarification offers) are still the
+# template's made-up options on a first install, and the preflight refuses them. Draft the
+# real ones from the distinct values of one small dimension column, read them and copy them
+# into project_config/ (docs/deployment-runbook.md §2.5):
+python scripts/draft_policies.py       # writes project_config_draft/memory_policy.yaml and session_policy.yaml
 
 # 4. Issue an API key (every route but /health requires one)
 python -m scripts.issue_api_key --id analyst-1 --name "Jane Analyst"
@@ -540,6 +545,7 @@ local-sql-agent/
 │   ├── sync_schema.py        #   bring schema.yaml's structure (datasource:, columns, types, tables) in step with the databases; propose relationships
 │   ├── assign_datasources.py #   the narrower tool: only write each schema.yaml table's datasource: from the databases
 │   ├── draft_descriptions.py #   draft the table and column descriptions schema.yaml lacks with the wizard's model, into schema.described.yaml for review
+│   ├── draft_policies.py     #   draft the real option values of memory_policy.yaml and session_policy.yaml from one dimension column, into project_config_draft/ for review
 │   ├── prompt_budget.py      #   each source's prompt size in real tokens; the PROMPT_RETRIEVAL_TOKEN_BUDGET to set
 │   ├── migrate_app_db.py     #   move the application database between backends
 │   ├── analyze_audit_log.py  #   aggregate-safe audit analysis

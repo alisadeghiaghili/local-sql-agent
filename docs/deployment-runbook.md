@@ -154,6 +154,13 @@ the first preflight (step 12), because the preflight fails while no key exists.
    wizard's own last line, `Setup complete.`, appears only in a directory that
    already holds all ten files; in the draft directory it lists the six files it
    does not write and says `Setup is NOT complete`, which is expected.
+   **Then draft the scope values** (§2.5): `python scripts/draft_policies.py`.
+   The wizard writes neither `session_policy.yaml` nor `memory_policy.yaml`, so
+   they are still the template's made-up options. The command reads the distinct
+   values of one small dimension column (a region, a channel, a kind) and writes
+   both files, with those values as options, into `project_config_draft/`. Read
+   them and copy them into `project_config/`. *Done when:* the preflight check
+   `Session and memory policies use real values` passes (step 12).
 10. **Set what each source needs** (*several databases only*): `description:`
     and `keywords:` so questions reach the right source (§16.4), and
     `nolock: true` on exactly the sources whose DBA requires `WITH (NOLOCK)`;
@@ -507,7 +514,8 @@ Who writes what:
 |---|---|
 | `schema.yaml` | By hand, or drafted from the live database by `python -m database.schema_inspector_cli` (§2.3), whose table and column descriptions `python scripts/draft_descriptions.py` then drafts for you to review (§2.4). It is the SQL guard's allowlist: a table you add widens what generated SQL may touch. Give every table a `db_schema` (§16.3). |
 | `entities.yaml`, `aliases.yaml`, `business_rules.yaml`, `examples.yaml` | By hand, or drafted with an LLM by the setup wizard `python setup_project.py` (§2.2), which writes the drafts to `project_config_draft/` for you to review and copy across. |
-| `metrics.yaml`, `retrieval_hints.yaml`, `session_policy.yaml`, `memory_policy.yaml` | By hand. Neither tool writes them, so after the copy they still hold the template's content. `docs/en/tutorial.md` shows how each one steers retrieval and the prompt. |
+| `session_policy.yaml`, `memory_policy.yaml` | By hand, or the values drafted from the warehouse by `python scripts/draft_policies.py` (§2.5): the options an analyst may pin and a clarification offers. Neither the wizard nor the inspector writes them, so after the copy they still hold the template's made-up options, which the preflight check `Session and memory policies use real values` refuses. |
+| `metrics.yaml`, `retrieval_hints.yaml` | By hand. Neither tool writes them, so after the copy they still hold the template's content. `docs/en/tutorial.md` shows how each one steers retrieval and the prompt. |
 | `system_prompt.md` | By hand: the model's instructions for your schema, rules and dialect (§5 says what happens without it). |
 | `relationships.yaml` | Optional; the server does not read it (the prompt's relationships come from `schema.yaml`). |
 | `datasources.yaml` | Only for more than one database (§16). |
@@ -1120,6 +1128,107 @@ or written (`schema.yaml` invalid or not editable line by line, the model refuse
 or not answering, an existing output without `--resume` or `--force`, a write
 error).
 
+### 2.5 Drafting the scope values: `scripts/draft_policies.py`
+
+`session_policy.yaml` and `memory_policy.yaml` describe one dimension of your
+warehouse, the one a ranking question is scoped to when it names no scope of its
+own (a region, a sales channel, a hall):
+
+- `session_policy.yaml`, `default_scope`: the table it is (`filter_key`), the
+  label shown while the question leaves it open (`default_label`), the options the
+  one-click clarification offers (`options`) and its prompt text.
+- `memory_policy.yaml`, `keys`: the **closed** set of values an analyst may pin
+  (`options`), with the column they constrain (`column`) and a length cap. The pin
+  on an assumption chip and `PUT /v2/memory/{key}` accept a value only when it is
+  one of the options.
+
+No setup tool wrote them before 6.16.1: the wizard drafts entities, aliases, rules
+and examples, the inspector and the sync write `schema.yaml`, and
+`scripts/draft_descriptions.py` writes descriptions. So a first install ran on the
+template's made-up options (`Ring A`, `Ring B`, `All rings`): the server started and
+memory seemed to work, but every real value an analyst tried to pin was outside the
+closed set and refused, and the clarification offered values the warehouse does not
+have. To the operator the feature looked gone. The preflight check `Session and
+memory policies use real values` (§3.1) now says so, and this command writes the
+real values:
+
+```bash
+python scripts/draft_policies.py --dry-run                      # counts only, nothing written
+python scripts/draft_policies.py                                # -> project_config_draft/
+python scripts/draft_policies.py --table Region --column Name   # choose the dimension
+```
+
+It is a separate command, like `draft_descriptions.py`, and not a step of the
+wizard. The wizard reads every table and asks a model; this reads one small column
+and asks nothing. And it has to be run again whenever the dimension gains a value,
+which should not mean running the wizard.
+
+**The dimension.** `--table` (a `schema.yaml` key or a bare name) and `--column`;
+without them, the `filter_key` of `session_policy.yaml` and the `column` of the
+memory key that shares it, as long as they name a real table and column of
+`schema.yaml`. A table is found the way the application finds a configured table
+name (`Customer` or `sales.Customer`, case and brackets ignored); a name that fits
+several tables is refused, and so is a column the table does not list. A column
+named like personal or contact data, or the `Name` of a table of people, is never
+read (the wizard's rules, `core/value_shapes.py`). A memory key with no `options`
+(any value up to `max_length`) is left as it is unless `--memory-key` names it.
+
+**The read.** One bounded statement per run,
+`SELECT DISTINCT TOP (N+1) <column> FROM <table> WHERE <column> IS NOT NULL ORDER BY <column>`,
+through the application's own engine and login (`database.executor`: a transaction
+that is always rolled back, the query timeout, the row cap, `WITH (NOLOCK)` where
+the source asks for it), on the data source of the table's `datasource:` (the
+default source without one). `N` is `--max-values` (default 200, and at most
+`MAX_ROWS_RETURNED - 1`). A column with more than `N` distinct values is refused
+with an explanation: a scope must be a small dimension, and a clarification with
+two hundred buttons is no clarification.
+
+**What is kept.** The values the wizard's rules accept (`core.value_shapes`): no
+date, number, code, phone number, e-mail or IP address, URL, address, masked value
+or error text, nothing over 40 characters or over the memory key's `max_length`,
+nothing equal to the session policy's `default_label`. Values that differ only by
+what the project's Persian and Arabic folding ignores (the Arabic and Persian forms
+of yeh and kaf, digit forms, the half-space, spacing, letter case) are one value;
+the spelling kept is the first in sorted order, the Persian letters before the
+Arabic. The list is sorted. The counts of what was left out, by reason, are printed.
+
+**What is written.** `project_config_draft/memory_policy.yaml` and
+`project_config_draft/session_policy.yaml`: the current files with only `options`
+replaced (and `filter_key` / `column` when `--table` / `--column` moved the
+dimension). Comments, `max_length`, `field_name`, `default_label`,
+`clarification_prompt` and any other field stay byte for byte; the script loads the
+result with the application's own validators and compares it with the input, and
+writes nothing when anything but those fields would differ. The session options are
+the `default_label` followed by the values, as in the template; the memory options
+never contain the `default_label` (so a pinned value always differs textually from
+the unset default). Unlike the other drafting tools they put no draft header on the files (the values
+are read from the warehouse, not guessed), but read them before you copy them over
+`project_config/`, then run the preflight.
+
+**Where it writes.** `project_config_draft/` unless `--output` says otherwise. The
+live configuration directory and `project_config.example/` are refused unless
+`--overwrite-live` is given; then each file it replaces is first copied to
+`<name>.bak-<YYYYmmdd-HHMMSS>` next to it, as the wizard does. An existing draft is
+not replaced without `--force`. `--config-dir` reads from another directory.
+
+**What is printed.** Counts: the values read, the options kept, the reasons for the
+rest. The values are warehouse data, so they are printed only with `--show-values`
+(the first ten); the files hold them, as they must. `--dry-run` reads the column
+and writes nothing.
+
+Exit codes: 0 done, or a dry run; 2 nothing could be decided or written (a file
+does not load, the dimension is not a real table and column, the column has too
+many values or none usable, the output is protected or already holds a draft, the
+database cannot be read).
+
+Two things to know before you move the dimension. `field_name`, `default_label` and
+`clarification_prompt` are not touched, so after `--table` check that they still
+describe the new dimension. And the scope a question names is recognised through
+`ring_aliases` of `aliases.yaml`, which the retriever stores under the key `Ring`
+(`retrieval/value_retriever.py`); `filter_key` is the key the session reads it
+under, so for a ring named in the question to count as the scope, `filter_key` must
+stay `Ring`, and the preflight asks for a table of that name in `schema.yaml`.
+
 ## 3. Run the preflight
 
 ```bash
@@ -1133,14 +1242,15 @@ model name the endpoint doesn't actually serve, no API key configured, a
 `denied_columns` name that no column has, an
 unwritable log directory, a `project_config/` that fails to load, a `project_config/` that is
 a raw draft from the schema inspector or the setup wizard, synonyms copied from rows,
-entities that name no table of `schema.yaml`, a data source with no table, a rate
+entities that name no table of `schema.yaml`, session and memory policies that still hold the
+template's sample options, a data source with no table, a rate
 limit too tight for your expected number of analysts, or a web UI address the
 CORS list would refuse). `[SKIP]` is
 not a failure — it means a check couldn't run (e.g. no database reachable
 yet to test the row cap against), not that something is wrong.
 
-The preflight has twenty-five checks with one data source (twenty-four in 6.15.0, twenty-two in 6.14.1, before two
-file checks were added), and a twenty-sixth, `Filter value check has vocabularies`, while `FILTER_VALUE_CHECK=true`. The checks run in this order: `Settings.validate()` (required settings,
+The preflight has twenty-six checks with one data source (twenty-five in 6.16.0, twenty-four in 6.15.0, twenty-two in 6.14.1, before two
+file checks were added), and a twenty-seventh, `Filter value check has vocabularies`, while `FILTER_VALUE_CHECK=true`. The checks run in this order: `Settings.validate()` (required settings,
 leftover placeholders, `.env` lines python-dotenv cannot use),
 `Tables map to data sources`, then `Database connectivity`,
 `Login is read-only`, `Row cap` and `Query timeout`, then
@@ -1154,7 +1264,8 @@ draft (`project_config/ is curated, not a raw draft`, `Aliases are curated`,
 `Every data source is described`, `No staging or change-capture tables` and
 `No live sample values in descriptions`: file reads only, no database call),
 `No table in an excluded schema` (advice, also file reads only),
-`Aliases hold no raw data values` and `Entities match schema keys` (file reads only),
+`Aliases hold no raw data values`, `Entities match schema keys` and
+`Session and memory policies use real values` (file reads only),
 `Rate limit sane for deployment` and `Web UI origin is allowed by CORS` (settings
 only). With several data sources the four database
 checks run once per source and each name carries the source, as
@@ -1238,6 +1349,7 @@ data sources, the four marked * print once per source, as
 | `No table in an excluded schema` | Reads `schema.yaml` and the exclusion rule of each table's data source(s): the system schemas, `EXCLUDE_SCHEMAS` and the source's `exclude_schemas:` (§2.3). A table counts when its schema (`db_schema`, or the key's qualifier) is excluded in every source it is assigned to; a table whose schema is unknown is never counted. | Never fails. A `[PASS]` line starting `advice: N of M table(s) are in a schema the setup tools are told not to scan: <keys>` lists the first keys and the two fixes: remove the tables from `schema.yaml`, or narrow the exclusion. The exclusion only limits what the inspector and `sync_schema.py` propose, so such a table is still synced. `[SKIP]` when nothing is excluded beyond the system schemas and no table is in one. | `schema.yaml` or `datasources.yaml` does not load. |
 | `Aliases hold no raw data values` | Reads `aliases.yaml` and counts the `synonyms` keys that have the shape of a value copied out of a row: a date or time (`1387/03/24`, `2024-05-01 10:00:00`), a phone number, an IP address, an e-mail address or URL, a masked value (`ab xxxxx cd`, `****1234`), a hash, a run of 8 or more digits (a national id) or an address (words with digits and a street word). A year, `q1` or any word is left alone; Persian digits are read as digits. It also reads an `aliases.yaml` that is not valid YAML, from its lines. | More than 5 such keys: `N of M synonym keys look like raw data values (<date>: N, <phone>: N, ...)`, the count for each shape and never a key. These are the synonyms the wizard of 6.13 and 6.14 built from sample values; they go into the prompt and stay in version control, and the check cannot tell a person's name from a word, so read the file as well. Delete them (keep only words people type); the wizard no longer writes them unless `--value-synonyms` is given (§2.2). | `aliases.yaml` is missing. |
 | `Entities match schema keys` | Reads `entities.yaml`, the keys of `ring_aliases` and `schema.yaml`. Retrieval takes an entity's key to be the name of a table (`retrieval/table_keys.py`), so it has to be that table's key in `schema.yaml`: a bare name for a table keyed by its bare name, `Schema.Table` for one keyed so; the bare name of a `Schema.Table` key is accepted when it picks out one key. `db_schema` does not help: `Sales_Dim.ActionType` finds nothing when the table is keyed `ActionType`. It reports an entity key that is no table's key, two entities for one table, and a `ring_aliases` key that names a table of `schema.yaml` by something other than its key (the name of a hall that is no table is left alone, as in a curated file). | `N entity key(s) are not a schema.yaml table key: Sales_Dim.ActionType (use ActionType), ...`, `N table(s) have two entities: Sales_Dim.ActionType (ActionType and Sales_Dim.ActionType), ...` and `N ring_aliases key(s) name a table but not by its schema.yaml key: ...`: the keys and the key to use, never a value. This is what the wizard of 6.13 and 6.14 left behind: it wrote every table as `Schema.Table` while `schema.yaml` keys a table whose name is unique by its bare name, so the qualified entity matched nothing and the bare duplicate beside it had no aliases; retrieval and alias matching lost those tables, and nothing else failed. Rename each key to the one in brackets, merge the aliases of two entities into one, and give `ring_aliases` the same keys; running the wizard again over the same output folder merges them for you (§2.2). | `schema.yaml` or `entities.yaml` does not load. |
+| `Session and memory policies use real values` | Reads `session_policy.yaml`, `memory_policy.yaml` and `schema.yaml`. Each `filter_key` must name a table of `schema.yaml` (found as the application finds a configured table name, §2.5), each memory key's `column` must be a column of it (a table that lists no column gives no verdict), and the options of a file must not be exactly the sample values of `project_config.example/` (compared as a set; a set that differs by one value is not flagged). Reading `project_config.example/` itself, it does not compare the template with itself, so the shipped example passes. PASS may carry advice: when the running application has cached the dimension's values (`prefetchable_columns`; the admin panel's card, since the command line has no cache), the number of options that are not among them, as counts. | `session_policy.yaml default_scope: options are the sample values of the shipped session_policy.yaml`, `memory_policy.yaml keys.scope: filter_key 'X' names no table of schema.yaml`, `... column 'Y' is not a column of T in schema.yaml`. Values are never printed. A first install still has the template's options, so every real value an analyst pins is refused and the clarification offers values the warehouse does not have. Draft the real ones with `python scripts/draft_policies.py` (§2.5), read them and copy the two files into `project_config/`. A deployment that works with a `filter_key` that is no `schema.yaml` table fails here too, though the server answers as before: add the table to `schema.yaml` or correct the key. | `schema.yaml` or a policy file does not load; `project_config/ loads` says why. |
 | `Rate limit sane for deployment` | Works out requests per second per analyst from `RATE_LIMIT_REQUESTS`, `RATE_LIMIT_WINDOW_SEC` and `RATE_LIMIT_BURST`, assuming `VERIFY_EXPECTED_ANALYSTS` (default 10) analysts share one key's bucket. | Under 0.1 requests per second per analyst: raise `RATE_LIMIT_REQUESTS`, or set `VERIFY_EXPECTED_ANALYSTS` to the real number. | Never. |
 | `Web UI origin is allowed by CORS` | Settings only, no network. With `VERIFY_UI_ORIGIN` set (the address people open the UI at, e.g. `http://172.16.101.42:8077`), looks for that origin in `CORS_ALLOWED_ORIGINS`; `*` allows any. Without it nothing can be proved, so it only advises (below). | With `VERIFY_UI_ORIGIN` set and not listed: `http://localhost:8077 is not in CORS_ALLOWED_ORIGINS (http://172.16.101.42:8077): a page opened at that address gets 'Failed to fetch' and every light shows red. Set in .env and restart the API: CORS_ALLOWED_ORIGINS=http://172.16.101.42:8077,http://localhost:8077 -- or open the page with exactly an allowed address (scheme, host and port)`. Add the line (the variable replaces the list, so the line carries the current entries too) and restart, or open the page with an allowed address. Also a `VERIFY_UI_ORIGIN` that is not `scheme://host[:port]`. Without `VERIFY_UI_ORIGIN` it never fails; a `[PASS]` line starting `advice:` appears when every allowed origin is loopback while `API_HOST` is not (the API is reachable from other machines, whose pages would be refused), or when exactly one non-loopback origin is allowed (the same page opened by host name, as `localhost`, or on another port is refused). It says to list every address the page is opened with (IP address, host name, `localhost`) and to set `VERIFY_UI_ORIGIN` to check one. It reads `API_HOST`, not a `--host` given to `uvicorn` on the command line. | Never. |
 | `Filter value check has vocabularies` | Listed only while `FILTER_VALUE_CHECK=true` (§20.11), last. Reads `schema.yaml` and `entities.yaml`: for each dimension table (one `entities.yaml` names) it looks for label-like columns (`Name`, `Title`, `Kind`, `Status`, `Type` ..., not a person's name or contact data) and for `prefetchable_columns`. | Never fails. A `[PASS]` line starting `advice: N dimension table(s) have label-like columns and no prefetchable_columns, so an invented value in them is not caught: <table> (<columns>), ...` names tables and columns, never a value. Add `prefetchable_columns` to the small ones in `schema.yaml` (a few hundred distinct values at most) and leave out tables of people and anything large. | `schema.yaml` or `entities.yaml` cannot be read -- `project_config/ loads` says why. |
@@ -1255,7 +1367,7 @@ a line in the gateway's own log and, behind a response cache, two junk entries i
 it each time it runs. It tests a property of the deployment that changes only when
 the gateway does, so it belongs where an operator asks for it, not on a page load
 or a timer; the command line always runs it.
-The eight checks above that read only `project_config/` run on the panel without it: they
+The nine checks above that read only `project_config/` run on the panel without it: they
 only read files. So does `Column restrictions name real columns` (it reads the keys and `schema.yaml`), and so does `Web UI origin is allowed by CORS` (it reads settings only);
 on the panel it sees the server's own environment, so `VERIFY_UI_ORIGIN` has to be
 set there for it to be more than advice.
