@@ -315,7 +315,7 @@ class TestMerge:
             table("ref", "Payments", "ID", "Amount", kind="fact"),
         ), RecordingLLM("Payments per region?"))
         assert sorted(entity_keys(out)) == ["Customer", "Orders", "Payments", "Region"]
-        assert sorted(read_yaml(out / "aliases.yaml")["ring_aliases"]) == ["Customer", "Orders", "Payments", "Region"]
+        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {}
         assert sorted(read_yaml(out / "business_rules.yaml")["rules"]) == ["Orders", "Payments"]
         questions = [e["question"] for e in read_yaml(out / "examples.yaml")["examples"]]
         assert questions == ["Orders per customer?", "Payments per region?"]
@@ -398,7 +398,7 @@ class TestSchemaKeys:
         assert entity_keys(out) == ["sales.Trade", "ref.Trade", "Customer"]
         entities = read_yaml(out / "entities.yaml")["entities"]
         assert entities["ref.Trade"]["table"] == "Trade" and entities["ref.Trade"]["schema_name"] == "ref"
-        assert sorted(read_yaml(out / "aliases.yaml")["ring_aliases"]) == ["Customer", "ref.Trade", "sales.Trade"]
+        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {}
         assert sorted(read_yaml(out / "business_rules.yaml")["rules"]) == ["ref.Trade", "sales.Trade"]
 
     def test_the_model_is_told_the_schema_of_each_table(self, tmp_path):
@@ -425,8 +425,8 @@ class TestSchemaKeys:
         assert sorted(entity_keys(out)) == ["ref.Trade", "sales.Trade"]
         entities = read_yaml(out / "entities.yaml")["entities"]
         assert entities["sales.Trade"]["schema_name"] == "sales"
-        for name, section in (("aliases.yaml", "ring_aliases"), ("business_rules.yaml", "rules")):
-            assert sorted(read_yaml(out / name)[section]) == ["ref.Trade", "sales.Trade"]
+        assert sorted(read_yaml(out / "business_rules.yaml")["rules"]) == ["ref.Trade", "sales.Trade"]
+        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {}
         summary = capsys.readouterr().out
         assert "Re-keyed in entities.yaml (1)" in summary and "Trade -> sales.Trade" in summary
 

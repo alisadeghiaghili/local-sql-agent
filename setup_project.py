@@ -222,6 +222,7 @@ from core.wizard_drafts import (
     MergeStats,
     back_up,
     collapse_same_key,
+    drop_table_rings,
     hold_back_empty,
     merge_examples,
     merge_mapping,
@@ -2753,6 +2754,42 @@ def _read_existing(
     return existing, problems
 
 
+def _known_tables(snapshot, namer, existing: _ExistingDraft, output_dir: Path):
+    """The tables the wizard can name, as a view: this run's, the earlier entities', ``schema.yaml``'s.
+
+    Used to tell a ``ring_aliases`` key that names a table from the value of a
+    ring (:func:`core.wizard_drafts.drop_table_rings`). A table is listed by
+    every key it is known by, so an earlier file's spelling of a key still finds it.
+
+    Args:
+        snapshot: The schema snapshot of this run.
+        namer: The key rule from :func:`_table_namer`.
+        existing: What the output directory held.
+        output_dir: The output directory; its ``schema.yaml`` is read if it has one.
+
+    Returns:
+        A :class:`core.config_doctor.SchemaView`.
+
+    Raises:
+        Nothing. A ``schema.yaml`` that cannot be read adds no table.
+
+    Examples:
+        >>> from types import SimpleNamespace as NS
+        >>> snap = NS(tables=[NS(name="Hall", schema="ref")])
+        >>> draft = _ExistingDraft(entities={"Bank": {"table": "Bank", "schema": "ref", "aliases": []}})
+        >>> view = _known_tables(snap, NS(key=lambda t: t.name), draft, Path("no such directory"))
+        >>> [t.key for t in view.tables]
+        ['Hall', 'Bank']
+    """
+    from core import config_doctor as doctor
+    from core.ring_names import table_view
+
+    rows = [(namer.key(t), t.schema or "", t.name) for t in snapshot.tables]
+    rows += [(key, entry.get("schema") or "", entry["table"]) for key, entry in existing.entities.items()]
+    rows += [(t.key, t.schema, t.name) for t in doctor.read_schema(output_dir).tables]
+    return table_view(rows)
+
+
 def _live_config_dir() -> Path:
     """The directory the application reads its configuration from.
 
@@ -3291,7 +3328,10 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
         namer: The key rule; built from *snapshot* when ``None``.
 
     Returns:
-        ``{"entities": {key: {...}}, "ring_aliases": {key: [...]}}``.
+        ``{"entities": {key: {...}}, "ring_aliases": {}}``. The aliases of a
+        table belong to its entity; ``ring_aliases`` is the map of a ring's
+        stored name to its forms and the wizard does not know the rings, so
+        it stays empty (the key is kept for the shape of the log).
 
     Raises:
         CachedAnswersError: When 3 tables in a row get the identical answer.
@@ -3300,7 +3340,6 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
     console.rule("[bold blue]Step 3: LLM Alias Generation[/bold blue]" if _RICH else "Step 3: Alias Generation")
 
     entities: dict[str, dict] = {}
-    ring_aliases: dict[str, list[str]] = {}
     total = len(snapshot.tables)
     guard = _AnswerGuard(
         "Step 3", "alias list", allow=getattr(args, "allow_repeated_answers", False),
@@ -3370,8 +3409,6 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
         }
         if getattr(table, "datasources", ()):
             entities[key]["datasource"] = list(table.datasources)
-        if aliases:
-            ring_aliases[key] = aliases
 
     console.print(f"  {guard.summary()}.", markup=False)
     if trimmed:
@@ -3398,9 +3435,9 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
         "aliases_failed": failed,
         "language": language,
         "provider": llm.provider,
-        "result": {"entities": entities, "ring_aliases": ring_aliases},
+        "result": {"entities": entities, "ring_aliases": {}},
     })
-    return {"entities": entities, "ring_aliases": ring_aliases}
+    return {"entities": entities, "ring_aliases": {}}
 
 
 #: Start of the placeholder rule written for a fact table the model gave no
@@ -3891,7 +3928,10 @@ def step6_review_and_write(
 
     What is shown and written is the merge of this run into *existing* (the
     files the output directory already held): see ``core.wizard_drafts``. The
-    counts are printed per file and recorded in the log.
+    counts are printed per file and recorded in the log. A ``ring_aliases``
+    entry of *existing* whose key names a table (written by 6.13 to 6.16.2,
+    one per table) is dropped first, its aliases kept in the table's entity,
+    and the keys are listed in the summary and in the log.
 
     "Regenerate" asks the LLM again and shows the new version: for
     ``business_rules.yaml`` and ``examples.yaml`` that re-runs step 4 or 5;
@@ -3908,7 +3948,8 @@ def step6_review_and_write(
         generated_at: Timestamp for the file headers.
         source_url: Redacted connection string for the ``entities.yaml`` header.
         entities_data: Step 3 entities.
-        ring_aliases: Step 3 aliases per table.
+        ring_aliases: Step 3 ring aliases (the wizard does not know the rings, so
+            none; the aliases of a table are in *entities_data*).
         rules: Step 4 business rules.
         examples: Step 5 examples.
         snapshot: The schema snapshot.
@@ -3951,6 +3992,11 @@ def step6_review_and_write(
     if not getattr(args, "keep_existing_synonyms", False):
         kept_synonyms, dropped_values = _without_value_synonyms(existing.synonyms)
         existing = replace(existing, synonyms=kept_synonyms)
+    # An earlier run wrote one `ring_aliases` entry per table; a key there is the value of a ring.
+    cleanup = drop_table_rings(
+        existing.ring_aliases, existing.entities, _known_tables(snapshot, namer, existing, output_dir),
+    )
+    existing = replace(existing, ring_aliases=cleanup.ring_aliases, entities=cleanup.entities)
     stats: dict[str, MergeStats] = {}
     made: list[Path] = backups if backups is not None else []
 
@@ -4081,6 +4127,13 @@ def step6_review_and_write(
         "held": {name: list(st.held) for name, st in stats.items() if st.held},
         "merged_duplicates": {name: [list(pair) for pair in pairs] for name, pairs in (collapsed or {}).items() if pairs},
         "dropped_value_synonyms": dropped_values,
+        "dropped_table_rings": {
+            "count": len(cleanup.dropped),
+            "keys": list(cleanup.dropped),
+            "aliases_added_to_entities": cleanup.carried,
+            "entities_created": cleanup.created,
+            "unplaced": list(cleanup.unplaced),
+        },
         "earlier_value_synonyms": _data_shaped_count(existing.synonyms),
         "backups": [str(b) for b in made],
         "inferred_relationships": sum(1 for link in links if link.inferred),
@@ -4327,6 +4380,24 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
             f"from rows ({kinds}) and were dropped; --keep-existing-synonyms keeps them.",
             markup=False,
         )
+    table_rings = done.get("dropped_table_rings") or {}
+    if table_rings.get("count"):
+        keys = table_rings.get("keys") or []
+        many = table_rings["count"] != 1
+        console.print(
+            f"  aliases.yaml: {table_rings['count']} ring_aliases entr{'ies' if many else 'y'} from an earlier run "
+            f"{'were' if many else 'was'} keyed by a table, not by the value of a ring, and {'were' if many else 'was'} "
+            f"dropped: {', '.join(keys[:10])}{' ...' if len(keys) > 10 else ''}. The aliases of a table belong in "
+            f"entities.yaml: {table_rings.get('aliases_added_to_entities', 0)} entities gained aliases from them and "
+            f"{table_rings.get('entities_created', 0)} had to be made. Entries that are ring names were not touched.",
+            markup=False,
+        )
+        if table_rings.get("unplaced"):
+            console.print(
+                f"  aliases.yaml: the aliases of {len(table_rings['unplaced'])} of them named no single table and "
+                f"went nowhere: {', '.join(table_rings['unplaced'][:10])}. Check .setup_log.json and entities.yaml.",
+                markup=False,
+            )
     earlier = done.get("earlier_value_synonyms") or {}
     if earlier:
         kinds = ", ".join(f"<{shape}>: {n}" for shape, n in sorted(earlier.items()))
@@ -4522,7 +4593,9 @@ def _restorable_results(
     Returns:
         ``(aliases, rules, examples)``. Each is ``None`` when it was not
         stored, has the wrong shape, or was generated for another language.
-        *aliases* is ``{"entities": ..., "ring_aliases": ...}``.
+        *aliases* is ``{"entities": ..., "ring_aliases": {}}``; the stored
+        ``ring_aliases`` (a table-keyed copy of the entities' aliases in a log
+        of 6.13 to 6.16.2) is not reused.
 
     Raises:
         Nothing. This function never raises.
@@ -4538,6 +4611,10 @@ def _restorable_results(
     if not (isinstance(aliases, dict) and isinstance(aliases.get("entities"), dict)
             and isinstance(aliases.get("ring_aliases"), dict)):
         aliases = None
+    else:
+        # A log of 6.13 to 6.16.2 holds one `ring_aliases` entry per table, the aliases the
+        # entities already have; a key there is the value of a ring, so none is reused.
+        aliases = {**aliases, "ring_aliases": {}}
     rules = _stored_result(log, "step4_rules")
     if not isinstance(rules, dict):
         rules = None

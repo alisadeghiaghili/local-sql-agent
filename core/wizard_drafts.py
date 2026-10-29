@@ -16,10 +16,15 @@ be tested on their own:
   summary prints (:class:`MergeStats`);
 * how two earlier entries that the new keys would put on one key become one
   (:func:`collapse_same_key`), so a merge never leaves two entries for one
-  table, and how a model's alias list is made usable (:func:`tidy_aliases`).
+  table, and how a model's alias list is made usable (:func:`tidy_aliases`);
+* how the entries that a run of 6.13 to 6.16.2 wrote into ``ring_aliases`` --
+  one per *table*, where a key must be the value of a ring -- are dropped from
+  an earlier ``aliases.yaml``, their aliases kept in ``entities.yaml``
+  (:func:`drop_table_rings`, :class:`RingCleanup`).
 
 Merging never removes an entry, except that two old entries for one table
-become one. An entry the new run produced replaces the old one with the same
+become one and that the table-keyed ``ring_aliases`` entries above are dropped
+(and counted). An entry the new run produced replaces the old one with the same
 key; every other old entry stays as it was.
 
 Public API
@@ -36,6 +41,7 @@ merge_examples(existing, new) -> (list, MergeStats)
 merge_relationships(existing, new, rename) -> (list, MergeStats)
 collapse_same_key(existing, rename, combine) -> (dict, tuple[(dropped, kept), ...])
 tidy_aliases(aliases, limit) -> list[str]
+RingCleanup, drop_table_rings(ring_aliases, entities, view) -> RingCleanup
 """
 
 from __future__ import annotations
@@ -47,6 +53,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core import config_doctor as doctor
+from core import ring_names
 from core.persian import normalize_for_matching
 
 __all__ = [
@@ -54,8 +62,10 @@ __all__ = [
     "DEFAULT_DRAFT_DIR",
     "EXAMPLE_DIR_NAME",
     "MergeStats",
+    "RingCleanup",
     "back_up",
     "collapse_same_key",
+    "drop_table_rings",
     "hold_back_empty",
     "merge_examples",
     "merge_mapping",
@@ -691,3 +701,129 @@ def tidy_aliases(aliases: Iterable[Any] | None, limit: int = ALIAS_LIMIT) -> lis
     if len(kept) > limit:
         kept = sorted(sorted(kept, key=lambda i: (len(words[i]), i))[:limit])
     return [items[i][1] for i in kept]
+
+
+# ---------------------------------------------------------------------------
+# ring_aliases entries that are tables
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RingCleanup:
+    """What :func:`drop_table_rings` did to an earlier ``aliases.yaml``.
+
+    Attributes:
+        ring_aliases: The entries that stay: every one whose key is not a table.
+        entities: The entities, with the aliases of the dropped entries added.
+        dropped: The keys dropped (table names, not data), in file order.
+        carried: Entities that gained aliases from a dropped entry.
+        created: Entities made for a table that had none.
+        unplaced: Dropped keys whose aliases went nowhere: the key names no
+            single table, so there was no entity to put them in.
+    """
+
+    ring_aliases: dict[str, list[str]]
+    entities: dict[str, dict[str, Any]]
+    dropped: tuple[str, ...] = ()
+    carried: int = 0
+    created: int = 0
+    unplaced: tuple[str, ...] = ()
+
+
+def _union_aliases(first: Iterable[str], second: Iterable[str]) -> list[str]:
+    """*first* then what *second* adds, without repeats (case ignored)."""
+    seen: dict[str, str] = {}
+    for item in (*first, *second):
+        seen.setdefault(str(item).casefold(), str(item))
+    return list(seen.values())
+
+
+def _table_key(view: doctor.SchemaView, key: str) -> str:
+    """The key of the one table of *view* that *key* names, or ``""``."""
+    found = doctor.resolve_table_keys(view, key)
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        spelled = doctor.entity_key_findings(view, (), [key]).unknown_rings
+        return next((right for _, right in spelled if right), "")
+    return ""
+
+
+def drop_table_rings(
+    ring_aliases: Mapping[str, list[str]],
+    entities: Mapping[str, Mapping[str, Any]],
+    view: doctor.SchemaView,
+) -> RingCleanup:
+    """Drop the ``ring_aliases`` entries that name a table; keep their aliases as the table's entity aliases.
+
+    A ``ring_aliases`` key is the exact value of a ring's name column. A run of
+    the wizard of 6.13 to 6.16.2 wrote one entry per table instead, keyed by
+    the table and holding the table's aliases, which are also in
+    ``entities.yaml``. An entry whose key names a table of *view* by its key,
+    by a bare name that finds one key, or by a ``Schema.Table`` spelling
+    (:func:`core.ring_names.ring_keys_naming_tables`) is dropped. Every other
+    entry -- a real ring, whatever words its name shares with a table -- is
+    returned as it was.
+
+    Nothing is lost: the aliases of a dropped entry are added to the entity of
+    that table (the entity has them already when the entry was written by the
+    wizard), and an entity is made for a table that has none.
+
+    Parameters
+    ----------
+    ring_aliases:
+        ``aliases.yaml`` ``ring_aliases`` of the earlier run.
+    entities:
+        ``entities.yaml`` of the earlier run, as the wizard reads it
+        (``{key: {"table", "schema", "aliases", ...}}``).
+    view:
+        The tables the wizard knows: this run's, the earlier entities' and
+        ``schema.yaml``'s (:func:`core.ring_names.table_view`).
+
+    Returns
+    -------
+    RingCleanup
+        With *entities* itself when no entry was dropped.
+
+    Examples
+    --------
+    >>> view = ring_names.table_view([("Hall", "ref", "Hall"), ("sales.Trade", "sales", "Trade")])
+    >>> rings = {"North Hall": ["north"], "Hall": ["hall"], "Trade": ["deal"], "Region A": ["a"]}
+    >>> entities = {"Hall": {"table": "Hall", "schema": "ref", "aliases": ["hall"]}}
+    >>> cleaned = drop_table_rings(rings, entities, view)
+    >>> list(cleaned.ring_aliases), cleaned.dropped
+    (['North Hall', 'Region A'], ('Hall', 'Trade'))
+    >>> cleaned.carried, cleaned.created, cleaned.entities["sales.Trade"]["aliases"]
+    (0, 1, ['deal'])
+    >>> drop_table_rings({"Region A": ["a"]}, entities, view).entities is entities
+    True
+    """
+    doomed = ring_names.ring_keys_naming_tables(view, ring_aliases)
+    if not doomed:
+        return RingCleanup(dict(ring_aliases), entities)  # type: ignore[arg-type]
+    gone = set(doomed)
+    grown = {key: dict(entry) for key, entry in entities.items()}
+    named = {key.casefold(): key for key in grown}
+    by_key = {table.key: table for table in view.tables}
+    carried = created = 0
+    unplaced: list[str] = []
+    for key in doomed:
+        aliases = list(ring_aliases[key])
+        table_key = _table_key(view, key)
+        target = named.get(key.casefold()) or (named.get(table_key.casefold()) if table_key else None)
+        if target is not None:
+            before = list(grown[target].get("aliases") or [])
+            after = _union_aliases(before, aliases)
+            if len(after) > len(before):
+                grown[target]["aliases"] = after
+                carried += 1
+        elif table_key:
+            table = by_key[table_key]
+            grown[table_key] = {"table": table.name, "schema": table.schema or None, "aliases": aliases}
+            named[table_key.casefold()] = table_key
+            created += 1
+        else:
+            unplaced.append(key)
+    return RingCleanup(
+        {key: list(value) for key, value in ring_aliases.items() if key not in gone},
+        grown, tuple(doomed), carried, created, tuple(unplaced),
+    )

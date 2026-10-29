@@ -129,7 +129,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from functools import partial, update_wrapper
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import requests
 from sqlalchemy import text
@@ -145,6 +145,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.console import use_utf8_console
 from core.cors_origins import clean_origin, env_line, is_loopback_origin, parse_origin
 import config as cfg
+
+if TYPE_CHECKING:
+    from core.config_doctor import SchemaView
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1037,10 +1040,23 @@ def check_aliases_are_curated() -> CheckResult:
     has nothing to put there, and the setup wizard itself writes an empty map
     when it finds no dimension table. It is reported as advice in the PASS
     detail while ``schema.yaml`` or ``entities.yaml`` describe tables, and
-    stands out in the FAIL detail when it comes with non-word seeds. File
-    reads only. SKIP when ``aliases.yaml`` is absent or not a mapping.
+    stands out in the FAIL detail when it comes with non-word seeds.
+
+    A ``ring_aliases`` key is the exact value of the ring dimension's name
+    column; the setup wizard of 6.13 to 6.16.2 wrote one entry per table
+    instead, keyed by the table's ``schema.yaml`` key, so a question that named
+    a table filtered the ring by the table's name. FAIL when a key is, as a
+    whole and ignoring letter case, a key of ``schema.yaml`` (the entries the
+    application ignores, with a WARNING at load; ``core.ring_names``); the
+    detail has the count and up to ten keys.
+    The PASS detail may carry advice (it then starts ``advice:``): when the
+    application has cached the ring dimension's values (the admin panel's card,
+    in the running server; the command line has no cache), the number of keys
+    that are not among them, as counts only. File reads only. SKIP when
+    ``aliases.yaml`` is absent or not a mapping.
     """
     from core import config_doctor as doctor
+    from core import ring_names
 
     name = "Aliases are curated"
     directory = _project_config_dir()
@@ -1063,6 +1079,20 @@ def check_aliases_are_curated() -> CheckResult:
             + " -- these are the seeds database.schema_inspector_cli copies from sample values of the "
             f"live rows, not a vocabulary. Restore the curated aliases.yaml ({_RUNBOOK_CURATION})",
         )
+    view = doctor.read_schema(directory)
+    table_keyed = ring_names.table_keyed_ring_keys(
+        aliases.ring_keys, (table.key for table in view.tables) if view.parsed else (),
+    )
+    if table_keyed:
+        return CheckResult(
+            name, "FAIL",
+            f"{len(table_keyed)} of {aliases.ring_aliases} ring_aliases key(s) are keys of schema.yaml tables: "
+            f"{ring_names.listed(table_keyed)} -- a ring_aliases key is the exact value of the ring dimension's "
+            "name column (the ring filter is built from it), not the name of a table; the setup wizard of 6.13 "
+            "to 6.16.2 wrote a table key per table here, and the application ignores such entries. Run "
+            "`python setup_project.py` again (it drops them and says how many) or restore the curated ring "
+            f"names from a backup ({_RUNBOOK_CURATION})",
+        )
     detail = f"{len(keys)} synonym key(s), {aliases.ring_aliases} ring alias(es)"
     if empty_rings and (
         doctor.read_schema(directory).tables
@@ -1072,7 +1102,40 @@ def check_aliases_are_curated() -> CheckResult:
             "; advice: ring_aliases is empty -- right when your questions never name a ring (hall), "
             "since only the ring filter reads it; otherwise add the ring names"
         )
+    outside = _ring_keys_outside_vocabulary(directory, view, aliases.ring_keys)
+    if outside is not None:
+        detail += outside
     return CheckResult(name, "PASS", detail)
+
+
+def _ring_keys_outside_vocabulary(directory: Path, view: SchemaView, ring_keys: tuple[str, ...]) -> str | None:
+    """Advice for the PASS detail: ``ring_aliases`` keys that are not cached values of the ring dimension.
+
+    ``None`` when there is nothing to say: no key, no readable policies or
+    schema, or no cached vocabulary (the command line has none). Counts and
+    the dimension's table and column only; no key and no value.
+    """
+    if not ring_keys or not view.parsed:
+        return None
+    from core import policy_values as values
+    from core import ring_names
+
+    try:
+        policies = values.read_policies(directory)
+    except ValueError:
+        return None
+    found = values.cached_dimension(policies, view, _cached_dimension_values)
+    if found is None:
+        return None
+    table, column, cached = found
+    missing = ring_names.ring_keys_outside(ring_keys, cached)
+    if not missing:
+        return None
+    return (
+        f"; advice: {missing} of {len(ring_keys)} ring_aliases key(s) are not among the {len(cached)} cached "
+        f"value(s) of {table}.{column} -- such a key matches no row of the ring dimension; compare the keys "
+        f"with the stored names ({_RUNBOOK_CURATION})"
+    )
 
 
 def check_aliases_hold_no_raw_values() -> CheckResult:
@@ -1166,7 +1229,7 @@ def check_entities_match_schema_keys() -> CheckResult:
         name, "FAIL",
         "; ".join(parts) + " -- retrieval reads an entity's key as the table's schema.yaml key, so such a table "
         "is never found by its aliases. Rename the key to the schema.yaml key, keep one entity per table "
-        f"(merge their aliases) and fix ring_aliases the same way ({_RUNBOOK_CURATION})",
+        f"(merge their aliases) and drop the ring_aliases entries that name a table, since a key there is a ring's name ({_RUNBOOK_CURATION})",
     )
 
 

@@ -23,6 +23,12 @@ The invariant the template's comments describe is kept and checked: the memory
 options never contain the session policy's ``default_label``, so a pinned value
 is always textually different from the unset default.
 
+The same values are also what ``aliases.yaml`` ``ring_aliases`` needs as keys
+(the exact stored value of the ring's name column), so :func:`draft_ring_aliases`
+adds an entry for each value that has none -- the value itself and, if the
+operator names a generic leading word, the value without it -- leaving every
+existing entry, ``synonyms`` and comment as they are.
+
 Public API
 ----------
 DraftValues, DraftedPolicies
@@ -30,6 +36,10 @@ DraftValues, DraftedPolicies
 usable_values(raw, default_label, max_length) -> DraftValues
 choose_memory_keys(policies, requested) -> list[str]
 draft_policies(policies, values, filter_key, column, memory_keys) -> DraftedPolicies
+DraftedRings
+    The drafted ``aliases.yaml`` and what was added to it.
+ring_forms(value, generic_words) -> list[str]
+draft_ring_aliases(text, values, generic_words) -> DraftedRings
 """
 
 from __future__ import annotations
@@ -56,8 +66,11 @@ from schema_data.yaml_text import (
 __all__ = [
     "DraftValues",
     "DraftedPolicies",
+    "DraftedRings",
     "choose_memory_keys",
     "draft_policies",
+    "draft_ring_aliases",
+    "ring_forms",
     "usable_values",
 ]
 
@@ -475,3 +488,168 @@ def draft_policies(
     )
     changed = moved or (column is not None and any(entry.column != column for entry in entries))
     return DraftedPolicies(memory_text, session_text, tuple(chosen), changed)
+
+
+# ---------------------------------------------------------------------------
+# ring_aliases of aliases.yaml
+# ---------------------------------------------------------------------------
+
+#: Written when there is no ``aliases.yaml`` to add to: both sections the loader requires.
+_NEW_ALIASES = "ring_aliases: {}\nsynonyms: {}\n"
+
+
+@dataclass(frozen=True)
+class DraftedRings:
+    """The drafted ``aliases.yaml`` as text, and what was added to it."""
+
+    text: str
+    added: tuple[str, ...]
+    """The values that got a new ``ring_aliases`` entry, in the order written."""
+    kept: int
+    """Entries the file already had; none of them was changed."""
+    stale: int
+    """Existing keys that are not among the values read (a count; the entries stay)."""
+
+
+def ring_forms(value: str, generic_words: Sequence[str] = ()) -> list[str]:
+    """The forms an analyst may type for the ring stored as *value*.
+
+    The value itself (``extract_ring`` finds a form inside the question, so the
+    stored name is the first thing that works), and one conservative variant: the
+    value without a leading generic word the operator named (``Hall Export`` for
+    the generic word ``Hall`` gives ``Export``). The variant is made only when a
+    whole word is left; words inside the value are never cut, and nothing is
+    inferred from the data.
+
+    Parameters
+    ----------
+    value:
+        The exact stored value of the ring's name column.
+    generic_words:
+        Words that begin many ring names and that analysts leave out (``Hall``,
+        ``Ring``); compared whole, with the project's folding.
+
+    Examples
+    --------
+    >>> ring_forms("Hall Export", ["Hall"])
+    ['Hall Export', 'Export']
+    >>> ring_forms("Hall Export")
+    ['Hall Export']
+    >>> ring_forms("Hallway Export", ["Hall"])
+    ['Hallway Export']
+    >>> ring_forms("Hall", ["Hall"])
+    ['Hall']
+    """
+    forms = [value]
+    words = value.split()
+    generic = {normalize_for_matching(word) for word in generic_words}
+    if len(words) > 1 and normalize_for_matching(words[0]) in generic:
+        rest = " ".join(words[1:])
+        if normalize_for_matching(rest) not in generic:
+            forms.append(rest)
+    return forms
+
+
+def _ring_entry_lines(value: str, forms: Sequence[str], indent: int) -> list[str]:
+    pad = " " * indent
+    return [f"{pad}{quote(value)}:", *(f"{pad}  - {quote(form)}" for form in forms)]
+
+
+def draft_ring_aliases(text: str, values: Sequence[str], generic_words: Sequence[str] = ()) -> DraftedRings:
+    """Add a ``ring_aliases`` entry for each stored ring value that has none, changing nothing else.
+
+    ``ring_aliases`` maps the exact value of the ring dimension's name column to
+    the forms analysts type for it. The entries are added to the *text* of
+    ``aliases.yaml`` line by line, after the last entry of the section, so every
+    comment, every curated entry, ``synonyms`` and the line endings stay as they
+    were; a value that already has an entry (same name after the project's
+    folding) is not touched. The forms of an entry are :func:`ring_forms`; a
+    shortened form that two values would share is left out, since it would name
+    neither. New entries are written longest value first: ``extract_ring``
+    returns the first entry with a form in the question, so ``Region AB`` must
+    come before ``Region A``.
+
+    Parameters
+    ----------
+    text:
+        The current ``aliases.yaml``; ``""`` when there is none.
+    values:
+        The stored ring values (:func:`usable_values`).
+    generic_words:
+        See :func:`ring_forms`.
+
+    Returns
+    -------
+    DraftedRings
+
+    Raises
+    ------
+    ValueError
+        When the file does not load with the application's validator, is laid
+        out in a way the line editor cannot edit (a non-empty ``ring_aliases``
+        written inline, :class:`~schema_data.yaml_text.LayoutError`), or the
+        result would differ from the input in anything but the added entries.
+        Nothing is returned then.
+
+    Examples
+    --------
+    >>> drafted = draft_ring_aliases('# mine\\nring_aliases:\\n  "Zone A": ["a"]\\nsynonyms:\\n  "annual": ["year"]\\n',
+    ...                              ["Zone A", "Zone B", "Zone BB"])
+    >>> drafted.added, drafted.kept
+    (('Zone BB', 'Zone B'), 1)
+    >>> print(drafted.text)
+    # mine
+    ring_aliases:
+      "Zone A": ["a"]
+      "Zone BB":
+        - "Zone BB"
+      "Zone B":
+        - "Zone B"
+    synonyms:
+      "annual": ["year"]
+    <BLANKLINE>
+    >>> draft_ring_aliases("", ["Zone A"]).text.splitlines()[:3]
+    ['ring_aliases:', '  "Zone A":', '    - "Zone A"']
+    """
+    from knowledge.config_loader import AliasesConfig, validate_yaml_text
+
+    source = text if text.strip() else _NEW_ALIASES
+    before = validate_yaml_text("aliases.yaml", source, AliasesConfig).model_dump()
+    taken = {normalize_for_matching(key) for key in before["ring_aliases"]}
+    wanted = {normalize_for_matching(value) for value in values}
+    fresh = [value for value in values if normalize_for_matching(value) not in taken]
+    fresh.sort(key=lambda value: (-len(value), normalize_for_matching(value)))
+    forms = {value: ring_forms(value, generic_words) for value in fresh}
+    shared = Counter(normalize_for_matching(form) for found in forms.values() for form in found[1:])
+    forms = {
+        value: [f for i, f in enumerate(found) if i == 0 or shared[normalize_for_matching(f)] == 1]
+        for value, found in forms.items()
+    }
+
+    lines, eol, bom = _split(source)
+    inline = next((i for i, line in enumerate(lines) if re.match(r"^ring_aliases[ \t]*:[ \t]*\{[ \t]*\}[ \t]*(?:#.*)?$", line)), None)
+    edits: list[Edit]
+    if inline is not None:
+        comment = _comment_of(lines[inline].split(":", 1)[1])
+        edits = [(inline, inline + 1, ["ring_aliases:" + (f" {comment}" if comment else ""), *_all_entries(fresh, forms, 2)])] if fresh else []
+    else:
+        try:
+            header, end = _top_block(lines, "ring_aliases")
+        except LayoutError:
+            raise LayoutError("`ring_aliases:` is written inline; edit it by hand") from None
+        body = [i for i in range(header + 1, end) if not is_blank_or_comment(lines[i])]
+        indent = indent_of(lines[body[0]]) if body else 2
+        edits = [(end, end, _all_entries(fresh, forms, indent))] if fresh else []
+    drafted = _join(apply_edits(list(lines), edits), eol, bom)
+
+    # Proof: it loads as the application loads it, and is the input plus exactly the new entries.
+    after = validate_yaml_text("aliases.yaml", drafted, AliasesConfig).model_dump()
+    expected = {"ring_aliases": {**before["ring_aliases"], **{v: forms[v] for v in fresh}}, "synonyms": before["synonyms"]}
+    if after != expected or list(after["ring_aliases"]) != list(expected["ring_aliases"]):
+        raise LayoutError("the edit would change more than the added entries; edit aliases.yaml by hand")
+    stale = sum(1 for key in before["ring_aliases"] if normalize_for_matching(key) not in wanted)
+    return DraftedRings(drafted, tuple(fresh), len(before["ring_aliases"]), stale)
+
+
+def _all_entries(fresh: Sequence[str], forms: Mapping[str, Sequence[str]], indent: int) -> list[str]:
+    return [line for value in fresh for line in _ring_entry_lines(value, forms[value], indent)]

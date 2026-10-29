@@ -86,7 +86,7 @@ class TestOneEntityPerTable:
         assert list(entities) == ["ActionType", "Date", "Trade"]
         assert entities["ActionType"]["aliases"] == ["alias of Sales_Dim.ActionType"]
         assert entities["ActionType"]["schema_name"] == "Sales_Dim"
-        assert sorted(read_yaml(out / "aliases.yaml")["ring_aliases"]) == ["ActionType", "Date", "Trade"]
+        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {}      # a ring_aliases key is a ring, not a table
         assert sorted(read_yaml(out / "business_rules.yaml")["rules"]) == ["Trade"]
 
     def test_an_entry_with_no_schema_is_the_table_its_name_says(self, tmp_path):
@@ -120,9 +120,7 @@ class TestOneEntityPerTable:
         entities = read_yaml(out / "entities.yaml")["entities"]
         assert [k for k, v in entities.items() if v["table"] == "ActionType"] == ["ActionType"]
         assert entities["ActionType"]["aliases"] == ["action kind"]
-        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {
-            "ActionType": ["action kind"], "Trade": ["alias of Sales_Fact.Trade"],
-        }
+        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {}
         rules = read_yaml(out / "business_rules.yaml")["rules"]
         assert list(rules) == ["Trade"] and rules["Trade"]["rule_text"] == "Use Amount."
         summary = capsys.readouterr().out
@@ -710,7 +708,7 @@ class TestAliasList:
         aliases = read_yaml(out / "entities.yaml")["entities"]["Bank"]["aliases"]
         assert aliases == ["bank", "name", "list"]
         assert len(aliases) <= 8
-        assert read_yaml(out / "aliases.yaml")["ring_aliases"]["Bank"] == aliases
+        assert read_yaml(out / "aliases.yaml")["ring_aliases"] == {}
         assert "2 alias list(s) had repeats or more than 8 entries and were cleaned." in capsys.readouterr().out
 
     def test_a_normal_list_is_left_alone(self, tmp_path):

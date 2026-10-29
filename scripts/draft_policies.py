@@ -10,6 +10,8 @@ Usage (from the repo root, with the server's environment active)::
     python scripts/draft_policies.py --dry-run --show-values      # ... and the first few values
     python scripts/draft_policies.py --max-values 100             # refuse a column with more values
     python scripts/draft_policies.py --overwrite-live             # write into project_config/ (with .bak)
+    python scripts/draft_policies.py --ring-aliases               # ... and add the ring names to aliases.yaml
+    python scripts/draft_policies.py --ring-aliases --generic-word Hall   # also draft "Export" for "Hall Export"
 
 Why it exists
 -------------
@@ -59,6 +61,20 @@ What it does
   options are the ``default_label`` followed by the values. A memory key with no
   ``options`` (any value up to ``max_length``) is left as it is unless
   ``--memory-key`` names it.
+* With ``--ring-aliases`` also writes ``project_config_draft/aliases.yaml``: the
+  current file with an ``ring_aliases`` entry added for each value that has none.
+  A ``ring_aliases`` key is the exact stored value of the ring dimension's name
+  column; ``ValueRetriever.extract_ring`` finds one of the entry's forms in the
+  question and filters by the key. The forms are the value itself and, with
+  ``--generic-word WORD`` (repeatable: a word that begins many ring names and that
+  analysts leave out, such as ``Hall``), the value without that leading word when
+  a whole word is left and no other value would give the same form. New entries are
+  written longest value first (the first entry with a form in the question wins).
+  Existing entries, ``synonyms``, comments and line endings stay byte for byte; the
+  script proves it by loading the result and comparing. Entries whose key is a table
+  of ``schema.yaml`` (what the setup wizard of 6.13 to 6.16.2 wrote) are left in the
+  draft and counted: the application ignores them, ``setup_project.py`` drops them.
+  Read the forms before you copy the file: only you know how analysts name a ring.
 * Never writes into ``project_config/`` or ``project_config.example/`` unless
   ``--overwrite-live`` is given; then each file it replaces is first copied to
   ``<name>.bak-<YYYYmmdd-HHMMSS>`` next to it, as the wizard does. An existing
@@ -92,7 +108,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.console import use_utf8_console  # noqa: E402
 import config as cfg  # noqa: E402 - loads .env, like every entry point
 from core import config_doctor as doctor  # noqa: E402
-from core.policy_drafts import choose_memory_keys, draft_policies, usable_values  # noqa: E402
+from core import ring_names  # noqa: E402
+from core.policy_drafts import choose_memory_keys, draft_policies, draft_ring_aliases, usable_values  # noqa: E402
 from core.policy_values import MEMORY_FILE, SESSION_FILE, read_policies  # noqa: E402
 from core.redaction import redact_error_text  # noqa: E402
 from core.value_shapes import is_personal_column  # noqa: E402
@@ -106,6 +123,7 @@ from schema_data.registry import (  # noqa: E402
 )
 
 __all__ = [
+    "ALIASES_FILE",
     "DEFAULT_MAX_VALUES",
     "EXIT_ERROR",
     "EXIT_OK",
@@ -117,6 +135,9 @@ __all__ = [
 
 EXIT_OK = 0
 EXIT_ERROR = 2
+
+#: The file ``--ring-aliases`` drafts.
+ALIASES_FILE = "aliases.yaml"
 
 #: Most distinct values a column may have to be a scope: more is not a small dimension.
 DEFAULT_MAX_VALUES = 200
@@ -224,6 +245,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ring-aliases", action="store_true",
+        help=(
+            f"Also draft {ALIASES_FILE}: add a ring_aliases entry (key = the exact stored value) for each value that has "
+            "none. Existing entries and synonyms are kept as they are."
+        ),
+    )
+    parser.add_argument(
+        "--generic-word", action="append", default=[], metavar="WORD",
+        help=(
+            "With --ring-aliases: a word that begins many ring names and that analysts leave out (repeatable). "
+            "A value that starts with it also gets the rest as a form. Default: none, the value itself only."
+        ),
+    )
+    parser.add_argument(
         "--max-values", type=int, default=DEFAULT_MAX_VALUES, metavar="N",
         help=f"Refuse a column with more than N distinct values (default {DEFAULT_MAX_VALUES}).",
     )
@@ -297,6 +332,63 @@ def _dimension(
     return key, spelled
 
 
+def _ring_aliases_draft(
+    args: argparse.Namespace,
+    directory: Path,
+    view: doctor.SchemaView,
+    values: Sequence[str],
+) -> str:
+    """The drafted ``aliases.yaml`` for ``--ring-aliases``; the counts are printed.
+
+    Parameters
+    ----------
+    args:
+        The parsed command line (``--generic-word``).
+    directory:
+        Where the current ``aliases.yaml`` is read from; it may be absent.
+    view:
+        ``schema.yaml``, to count the existing entries that are keyed by a table.
+    values:
+        The stored ring values kept (:func:`core.policy_drafts.usable_values`).
+
+    Returns
+    -------
+    str
+        The file as text.
+
+    Raises
+    ------
+    ValueError
+        When the file cannot be read or edited (the message says why).
+    """
+    path = directory / ALIASES_FILE
+    try:
+        current = path.read_bytes().decode("utf-8-sig") if path.is_file() else ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"cannot read {path}: {_describe(exc)}") from exc
+    try:
+        drafted = draft_ring_aliases(current, values, args.generic_word)
+    except ValueError as exc:
+        raise ValueError(f"cannot draft {ALIASES_FILE}: {exc}") from exc
+    many = len(drafted.added) != 1
+    print(
+        f"{ALIASES_FILE}: " + (f"{len(drafted.added)} ring_aliases entr{'ies' if many else 'y'} added" if drafted.added else "no entry to add")
+        + f"; {drafted.kept} already there and left as they are" + ("" if current else " (there is no file yet: a new one is drafted)")
+    )
+    if drafted.stale:
+        print(f"  {drafted.stale} existing key(s) are not among the {len(values)} stored value(s); they stay, check them")
+    existing = doctor.read_aliases(directory)
+    keyed = ring_names.table_keyed_ring_keys(
+        existing.ring_keys if existing else (), (table.key for table in view.tables),
+    )
+    if keyed:
+        print(
+            f"  {len(keyed)} existing key(s) are keys of schema.yaml tables ({ring_names.listed(keyed)}): the application "
+            "ignores them; python setup_project.py drops them from an aliases.yaml it merges into"
+        )
+    return drafted.text
+
+
 def _write_atomically(path: Path, text: str) -> None:
     """Write *text* to *path* through a temporary file and a rename."""
     temporary = path.with_name(path.name + ".tmp")
@@ -325,6 +417,8 @@ def main(argv: Sequence[str] | None = None, *, read_values: ValueReader | None =
     limit = args.max_values
     if limit < 1:
         return _error("--max-values must be a positive number")
+    if args.generic_word and not args.ring_aliases:
+        return _error("--generic-word belongs to --ring-aliases")
     if limit + 1 > cfg.settings.max_rows_returned:
         return _error(
             f"--max-values {limit} needs {limit + 1} rows and the application returns at most "
@@ -413,11 +507,16 @@ def main(argv: Sequence[str] | None = None, *, read_values: ValueReader | None =
             "  the dimension moved: field_name, default_label and clarification_prompt are unchanged; "
             "check that they still describe it"
         )
+    targets = {args.output / MEMORY_FILE: drafted.memory_text, args.output / SESSION_FILE: drafted.session_text}
+    if args.ring_aliases:
+        try:
+            targets[args.output / ALIASES_FILE] = _ring_aliases_draft(args, directory, view, kept.values)
+        except ValueError as exc:
+            return _error(str(exc))
     if args.dry_run:
         print("\ndry run: nothing was written")
         return EXIT_OK
 
-    targets = {args.output / MEMORY_FILE: drafted.memory_text, args.output / SESSION_FILE: drafted.session_text}
     existing = [path for path in targets if path.exists()]
     if existing and not (protected or args.force):
         names = ", ".join(path.name for path in existing)
@@ -434,7 +533,7 @@ def main(argv: Sequence[str] | None = None, *, read_values: ValueReader | None =
     for path in targets:
         print(f"written: {path}")
     print(
-        "\nRead both files, then copy them into the configuration directory yourself"
+        f"\nRead {'all three files' if args.ring_aliases else 'both files'}, then copy them into the configuration directory yourself"
         + (" (they are already there)" if protected else "")
         + "; `python -m scripts.verify_deployment` then checks them."
     )
