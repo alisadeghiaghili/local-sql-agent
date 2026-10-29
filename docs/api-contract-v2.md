@@ -102,6 +102,7 @@ POST   /v2/sessions/{sid}/turns/{tid}/confirmation → "this answer is correct" 
 DELETE /v2/sessions/{sid}/turns/{tid}/confirmation → withdraw the caller's own confirmation
 GET    /v2/sessions/{sid}/confirmations → the turns of this session the caller confirmed
 GET    /v2/access-requests              → the caller's own access requests + status
+GET    /v2/examples?limit=6             → examples.yaml questions the caller can start with (text only)
 GET    /v2/memory                       → the caller's entries + which keys are rememberable
 PUT    /v2/memory/{key}                 → set one entry
 DELETE /v2/memory/{key}                 → forget one
@@ -192,6 +193,17 @@ access request they raised, across every session, with its current status and,
 once denied, the reason. Scoped by the caller's principal id alone; a security
 admin's denial reason is visible here precisely because this read is already
 confined to the requester's own rows.
+
+`GET /v2/examples` is what the analyst page offers in an empty conversation:
+`{"examples": [{"question": "..."}]}`, the deployment's `examples.yaml`
+questions in file order, at most `limit` (default 6, clamped to 1..12),
+duplicates and blank questions dropped. Only question text is returned, never
+the SQL or the tags. A question is offered to a caller only when its SQL passes
+the guard (`validate_sql`) with that caller's `denied_columns`, so an example
+over a column the caller may not read is not suggested to them, and one the
+guard refuses for any other reason is suggested to nobody
+(`core/start_examples.py`). No readable `examples.yaml` is `{"examples": []}`,
+not an error.
 
 `GET /v2/sessions` — the conversation index, owner-scoped (a caller only ever
 sees sessions it created):

@@ -477,6 +477,11 @@ button { font-family: inherit; }
 }
 .sample:hover:not(:disabled) { border-color: var(--teal); background: var(--teal-l); color: var(--teal-d); }
 .sample:disabled { opacity: .5; cursor: not-allowed; text-decoration: line-through; }
+/* Live mode's start questions (examples.yaml, GET /v2/examples): the same
+ * chips as the demo's stories, hidden until they arrive -- `.samples`
+ * sets display:flex, which would otherwise override [hidden]. */
+.start-examples[hidden] { display: none; }
+.start-example { max-inline-size: 100%; text-align: start; }
 
 .turn {
   display: flex; flex-direction: column; gap: 12px;

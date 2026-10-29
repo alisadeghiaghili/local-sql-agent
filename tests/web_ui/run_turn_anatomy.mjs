@@ -167,4 +167,15 @@ assert.ok(card.el.querySelector(".stage-strip"), "stage-strip in DOM");
 // Details drawer
 assert.ok(card.el.querySelector(".turn-details"), "details drawer present");
 
+// The resolved question is shown when it says more than the question, and
+// left out when it only repeats it (spacing aside): the same sentence twice.
+{
+  const same = createTurnCard({ ...turn, turn_id: "t2", resolved_question: "  Top   customers " }, ctx);
+  assert.equal(same.el.querySelector(".resolved-card"), null, "a resolved question equal to the question is not repeated");
+  const none = createTurnCard({ ...turn, turn_id: "t3", resolved_question: null }, ctx);
+  assert.equal(none.el.querySelector(".resolved-card"), null);
+  const differs = createTurnCard({ ...turn, turn_id: "t4", resolved_question: "Top customers in 1403" }, ctx);
+  assert.ok(differs.el.querySelector(".resolved-card"), "a rewritten question is shown");
+}
+
 console.log("ALL_ANATOMY_PASSED");
