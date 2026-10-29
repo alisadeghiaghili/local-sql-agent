@@ -148,6 +148,11 @@ class TestRespellLiteral:
         assert respell_literal("میخواهم", [stored]) == stored
         assert respell_literal(stored, ["میخواهم"]) == "میخواهم"
 
+    def test_another_stored_value_the_matching_fold_equates_with_the_literal_leaves_it_alone(self):
+        # the comparison may already find "کیش " (trailing space) for the literal; one spelling would lose it
+        assert respell_literal(HALL, [STORED, HALL + " "]) is None
+        assert respell_literal(HALL, [STORED, "Hall"]) == STORED
+
     @pytest.mark.parametrize(
         ("literal", "stored"),
         [

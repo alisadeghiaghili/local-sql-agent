@@ -104,7 +104,7 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
-from core.persian import LETTER_FORM_GROUPS, PRESENTATION_FORMS_RE, letter_form_key
+from core.persian import LETTER_FORM_GROUPS, PRESENTATION_FORMS_RE, letter_form_key, normalize_for_matching
 from retrieval.filter_values import comparison_literals, like_patterns, usable_vocabularies
 from security.column_policy import cached_column_policy, hidden_value_columns
 from security.sql_guard import column_origins, validate_sql
@@ -160,8 +160,11 @@ def respell_literal(value: str, stored: Iterable[str]) -> str | None:
     str | None
         The one stored value that equals *value* up to letter form
         (:func:`core.persian.letter_form_key`), when *value* is not itself a
-        stored value; ``None`` when it is one, when none matches, and when more
-        than one distinct value does.
+        stored value; ``None`` when it is one, when none matches, when more
+        than one distinct value does, and when another stored value is the same
+        text under the matching fold of :func:`core.persian.normalize_for_matching`
+        (a trailing space, a different case: the comparison may already find
+        it, and rewriting to the one stored spelling could lose it).
 
     Examples
     --------
@@ -173,6 +176,8 @@ def respell_literal(value: str, stored: Iterable[str]) -> str | None:
     True
     >>> respell_literal("Alpha", ["alpha", "Beta"]) is None
     True
+    >>> respell_literal("\u06a9\u06cc\u0634", ["\u0643\u064a\u0634", "\u06a9\u06cc\u0634 "]) is None
+    True
     """
     stored = list(dict.fromkeys(stored))
     if value in stored:
@@ -181,7 +186,15 @@ def respell_literal(value: str, stored: Iterable[str]) -> str | None:
     if not key:
         return None
     candidates = [candidate for candidate in stored if letter_form_key(candidate) == key]
-    return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) != 1:
+        return None
+    folded = normalize_for_matching(value)
+    if any(
+        normalize_for_matching(other) == folded
+        for other in stored if other != candidates[0]
+    ):
+        return None
+    return candidates[0]
 
 
 def respell_like_pattern(pattern: str, stored: Iterable[str]) -> str | None:
