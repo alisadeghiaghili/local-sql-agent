@@ -382,6 +382,24 @@ _LIFESPAN_SETTINGS = dict(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_warm_up_outlives_its_test():
+    """Wait, after each test, for any ``llm-prefix-warmup`` thread it started.
+
+    A warm-up holds ``llm.warmup._warmup_lock`` until its thread returns.
+    A test that releases its blocked warm-up and ends at once left that
+    thread still finishing; on a slow runner the next test's warm-up then
+    found the lock taken, logged "another warm-up is already running" and
+    sent nothing, and that test's ``entered.wait(5)`` failed. Every test
+    here releases what it blocks, so the join is short; the timeout only
+    bounds a test that forgets to.
+    """
+    yield
+    for thread in threading.enumerate():
+        if thread.name == "llm-prefix-warmup":
+            thread.join(15)
+
+
 @pytest.fixture()
 def fake_agent():
     """Install an agent whose router is a ``RecordingBackend``; undo afterwards."""
