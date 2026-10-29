@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from config import override_settings
 from core.persian import LETTER_FORM_GROUPS, letter_form_key, normalize_for_matching
@@ -328,6 +330,27 @@ class TestEquality:
         seed([stored, OTHER])
         fix = fix_filter_spelling(f"{HEAD}r.[Name] = N'{HALL}''s'")
         assert fix.sql == f"{HEAD}r.[Name] = N'{STORED}''s'"
+
+    def test_a_stored_value_that_looks_like_sql_stays_one_literal(self):
+        # the stored value is warehouse data: it must never become part of the statement
+        stored = STORED + "' OR '1'='1' --"
+        seed([stored, OTHER])
+        sql = f"{HEAD}r.[Name] = N'{HALL}'' OR ''1''=''1'' --'"
+        fix = fix_filter_spelling(sql)
+        assert fix.sql == f"{HEAD}r.[Name] = N'{STORED}'' OR ''1''=''1'' --'"
+        assert fix.fixed == 1
+        tree = sqlglot.parse_one(fix.sql, read="tsql")
+        assert len(list(tree.find_all(exp.EQ))) == 1
+        assert not list(tree.find_all(exp.Or))
+
+    def test_a_backslash_is_text_in_tsql_and_an_escape_where_the_dialect_says_so(self):
+        stored = STORED + "\\d"
+        seed([stored, OTHER])
+        tsql = f"{HEAD}r.[Name] = N'{HALL}\\d'"
+        assert fix_filter_spelling(tsql).sql == f"{HEAD}r.[Name] = N'{stored}'"
+        # MySQL reads a backslash as an escape: the literal is written with two, and is not edited
+        mysql = f"SELECT r.`Name` FROM `ref`.`Ring` AS r WHERE r.`Name` = '{HALL}\\\\d' LIMIT 5"
+        assert fix_filter_spelling(mysql, dialect="mysql") == SpellingFix(mysql)
 
     def test_the_rest_of_the_statement_is_kept_to_the_character(self):
         seed([STORED, OTHER])

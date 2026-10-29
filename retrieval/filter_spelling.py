@@ -176,7 +176,7 @@ def respell_literal(value: str, stored: Iterable[str]) -> str | None:
     True
     >>> respell_literal("Alpha", ["alpha", "Beta"]) is None
     True
-    >>> respell_literal("\u06a9\u06cc\u0634", ["\u0643\u064a\u0634", "\u06a9\u06cc\u0634 "]) is None
+    >>> respell_literal("\\u06a9\\u06cc\\u0634", ["\\u0643\\u064a\\u0634", "\\u06a9\\u06cc\\u0634 "]) is None
     True
     """
     stored = list(dict.fromkeys(stored))
@@ -319,6 +319,7 @@ def fix_filter_spelling(
 
 
 def _fix(sql: str, denied_columns: Iterable[str] | None, dialect: str) -> SpellingFix:
+    """:func:`fix_filter_spelling` without the guard against failure (any exception propagates)."""
     tree = sqlglot.parse_one(sql, read=dialect)
     if tree is None:
         return SpellingFix(sql)
