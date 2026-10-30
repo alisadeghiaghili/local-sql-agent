@@ -16,4 +16,4 @@ rather than by whoever reads the wrong one months later.
 
 from __future__ import annotations
 
-__version__ = "6.16.4"
+__version__ = "6.17.0"
