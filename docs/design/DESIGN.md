@@ -225,6 +225,15 @@ Covered by `tests/web_ui/test_web_ui_sql_highlight.py` /
 Composer moves to the **bottom**. Sticky-top composer fights a multi-turn
 transcript after turn two.
 
+**Empty transcript (6.17.0).** A conversation with no turns shows one hint
+line and, in live mode with a key, up to six one-click start questions: the
+deployment's own `examples.yaml` questions, from `GET /v2/examples`. The server
+offers a question only when its SQL passes the guard for the caller's
+`denied_columns` and returns question text only, never SQL. The chips are
+hidden until they arrive, so with no examples, an older server or an error the
+empty state is the hint alone. The demo mode's sample stories are a separate,
+demo-only affordance.
+
 ### 5.2 Turn anatomy (production default)
 
 **Contract first.** `docs/api-contract-v2.md` §5 and §7 are not optional:
@@ -241,8 +250,10 @@ transcript after turn two.
 A successful turn renders, in order:
 
 1. **Question bubble** (navy) — always.
-2. **Resolved question** — only when present; teal-bordered, labelled
-   «برداشت سامانه». Never buried.
+2. **Resolved question** — only when present **and different from the
+   question** (spacing aside; 6.17.0): teal-bordered, labelled «برداشت سامانه
+   از پرسش». A resolved question that only repeats the question bubble is the
+   same sentence twice and is left out. Never buried.
 3. **Basis line** — when this turn refines an earlier one (jump link).
 4. **Assumption chips** (editable + pin) + **clarification offers** — when
    `ambiguity` is non-empty. Visible, not in a drawer.
@@ -252,10 +263,18 @@ A successful turn renders, in order:
 7. **SQL** — expanded on first turn, on failure, and while streaming;
    collapsible afterwards. Guard pill + rule live in the SQL header.
 8. **Result** — table, chart, scalar, zero-rows, or omitted-rows — always
-   when rows exist or when "no rows" is itself the answer.
-9. **Details drawer** (collapsed) — full pipeline timings, LLM status strip,
-   warnings, interpretation (with truncation qualifier above it), feedback
-   control, export options beyond the primary Excel action.
+   when rows exist or when "no rows" is itself the answer. Under it, a
+   **rating footer**: «پاسخ درست است» (a one-click toggle) and «پاسخ نادرست
+   است» (6.16.4), which opens the flag form in the drawer and focuses it; the
+   report itself is still sent from that form. A sent report shows on the
+   button as «✓ گزارش شد». The two ratings undo each other: the later one
+   wins.
+9. **Interpretation** — when the analyst asked for it, in the main flow
+   after the result, with its truncation qualifier above it
+   (`DESIGN-INVARIANTS.md` §9: what a user switches on is never hidden).
+10. **Details drawer** (collapsed) — full pipeline timings, LLM status strip,
+   warnings, the flag form («این عدد درست نیست؟», category and note), export
+   options beyond the primary action.
 
 **What stays out of the default turn chrome:** five equal nested cards,
 LLM status strip on every turn, sample-story buttons, mode switch.
@@ -422,6 +441,10 @@ Release checklist (each train):
 | D12 | Chrome i18n fa/en via `web/js/i18n.js` | Engine is bilingual; shell must not be Persian-only forever |
 | D13 | The SQL an analyst reads is laid out by the server in one house style, **for display only**, and only when the layout parses back to the same statement | See "D13 in full" below |
 | D14 | A `denied_columns` entry can be scoped to a table and/or data source, and then makes the column **join-only** | See "D14 in full" below |
+| D15 | Both ratings sit on the answer: «پاسخ درست است» and «پاسخ نادرست است» side by side under the result (6.16.4); the flag form stays in the drawer | The flag hidden in the drawer was not found next to the confirmation (#223). The shortcut opens the existing form, so there is still one flag path, one set of categories and one endpoint |
+| D16 | The admin panel shows one **view** at a time — «وضعیت», «کیفیت و استفاده», «دسترسی و کلیدها», «داده و پیکربندی», «همه» — by hiding sections, never moving or unloading them (6.17.0) | Thirteen sections were 6,800 px tall. Hiding changes no data flow, keeps every `#sec-*` link working and keeps «همه» as the old page; see §5.3 |
+| D17 | An empty conversation offers `examples.yaml` questions the guard accepts **for that caller**, as text only (6.17.0) | A new analyst had nothing to ask. Offering a question the caller's key would refuse is a broken promise and reveals that a restricted column exists |
+| D18 | Server timestamps on the admin panel are Persian calendar dates with the ISO string as the title (6.17.0) | Raw `2026-10-27T10:46:31.435668` is unreadable for the operators the panel serves; the exact value stays one hover away |
 
 ### D13 in full — the house SQL layout (6.5)
 

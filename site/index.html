@@ -205,6 +205,34 @@
             and an evaluation harness are first-class parts of the engine.
           </p>
         </div>
+        <div class="feature">
+          <span>04</span>
+          <h3>Spelled the way the warehouse stores it</h3>
+          <p>
+            Persian ی and ک where the warehouse keeps Arabic ي and ك, or a plural
+            such as «تالارها», no longer return nothing. The filter is mapped to
+            the stored value before the query runs, with no extra model call.
+          </p>
+        </div>
+        <div class="feature">
+          <span>05</span>
+          <h3>Rated where it is read</h3>
+          <p>
+            “Correct” and “Incorrect” sit under every answer and become reviewed
+            cases for measuring accuracy on your own questions. An empty
+            conversation offers your own example questions—only those the
+            guard allows for that analyst.
+          </p>
+        </div>
+        <div class="feature">
+          <span>06</span>
+          <h3>An admin panel for the people who run it</h3>
+          <p>
+            Views for status, quality, access and configuration; deployment
+            checks that fail loudly; keys, column ACLs and access requests in
+            one place, split between an operations and a security role.
+          </p>
+        </div>
       </section>
       <section class="start shell" id="start">
         <div>
@@ -227,7 +255,7 @@
             <span>QUICK START</span
             ><button id="copyCommand" type="button">copy</button>
           </div>
-          <pre><code><span class="comment"># clone and install</span><br>git clone https://github.com/alisadeghiaghili/local-sql-agent.git<br>cd local-sql-agent<br>pip install -r requirements.txt<br><br><span class="comment"># configure your domain, then run</span><br>python app.py</code></pre>
+          <pre><code><span class="comment"># clone and install the audited pins</span><br>git clone https://github.com/alisadeghiaghili/local-sql-agent.git<br>cd local-sql-agent<br>pip install -r requirements.lock<br><br><span class="comment"># configure project_config/ and .env, check, serve</span><br>python scripts/verify_deployment.py<br>uvicorn api.server:app --port 8000</code></pre>
           <div class="install-footer">
             Python 3.11+ <span>·</span> local LLM endpoint <span>·</span> your
             SQL warehouse

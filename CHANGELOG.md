@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- **The design documents describe 6.17 (`docs/design/DESIGN.md`, `docs/design/DESIGN-INVARIANTS.md`, `docs/design/RETRIEVAL.md`, `docs/admin-panel-architecture.md`).**
+  - **Turn anatomy (`DESIGN.md` §5.2).** It gains the rating footer and the empty transcript's start questions. The resolved question is shown only when it differs from the question. The interpretation is listed in the main flow, where the code always put it (`DESIGN-INVARIANTS.md` §9 notes the correction).
+  - **Decision log.** New entries D15 (both ratings on the answer), D16 (admin views), D17 (start questions) and D18 (Persian dates).
+  - **`RETRIEVAL.md` §12.** It records the `ring_aliases` rule of 6.16.3.
+  - **The admin architecture §3.2.** It describes the grouped views.
+- **README.** The feature table names the thirteen admin sections in their views, both ratings, the start questions and the filter-value fixes.
+- **The GitHub Pages site (`site/`).**
+  - **Three new cards in all five languages:** filter values spelled as the warehouse stores them, ratings and start questions, and the admin panel.
+  - **The quick start** installs `requirements.lock` and ends with the preflight and `uvicorn` instead of the REPL.
+  - **Phone widths.** The page no longer scrolls sideways there: the hero's glow reached 2 px past the edge.
+
 ## [6.17.0] — 2026-10-30
 
 **Issues fixed:** none were open for these; they are usability work on both pages, asked for directly: the admin panel shows one view at a time with readable Persian dates, and an empty conversation offers the deployment's own example questions.
