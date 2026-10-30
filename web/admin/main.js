@@ -35,6 +35,10 @@
 
 import { AdminApi, AdminUnauthorizedError, AdminForbiddenError, AdminApiError } from "./admin.js";
 import { renderAccessRequestsList } from "./access-requests.js";
+import { formatWhen } from "./time.js";
+import {
+  applyView, initialView, markAttention, readRememberedView, rememberView, renderViewSwitch, viewForSection,
+} from "./views.js";
 import { getApiKey, setApiKey, clearApiKey, hasApiKey } from "../js/apikey.js";
 import {
   state, loadPersisted, persistTheme, persistBaseUrl, applyTheme,
@@ -327,6 +331,12 @@ function updateSummaryRail() {
   setRailItem("rail-checks", _rail.health);
   setRailItem("rail-feedback", _rail.feedback);
   setRailItem("rail-cache", _rail.cache);
+  // The same facts mark the view buttons (views.js), so a failed check or
+  // open feedback is seen from any view, not only from the rail.
+  markAttention(document, {
+    status: ["rail-maintenance", "rail-checks"].some((id) => $(id)?.classList.contains("crit")),
+    quality: Boolean($("rail-feedback")?.classList.contains("warn")),
+  });
 }
 
 function setRailItem(id, data) {
@@ -348,18 +358,20 @@ function setRailItem(id, data) {
   } else if (id === "rail-checks") {
     const checks = data.checks || [];
     const failed = checks.filter((c) => c.status === "FAIL").length;
-    val.textContent = failed ? `${failed} / ${checks.length}` : `${checks.length}`;
-    sub.textContent = failed ? `${failed} ناموفق` : "همه موفق";
+    // "N از M", not "N / M": with Persian text around it, a slash between
+    // two numbers was laid out right to left and read as "21 / 2".
+    val.textContent = failed ? `${fmtNum(failed)} از ${fmtNum(checks.length)}` : fmtNum(checks.length);
+    sub.textContent = failed ? "بررسی ناموفق" : "همه موفق";
     el.classList.add(failed ? "crit" : "good");
   } else if (id === "rail-feedback") {
     const open = data.open ?? data.total_open ?? (data.stats && data.stats.open) ?? null;
     const n = open === null ? (Array.isArray(data.feedback) ? data.feedback.length : "—") : open;
-    val.textContent = String(n);
+    val.textContent = n === "—" ? n : fmtNum(n);
     sub.textContent = "باز";
     el.classList.add(Number(n) > 0 ? "warn" : "good");
   } else if (id === "rail-cache") {
     const size = data.size ?? data.entries ?? "—";
-    val.textContent = String(size);
+    val.textContent = size === "—" ? size : fmtNum(size);
     sub.textContent = "ورودی";
     el.classList.add("good");
   }
@@ -388,6 +400,62 @@ setInterval(() => {
   if (document.hidden) return;
   refreshMany(AUTO_REFRESH_CARDS);
 }, AUTO_REFRESH_MS);
+
+/* Grouped views (views.js): the nav opens with one button per view and
+ * only that view's sections are shown. A link to a section in another view
+ * (a bookmark, a summary-rail item) switches to that view first. */
+const RAIL_TARGETS = {
+  "rail-maintenance": "sec-maintenance",
+  "rail-checks": "sec-health",
+  "rail-feedback": "sec-feedback",
+  "rail-cache": "sec-cache",
+};
+(function wireViews() {
+  // The views are a convenience: if setting them up fails for any reason
+  // (a page without the nav, an older browser), every section stays shown
+  // -- the page as it was -- and the rest of the panel is unaffected.
+  try {
+    wireViewsUnguarded();
+  } catch {
+    try { applyView(document, "all"); } catch { /* sections were never hidden */ }
+  }
+})();
+
+function wireViewsUnguarded() {
+  const nav = $("admin-jump");
+  if (!nav || typeof document.querySelectorAll !== "function") return;
+  let storage = null;
+  try { storage = globalThis.localStorage || null; } catch { storage = null; }
+  const hash = () => String((globalThis.location && globalThis.location.hash) || "");
+  const select = (viewId) => rememberView(storage, applyView(document, viewId));
+  const goTo = (id) => {
+    const target = document.getElementById(id);
+    if (!target) return;
+    const owner = viewForSection(id);
+    if (owner && target.hidden) select(owner);
+    if (typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
+  };
+  renderViewSwitch(nav, (viewId) => {
+    select(viewId);
+    if (typeof globalThis.scrollTo === "function") globalThis.scrollTo({ top: 0 });
+  });
+  applyView(document, initialView(hash(), readRememberedView(storage)));
+  if (hash().length > 1) goTo(hash().slice(1));
+  if (typeof globalThis.addEventListener === "function") {
+    globalThis.addEventListener("hashchange", () => goTo(hash().slice(1)));
+  }
+  for (const [railId, sectionId] of Object.entries(RAIL_TARGETS)) {
+    const item = $(railId);
+    if (!item) continue;
+    item.setAttribute("role", "link");
+    item.tabIndex = 0;
+    item.classList.add("is-link");
+    item.addEventListener("click", () => goTo(sectionId));
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goTo(sectionId); }
+    });
+  }
+}
 
 /* Scroll-spy for the sticky jump nav so the active section is obvious
  * while scrolling ten cards. IntersectionObserver, not a scroll handler. */
@@ -647,7 +715,7 @@ function renderSummary(report) {
   const range = report.time_range || {};
   if (range.start || range.end) {
     out.push(
-      `<p class="admin-loading" dir="ltr">${escapeHtml(range.start ?? "—")} → ${escapeHtml(range.end ?? "—")}</p>`,
+      `<p class="admin-loading">از ${whenHtml(range.start)} تا ${whenHtml(range.end)}</p>`,
     );
   }
 
@@ -667,6 +735,14 @@ function renderSummary(report) {
 
 function fmtNum(n) {
   return Number(n).toLocaleString("fa-IR");
+}
+
+/** An escaped HTML fragment for a server timestamp: the readable Persian
+ * date (time.js) with the original ISO string as its title. */
+function whenHtml(value) {
+  const { text, title } = formatWhen(value);
+  if (!title) return escapeHtml(text || "—");
+  return `<span title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
 }
 
 function twoColumnTable(headA, headB, entries) {
@@ -726,7 +802,7 @@ function renderHealth(payload) {
     (a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3),
   );
 
-  const cards = sorted.map((c) => {
+  const card = (c) => {
     const cls = c.status === "PASS" ? "pass" : c.status === "FAIL" ? "fail" : "skip";
     const mark = c.status === "PASS" ? "✓" : c.status === "FAIL" ? "✕" : "–";
     const detail = c.detail
@@ -740,14 +816,25 @@ function renderHealth(payload) {
       detail +
       "</span></div>"
     );
-  });
+  };
+
+  // What needs reading (FAIL, then SKIP) is shown as cards; the passed
+  // checks, usually most of them, fold into one line that opens to the
+  // same cards. Nothing is dropped: a PASS detail (an `advice:`) is one
+  // click away.
+  const attention = sorted.filter((c) => c.status !== "PASS").map(card);
+  const passedCards = sorted.filter((c) => c.status === "PASS").map(card);
+  const passedBlock = passedCards.length
+    ? '<details class="admin-checks-passed">' +
+      `<summary>${fmtNum(passed)} بررسی موفق</summary>` +
+      `<div class="admin-rail">${passedCards.join("")}</div></details>`
+    : "";
 
   const deepNote = payload.deep
     ? '<p class="admin-cache-age">شامل بررسی‌های عمیق (DDL/WAITFOR)</p>'
     : "";
 
-  body.innerHTML = summary + formatCacheAge(payload.cache) + deepNote + cards.join("");
-  void passed;
+  body.innerHTML = summary + formatCacheAge(payload.cache) + deepNote + attention.join("") + passedBlock;
 }
 
 /** Admin panel phase 6 §5: the panel must show what clearing will cost
@@ -840,7 +927,7 @@ function renderFeedback(stats, rows) {
     tiles.push(statTile({
       label: "دقت آخرین baseline",
       value: Number(stats.baseline.accuracy_pct).toFixed(1), unit: "٪",
-      sub: `${escapeHtml(stats.baseline.mode)} · ${escapeHtml(stats.baseline.generated_at || "")}`,
+      sub: `${escapeHtml(stats.baseline.mode)} · ${escapeHtml(formatWhen(stats.baseline.generated_at || "").text)}`,
     }));
   } else {
     tiles.push(statTile({ label: "دقت آخرین baseline", value: "—", sub: "هنوز baseline ثبت نشده" }));
@@ -1096,7 +1183,7 @@ function renderVocabulary(payload) {
       `<td dir="ltr">${escapeHtml(c.table)}.${escapeHtml(c.column)}</td>` +
       `<td><span class="admin-status-pill admin-status-${freshCls}">${escapeHtml(freshLabel)}</span> ${failureNote}</td>` +
       `<td class="num">${c.value_count === null ? "—" : escapeHtml(fmtNum(c.value_count))}</td>` +
-      `<td dir="ltr">${escapeHtml(c.fetched_at || "—")}</td>`;
+      `<td>${whenHtml(c.fetched_at)}</td>`;
 
     const actionTd = document.createElement("td");
     const btn = document.createElement("button");

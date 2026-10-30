@@ -38,17 +38,22 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _MODULE_JS = _REPO_ROOT / "web" / "admin" / "access-requests.js"
+_TIME_JS = _REPO_ROOT / "web" / "admin" / "time.js"
 _HARNESS = Path(__file__).resolve().parent / "run_admin_access_requests.mjs"
 
 _NODE = shutil.which("node")
 
 
 def _prepare_copy(tmp_path: Path) -> Path:
-    """Copy access-requests.js into *tmp_path* as ESM (``.mjs``) --
-    byte-identical, since the module has no internal ``./*.js`` imports of
-    its own (mirrors run_feedback_control.mjs's own ``_prepare_copy``)."""
+    """Copy access-requests.js into *tmp_path* as ESM (``.mjs``), with its
+    one internal import (``./time.js``, readable dates) copied beside it and
+    the specifier rewritten to match (mirrors run_feedback_control.mjs's
+    own ``_prepare_copy``)."""
     module_mjs = tmp_path / "access-requests.mjs"
-    module_mjs.write_text(_MODULE_JS.read_text(encoding="utf-8"), encoding="utf-8")
+    src = _MODULE_JS.read_text(encoding="utf-8")
+    assert 'from "./time.js"' in src
+    module_mjs.write_text(src.replace('from "./time.js"', 'from "./time.mjs"'), encoding="utf-8")
+    (tmp_path / "time.mjs").write_text(_TIME_JS.read_text(encoding="utf-8"), encoding="utf-8")
     return module_mjs
 
 

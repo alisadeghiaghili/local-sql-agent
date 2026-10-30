@@ -156,7 +156,13 @@ function findAll(root, tag) {
   assert.ok(host.textContent.includes("analyst-1"), "expected the requester id");
   assert.ok(host.textContent.includes("NationalID"), "expected the column name");
   assert.ok(host.textContent.includes("چند مشتری فعال داریم؟"), "expected the joined question");
-  assert.ok(host.textContent.includes("2026-09-22T00:00:00Z"), "expected the created time");
+  // The created time is a readable Persian date (time.js), with the exact
+  // ISO string kept in the line's title.
+  assert.ok(host.textContent.includes("شهریور ۱۴۰۵"), "expected the created time as a Persian date");
+  assert.ok(
+    findAll(host, "P").some((p) => p.title === "2026-09-22T00:00:00Z"),
+    "expected the original created time in the title",
+  );
   assert.ok(host.textContent.includes("باز"), "expected the open-status label");
 
   const buttons = findAll(host, "BUTTON");
