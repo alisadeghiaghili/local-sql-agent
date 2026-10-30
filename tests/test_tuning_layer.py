@@ -127,6 +127,17 @@ _ALLOWED_MODULE_CONSTANTS = {
         "abuse bound -- an Origin header longer than this is never parsed for the "
         "same-origin test (it is not a real origin); it changes no CORS decision"
     ),
+    "core/start_examples.py::MAX_LIMIT": (
+        "implementation detail -- the most start questions one GET "
+        "/v2/examples response carries (the page asks for six). It bounds a "
+        "client-supplied `limit`, so a request cannot make the route check "
+        "every example's SQL; it is not a behaviour an operator tunes"
+    ),
+    "core/start_examples.py::MAX_QUESTION_LENGTH": (
+        "implementation detail -- an examples.yaml question longer than "
+        "this is not a one-click start for the empty conversation, so it is "
+        "not offered; nothing else reads it"
+    ),
     "core/cors_origins.py::MAX_ORIGIN_LENGTH": (
         "abuse bound -- the most characters of a request-supplied origin that are "
         "ever printed; a longer value is cut, never echoed whole"

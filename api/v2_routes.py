@@ -919,6 +919,40 @@ def list_own_access_requests(principal: Principal = Depends(require_principal)) 
 
 
 # ---------------------------------------------------------------------------
+# GET /v2/examples -- questions to start with (analyst page, empty state)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/examples",
+    summary="Questions from examples.yaml the caller can start with (question text only)",
+)
+def list_start_examples(
+    limit: int = 6,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """The ``examples.yaml`` questions the analyst page offers as one-click
+    starts in an empty conversation (:mod:`core.start_examples`).
+
+    Only question text is returned, never SQL or tags, and only questions
+    whose SQL passes the guard for this principal's ``denied_columns``. A
+    deployment without a readable ``examples.yaml`` answers with an empty
+    list, not an error: the page then shows its plain hint, as before.
+    """
+    from core.start_examples import offered_questions
+
+    try:
+        import knowledge.examples as examples_module
+
+        examples = examples_module.EXAMPLES
+    except Exception:  # noqa: BLE001 -- a missing or invalid file is "no examples", never a 500
+        logger.warning("GET /v2/examples: examples.yaml could not be read; offering none")
+        examples = []
+    questions = offered_questions(examples, denied_columns=principal.denied_columns, limit=limit)
+    return {"examples": [{"question": q} for q in questions]}
+
+
+# ---------------------------------------------------------------------------
 # GET/PUT/DELETE /v2/memory* — cross-session memory (§5)
 # ---------------------------------------------------------------------------
 

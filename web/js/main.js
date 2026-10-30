@@ -682,9 +682,56 @@ function renderTranscriptEmptyState() {
     wrap.appendChild(label);
     empty.appendChild(wrap);
     renderSamples(wrap);
+  } else if (state.mode === "live" && hasApiKey()) {
+    // Questions this deployment's examples.yaml curates, offered as
+    // one-click starts. Filled in when they arrive; if they never do (an
+    // older server, no examples, an error), the hint above is the whole
+    // empty state, as before.
+    const wrap = document.createElement("div");
+    wrap.className = "samples start-examples";
+    wrap.id = "start-examples";
+    wrap.hidden = true;
+    empty.appendChild(wrap);
+    renderStartExamples(wrap);
   }
 
   $("transcript").appendChild(empty);
+}
+
+/** The start questions, fetched once per page load (they change only when
+ * the operator edits examples.yaml); a failed fetch is not remembered, so
+ * the next empty conversation tries again. */
+let startExamplesPromise = null;
+
+async function renderStartExamples(wrap) {
+  if (!startExamplesPromise) {
+    startExamplesPromise = api.listExamples(6).then(
+      (body) => (Array.isArray(body && body.examples) ? body.examples : []),
+      () => { startExamplesPromise = null; return []; },
+    );
+  }
+  const examples = await startExamplesPromise;
+  if (!wrap.isConnected || !examples.length) return;
+  const label = document.createElement("span");
+  label.className = "samples-label";
+  label.textContent = t("startExamples");
+  wrap.appendChild(label);
+  for (const ex of examples) {
+    const question = typeof ex.question === "string" ? ex.question : "";
+    if (!question) continue;
+    const btn = document.createElement("button");
+    btn.className = "sample start-example";
+    btn.type = "button";
+    btn.textContent = question;
+    btn.dir = "auto";
+    btn.addEventListener("click", () => {
+      if (state.busy) return;
+      $("question").value = question;
+      ask();
+    });
+    wrap.appendChild(btn);
+  }
+  wrap.hidden = false;
 }
 
 /** Removes the empty-state placeholder (and, with it, any sample-story

@@ -445,6 +445,14 @@ export class Api {
     return res.json();
   }
 
+  /** Questions from the deployment's examples.yaml to start a conversation
+   * with: `{ examples: [{ question }] }`, question text only, already
+   * filtered by the server for this key's denied columns. */
+  async listExamples(limit = 6) {
+    const res = await this._fetchV2(`/v2/examples?limit=${encodeURIComponent(limit)}`, { method: "GET" });
+    return res.json();
+  }
+
   /** "درخواست دسترسی" (ADR-004 part 1) -- requests access to the denied
    * column that caused a guard rejection on this turn. No request body:
    * the requester is stamped server-side from the authenticated

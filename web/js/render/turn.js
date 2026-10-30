@@ -86,8 +86,11 @@ export function createTurnCard(turn, ctx) {
   const body = el("div", "turn-body");
   root.appendChild(body);
 
-  // 2. Resolved question — trust surface, always in the main flow.
-  if (turn.resolved_question) {
+  // 2. Resolved question — trust surface, always in the main flow. Shown
+  // when it says something the question bubble above does not: a follow-up
+  // rewritten as a full question. A resolved question that only repeats
+  // the question (spacing aside) would be the same sentence twice.
+  if (turn.resolved_question && !sameText(turn.resolved_question, turn.question)) {
     const card = el("div", "resolved-card");
     const label = el("div", "resolved-label");
     label.textContent = "برداشت سامانه از پرسش";
@@ -428,6 +431,13 @@ export function createTurnCard(turn, ctx) {
  * indistinguishable from a query that ran and matched nothing, which is
  * the exact confusion DESIGN-INVARIANTS.md §8 calls out: "did not run"
  * and "returned nothing" must never look the same. */
+/** True when *a* and *b* are the same text once runs of whitespace are
+ * collapsed and the ends trimmed. */
+function sameText(a, b) {
+  const norm = (x) => String(x ?? "").replace(/\s+/g, " ").trim();
+  return norm(a) === norm(b);
+}
+
 function isGuardRejected(turn) {
   return !!(turn.guard && turn.guard.verdict === "rejected");
 }
