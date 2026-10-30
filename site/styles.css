@@ -632,3 +632,10 @@ footer a {
   }
   
 }
+
+/* The hero's decorative glow reached 2px past a phone's edge and gave the page a
+   horizontal scroll. clip (not hidden) creates no scroll container, so sticky
+   elements keep working. */
+html,body {
+  overflow-x:clip
+}

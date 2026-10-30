@@ -1,7 +1,8 @@
 # Admin panel — architecture
 
-Status: **implemented** (phases 1 to 7; the panel has thirteen sections and
-`/admin/*` routes behind four capability dependencies). This is the design
+Status: **implemented** (phases 1 to 7; the panel has thirteen sections,
+shown one grouped view at a time since 6.17.0 (§3.2), and `/admin/*` routes
+behind four capability dependencies). This is the design
 contract, in the spirit of `api-contract-v2.md`: decisions with their reasons,
 so the implementation can be checked against intent. Sections written before
 the build keep their original wording where it records a reason; §5.4, §7 and
@@ -156,7 +157,11 @@ the security admin, whose actions have no other supervisory mechanism.
   confirmation becomes a `reviewed` golden-set candidate
   (`scripts/harvest_golden.py`, then `eval.cli verify --accept`) and a figure
   in the quality card below. A principal who flags and confirms the same turn
-  keeps the later action only.
+  keeps the later action only. Since 6.16.4 the flag has a visible entry point
+  beside the confirmation: «پاسخ نادرست است» in the answer's footer opens the
+  drawer's flag form and focuses it (the report is still sent from that form,
+  with the same categories and endpoint), because a flag reachable only from
+  the collapsed drawer was not found (#223).
 - **Retrieval-miss review.** `scripts/analyze_misses.py` already derives
   synonym gaps from query logs. Surfacing them with a one-click "add this
   synonym" turns diagnosis into a fix.
@@ -251,6 +256,35 @@ the security admin, whose actions have no other supervisory mechanism.
   over the security admin.
 
 ---
+
+### 3.2 How the panel is laid out (6.17.0)
+
+The sections are grouped into four views plus «همه», chosen with a segmented
+control at the start of the sticky nav (`web/admin/views.js`):
+
+| View | Sections |
+|---|---|
+| «وضعیت» (default) | maintenance, deployment checks |
+| «کیفیت و استفاده» | audit summary, feedback, quality, usage |
+| «دسترسی و کلیدها» | access requests, keys, failed authentication |
+| «داده و پیکربندی» | cache, configuration, schema drift, vocabulary |
+| «همه» | every section: the page as it was |
+
+- **The rail stays.** The summary rail is shown in every view, and each rail
+  item opens its section.
+- **Hidden, never moved.** Sections are hidden, not moved or unloaded, so
+  every card's fetch and refresh cadence is what §3's tiers describe and
+  switching views never shows a stale card.
+- **Links and memory.** A `#sec-*` link opens the view that holds it, and the
+  last view is remembered per browser.
+- **Attention.** A view that needs attention (a failed check, maintenance on,
+  open feedback) carries a dot and screen-reader text.
+- **Fail safe.** If the views cannot be set up, every section stays shown.
+- **Dates.** Server timestamps on the cards are Persian calendar dates with
+  the ISO string as the title (`web/admin/time.js`).
+- **Grouping by question.** The grouping follows the operator's questions —
+  is anything wrong, are the answers good, who can see what, is the
+  configuration current — not the build phases.
 
 ## 4. Three kinds of data, three homes
 

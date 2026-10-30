@@ -486,3 +486,48 @@ resolution as §9 (`usable_vocabularies`, `security.sql_guard.column_origins`).
 
 **Not covered.** The same cases as §9: mode `sql`, the `_prev` refinement, a column
 that is not in `prefetchable_columns`, and a column inside an expression.
+
+## 12. A `ring_aliases` key is a stored value, never a table key (6.16.3)
+
+`aliases.yaml`'s `ring_aliases` is the static first tier of value resolution:
+
+- **What the map holds.** Each key is the **exact stored value** of the
+  default-scope dimension's name column (a hall, in the production deployment).
+  Its list holds the forms analysts type for it.
+- **How it is used.** `ValueRetriever.extract_ring` finds a form in the
+  question and returns the key. The key becomes the default-scope filter
+  (`WHERE r.[Name] = N'<key>'`), and it wins over every other tier.
+
+**What went wrong.**
+
+- **The wizard wrote tables, not values.** From 6.13 to 6.16.2 the setup wizard
+  wrote one entry per **table** into this map: the key was the table's key and
+  the list was the table's aliases.
+- **Questions then matched a table.** A question that used a table's alias
+  ("currency", "halls", "trades") matched one of those entries and was filtered
+  on the table's own name (`N'Currency'`, `N'Ring'`).
+- **The answer was empty.** No row matched, and nothing in the turn said why.
+
+**The rule since 6.16.3.**
+
+- **At load** (`core/ring_names.py`, `knowledge/aliases.py`), an entry is left out
+  when its key equals a key of `schema.yaml`'s `tables` as a whole, letter case
+  ignored. One WARNING names how many and which. Only that exact match counts: a
+  hall called `North Hall` is untouched because a table is called `Hall`, and a
+  bare name that merely resolves to a table key is not a match either. Without a
+  readable `schema.yaml`, every entry is used as written.
+- **The preflight** check `Aliases are curated` fails on such entries and names
+  them.
+- **The wizard** no longer writes the map. On a re-run it drops a table-keyed
+  entry from an earlier file and moves the entry's aliases to that table's
+  entity in `entities.yaml`, where table retrieval reads them, so no alias is
+  lost.
+- **Drafting.** `python scripts/draft_policies.py --ring-aliases [--generic-word
+  W]` drafts entries from the stored values for review. Each draft holds the
+  value itself, and the value without a leading generic word when that form is
+  unique. Drafts are written longest value first, because the first entry with a
+  form in the question wins.
+
+**Not covered.** A real stored value that is exactly a table key, letter case
+aside, cannot be told apart from a wizard entry: it is ignored and the preflight
+fails. There is no setting to switch the rule off.

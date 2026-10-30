@@ -253,9 +253,12 @@ Copy discipline (applies to every string above):
 
 ## 9. What a user switches on is never hidden
 
-`DESIGN.md` §5.2 item 9 places the interpretation inside the collapsed details
+`DESIGN.md` §5.2 item 9 placed the interpretation inside the collapsed details
 drawer. §14b already records burying assumptions there as a product error and
-corrects it. The same error was then made one item later, and not caught.
+corrects it. The same error was then made one item later, and not caught. (The
+code followed this rule from the start; `DESIGN.md` §5.2 was brought in line in
+the 6.17 documentation update and now lists the interpretation as item 9, in
+the main flow.)
 
 This case is worse, because interpretation is not merely important — it is
 **opted into**. The analyst ticks a box whose label states its cost ("up to

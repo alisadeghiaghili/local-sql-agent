@@ -98,6 +98,18 @@ const ffeatures = [
     "آماده برای بررسی در محیط عملیاتی",
     "احراز هویت، cache آگاه از ACL، خروجی ساختاریافته و audit trail اجزای اصلی موتور هستند.",
   ],
+  [
+    "همان املایی که انبارداده نگه می‌دارد",
+    "«ی» و «ک» فارسی در جایی که انبارداده «ي» و «ك» عربی نگه داشته، یا جمعی مثل «تالارها»، دیگر جواب خالی نمی‌دهد. فیلتر پیش از اجرا به مقدار ذخیره‌شده نگاشته می‌شود، بدون فراخوانی اضافهٔ مدل.",
+  ],
+  [
+    "امتیاز همان‌جا که خوانده می‌شود",
+    "«پاسخ درست است» و «پاسخ نادرست است» زیر هر پاسخ هست و به نمونه‌های بازبینی‌شده برای سنجش دقت روی پرسش‌های خودتان تبدیل می‌شود. گفتگوی خالی پرسش‌های نمونهٔ خودتان را پیشنهاد می‌دهد؛ فقط آن‌هایی که گارد برای همان تحلیل‌گر مجاز می‌داند.",
+  ],
+  [
+    "پنل مدیریت برای کسانی که آن را اداره می‌کنند",
+    "نماهایی برای وضعیت، کیفیت، دسترسی و پیکربندی؛ بررسی‌های استقراری که خطا را آشکارا اعلام می‌کنند؛ کلیدها، ACL ستون‌ها و درخواست‌های دسترسی در یک جا، با دو نقش جدا برای عملیات و امنیت.",
+  ],
 ];
 const translations = {
   fa: {
@@ -179,6 +191,18 @@ const translations = {
         "Für prüfbare Produktion",
         "Authentifizierung, ACL-bewusstes Caching, strukturierte Exporte und Audit Trails sind zentrale Bestandteile.",
       ],
+      [
+        "So geschrieben, wie das Warehouse es speichert",
+        "Persisches ی und ک, wo das Warehouse arabisches ي und ك speichert, oder ein Plural wie «تالارها» liefern kein leeres Ergebnis mehr. Der Filter wird vor der Ausführung auf den gespeicherten Wert abgebildet – ohne zusätzlichen Modellaufruf.",
+      ],
+      [
+        "Bewertet, wo gelesen wird",
+        "„Richtig“ und „Falsch“ stehen unter jeder Antwort und werden zu geprüften Fällen, mit denen die Genauigkeit an Ihren eigenen Fragen gemessen wird. Ein leeres Gespräch schlägt Ihre eigenen Beispielfragen vor – nur die, die der Guard für diese Person zulässt.",
+      ],
+      [
+        "Ein Admin-Panel für den Betrieb",
+        "Ansichten für Status, Qualität, Zugriff und Konfiguration; Deployment-Prüfungen, die laut scheitern; Schlüssel, Spalten-ACLs und Zugriffsanfragen an einem Ort, aufgeteilt auf eine Betriebs- und eine Sicherheitsrolle.",
+      ],
     ],
     question: "Frage",
     next: "nächstes Beispiel ↻",
@@ -247,6 +271,18 @@ const translations = {
       [
         "مصمم للتدقيق التشغيلي",
         "المصادقة والتخزين المؤقت المدرك لـ ACL والتصديرات المنظمة ومسارات التدقيق أجزاء أساسية.",
+      ],
+      [
+        "بالإملاء الذي يخزّنه المستودع",
+        "لم يعد «ی» و«ک» الفارسيان، حيث يخزّن المستودع «ي» و«ك» العربيين، أو جمع مثل «تالارها» يعيدان نتيجة فارغة. يُطابَق الفلتر مع القيمة المخزّنة قبل تنفيذ الاستعلام، دون استدعاء إضافي للنموذج.",
+      ],
+      [
+        "تقييم حيث تُقرأ الإجابة",
+        "يظهر «صحيح» و«غير صحيح» تحت كل إجابة، ويتحولان إلى حالات مراجَعة لقياس الدقة على أسئلتك أنت. وتقترح المحادثة الفارغة أسئلة أمثلتك الخاصة؛ فقط تلك التي يسمح بها الحارس لذلك المحلل.",
+      ],
+      [
+        "لوحة إدارة لمن يشغّلونه",
+        "عروض للحالة والجودة والوصول والإعداد؛ فحوص نشر تفشل بوضوح؛ والمفاتيح وصلاحيات الأعمدة وطلبات الوصول في مكان واحد، موزعة بين دور للعمليات ودور للأمن.",
       ],
     ],
     question: "سؤال",
@@ -320,6 +356,18 @@ const translations = {
       [
         "Operasyonel inceleme için",
         "Kimlik doğrulama, ACL farkındalıklı önbellek, yapılandırılmış dışa aktarımlar ve denetim izleri temel bileşenlerdir.",
+      ],
+      [
+        "Ambarın sakladığı yazımla",
+        "Ambar Arapça ي ve ك saklarken Farsça ی ve ک ile yazılmış bir değer ya da «تالارها» gibi bir çoğul artık boş sonuç döndürmüyor. Filtre, sorgu çalışmadan önce saklanan değere eşlenir; ek model çağrısı yoktur.",
+      ],
+      [
+        "Okunduğu yerde değerlendirilir",
+        "Her yanıtın altında “Doğru” ve “Yanlış” bulunur; bunlar kendi sorularınızda doğruluğu ölçmek için incelenmiş vakalara dönüşür. Boş bir konuşma kendi örnek sorularınızı önerir—yalnızca guard'ın o analiste izin verdiklerini.",
+      ],
+      [
+        "İşletenler için bir yönetim paneli",
+        "Durum, kalite, erişim ve yapılandırma görünümleri; açıkça başarısız olan dağıtım kontrolleri; anahtarlar, sütun ACL'leri ve erişim talepleri tek yerde, operasyon ve güvenlik rollerine ayrılmış.",
       ],
     ],
     question: "Soru",
