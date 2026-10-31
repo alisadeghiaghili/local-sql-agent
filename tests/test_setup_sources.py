@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -75,6 +76,69 @@ def test_an_unset_connection_variable_is_reported(project, monkeypatch):
     (project / "datasources.yaml").write_text(TWO, encoding="utf-8")
     monkeypatch.delenv("DB_URL_REPORTS")
     with pytest.raises(SourceSelectionError, match=r"data source 'reports' cannot be used: .*DB_URL_REPORTS"):
+        configured_sources()
+
+
+STRUCTURED = """\
+default: Auction_DM
+datasources:
+  Auction_DM:
+    host: db1
+    database: AuctionDM
+    username: nlq
+    password_env: Auction_DM_PASSWORD
+"""
+
+
+def _pin_dotenv_state(monkeypatch, path: str) -> None:
+    """What ``config`` recorded at import depends on the runner (``PYTHON_DOTENV_DISABLED``, a real .env)."""
+    monkeypatch.setattr(cfg, "_dotenv_path", path)
+    monkeypatch.setattr(cfg, "_dotenv_disabled", False)
+    monkeypatch.setattr(cfg, "_dotenv_missing", False)
+    monkeypatch.setattr(cfg, "_dotenv_scan_unavailable", False)
+
+
+def test_an_unset_password_says_what_the_dotenv_file_holds(project, monkeypatch, tmp_path_factory):
+    # Issue #237: "is not set or is empty" alone, although the password was in .env.
+    (project / "datasources.yaml").write_text(STRUCTURED, encoding="utf-8")
+    dotenv = tmp_path_factory.mktemp("app") / ".env"
+    dotenv.write_text("Auction_DM_PASSWORD=pw-secret\n", encoding="utf-8")
+    monkeypatch.delenv("Auction_DM_PASSWORD", raising=False)
+    _pin_dotenv_state(monkeypatch, str(dotenv))
+    with pytest.raises(SourceSelectionError) as excinfo:
+        configured_sources()
+    text = str(excinfo.value)
+    assert text.startswith(
+        "data source 'Auction_DM' cannot be used: data source 'Auction_DM': environment variable "
+        "Auction_DM_PASSWORD (named by password_env) is not set or is empty\n  "
+    )
+    assert f"{dotenv} line 1 assigns Auction_DM_PASSWORD, but Auction_DM_PASSWORD is not in the process environment" in text
+    assert "pw-secret" not in text
+
+
+def test_an_unset_password_says_python_dotenv_is_missing(project, monkeypatch):
+    # Issue #237: python-dotenv absent from the environment, so .env was never read.
+    (project / "datasources.yaml").write_text(STRUCTURED, encoding="utf-8")
+    monkeypatch.delenv("Auction_DM_PASSWORD", raising=False)
+    _pin_dotenv_state(monkeypatch, "")
+    monkeypatch.setattr(cfg, "_dotenv_missing", True)
+    with pytest.raises(SourceSelectionError) as excinfo:
+        configured_sources()
+    text = str(excinfo.value)
+    assert text.startswith(
+        "data source 'Auction_DM' cannot be used: data source 'Auction_DM': environment variable "
+        "Auction_DM_PASSWORD (named by password_env) is not set or is empty\n  "
+        "python-dotenv is not installed in this Python environment ("
+    )
+    assert sys.executable in text
+    assert text.endswith("pip install -r requirements.lock")
+
+
+def test_an_unset_connection_variable_says_no_dotenv_was_found(project, monkeypatch):
+    (project / "datasources.yaml").write_text(TWO, encoding="utf-8")
+    monkeypatch.delenv("DB_URL_REPORTS")
+    _pin_dotenv_state(monkeypatch, "")
+    with pytest.raises(SourceSelectionError, match=r"(?s)DB_URL_REPORTS.*\n  no \.env file was found"):
         configured_sources()
 
 

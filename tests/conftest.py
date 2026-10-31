@@ -265,3 +265,10 @@ def _ignore_real_dotenv_problems(monkeypatch) -> None:
     import config
 
     monkeypatch.setattr(config, "_dotenv_problems", [])
+    # What ``config`` records about how .env was loaded depends on the runner
+    # (PYTHON_DOTENV_DISABLED=1, python-dotenv missing, a debugger); the
+    # messages that explain an unset variable read it. Tests that need one of
+    # these states set it themselves.
+    monkeypatch.setattr(config, "_dotenv_disabled", False)
+    monkeypatch.setattr(config, "_dotenv_missing", False)
+    monkeypatch.setattr(config, "_dotenv_scan_unavailable", False)
