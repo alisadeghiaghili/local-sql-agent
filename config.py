@@ -124,15 +124,63 @@ _dotenv_path: str = ""
 _dotenv_problems: list[DotenvProblem] = []
 #: ``PYTHON_DOTENV_DISABLED`` was set, so no ``.env`` was searched for or loaded.
 _dotenv_disabled: bool = False
-#: python-dotenv (or :mod:`core.dotenv_check`, which imports ``dotenv.parser``)
-#: could not be imported, so no ``.env`` was read at all. Set once, below.
+#: python-dotenv itself could not be imported, so no ``.env`` was read at
+#: all. Set once, below.
 _dotenv_missing: bool = False
+#: python-dotenv is installed but :mod:`core.dotenv_check` could not be
+#: imported: ``.env`` is still loaded, only not scanned or explained.
+_dotenv_scan_unavailable: bool = False
+
+
+def _dotenv_search_start() -> str:
+    """The folder python-dotenv's ``find_dotenv()`` starts searching from.
+
+    ``find_dotenv()`` starts at the folder of the file that called it, and
+    walks up from there. It starts at the current working directory instead
+    when it is called interactively (``sys.ps1`` / ``sys.ps2`` exist, or
+    ``__main__`` has no ``__file__``), under a debugger or tracer
+    (``sys.gettrace()`` is not ``None``), or from a frozen executable
+    (``sys.frozen``). These are the same conditions, and this must be called
+    from this module's top level at the moment ``find_dotenv()`` is, so that
+    "the file that called it" is this file.
+
+    Returns
+    -------
+    str
+        The folder the search starts from; the message that names the folders
+        searched for a ``.env`` reports it.
+
+    Examples
+    --------
+    >>> import os
+    >>> _dotenv_search_start() in (os.getcwd(), os.path.dirname(os.path.abspath(__file__)))
+    True
+    """
+    interactive = hasattr(sys, "ps1") or hasattr(sys, "ps2")
+    if not interactive:
+        try:
+            main = __import__("__main__", None, None, fromlist=["__file__"])
+        except ModuleNotFoundError:  # pragma: no cover - python-dotenv treats it as not interactive
+            main = None
+        interactive = main is not None and not hasattr(main, "__file__")
+    if interactive or sys.gettrace() is not None or getattr(sys, "frozen", False):
+        return os.getcwd()
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+#: The folder ``find_dotenv()`` actually started from (see
+#: :func:`_dotenv_search_start`); recorded at import, next to the search.
+_dotenv_search_dir: str = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from dotenv import find_dotenv, load_dotenv
-
-    from core.dotenv_check import DotenvProblem, scan_dotenv
-
+except ImportError:  # pragma: no cover - exercised only when dependency missing
+    _dotenv_missing = True
+else:
+    try:
+        from core.dotenv_check import DotenvProblem, scan_dotenv
+    except ImportError:  # pragma: no cover - python-dotenv is there; the scan is not
+        _dotenv_scan_unavailable = True
     # find_dotenv() here, not inside load_dotenv(): it searches from the
     # calling file's directory, and the scan must read the same file.
     # PYTHON_DOTENV_DISABLED turns loading off, and with it the check.
@@ -140,15 +188,15 @@ try:
         "1", "true", "t", "yes", "y",
     )
     if not _dotenv_disabled:
+        _dotenv_search_dir = _dotenv_search_start()
         _dotenv_path = find_dotenv()
-        _dotenv_problems = scan_dotenv(_dotenv_path)
+        if not _dotenv_scan_unavailable:
+            _dotenv_problems = scan_dotenv(_dotenv_path)
     load_dotenv(_dotenv_path or None)
-except ImportError:  # pragma: no cover - exercised only when dependency missing
-    _dotenv_missing = True
 
 
 def _dotenv_missing_sentence() -> str:
-    """The one sentence for an environment without a usable python-dotenv."""
+    """The one sentence for an environment without python-dotenv."""
     return (
         f"python-dotenv is not installed in this Python environment ({sys.executable}), "
         "so .env was not read; install the requirements into it: "
@@ -156,13 +204,25 @@ def _dotenv_missing_sentence() -> str:
     )
 
 
+def _dotenv_unscanned_sentence(variable: str) -> str:
+    """The one sentence when python-dotenv loaded ``.env`` but it cannot be inspected."""
+    where = f"{_dotenv_path} was loaded" if _dotenv_path else "no .env file was found"
+    return (
+        f"{where}, but core.dotenv_check could not be imported, so it was not "
+        f"inspected; check that the .env python-dotenv loads assigns {variable}"
+    )
+
+
 def explain_unset_variable(variable: str) -> list[str]:
     """Why *variable*, expected from ``.env``, is unset or empty in this process.
 
     For a message that otherwise only says "not set or is empty": which
-    ``.env`` was loaded (or that none was found), what python-dotenv could not
-    use in it, and whether the file assigns the variable at all. See
-    :func:`core.dotenv_check.explain_unset`.
+    ``.env`` was loaded (or that none was found, and the folder the search
+    started from), what python-dotenv could not use in it, and whether the
+    file assigns the variable at all. See :func:`core.dotenv_check.explain_unset`.
+
+    This is only ever an addition to an error that is already being raised,
+    so it never raises: any failure while building it yields ``[]``.
 
     Parameters
     ----------
@@ -175,7 +235,9 @@ def explain_unset_variable(variable: str) -> list[str]:
         Sentences naming files, lines and variables, never a value. When
         python-dotenv is not installed in this environment, the single
         sentence saying so (it names the interpreter), because then ``.env``
-        was never read.
+        was never read. When python-dotenv loaded ``.env`` but
+        :mod:`core.dotenv_check` cannot be imported, one sentence saying the
+        file was not inspected. ``[]`` if the explanation itself failed.
 
     Examples
     --------
@@ -184,21 +246,32 @@ def explain_unset_variable(variable: str) -> list[str]:
     >>> isinstance(lines, list)
     True
     """
-    if _dotenv_missing:
-        return [_dotenv_missing_sentence()]
     try:
-        from core.dotenv_check import explain_unset
-    except ImportError:  # pragma: no cover - python-dotenv missing
-        return [_dotenv_missing_sentence()]
-    return explain_unset(
-        variable,
-        _dotenv_path,
-        _dotenv_problems,
-        os.environ,
-        # find_dotenv() searches from the folder of the file that called it.
-        os.path.dirname(os.path.abspath(__file__)),
-        disabled=_dotenv_disabled,
-    )
+        if _dotenv_missing:
+            return [_dotenv_missing_sentence()]
+        if _dotenv_scan_unavailable:
+            return [_dotenv_unscanned_sentence(variable)]
+        try:
+            from core.dotenv_check import explain_unset
+        except ImportError:
+            return [_dotenv_unscanned_sentence(variable)]
+        return explain_unset(
+            variable,
+            _dotenv_path,
+            _dotenv_problems,
+            os.environ,
+            # The folder find_dotenv() really searched from: not always this file's.
+            _dotenv_search_dir,
+            disabled=_dotenv_disabled,
+        )
+    except Exception as exc:  # noqa: BLE001 - never mask the error being explained
+        import logging
+
+        # The exception type only: its text could quote a .env line.
+        logging.getLogger(__name__).debug(
+            "could not explain why %s is unset (%s)", variable, type(exc).__name__
+        )
+        return []
 
 
 #: Origins the bundled ``web/`` UI is documented to be served from, and the
@@ -317,6 +390,13 @@ def _has_placeholder_login_host(url: str) -> bool:
     return (parsed.username or "").lower() == "username" and (parsed.host or "").lower() == "server"
 
 
+def _unset_variable_error(message: str, variable: str) -> ValueError:
+    """An :class:`~database.datasources.UnsetVariableError` (imported late: it imports this module)."""
+    from database.datasources import UnsetVariableError
+
+    return UnsetVariableError(message, variable)
+
+
 def _check_warehouse_url(label: str, url: str, dialect: str, placeholders: set[str]) -> None:
     """Refuse an unset, placeholder or wrong-dialect warehouse connection string.
 
@@ -350,14 +430,26 @@ def _check_warehouse_url(label: str, url: str, dialect: str, placeholders: set[s
     ------
     ValueError
         Naming *label* and what is wrong with it.
+    database.datasources.UnsetVariableError
+        (A :class:`ValueError`.) *label* is an environment variable name and
+        the variable is unset or empty -- the URL is empty, or it is the
+        factory-default placeholder because ``DB_CONNECTION_URL`` is not in
+        the environment. The message is the same; the exception carries the
+        variable so :meth:`Settings.validate` can say why it is missing.
     """
     if not url or url in placeholders:
-        raise ValueError(f"{label} is not configured")
+        message = f"{label} is not configured"
+        if not url and label.isidentifier():
+            raise _unset_variable_error(message, label)
+        raise ValueError(message)
     if _has_placeholder_login_host(url):
-        raise ValueError(
+        message = (
             f"{label} still has the factory-default placeholder "
             "host (username@server) — set a real connection string in .env"
         )
+        if label.isidentifier() and not os.environ.get(label):
+            raise _unset_variable_error(message, label)
+        raise ValueError(message)
 
     from sqlalchemy.engine import make_url
 
@@ -1967,8 +2059,11 @@ class Settings:
         otherwise each data source's connection (see
         :mod:`database.datasources`). A structured source whose
         ``username_env`` / ``password_env`` variable is unset or empty is
-        refused, naming the source and the variable, and saying why it is
-        missing (:func:`explain_unset_variable`).
+        refused, naming the source and the variable. So is a ``url_env``
+        variable (or ``DB_CONNECTION_URL``) that is unset or empty. Each of
+        these adds why the variable is missing
+        (:func:`explain_unset_variable`); a connection string that is set but
+        wrong does not.
         """
         if _dotenv_problems:
             from core.dotenv_check import format_problems

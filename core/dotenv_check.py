@@ -19,22 +19,28 @@ numbers and variable names only, because this file holds passwords.
 
 A tool that needs a variable it cannot find (a data source's
 ``password_env``, say) calls :func:`explain_unset` for the likely reason:
-no ``.env`` was found at all (on Windows typically a ``.env.txt``), the file
-has lines python-dotenv skipped, the variable is not in it (or spelled with
-different case), it is empty there, or an empty variable already in the
-process environment kept python-dotenv from setting it.
+no ``.env`` was found at all (a ``.env.txt`` that a file manager hiding
+extensions saved is named), the file has lines python-dotenv skipped, the
+variable is not in it (or is spelled with different case, where names are
+case-sensitive), it is empty, blank or built from ``${...}`` references
+there, it is there but missing from the process environment (the process
+predates the edit, or another ``.env`` was loaded), or the process
+environment holds an empty or blank value for it, which python-dotenv never
+overrides.
 
 Public API
 ----------
 DotenvProblem
 scan_dotenv(path) -> list[DotenvProblem]
 format_problems(path, problems) -> str
-explain_unset(variable, path, problems, environ, search_dir) -> list[str]
+explain_unset(variable, path, problems, environ, search_dir, *, disabled=False,
+               case_sensitive=os.name != "nt") -> list[str]
 """
 
 from __future__ import annotations
 
 import io
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -308,26 +314,62 @@ def format_problems(path: str | Path, problems: list[DotenvProblem]) -> str:
     return "\n".join(lines)
 
 
-def _assignments(path: str | Path) -> dict[str, list[tuple[int, bool]]]:
-    """Every variable *path* assigns: ``name -> [(line, value is empty), ...]``.
+def _assignments(path: str | Path) -> dict[str, list[tuple[int, bool, bool]]]:
+    """Every variable *path* assigns: ``name -> [(line, blank, interpolates), ...]``.
 
-    Only names, line numbers and whether a value is empty are kept; a value
-    itself never leaves this function. An unreadable file assigns nothing
-    (:func:`scan_dotenv` reports it as ``"unreadable"``).
+    Only names, line numbers and two facts about a value are kept: whether it
+    is empty or blank (whitespace only), and whether it contains ``${``
+    (python-dotenv expands such a reference from the environment, and an
+    unset variable expands to an empty value). A value itself never leaves
+    this function. An unreadable file assigns nothing (:func:`scan_dotenv`
+    reports it as ``"unreadable"``).
     """
     try:
         with open(path, encoding="utf-8") as stream:
             bindings = list(parse_stream(io.StringIO(stream.read())))
     except (OSError, UnicodeDecodeError):
         return {}
-    found: dict[str, list[tuple[int, bool]]] = {}
+    found: dict[str, list[tuple[int, bool, bool]]] = {}
     for binding in bindings:
         if binding.error or binding.key is None or binding.value is None:
             continue
         line = _start_line(binding.original.string, binding.original.line)
         name = binding.key.lstrip(_BOM)
-        found.setdefault(name, []).append((line, not binding.value.strip()))
+        found.setdefault(name, []).append(
+            (line, not binding.value.strip(), _INTERPOLATION in binding.value)
+        )
     return found
+
+
+#: What python-dotenv expands from the environment inside a value.
+_INTERPOLATION = "${"
+
+def _blank_in_environ(variable: str) -> str:
+    """The sentence for a variable that is in the environment but empty or blank.
+
+    It does not claim where the empty value came from: python-dotenv never
+    overrides a variable that is already set, and ``${...}`` expansion in
+    ``.env`` of an unset variable also yields an empty value.
+    """
+    return (
+        f"the process environment holds an empty or blank value for {variable}; "
+        "python-dotenv never overrides a variable that is already set, and "
+        "${...} expansion in .env of an unset variable also yields an empty value; "
+        f"unset it (PowerShell: Remove-Item Env:{variable}; bash: unset {variable}) "
+        "or set it to the real value, and restart"
+    )
+
+
+def _misnamed_dotenv(search: Path) -> Path | None:
+    """A ``.env.txt`` in *search* or a folder above it, as ``find_dotenv`` walks."""
+    for folder in (search, *search.parents):
+        candidate = folder / ".env.txt"
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:  # pragma: no cover - an unreadable folder on the way up
+            continue
+    return None
 
 
 def explain_unset(
@@ -338,6 +380,7 @@ def explain_unset(
     search_dir: str | Path,
     *,
     disabled: bool = False,
+    case_sensitive: bool = os.name != "nt",
 ) -> list[str]:
     """Why *variable* is unset or empty although it is supposed to come from ``.env``.
 
@@ -357,12 +400,19 @@ def explain_unset(
         to the root). Named in the message when no file was found.
     disabled:
         ``PYTHON_DOTENV_DISABLED`` was set, so nothing was loaded.
+    case_sensitive:
+        Whether environment variable names are case-sensitive here (they are
+        not on Windows). When ``False``, a ``.env`` line that differs from
+        *variable* only in case is the variable itself, and no message says
+        otherwise.
 
     Returns
     -------
     list[str]
         One or more sentences, most likely cause first. Line numbers and
-        variable names only, never a value.
+        variable names only, never a value. A variable that is in *environ*
+        with an empty or blank value is reported first, whatever the
+        ``.env`` holds, because python-dotenv never replaces it.
 
     Examples
     --------
@@ -371,59 +421,90 @@ def explain_unset(
     ...     env = os.path.join(d, ".env")
     ...     _ = Path(env).write_text("Auction_DM_PASSWORD=\\n", encoding="utf-8")
     ...     explain_unset("Auction_DM_PASSWORD", env, [], {}, d)[0].endswith(
-    ...         "line 1 assigns Auction_DM_PASSWORD an empty value")
+    ...         "line 1 assigns Auction_DM_PASSWORD an empty or blank value")
     True
     >>> explain_unset("PW", "", [], {}, "/app", disabled=True)[0]
     'PYTHON_DOTENV_DISABLED is set, so no .env file was loaded; set PW in the environment itself'
+    >>> explain_unset("PW", "", [], {"PW": " "}, "/nonexistent/app")[0].split(";")[0]
+    'the process environment holds an empty or blank value for PW'
     """
+    blank_in_environ = variable in environ and not environ[variable].strip()
+    reasons: list[str] = [_blank_in_environ(variable)] if blank_in_environ else []
+
     if disabled:
-        return [
+        reasons.append(
             f"PYTHON_DOTENV_DISABLED is set, so no .env file was loaded; "
             f"set {variable} in the environment itself"
-        ]
+        )
+        return reasons
     search = Path(search_dir)
     if not path:
-        hint = f"no .env file was found in {search} or any folder above it, so nothing was loaded from one"
-        misnamed = search / ".env.txt"
-        if misnamed.is_file():
+        hint = (
+            f"no .env file was found in {search} or any folder above it, "
+            "so nothing was loaded from one"
+        )
+        misnamed = _misnamed_dotenv(search)
+        if misnamed is not None:
             hint += (
-                f"; {misnamed} exists: Windows hides the .txt extension, "
-                "so the file must be renamed to .env"
+                f"; {misnamed} exists (a file manager that hides extensions may "
+                "have saved the file under that name): rename it to .env"
             )
-        else:
+        elif not blank_in_environ:
             hint += f"; create {search / '.env'} (copy .env.example) and set {variable} in it"
-        return [hint]
+        reasons.append(hint)
+        return reasons
 
-    reasons: list[str] = []
     if problems:
         reasons.append(f"{path} has lines python-dotenv could not use, and {variable} may be one of them:")
         reasons.extend(f"  - {problem.message}" for problem in problems)
 
-    assigned = _assignments(path)
-    lines = assigned.get(variable)
-    if lines:
-        line, empty = lines[-1]
-        if empty:
-            reasons.append(f"{path} line {line} assigns {variable} an empty value")
-        elif variable in environ:
-            reasons.append(
-                f"{path} line {line} assigns {variable}, but the process environment "
-                "already holds an empty value for it, and a .env file never overrides "
-                f"a variable that is already set; remove it from the environment "
-                f"(PowerShell: Remove-Item Env:{variable})"
-            )
-        return reasons or [f"{path} line {line} assigns {variable}"]
+    if any(problem.kind == "unreadable" for problem in problems):
+        # Nothing can be said about what the file assigns; "unreadable" above
+        # is the reason, and "does not assign" would be a guess.
+        return reasons
 
+    assigned = _assignments(path)
     folded = variable.casefold()
+    if case_sensitive:
+        matches = [(name, entry) for name, entries in assigned.items()
+                   for entry in entries if name == variable]
+    else:
+        matches = [(name, entry) for name, entries in assigned.items()
+                   for entry in entries if name.casefold() == folded]
+    if matches:
+        _, (line, blank, interpolates) = max(matches, key=lambda match: match[1][0])
+        if blank:
+            reasons.append(f"{path} line {line} assigns {variable} an empty or blank value")
+        if interpolates:
+            reasons.append(
+                f"{path} line {line} assigns {variable} a value containing ${{...}}: "
+                "python-dotenv replaces each reference with that variable's value, "
+                "or with an empty value when it is not set, so check the variables "
+                "the line refers to"
+            )
+        if not blank and not interpolates and variable not in environ:
+            reasons.append(
+                f"{path} line {line} assigns {variable}, but {variable} is not in the "
+                "process environment: the process started before the file was edited "
+                f"(restart it), or a different .env than {path} was loaded"
+            )
+        if not reasons or (blank_in_environ and not blank and not interpolates):
+            reasons.append(f"{path} line {line} assigns {variable}")
+        return reasons
+
     near = sorted(
-        (found[0][0], name) for name, found in assigned.items() if name.casefold() == folded
+        (entries[0][0], name) for name, entries in assigned.items()
+        if case_sensitive and name.casefold() == folded
     )
     if near:
-        reasons.extend(
-            f"{path} line {line} assigns {name}; variable names are case-sensitive, "
-            f"so it must be spelled {variable}"
-            for line, name in near
-        )
+        for line, name in near:
+            text = (
+                f"{path} line {line} assigns {name}; variable names are "
+                f"case-sensitive, so it must be spelled {variable}"
+            )
+            if all(blank for _, blank, _ in assigned[name]):
+                text += " (and its value is empty or blank)"
+            reasons.append(text)
     elif not any(problem.name == variable for problem in problems):
         reasons.append(f"{path} does not assign {variable}; add a line {variable}=... to it")
     return reasons

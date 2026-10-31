@@ -585,10 +585,20 @@ class TestExplainUnset:
         assert f"no .env file was found in {tmp_path}" in out
         assert "copy .env.example" in out
 
-    def test_a_dotenv_txt_left_by_windows_is_named(self, tmp_path):
+    def test_a_dotenv_txt_is_named_without_blaming_one_operating_system(self, tmp_path):
         (tmp_path / ".env.txt").write_text(f"{_VAR}={SECRET}\n", encoding="utf-8")
         (out,) = _explain(tmp_path, None)
-        assert str(tmp_path / ".env.txt") in out and "renamed to .env" in out
+        assert str(tmp_path / ".env.txt") in out and "rename it to .env" in out
+        assert "a file manager that hides extensions" in out
+        assert "Windows" not in out and "create" not in out
+        assert SECRET not in out
+
+    def test_a_dotenv_txt_in_a_folder_above_is_found_as_find_dotenv_walks_up(self, tmp_path):
+        (tmp_path / ".env.txt").write_text(f"{_VAR}={SECRET}\n", encoding="utf-8")
+        deep = tmp_path / "app" / "src"
+        deep.mkdir(parents=True)
+        (out,) = explain_unset(_VAR, "", [], {}, deep)
+        assert str(tmp_path / ".env.txt") in out and f"no .env file was found in {deep}" in out
         assert SECRET not in out
 
     def test_disabled_loading_is_named(self, tmp_path):
@@ -601,10 +611,10 @@ class TestExplainUnset:
 
     def test_an_empty_value_names_its_line(self, tmp_path):
         (out,) = _explain(tmp_path, f"DB_HOST=db1\n\n{_VAR}=\n")
-        assert out.endswith(f"line 3 assigns {_VAR} an empty value")
+        assert out.endswith(f"line 3 assigns {_VAR} an empty or blank value")
 
     def test_a_name_in_other_case_is_named(self, tmp_path):
-        (out,) = _explain(tmp_path, f"AUCTION_DM_PASSWORD={SECRET}\n")
+        (out,) = _explain(tmp_path, f"AUCTION_DM_PASSWORD={SECRET}\n", case_sensitive=True)
         assert "line 1 assigns AUCTION_DM_PASSWORD" in out and f"spelled {_VAR}" in out
         assert SECRET not in out
 
@@ -615,14 +625,37 @@ class TestExplainUnset:
         assert len(out) == 2  # the variable is the unparsable line; not also "does not assign"
         assert SECRET not in "\n".join(out)
 
-    def test_an_empty_variable_already_in_the_environment_wins(self, tmp_path):
-        (out,) = _explain(tmp_path, f"{_VAR}={SECRET}\n", environ={_VAR: ""})
-        assert "already holds an empty value" in out and f"Remove-Item Env:{_VAR}" in out
-        assert SECRET not in out
-
     def test_a_crlf_file_with_a_bom_still_finds_the_variable(self, tmp_path):
         (out,) = _explain(tmp_path, f"\ufeff{_VAR}=\r\nB=1\r\n")
-        assert out.endswith(f"line 1 assigns {_VAR} an empty value")
+        assert out.endswith(f"line 1 assigns {_VAR} an empty or blank value")
+
+
+def _pin_dotenv_state(monkeypatch, *, path: str = "", search_dir: Path | str | None = None) -> None:
+    """Make ``config``'s import-time record independent of the runner's environment.
+
+    ``PYTHON_DOTENV_DISABLED=1``, a missing python-dotenv, an unimportable scan
+    module and the folder the search started from are all recorded once at
+    import; a test of the explanation must say which it assumes.
+    """
+    monkeypatch.setattr(config, "_dotenv_path", path)
+    monkeypatch.setattr(config, "_dotenv_disabled", False)
+    monkeypatch.setattr(config, "_dotenv_missing", False)
+    monkeypatch.setattr(config, "_dotenv_scan_unavailable", False)
+    if search_dir is not None:
+        monkeypatch.setattr(config, "_dotenv_search_dir", str(search_dir))
+
+
+def _write_structured(directory: Path) -> None:
+    (directory / "datasources.yaml").write_text(
+        "default: Auction_DM\n"
+        "datasources:\n"
+        "  Auction_DM:\n"
+        "    host: db1\n"
+        "    database: AuctionDM\n"
+        "    username: nlq\n"
+        f"    password_env: {_VAR}\n",
+        encoding="utf-8",
+    )
 
 
 class TestUnsetPasswordAtStartup:
@@ -640,8 +673,7 @@ class TestUnsetPasswordAtStartup:
             encoding="utf-8",
         )
         monkeypatch.delenv(_VAR, raising=False)
-        monkeypatch.setattr(config, "_dotenv_path", "")
-        monkeypatch.setattr(config, "_dotenv_disabled", False)
+        _pin_dotenv_state(monkeypatch, path="")
         reset_datasources_cache()
         try:
             with override_settings(
@@ -655,3 +687,437 @@ class TestUnsetPasswordAtStartup:
         assert f"{_VAR} (named by password_env) is not set or is empty" in text
         assert "no .env file was found" in text
         assert excinfo.value.variable == _VAR
+
+
+# ---------------------------------------------------------------------------
+# The environment holds an empty or blank value (items 2, 3)
+# ---------------------------------------------------------------------------
+
+class TestEmptyVariableInTheEnvironment:
+    def test_without_a_dotenv_the_fix_is_to_remove_or_set_it_not_to_create_a_file(self, tmp_path):
+        out = _explain(tmp_path, None, environ={_VAR: ""})
+        assert out[0].startswith(f"the process environment holds an empty or blank value for {_VAR};")
+        assert f"unset it (PowerShell: Remove-Item Env:{_VAR}; bash: unset {_VAR})" in out[0]
+        assert f"no .env file was found in {tmp_path}" in out[1]
+        assert "create" not in "\n".join(out)
+
+    def test_a_dotenv_without_the_line_still_reports_it_first(self, tmp_path):
+        out = _explain(tmp_path, f"DB_HOST=db1\nOTHER={SECRET}\n", environ={_VAR: ""})
+        assert out[0].startswith("the process environment holds an empty or blank value")
+        assert out[-1].endswith(f"does not assign {_VAR}; add a line {_VAR}=... to it")
+        assert SECRET not in "\n".join(out)
+
+    def test_a_dotenv_that_assigns_it_does_not_replace_it(self, tmp_path):
+        out = _explain(tmp_path, f"{_VAR}={SECRET}\n", environ={_VAR: ""})
+        assert out[0].startswith("the process environment holds an empty or blank value")
+        assert "python-dotenv never overrides a variable that is already set" in out[0]
+        assert out[1].endswith(f"line 1 assigns {_VAR}")
+        assert SECRET not in "\n".join(out)
+
+    def test_a_whitespace_only_value_in_the_environment_is_blank(self, tmp_path):
+        out = _explain(tmp_path, None, environ={_VAR: " \t "})
+        assert out[0].startswith("the process environment holds an empty or blank value")
+
+    def test_a_set_variable_is_not_reported(self, tmp_path):
+        out = _explain(tmp_path, None, environ={_VAR: SECRET})
+        assert not any("holds an empty" in line for line in out)
+        assert SECRET not in "\n".join(out)
+
+    def test_it_does_not_claim_where_the_empty_value_came_from(self, tmp_path):
+        text = "\n".join(_explain(tmp_path, f"{_VAR}={SECRET}\n", environ={_VAR: ""}))
+        assert "already holds" not in text
+        assert "before startup" not in text
+        assert "expansion in .env of an unset variable also yields an empty value" in text
+
+    def test_disabled_loading_still_reports_the_empty_value_first(self, tmp_path):
+        out = _explain(tmp_path, None, environ={_VAR: ""}, disabled=True)
+        assert out[0].startswith("the process environment holds an empty or blank value")
+        assert out[1].startswith("PYTHON_DOTENV_DISABLED is set")
+
+
+class TestBlankAndInterpolatedValues:
+    def test_a_whitespace_only_value_is_blank(self, tmp_path):
+        out = _explain(tmp_path, f'DB_HOST=db1\n{_VAR}="   "\n')
+        assert out[-1].endswith(f"line 2 assigns {_VAR} an empty or blank value")
+
+    def test_an_interpolated_value_names_its_line_but_not_the_value(self, tmp_path):
+        out = _explain(tmp_path, f"{_VAR}=${{VAULT_{SECRET}}}\n", environ={_VAR: ""})
+        text = "\n".join(out)
+        assert f"line 1 assigns {_VAR} a value containing ${{...}}" in text
+        assert "empty value when it is not set" in text
+        assert SECRET not in text
+
+    def test_interpolation_is_reported_for_a_variable_missing_from_the_environment_too(self, tmp_path):
+        out = _explain(tmp_path, f"{_VAR}=${{OTHER}}\n")
+        assert any("containing ${...}" in line for line in out)
+        assert not any("not in the process environment" in line for line in out)
+
+    def test_assignments_record_the_flag_and_never_the_value(self, tmp_path):
+        from core.dotenv_check import _assignments
+
+        path = tmp_path / ".env"
+        path.write_text(f"A=${{B}}{SECRET}\nC={SECRET}\nD=\nE='  '\n", encoding="utf-8")
+        found = _assignments(path)
+        assert found == {
+            "A": [(1, False, True)],
+            "C": [(2, False, False)],
+            "D": [(3, True, False)],
+            "E": [(4, True, False)],
+        }
+        assert SECRET not in repr(found)
+
+
+class TestAssignedButNotInTheEnvironment:
+    def test_the_reason_is_a_stale_process_or_another_dotenv(self, tmp_path):
+        out = _explain(tmp_path, f"DB_HOST=db1\n{_VAR}={SECRET}\n")
+        (line,) = out
+        assert line.startswith(f"{tmp_path / '.env'} line 2 assigns {_VAR}, but {_VAR} is not in the process environment")
+        assert "started before the file was edited (restart it)" in line
+        assert f"a different .env than {tmp_path / '.env'} was loaded" in line
+        assert SECRET not in line
+
+
+class TestCaseSensitivity:
+    def test_case_sensitive_names_the_mismatch(self, tmp_path):
+        (out,) = _explain(tmp_path, f"AUCTION_DM_PASSWORD={SECRET}\n", case_sensitive=True)
+        assert "line 1 assigns AUCTION_DM_PASSWORD; variable names are case-sensitive" in out
+        assert f"so it must be spelled {_VAR}" in out
+        assert "empty" not in out
+        assert SECRET not in out
+
+    def test_case_sensitive_says_when_the_other_case_line_is_empty_too(self, tmp_path):
+        (out,) = _explain(tmp_path, "AUCTION_DM_PASSWORD=\n", case_sensitive=True)
+        assert out.endswith("(and its value is empty or blank)")
+
+    def test_case_insensitive_treats_the_other_case_line_as_the_variable(self, tmp_path):
+        out = _explain(tmp_path, "AUCTION_DM_PASSWORD=\n", case_sensitive=False)
+        assert out == [f"{tmp_path / '.env'} line 1 assigns {_VAR} an empty or blank value"]
+        assert "case-sensitive" not in "\n".join(out)
+
+    def test_case_insensitive_applies_the_interpolation_check_to_that_line(self, tmp_path):
+        out = _explain(tmp_path, "auction_dm_password=${X}\n", case_sensitive=False)
+        assert any("containing ${...}" in line for line in out)
+        assert "case-sensitive" not in "\n".join(out)
+
+    def test_case_insensitive_with_a_value_says_it_is_missing_from_the_environment(self, tmp_path):
+        out = _explain(tmp_path, f"AUCTION_DM_PASSWORD={SECRET}\n", case_sensitive=False)
+        assert len(out) == 1 and "is not in the process environment" in out[0]
+        assert "case-sensitive" not in out[0] and SECRET not in out[0]
+
+    def test_the_default_follows_the_operating_system(self):
+        import inspect
+
+        default = inspect.signature(explain_unset).parameters["case_sensitive"].default
+        assert default is (__import__("os").name != "nt")
+
+
+class TestAnUnreadableFile:
+    def test_it_does_not_also_claim_the_variable_is_not_assigned(self, tmp_path):
+        path = tmp_path / ".env"
+        path.write_bytes(b"A=1\n" + _VAR.encode() + b"=\xff\xfe\n")
+        problems = scan_dotenv(path)
+        assert [p.kind for p in problems] == ["unreadable"]
+        out = explain_unset(_VAR, str(path), problems, {}, tmp_path)
+        assert any("could not be read as UTF-8 text" in line for line in out)
+        assert not any("does not assign" in line for line in out)
+
+
+# ---------------------------------------------------------------------------
+# Where python-dotenv searched (item 1)
+# ---------------------------------------------------------------------------
+
+class TestSearchStart:
+    @pytest.fixture()
+    def plain_script(self, monkeypatch, tmp_path):
+        """The state of a server started as ``python app.py``: no REPL, no tracer."""
+        import types
+
+        main = types.ModuleType("__main__")
+        main.__file__ = str(tmp_path / "app.py")
+        monkeypatch.setitem(sys.modules, "__main__", main)
+        monkeypatch.delattr(sys, "ps1", raising=False)
+        monkeypatch.delattr(sys, "ps2", raising=False)
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setattr(sys, "gettrace", lambda: None)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        return elsewhere
+
+    def test_a_plain_script_searches_from_the_folder_of_config_py(self, plain_script):
+        assert config._dotenv_search_start() == str(Path(config.__file__).resolve().parent)
+
+    def test_a_debugger_or_tracer_searches_from_the_working_directory(self, plain_script, monkeypatch):
+        monkeypatch.setattr(sys, "gettrace", lambda: object())
+        assert config._dotenv_search_start() == str(plain_script.resolve())
+
+    def test_an_interactive_session_searches_from_the_working_directory(self, plain_script, monkeypatch):
+        monkeypatch.setattr(sys, "ps1", ">>> ", raising=False)
+        assert config._dotenv_search_start() == str(plain_script.resolve())
+
+    def test_ps2_alone_counts_as_interactive(self, plain_script, monkeypatch):
+        monkeypatch.setattr(sys, "ps2", "... ", raising=False)
+        assert config._dotenv_search_start() == str(plain_script.resolve())
+
+    def test_a_main_module_without_a_file_is_interactive(self, plain_script, monkeypatch):
+        import types
+
+        monkeypatch.setitem(sys.modules, "__main__", types.ModuleType("__main__"))
+        assert config._dotenv_search_start() == str(plain_script.resolve())
+
+    def test_a_frozen_executable_searches_from_the_working_directory(self, plain_script, monkeypatch):
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        assert config._dotenv_search_start() == str(plain_script.resolve())
+
+    def test_the_helper_agrees_with_find_dotenv_itself(self, plain_script, monkeypatch):
+        """Same conditions as python-dotenv: a .env in the cwd is found only when it searches there."""
+        from dotenv import find_dotenv
+
+        (plain_script / ".env").write_text("A=1\n", encoding="utf-8")
+        assert find_dotenv() != str(plain_script / ".env")  # called from a file: not the cwd
+        monkeypatch.setattr(sys, "gettrace", lambda: object())
+        assert find_dotenv() == str(plain_script / ".env")
+        assert config._dotenv_search_start() == str(plain_script.resolve())
+
+
+class TestExplanationNamesTheFolderSearched:
+    def test_the_recorded_folder_is_the_one_named(self, tmp_path, monkeypatch):
+        cwd = tmp_path / "launched-from"
+        cwd.mkdir()
+        _pin_dotenv_state(monkeypatch, path="", search_dir=cwd)
+        (out,) = config.explain_unset_variable(_VAR)
+        assert f"no .env file was found in {cwd} " in out
+        assert f"create {cwd / '.env'} " in out
+        assert str(Path(config.__file__).resolve().parent) not in out
+
+    def test_the_dotenv_txt_probe_uses_the_recorded_folder(self, tmp_path, monkeypatch):
+        cwd = tmp_path / "launched-from"
+        cwd.mkdir()
+        (cwd / ".env.txt").write_text(f"{_VAR}={SECRET}\n", encoding="utf-8")
+        _pin_dotenv_state(monkeypatch, path="", search_dir=cwd)
+        (out,) = config.explain_unset_variable(_VAR)
+        assert str(cwd / ".env.txt") in out and SECRET not in out
+
+    def test_a_process_started_from_another_folder_records_the_working_directory(self, tmp_path):
+        """End to end: ``python -c`` has no ``__file__``, so find_dotenv() searches the cwd."""
+        import os
+
+        (tmp_path / ".env").write_text(f"{_VAR}={SECRET}\n", encoding="utf-8")
+        probe = (
+            "import os, config\n"
+            "print(os.getcwd())\n"
+            "print(config._dotenv_search_dir)\n"
+            "print(config._dotenv_path)\n"
+        )
+        run_env = {
+            **os.environ,
+            "PROJECT_CONFIG_DIR": str(_REPO_ROOT / "project_config.example"),
+            "PYTHONPATH": str(_REPO_ROOT),
+        }
+        run_env.pop("PYTHON_DOTENV_DISABLED", None)
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=tmp_path, env=run_env, capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+        cwd, search_dir, found = done.stdout.splitlines()
+        assert search_dir == cwd
+        assert found == str(Path(cwd) / ".env")
+        assert search_dir != str(_REPO_ROOT)
+
+
+# ---------------------------------------------------------------------------
+# The explanation never masks the real error (item 7)
+# ---------------------------------------------------------------------------
+
+class TestExplanationNeverMasksTheError:
+    @pytest.fixture()
+    def explain_raises(self, monkeypatch):
+        import core.dotenv_check as module
+
+        def boom(*args, **kwargs):
+            raise RuntimeError(f"boom with {SECRET}")
+
+        monkeypatch.setattr(module, "explain_unset", boom)
+
+    def test_a_failing_explanation_is_an_empty_list(self, explain_raises, monkeypatch, caplog):
+        _pin_dotenv_state(monkeypatch)
+        with caplog.at_level("DEBUG"):
+            assert config.explain_unset_variable(_VAR) == []
+        assert SECRET not in caplog.text  # only the exception type is logged
+
+    def test_validate_still_raises_the_original_error(self, explain_raises, tmp_path, monkeypatch):
+        from database.datasources import UnsetVariableError, reset_datasources_cache
+
+        _write_structured(tmp_path)
+        monkeypatch.delenv(_VAR, raising=False)
+        _pin_dotenv_state(monkeypatch)
+        reset_datasources_cache()
+        try:
+            with override_settings(
+                openai_model="llama3", sql_dialect="tsql", project_config_dir=str(tmp_path),
+            ):
+                with pytest.raises(UnsetVariableError) as excinfo:
+                    config.settings.validate()
+        finally:
+            reset_datasources_cache()
+        assert str(excinfo.value).endswith(f"{_VAR} (named by password_env) is not set or is empty")
+        assert excinfo.value.variable == _VAR
+        assert SECRET not in str(excinfo.value)
+
+    def test_the_setup_tools_still_raise_the_original_error(self, explain_raises, tmp_path, monkeypatch):
+        from database.datasources import reset_datasources_cache
+        from database.setup_sources import SourceSelectionError, configured_sources
+
+        _write_structured(tmp_path)
+        monkeypatch.delenv(_VAR, raising=False)
+        _pin_dotenv_state(monkeypatch)
+        reset_datasources_cache()
+        try:
+            with override_settings(project_config_dir=str(tmp_path)):
+                with pytest.raises(SourceSelectionError) as excinfo:
+                    configured_sources()
+        finally:
+            reset_datasources_cache()
+        assert str(excinfo.value).endswith(f"{_VAR} (named by password_env) is not set or is empty")
+
+
+# ---------------------------------------------------------------------------
+# A scan module that cannot be imported is not "python-dotenv is missing" (item 8)
+# ---------------------------------------------------------------------------
+
+_NO_SCAN_PROBE = """
+import os
+import sys
+import dotenv
+
+target = sys.argv[1]
+dotenv.find_dotenv = lambda *args, **kwargs: target
+sys.modules["core.dotenv_check"] = None  # makes "import core.dotenv_check" raise ImportError
+
+import config
+
+print(config._dotenv_missing)
+print(config._dotenv_scan_unavailable)
+print(config._dotenv_problems)
+print(os.environ.get("NO_SCAN_PROBE_VARIABLE"))
+for line in config.explain_unset_variable("NO_SCAN_PROBE_VARIABLE"):
+    print(line)
+"""
+
+
+class TestScanModuleUnavailable:
+    def test_dotenv_is_still_loaded_and_the_explanation_does_not_blame_python_dotenv(self, tmp_path):
+        import os
+
+        path = tmp_path / ".env"
+        path.write_text("NO_SCAN_PROBE_VARIABLE=loaded-anyway\n", encoding="utf-8")
+        run_env = {**os.environ, "PROJECT_CONFIG_DIR": "project_config.example"}
+        run_env.pop("PYTHON_DOTENV_DISABLED", None)
+        run_env.pop("NO_SCAN_PROBE_VARIABLE", None)
+        done = subprocess.run(
+            [sys.executable, "-c", _NO_SCAN_PROBE, str(path)],
+            cwd=_REPO_ROOT, env=run_env, capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+        out = done.stdout.splitlines()
+        assert out[:4] == ["False", "True", "[]", "loaded-anyway"]
+        assert done.stderr.strip() == ""  # no warning at import time
+        text = "\n".join(out[4:])
+        assert "not installed" not in text and "requirements.lock" not in text
+        assert "core.dotenv_check could not be imported" in text
+        assert str(path) in text
+        assert "loaded-anyway" not in text
+
+    def test_the_in_process_flag_gives_the_same_sentence(self, monkeypatch, tmp_path):
+        _pin_dotenv_state(monkeypatch, path=str(tmp_path / ".env"))
+        monkeypatch.setattr(config, "_dotenv_scan_unavailable", True)
+        (out,) = config.explain_unset_variable(_VAR)
+        assert "not installed" not in out and "could not be imported" in out
+
+    def test_a_missing_python_dotenv_is_still_reported_as_missing(self, monkeypatch):
+        _pin_dotenv_state(monkeypatch)
+        monkeypatch.setattr(config, "_dotenv_missing", True)
+        (out,) = config.explain_unset_variable(_VAR)
+        assert "python-dotenv is not installed" in out
+
+
+# ---------------------------------------------------------------------------
+# A url_env / DB_CONNECTION_URL that is unset or empty gets the explanation too (item 5)
+# ---------------------------------------------------------------------------
+
+class TestUnsetConnectionStringAtStartup:
+    @pytest.fixture()
+    def validate_with(self, tmp_path, monkeypatch):
+        from database.datasources import reset_datasources_cache
+
+        _pin_dotenv_state(monkeypatch, path="", search_dir=tmp_path)
+
+        def run(**settings):
+            reset_datasources_cache()
+            try:
+                with override_settings(
+                    openai_model="llama3", sql_dialect="tsql", project_config_dir=str(tmp_path), **settings,
+                ):
+                    config.settings.validate()
+            finally:
+                reset_datasources_cache()
+
+        return run
+
+    def test_an_unset_url_env_variable_says_why(self, tmp_path, monkeypatch, validate_with):
+        from database.datasources import UnsetVariableError
+
+        (tmp_path / "datasources.yaml").write_text(
+            "default: main\ndatasources:\n  main:\n    url_env: DB_URL_MAIN\n", encoding="utf-8",
+        )
+        monkeypatch.delenv("DB_URL_MAIN", raising=False)
+        with pytest.raises(UnsetVariableError, match="DB_URL_MAIN is not configured") as excinfo:
+            validate_with()
+        assert excinfo.value.variable == "DB_URL_MAIN"
+        assert f"\n  no .env file was found in {tmp_path} " in str(excinfo.value)
+
+    def test_an_empty_url_env_variable_with_an_empty_environment_value_says_so(
+        self, tmp_path, monkeypatch, validate_with,
+    ):
+        (tmp_path / "datasources.yaml").write_text(
+            "default: main\ndatasources:\n  main:\n    url_env: DB_URL_MAIN\n", encoding="utf-8",
+        )
+        monkeypatch.setenv("DB_URL_MAIN", "")
+        with pytest.raises(ValueError, match="DB_URL_MAIN is not configured") as excinfo:
+            validate_with()
+        assert "the process environment holds an empty or blank value for DB_URL_MAIN" in str(excinfo.value)
+
+    def test_an_empty_db_connection_url_says_why(self, tmp_path, monkeypatch, validate_with):
+        monkeypatch.setenv("DB_CONNECTION_URL", "")
+        monkeypatch.delenv("DB_PASSWORD", raising=False)
+        with pytest.raises(ValueError, match="DB_CONNECTION_URL is not configured") as excinfo:
+            validate_with(db_connection_url="")
+        assert "the process environment holds an empty or blank value for DB_CONNECTION_URL" in str(excinfo.value)
+
+    def test_an_unset_db_connection_url_that_is_the_factory_default_says_why(
+        self, tmp_path, monkeypatch, validate_with,
+    ):
+        monkeypatch.delenv("DB_CONNECTION_URL", raising=False)
+        monkeypatch.delenv("DB_PASSWORD", raising=False)
+        with pytest.raises(ValueError, match="factory-default placeholder") as excinfo:
+            validate_with(db_connection_url="mssql+pyodbc://username@server/db")
+        assert f"\n  no .env file was found in {tmp_path} " in str(excinfo.value)
+
+    def test_a_placeholder_value_is_not_blamed_on_a_missing_dotenv(self, tmp_path, monkeypatch, validate_with):
+        (tmp_path / "datasources.yaml").write_text(
+            "default: main\ndatasources:\n  main:\n    url_env: DB_URL_MAIN\n", encoding="utf-8",
+        )
+        monkeypatch.setenv("DB_URL_MAIN", "change_me")
+        with pytest.raises(ValueError, match="DB_URL_MAIN is not configured") as excinfo:
+            validate_with()
+        assert "\n" not in str(excinfo.value)
+
+    def test_check_warehouse_url_raises_the_unset_error_only_for_a_variable_label(self):
+        from config import _check_warehouse_url
+        from database.datasources import UnsetVariableError
+
+        with pytest.raises(UnsetVariableError) as excinfo:
+            _check_warehouse_url("DB_URL_X", "", "tsql", set())
+        assert str(excinfo.value) == "DB_URL_X is not configured" and excinfo.value.variable == "DB_URL_X"
+        with pytest.raises(ValueError, match="not configured") as plain:
+            _check_warehouse_url("data source 'x'", "", "tsql", set())
+        assert type(plain.value) is ValueError
