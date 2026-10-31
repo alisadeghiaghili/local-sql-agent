@@ -75,6 +75,21 @@ def first_line(exc: BaseException) -> str:
     return (str(exc).strip().splitlines() or [""])[0][:160]
 
 
+def _unset_hint(variable: str | None) -> str:
+    """Indented lines saying why *variable* is missing, or ``""`` without one.
+
+    A bare "is not set or is empty" sends the reader to the wrong place when
+    the variable *is* in their ``.env``: the file was not found (on Windows a
+    ``.env.txt``), it has a line python-dotenv skipped, or the name differs.
+    See :func:`config.explain_unset_variable`.
+    """
+    if not variable:
+        return ""
+    import config
+
+    return "".join(f"\n  {line}" for line in config.explain_unset_variable(variable))
+
+
 def datasources_file_in_use() -> bool:
     """Whether ``<PROJECT_CONFIG_DIR>/datasources.yaml`` exists (and is valid).
 
@@ -127,7 +142,9 @@ def configured_sources(
     ------
     SourceSelectionError
         If ``datasources.yaml`` is invalid, a name is not configured, or a
-        source's credentials cannot be read (an unset environment variable).
+        source's credentials cannot be read (an unset environment variable;
+        the message then says which ``.env`` was loaded and why the variable
+        is not in it, see :func:`config.explain_unset_variable`).
 
     Examples
     --------
@@ -166,11 +183,15 @@ def configured_sources(
         try:
             source = get_datasource(name)
         except ValueError as exc:  # DataSourceConfigError: a variable that is not set
-            raise SourceSelectionError(f"data source {name!r} cannot be used: {first_line(exc)}") from exc
+            raise SourceSelectionError(
+                f"data source {name!r} cannot be used: {first_line(exc)}"
+                f"{_unset_hint(getattr(exc, 'variable', None))}"
+            ) from exc
         if not source.url:
+            variable = source.url_env or "DB_CONNECTION_URL"
             raise SourceSelectionError(
                 f"data source {name!r} cannot be used: the environment variable "
-                f"{source.url_env or 'DB_CONNECTION_URL'} that holds its connection string is not set"
+                f"{variable} that holds its connection string is not set{_unset_hint(variable)}"
             )
         chosen.append(ConfiguredSource(
             name=name,

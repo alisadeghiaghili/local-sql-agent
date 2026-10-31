@@ -78,6 +78,44 @@ def test_an_unset_connection_variable_is_reported(project, monkeypatch):
         configured_sources()
 
 
+STRUCTURED = """\
+default: Auction_DM
+datasources:
+  Auction_DM:
+    host: db1
+    database: AuctionDM
+    username: nlq
+    password_env: Auction_DM_PASSWORD
+"""
+
+
+def test_an_unset_password_says_what_the_dotenv_file_holds(project, monkeypatch, tmp_path_factory):
+    # Issue #237: "is not set or is empty" alone, although the password was in .env.
+    (project / "datasources.yaml").write_text(STRUCTURED, encoding="utf-8")
+    dotenv = tmp_path_factory.mktemp("app") / ".env"
+    dotenv.write_text("AUCTION_DM_PASSWORD=pw-secret\n", encoding="utf-8")
+    monkeypatch.delenv("Auction_DM_PASSWORD", raising=False)
+    monkeypatch.setattr(cfg, "_dotenv_path", str(dotenv))
+    with pytest.raises(SourceSelectionError) as excinfo:
+        configured_sources()
+    text = str(excinfo.value)
+    assert text.startswith(
+        "data source 'Auction_DM' cannot be used: data source 'Auction_DM': environment variable "
+        "Auction_DM_PASSWORD (named by password_env) is not set or is empty\n  "
+    )
+    assert f"{dotenv} line 1 assigns AUCTION_DM_PASSWORD" in text
+    assert "pw-secret" not in text
+
+
+def test_an_unset_connection_variable_says_no_dotenv_was_found(project, monkeypatch):
+    (project / "datasources.yaml").write_text(TWO, encoding="utf-8")
+    monkeypatch.delenv("DB_URL_REPORTS")
+    monkeypatch.setattr(cfg, "_dotenv_path", "")
+    monkeypatch.setattr(cfg, "_dotenv_disabled", False)
+    with pytest.raises(SourceSelectionError, match=r"(?s)DB_URL_REPORTS.*\n  no \.env file was found"):
+        configured_sources()
+
+
 def test_without_a_file_the_one_implicit_source(project):
     assert datasources_file_in_use() is False
     with cfg.override_settings(db_connection_url="sqlite:///only.db"):

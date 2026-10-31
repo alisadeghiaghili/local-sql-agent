@@ -152,6 +152,7 @@ __all__ = [
     "DataSourcesConfig",
     "DataSourceConfigError",
     "UnknownDataSourceError",
+    "UnsetVariableError",
     "build_url",
     "apply_db_password",
     "datasources_path",
@@ -251,6 +252,27 @@ class DataSourceConfigError(ValueError):
     Messages name the source and the environment variable concerned, and
     never a secret's value.
     """
+
+
+class UnsetVariableError(DataSourceConfigError):
+    """A variable named by ``username_env`` or ``password_env`` is unset or empty.
+
+    Attributes
+    ----------
+    variable:
+        The variable's name, so a caller can explain why it is missing
+        (:func:`config.explain_unset_variable`).
+
+    Examples
+    --------
+    >>> error = UnsetVariableError("data source 'sales': PW is not set", "PW")
+    >>> error.variable, isinstance(error, DataSourceConfigError)
+    ('PW', True)
+    """
+
+    def __init__(self, message: str, variable: str) -> None:
+        super().__init__(message)
+        self.variable = variable
 
 
 # ---------------------------------------------------------------------------
@@ -863,9 +885,10 @@ def _read_env(source: str, field: str, variable: str, environ: Mapping[str, str]
     """Return the raw value of *variable*, or refuse naming source and variable."""
     value = environ.get(variable, "")
     if not value:
-        raise DataSourceConfigError(
+        raise UnsetVariableError(
             f"data source {source!r}: environment variable {variable} "
-            f"(named by {field}) is not set or is empty"
+            f"(named by {field}) is not set or is empty",
+            variable,
         )
     return value
 

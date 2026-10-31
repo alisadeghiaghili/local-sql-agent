@@ -17,11 +17,19 @@ start on a non-empty result.
 No ``.env`` value is ever read into a message here: a problem carries line
 numbers and variable names only, because this file holds passwords.
 
+A tool that needs a variable it cannot find (a data source's
+``password_env``, say) calls :func:`explain_unset` for the likely reason:
+no ``.env`` was found at all (on Windows typically a ``.env.txt``), the file
+has lines python-dotenv skipped, the variable is not in it (or spelled with
+different case), it is empty there, or an empty variable already in the
+process environment kept python-dotenv from setting it.
+
 Public API
 ----------
 DotenvProblem
 scan_dotenv(path) -> list[DotenvProblem]
 format_problems(path, problems) -> str
+explain_unset(variable, path, problems, environ, search_dir) -> list[str]
 """
 
 from __future__ import annotations
@@ -30,11 +38,12 @@ import io
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Iterator, Literal
 
 from dotenv.parser import Binding, parse_stream
 
-__all__ = ["DotenvProblem", "format_problems", "scan_dotenv"]
+__all__ = ["DotenvProblem", "explain_unset", "format_problems", "scan_dotenv"]
 
 #: What a shell, a container runtime and ``os.environ`` agree is a variable name.
 _VALID_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -297,3 +306,124 @@ def format_problems(path: str | Path, problems: list[DotenvProblem]) -> str:
         "Fix the lines above and restart."
     )
     return "\n".join(lines)
+
+
+def _assignments(path: str | Path) -> dict[str, list[tuple[int, bool]]]:
+    """Every variable *path* assigns: ``name -> [(line, value is empty), ...]``.
+
+    Only names, line numbers and whether a value is empty are kept; a value
+    itself never leaves this function. An unreadable file assigns nothing
+    (:func:`scan_dotenv` reports it as ``"unreadable"``).
+    """
+    try:
+        with open(path, encoding="utf-8") as stream:
+            bindings = list(parse_stream(io.StringIO(stream.read())))
+    except (OSError, UnicodeDecodeError):
+        return {}
+    found: dict[str, list[tuple[int, bool]]] = {}
+    for binding in bindings:
+        if binding.error or binding.key is None or binding.value is None:
+            continue
+        line = _start_line(binding.original.string, binding.original.line)
+        name = binding.key.lstrip(_BOM)
+        found.setdefault(name, []).append((line, not binding.value.strip()))
+    return found
+
+
+def explain_unset(
+    variable: str,
+    path: str | Path,
+    problems: Sequence[DotenvProblem],
+    environ: Mapping[str, str],
+    search_dir: str | Path,
+    *,
+    disabled: bool = False,
+) -> list[str]:
+    """Why *variable* is unset or empty although it is supposed to come from ``.env``.
+
+    Parameters
+    ----------
+    variable:
+        The environment variable a caller needed (for example a data
+        source's ``password_env``).
+    path:
+        The ``.env`` file python-dotenv loaded; empty when none was found.
+    problems:
+        What :func:`scan_dotenv` reported for *path*.
+    environ:
+        The process environment after ``.env`` was loaded.
+    search_dir:
+        The folder python-dotenv started its search from (it then walks up
+        to the root). Named in the message when no file was found.
+    disabled:
+        ``PYTHON_DOTENV_DISABLED`` was set, so nothing was loaded.
+
+    Returns
+    -------
+    list[str]
+        One or more sentences, most likely cause first. Line numbers and
+        variable names only, never a value.
+
+    Examples
+    --------
+    >>> import tempfile, os
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     env = os.path.join(d, ".env")
+    ...     _ = Path(env).write_text("Auction_DM_PASSWORD=\\n", encoding="utf-8")
+    ...     explain_unset("Auction_DM_PASSWORD", env, [], {}, d)[0].endswith(
+    ...         "line 1 assigns Auction_DM_PASSWORD an empty value")
+    True
+    >>> explain_unset("PW", "", [], {}, "/app", disabled=True)[0]
+    'PYTHON_DOTENV_DISABLED is set, so no .env file was loaded; set PW in the environment itself'
+    """
+    if disabled:
+        return [
+            f"PYTHON_DOTENV_DISABLED is set, so no .env file was loaded; "
+            f"set {variable} in the environment itself"
+        ]
+    search = Path(search_dir)
+    if not path:
+        hint = f"no .env file was found in {search} or any folder above it, so nothing was loaded from one"
+        misnamed = search / ".env.txt"
+        if misnamed.is_file():
+            hint += (
+                f"; {misnamed} exists: Windows hides the .txt extension, "
+                "so the file must be renamed to .env"
+            )
+        else:
+            hint += f"; create {search / '.env'} (copy .env.example) and set {variable} in it"
+        return [hint]
+
+    reasons: list[str] = []
+    if problems:
+        reasons.append(f"{path} has lines python-dotenv could not use, and {variable} may be one of them:")
+        reasons.extend(f"  - {problem.message}" for problem in problems)
+
+    assigned = _assignments(path)
+    lines = assigned.get(variable)
+    if lines:
+        line, empty = lines[-1]
+        if empty:
+            reasons.append(f"{path} line {line} assigns {variable} an empty value")
+        elif variable in environ:
+            reasons.append(
+                f"{path} line {line} assigns {variable}, but the process environment "
+                "already holds an empty value for it, and a .env file never overrides "
+                f"a variable that is already set; remove it from the environment "
+                f"(PowerShell: Remove-Item Env:{variable})"
+            )
+        return reasons or [f"{path} line {line} assigns {variable}"]
+
+    folded = variable.casefold()
+    near = sorted(
+        (found[0][0], name) for name, found in assigned.items() if name.casefold() == folded
+    )
+    if near:
+        reasons.extend(
+            f"{path} line {line} assigns {name}; variable names are case-sensitive, "
+            f"so it must be spelled {variable}"
+            for line, name in near
+        )
+    elif not any(problem.name == variable for problem in problems):
+        reasons.append(f"{path} does not assign {variable}; add a line {variable}=... to it")
+    return reasons

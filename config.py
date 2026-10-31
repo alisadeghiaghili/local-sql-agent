@@ -121,6 +121,8 @@ from typing import Any, Generator
 #: because python-dotenv itself only prints a one-line warning to stderr.
 _dotenv_path: str = ""
 _dotenv_problems: list[DotenvProblem] = []
+#: ``PYTHON_DOTENV_DISABLED`` was set, so no ``.env`` was searched for or loaded.
+_dotenv_disabled: bool = False
 
 try:
     from dotenv import find_dotenv, load_dotenv
@@ -130,14 +132,56 @@ try:
     # find_dotenv() here, not inside load_dotenv(): it searches from the
     # calling file's directory, and the scan must read the same file.
     # PYTHON_DOTENV_DISABLED turns loading off, and with it the check.
-    if os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() not in (
+    _dotenv_disabled = os.environ.get("PYTHON_DOTENV_DISABLED", "").casefold() in (
         "1", "true", "t", "yes", "y",
-    ):
+    )
+    if not _dotenv_disabled:
         _dotenv_path = find_dotenv()
         _dotenv_problems = scan_dotenv(_dotenv_path)
     load_dotenv(_dotenv_path or None)
 except ImportError:  # pragma: no cover - exercised only when dependency missing
     pass
+
+
+def explain_unset_variable(variable: str) -> list[str]:
+    """Why *variable*, expected from ``.env``, is unset or empty in this process.
+
+    For a message that otherwise only says "not set or is empty": which
+    ``.env`` was loaded (or that none was found), what python-dotenv could not
+    use in it, and whether the file assigns the variable at all. See
+    :func:`core.dotenv_check.explain_unset`.
+
+    Parameters
+    ----------
+    variable:
+        The environment variable that was needed.
+
+    Returns
+    -------
+    list[str]
+        Sentences naming files, lines and variables, never a value; empty
+        when python-dotenv is not installed.
+
+    Examples
+    --------
+    >>> import config
+    >>> lines = config.explain_unset_variable("NO_SUCH_VARIABLE_FOR_THE_DOCTEST")
+    >>> isinstance(lines, list)
+    True
+    """
+    try:
+        from core.dotenv_check import explain_unset
+    except ImportError:  # pragma: no cover - python-dotenv missing
+        return []
+    return explain_unset(
+        variable,
+        _dotenv_path,
+        _dotenv_problems,
+        os.environ,
+        # find_dotenv() searches from the folder of the file that called it.
+        os.path.dirname(os.path.abspath(__file__)),
+        disabled=_dotenv_disabled,
+    )
 
 
 #: Origins the bundled ``web/`` UI is documented to be served from, and the
@@ -1906,7 +1950,8 @@ class Settings:
         otherwise each data source's connection (see
         :mod:`database.datasources`). A structured source whose
         ``username_env`` / ``password_env`` variable is unset or empty is
-        refused, naming the source and the variable.
+        refused, naming the source and the variable, and saying why it is
+        missing (:func:`explain_unset_variable`).
         """
         if _dotenv_problems:
             from core.dotenv_check import format_problems
@@ -1937,13 +1982,19 @@ class Settings:
         # each source's connection when there is one (in which case
         # DB_CONNECTION_URL itself is not used and not required). See
         # database.datasources.
-        from database.datasources import validate_datasource_urls
+        from database.datasources import UnsetVariableError, validate_datasource_urls
 
-        validate_datasource_urls(
-            lambda label, url, dialect: _check_warehouse_url(label, url, dialect, placeholders),
-            self,
-            placeholders,
-        )
+        try:
+            validate_datasource_urls(
+                lambda label, url, dialect: _check_warehouse_url(label, url, dialect, placeholders),
+                self,
+                placeholders,
+            )
+        except UnsetVariableError as exc:
+            # "not set or is empty" alone points at the wrong place when the
+            # variable *is* written in a .env that was never loaded.
+            hint = "".join(f"\n  {line}" for line in explain_unset_variable(exc.variable))
+            raise UnsetVariableError(f"{exc}{hint}", exc.variable) from exc
 
         # LLM_EXTRA_BODY is parsed on every request, so a malformed value
         # would otherwise surface as an error on the first question rather

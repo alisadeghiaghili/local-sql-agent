@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A data source variable missing from `.env` now says why (`core/dotenv_check.py`, `config.py`, `database/datasources.py`, `database/setup_sources.py`) (#237).** The setup tools (`python -m database.schema_inspector_cli` and the other tools that read `datasources.yaml`) stopped with only `environment variable Auction_DM_PASSWORD (named by password_env) is not set or is empty`, with nothing to show which `.env` was read or what was wrong with it. The message for a variable named by `password_env`, `username_env` or `url_env` now adds the reason, without printing any value: which `.env` file was loaded, or that none was found (on Windows, a file saved as `.env.txt` with the extension hidden is named as the likely cause); a line python-dotenv could not parse; the same name written with different letters (`AUCTION_DM_PASSWORD` for `Auction_DM_PASSWORD`); a name present with an empty value; and an empty variable already in the process environment, which python-dotenv never overrides. `Settings.validate()` (so server start-up and the preflight) gives the same explanation. Only the error text changes; no setting is read differently.
+
 ### Documentation
 
 - **The design documents describe 6.17 (`docs/design/DESIGN.md`, `docs/design/DESIGN-INVARIANTS.md`, `docs/design/RETRIEVAL.md`, `docs/admin-panel-architecture.md`).**

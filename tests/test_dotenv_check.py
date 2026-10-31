@@ -23,7 +23,7 @@ from dotenv.parser import parse_stream
 
 import config
 from config import override_settings
-from core.dotenv_check import DotenvProblem, format_problems, scan_dotenv
+from core.dotenv_check import DotenvProblem, explain_unset, format_problems, scan_dotenv
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -502,3 +502,99 @@ class TestConfigScansTheFileItLoaded:
     def test_disabled_loading_skips_the_check(self, tmp_path):
         out = _import_config_against(tmp_path, "BAD='x\n", PYTHON_DOTENV_DISABLED="1")
         assert out == ["''"]
+
+
+# ---------------------------------------------------------------------------
+# Why a variable expected from .env is missing (issue #237)
+# ---------------------------------------------------------------------------
+
+_VAR = "Auction_DM_PASSWORD"
+
+
+def _explain(tmp_path: Path, text: str | None, environ=None, **kwargs) -> list[str]:
+    path = ""
+    if text is not None:
+        target = tmp_path / ".env"
+        with open(target, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        path = str(target)
+    problems = scan_dotenv(path) if path else []
+    return explain_unset(_VAR, path, problems, environ or {}, tmp_path, **kwargs)
+
+
+class TestExplainUnset:
+    def test_no_dotenv_file_names_the_folder_searched(self, tmp_path):
+        (out,) = _explain(tmp_path, None)
+        assert f"no .env file was found in {tmp_path}" in out
+        assert "copy .env.example" in out
+
+    def test_a_dotenv_txt_left_by_windows_is_named(self, tmp_path):
+        (tmp_path / ".env.txt").write_text(f"{_VAR}={SECRET}\n", encoding="utf-8")
+        (out,) = _explain(tmp_path, None)
+        assert str(tmp_path / ".env.txt") in out and "renamed to .env" in out
+        assert SECRET not in out
+
+    def test_disabled_loading_is_named(self, tmp_path):
+        (out,) = _explain(tmp_path, None, disabled=True)
+        assert out.startswith("PYTHON_DOTENV_DISABLED is set")
+
+    def test_a_file_without_the_variable(self, tmp_path):
+        (out,) = _explain(tmp_path, f"DB_HOST=db1\nOTHER={SECRET}\n")
+        assert out.endswith(f"does not assign {_VAR}; add a line {_VAR}=... to it")
+
+    def test_an_empty_value_names_its_line(self, tmp_path):
+        (out,) = _explain(tmp_path, f"DB_HOST=db1\n\n{_VAR}=\n")
+        assert out.endswith(f"line 3 assigns {_VAR} an empty value")
+
+    def test_a_name_in_other_case_is_named(self, tmp_path):
+        (out,) = _explain(tmp_path, f"AUCTION_DM_PASSWORD={SECRET}\n")
+        assert "line 1 assigns AUCTION_DM_PASSWORD" in out and f"spelled {_VAR}" in out
+        assert SECRET not in out
+
+    def test_an_unparsable_line_is_listed_without_its_value(self, tmp_path):
+        out = _explain(tmp_path, f"{_VAR}='{SECRET}\n")
+        assert out[0].endswith(f"and {_VAR} may be one of them:")
+        assert out[1] == f"  - line 1: could not be parsed (looks like an assignment to {_VAR})"
+        assert len(out) == 2  # the variable is the unparsable line; not also "does not assign"
+        assert SECRET not in "\n".join(out)
+
+    def test_an_empty_variable_already_in_the_environment_wins(self, tmp_path):
+        (out,) = _explain(tmp_path, f"{_VAR}={SECRET}\n", environ={_VAR: ""})
+        assert "already holds an empty value" in out and f"Remove-Item Env:{_VAR}" in out
+        assert SECRET not in out
+
+    def test_a_crlf_file_with_a_bom_still_finds_the_variable(self, tmp_path):
+        (out,) = _explain(tmp_path, f"\ufeff{_VAR}=\r\nB=1\r\n")
+        assert out.endswith(f"line 1 assigns {_VAR} an empty value")
+
+
+class TestUnsetPasswordAtStartup:
+    def test_validate_says_why_the_password_is_missing(self, tmp_path, monkeypatch):
+        from database.datasources import UnsetVariableError, reset_datasources_cache
+
+        (tmp_path / "datasources.yaml").write_text(
+            "default: Auction_DM\n"
+            "datasources:\n"
+            "  Auction_DM:\n"
+            "    host: db1\n"
+            "    database: AuctionDM\n"
+            "    username: nlq\n"
+            f"    password_env: {_VAR}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv(_VAR, raising=False)
+        monkeypatch.setattr(config, "_dotenv_path", "")
+        monkeypatch.setattr(config, "_dotenv_disabled", False)
+        reset_datasources_cache()
+        try:
+            with override_settings(
+                openai_model="llama3", sql_dialect="tsql", project_config_dir=str(tmp_path),
+            ):
+                with pytest.raises(UnsetVariableError) as excinfo:
+                    config.settings.validate()
+        finally:
+            reset_datasources_cache()
+        text = str(excinfo.value)
+        assert f"{_VAR} (named by password_env) is not set or is empty" in text
+        assert "no .env file was found" in text
+        assert excinfo.value.variable == _VAR
