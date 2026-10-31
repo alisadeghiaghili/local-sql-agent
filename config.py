@@ -99,6 +99,7 @@ and were deliberately left alone rather than duplicated into ``Settings``.
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -123,6 +124,9 @@ _dotenv_path: str = ""
 _dotenv_problems: list[DotenvProblem] = []
 #: ``PYTHON_DOTENV_DISABLED`` was set, so no ``.env`` was searched for or loaded.
 _dotenv_disabled: bool = False
+#: python-dotenv (or :mod:`core.dotenv_check`, which imports ``dotenv.parser``)
+#: could not be imported, so no ``.env`` was read at all. Set once, below.
+_dotenv_missing: bool = False
 
 try:
     from dotenv import find_dotenv, load_dotenv
@@ -140,7 +144,16 @@ try:
         _dotenv_problems = scan_dotenv(_dotenv_path)
     load_dotenv(_dotenv_path or None)
 except ImportError:  # pragma: no cover - exercised only when dependency missing
-    pass
+    _dotenv_missing = True
+
+
+def _dotenv_missing_sentence() -> str:
+    """The one sentence for an environment without a usable python-dotenv."""
+    return (
+        f"python-dotenv is not installed in this Python environment ({sys.executable}), "
+        "so .env was not read; install the requirements into it: "
+        "pip install -r requirements.lock"
+    )
 
 
 def explain_unset_variable(variable: str) -> list[str]:
@@ -159,8 +172,10 @@ def explain_unset_variable(variable: str) -> list[str]:
     Returns
     -------
     list[str]
-        Sentences naming files, lines and variables, never a value; empty
-        when python-dotenv is not installed.
+        Sentences naming files, lines and variables, never a value. When
+        python-dotenv is not installed in this environment, the single
+        sentence saying so (it names the interpreter), because then ``.env``
+        was never read.
 
     Examples
     --------
@@ -169,10 +184,12 @@ def explain_unset_variable(variable: str) -> list[str]:
     >>> isinstance(lines, list)
     True
     """
+    if _dotenv_missing:
+        return [_dotenv_missing_sentence()]
     try:
         from core.dotenv_check import explain_unset
     except ImportError:  # pragma: no cover - python-dotenv missing
-        return []
+        return [_dotenv_missing_sentence()]
     return explain_unset(
         variable,
         _dotenv_path,

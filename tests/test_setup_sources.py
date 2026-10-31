@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -105,6 +106,23 @@ def test_an_unset_password_says_what_the_dotenv_file_holds(project, monkeypatch,
     )
     assert f"{dotenv} line 1 assigns AUCTION_DM_PASSWORD" in text
     assert "pw-secret" not in text
+
+
+def test_an_unset_password_says_python_dotenv_is_missing(project, monkeypatch):
+    # Issue #237: python-dotenv absent from the environment, so .env was never read.
+    (project / "datasources.yaml").write_text(STRUCTURED, encoding="utf-8")
+    monkeypatch.delenv("Auction_DM_PASSWORD", raising=False)
+    monkeypatch.setattr(cfg, "_dotenv_missing", True)
+    with pytest.raises(SourceSelectionError) as excinfo:
+        configured_sources()
+    text = str(excinfo.value)
+    assert text.startswith(
+        "data source 'Auction_DM' cannot be used: data source 'Auction_DM': environment variable "
+        "Auction_DM_PASSWORD (named by password_env) is not set or is empty\n  "
+        "python-dotenv is not installed in this Python environment ("
+    )
+    assert sys.executable in text
+    assert text.endswith("pip install -r requirements.lock")
 
 
 def test_an_unset_connection_variable_says_no_dotenv_was_found(project, monkeypatch):

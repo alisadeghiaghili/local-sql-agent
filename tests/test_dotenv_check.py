@@ -504,6 +504,63 @@ class TestConfigScansTheFileItLoaded:
         assert out == ["''"]
 
 
+_MISSING_PROBE = """
+import sys
+
+sys.modules["dotenv"] = None  # makes "import dotenv" raise ImportError
+
+import config
+
+print(config._dotenv_missing)
+print(config._dotenv_path == "")
+for line in config.explain_unset_variable("Auction_DM_PASSWORD"):
+    print(line)
+"""
+
+
+class TestPythonDotenvMissing:
+    """Issue #237: python-dotenv absent, so .env is silently skipped."""
+
+    def test_the_explanation_names_the_package_the_interpreter_and_the_fix(self, monkeypatch):
+        monkeypatch.setattr(config, "_dotenv_missing", True)
+        lines = config.explain_unset_variable("X")
+        assert len(lines) == 1
+        assert "python-dotenv is not installed" in lines[0]
+        assert sys.executable in lines[0]
+        assert "requirements.lock" in lines[0]
+        assert ".env was not read" in lines[0]
+
+    def test_it_does_not_consult_the_dotenv_file(self, monkeypatch, tmp_path):
+        path = tmp_path / ".env"
+        path.write_text(f"X={SECRET}\n", encoding="utf-8")
+        monkeypatch.setattr(config, "_dotenv_missing", True)
+        monkeypatch.setattr(config, "_dotenv_path", str(path))
+        text = "\n".join(config.explain_unset_variable("X"))
+        assert SECRET not in text
+        assert str(path) not in text
+
+    def test_a_present_python_dotenv_does_not_say_it_is_missing(self):
+        assert config._dotenv_missing is False
+        assert not any("not installed" in line for line in config.explain_unset_variable("X"))
+
+    def test_a_process_without_python_dotenv_records_and_explains_it(self):
+        import os
+
+        run_env = {**os.environ, "PROJECT_CONFIG_DIR": "project_config.example"}
+        run_env.pop("PYTHON_DOTENV_DISABLED", None)
+        run_env.pop("Auction_DM_PASSWORD", None)
+        done = subprocess.run(
+            [sys.executable, "-c", _MISSING_PROBE],
+            cwd=_REPO_ROOT, env=run_env, capture_output=True, text=True, encoding="utf-8", check=True,
+        )
+        out = done.stdout.splitlines()
+        assert out[:2] == ["True", "True"]
+        assert len(out) == 3
+        assert "python-dotenv is not installed" in out[2]
+        assert sys.executable in out[2]
+        assert "requirements.lock" in out[2]
+
+
 # ---------------------------------------------------------------------------
 # Why a variable expected from .env is missing (issue #237)
 # ---------------------------------------------------------------------------
