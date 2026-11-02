@@ -27,6 +27,55 @@ PERSIAN_DAYS_OF_WEEK = {
 # Persian season names as stored in sales.Date.PersianSeasonName.
 PERSIAN_SEASONS = ["بهار", "تابستان", "پاییز", "زمستان"]
 
+# A name from one of the fixed vocabularies above is found only as a whole
+# word: no letter directly before or after it. Whitespace is allowed between
+# any two of its letters, so "پنج شنبه" and "اردی بهشت" still match the
+# one-word canonical forms (ZWNJ is already removed by the normaliser), and a
+# month name may carry "ماه", attached or not ("دیماه", "دی ماه",
+# "اسفندماه"). Issue #244: the earlier substring match on whitespace-free text
+# found "دی" inside "جدیدترین" and "تولیدی" and across "تعداد یک", "تیر"
+# inside "تیرآهن" and "آذر" inside "آذربایجان", and added a month filter to
+# questions that named no month. Digits may touch a name ("اسفند۱۴۰۲").
+_NO_LETTER_BEFORE = r"(?<![^\W\d_])"
+_NO_LETTER_AFTER = r"(?![^\W\d_])"
+_MONTH_SUFFIX = "ماه"
+
+
+def _spaced(word: str) -> str:
+    """*word*'s letters as a regex that allows whitespace between them."""
+    return r"\s*".join(re.escape(ch) for ch in normalize_compact(word))
+
+
+def _whole_word(name: str, optional_suffix: str = "") -> re.Pattern[str]:
+    """A pattern finding *name* as a whole word in normalised text.
+
+    Args:
+        name: The canonical name, e.g. ``"دی"`` or ``"پنجشنبه"``.
+        optional_suffix: A word that may follow *name*, attached or after
+            whitespace, without breaking the match (``"ماه"`` for months).
+
+    Returns:
+        A compiled pattern for :func:`core.persian.normalize_for_matching`
+        output.
+
+    Examples:
+        >>> bool(_whole_word("دی", "ماه").search("معاملات دیماه"))
+        True
+        >>> bool(_whole_word("دی", "ماه").search("جدیدترین قراردادها"))
+        False
+    """
+    tail = f"(?:\\s*{_spaced(optional_suffix)})?" if optional_suffix else ""
+    return re.compile(_NO_LETTER_BEFORE + _spaced(name) + tail + _NO_LETTER_AFTER)
+
+
+_MONTH_PATTERNS = [(name, _whole_word(name, _MONTH_SUFFIX)) for name in PERSIAN_MONTHS]
+# Longest names first so e.g. "یکشنبه" is tried before "شنبه".
+_DAY_OF_WEEK_PATTERNS = [
+    (number, _whole_word(name))
+    for name, number in sorted(PERSIAN_DAYS_OF_WEEK.items(), key=lambda kv: len(kv[0]), reverse=True)
+]
+_SEASON_PATTERNS = [(name, _whole_word(name)) for name in PERSIAN_SEASONS]
+
 
 class ValueRetriever:
 
@@ -52,28 +101,25 @@ class ValueRetriever:
 
     @classmethod
     def extract_month_name(cls, question: str) -> str | None:
-        q = normalize_compact(question)
-        for name in PERSIAN_MONTHS:
-            if normalize_compact(name) in q:
+        q = normalize_for_matching(question)
+        for name, pattern in _MONTH_PATTERNS:
+            if pattern.search(q):
                 return name
         return None
 
     @classmethod
     def extract_day_of_week(cls, question: str) -> int | None:
-        q = normalize_compact(question)
-        # Longest names first so e.g. "یکشنبه" matches before its substring "شنبه".
-        for name, day_number in sorted(
-            PERSIAN_DAYS_OF_WEEK.items(), key=lambda kv: len(kv[0]), reverse=True
-        ):
-            if normalize_compact(name) in q:
+        q = normalize_for_matching(question)
+        for day_number, pattern in _DAY_OF_WEEK_PATTERNS:
+            if pattern.search(q):
                 return day_number
         return None
 
     @classmethod
     def extract_season_name(cls, question: str) -> str | None:
-        q = normalize_compact(question)
-        for name in PERSIAN_SEASONS:
-            if normalize_compact(name) in q:
+        q = normalize_for_matching(question)
+        for name, pattern in _SEASON_PATTERNS:
+            if pattern.search(q):
                 return name
         return None
 

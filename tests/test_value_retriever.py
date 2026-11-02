@@ -43,6 +43,56 @@ class TestExtractMonthName:
         assert ValueRetriever.extract_month_name("خرید مشتریان") is None
 
 
+class TestFixedVocabularyNamesAreWholeWords:
+    """Issue #244: a month, weekday or season name is found only as a word.
+
+    The earlier match removed every space from the question and looked for
+    the name as a substring, so "دی" was found inside ordinary words and
+    across word joins, and most questions got a month filter they never
+    asked for. The spellings that did match a real name still match.
+    """
+
+    @pytest.mark.parametrize("question", [
+        "جدیدترین قراردادها",       # inside a word
+        "حجم عرضه کالای تولیدی",     # at the end of a word
+        "تعداد یک ساله قراردادها",   # across "تعداد" + "یک" once spaces go
+        "موجودی انبار",
+        "تالار دیگر",
+        "چند ردیف داریم؟",
+        "خریداران عمده تیرآهن",     # "تیر"
+        "معاملات آذربایجان",        # "آذر"
+        "مشتری مهربان",             # "مهر"
+    ])
+    def test_name_inside_another_word_is_not_a_month(self, question):
+        assert ValueRetriever.extract_month_name(question) is None
+        assert "PersianMonthName" not in ValueRetriever.retrieve(question)
+
+    @pytest.mark.parametrize("question, month", [
+        ("معاملات دی", "دی"),
+        ("دی", "دی"),
+        ("معاملات دی ماه ۱۴۰۳", "دی"),
+        ("معاملات دی\u200cماه", "دی"),
+        ("معاملات دیماه", "دی"),
+        ("معاملات اسفندماه", "اسفند"),
+        ("اسفند۱۴۰۲", "اسفند"),
+        ("معاملات اردی بهشت", "اردیبهشت"),
+        ("معاملات مهر", "مهر"),
+        ("فروش تیر و مرداد", "تیر"),
+    ])
+    def test_month_as_a_word_still_matches(self, question, month):
+        assert ValueRetriever.extract_month_name(question) == month
+
+    def test_weekday_inside_another_word_is_not_a_weekday(self):
+        # "شنبه" is the tail of "یکشنبه"; on its own it is still found.
+        assert ValueRetriever.extract_day_of_week("معاملات یکشنبه") == 2
+        assert ValueRetriever.extract_day_of_week("سه\u200cشنبه") == 4
+        assert ValueRetriever.extract_day_of_week("شنبه\u200cها") is None
+
+    def test_season_inside_another_word_is_not_a_season(self):
+        assert ValueRetriever.extract_season_name("بهارستان") is None
+        assert ValueRetriever.extract_season_name("فصل بهار") == "بهار"
+
+
 class TestExtractDayOfWeek:
 
     def test_shanbe_is_one(self):
