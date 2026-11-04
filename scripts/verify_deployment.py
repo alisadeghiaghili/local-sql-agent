@@ -1779,7 +1779,8 @@ def check_web_ui_origin_allowed() -> CheckResult:
     if wildcard:
         return CheckResult(name, "PASS", f"any origin is allowed (CORS_ALLOWED_ORIGINS={','.join(allowed)})")
     api_host = cfg.settings.api_host.strip()
-    api_host_url = f"http://[{api_host}]" if ":" in api_host else f"http://{api_host}"
+    # Only compared against the allowed origins, never requested.
+    api_host_url = f"http://[{api_host}]" if ":" in api_host else f"http://{api_host}"  # NOSONAR(S5332)
     reachable_elsewhere = bool(api_host) and not is_loopback_origin(api_host_url)
     if allowed and all(is_loopback_origin(o) for o in allowed) and reachable_elsewhere:
         return CheckResult(

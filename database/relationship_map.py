@@ -130,7 +130,7 @@ def _load_from_inspection() -> dict[tuple[str, str], list[str]]:
     try:
         snapshot = inspector.inspect(fetch_row_counts=False)
     except ConnectionError as exc:
-        logger.error("Schema inspection failed: %s", exc)
+        logger.error("Schema inspection failed: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
         return {}
     finally:
         inspector.close()

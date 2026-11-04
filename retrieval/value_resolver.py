@@ -552,7 +552,7 @@ def _run_under_deadline(
         global _in_flight_resolutions
         try:
             outcome["value"] = execute_fn(sql, params)
-        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) re-raised in the caller's thread
             outcome["error"] = exc
         finally:
             done.set()

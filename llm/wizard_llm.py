@@ -52,7 +52,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any
 
 from core.wizard_drafts import ALIAS_LIMIT, tidy_aliases
 from llm.base import LLMBackend
@@ -382,7 +382,7 @@ class WizardLLM:
         self,
         prompt: str,
         expect_json: bool = True,
-    ) -> Union[str, dict, list]:
+    ) -> str | dict | list:
         """Send *prompt* to the LLM and return the response.
 
         Parameters

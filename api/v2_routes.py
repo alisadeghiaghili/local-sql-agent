@@ -217,7 +217,7 @@ def _require_system_prompt() -> str:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/sessions", response_model=CreateSessionResponse, status_code=201)
+@router.post("/sessions", status_code=201)
 def create_session(principal: Principal = Depends(require_principal)) -> CreateSessionResponse:
     record = get_session_store().create(owner_id=principal.id)
     expires_at = None
@@ -241,7 +241,7 @@ def create_session(principal: Principal = Depends(require_principal)) -> CreateS
 # ---------------------------------------------------------------------------
 
 
-@router.get("/sessions", response_model=SessionIndexResponse)
+@router.get("/sessions")
 def list_sessions(principal: Principal = Depends(require_principal)) -> SessionIndexResponse:
     rows = get_session_store().list_sessions(principal.id)
     entries = [SessionIndexEntry(**row) for row in rows]
@@ -253,7 +253,7 @@ def list_sessions(principal: Principal = Depends(require_principal)) -> SessionI
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/sessions/{session_id}", response_model=RenameSessionResponse)
+@router.patch("/sessions/{session_id}")
 def rename_session(
     session_id: str, req: RenameSessionRequest, principal: Principal = Depends(require_principal),
 ) -> RenameSessionResponse:
@@ -281,7 +281,7 @@ def rename_session(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/sessions/{session_id}", response_model=SessionTranscriptResponse)
+@router.get("/sessions/{session_id}")
 def get_session(
     session_id: str, principal: Principal = Depends(require_principal),
 ) -> SessionTranscriptResponse:
@@ -580,7 +580,7 @@ async def _turn_event_stream(
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/sessions/{session_id}/turns/{turn_id}/assumptions", response_model=Turn)
+@router.patch("/sessions/{session_id}/turns/{turn_id}/assumptions")
 async def patch_assumptions(
     session_id: str,
     turn_id: str,
@@ -945,7 +945,7 @@ def list_start_examples(
         import knowledge.examples as examples_module
 
         examples = examples_module.EXAMPLES
-    except Exception:  # noqa: BLE001 -- a missing or invalid file is "no examples", never a 500
+    except Exception:  # noqa: BLE001  # a missing or invalid file is "no examples", never a 500
         logger.warning("GET /v2/examples: examples.yaml could not be read; offering none")
         examples = []
     questions = offered_questions(examples, denied_columns=principal.denied_columns, limit=limit)
@@ -957,7 +957,7 @@ def list_start_examples(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/memory", response_model=MemoryIndexResponse)
+@router.get("/memory")
 def get_memory(principal: Principal = Depends(require_principal)) -> MemoryIndexResponse:
     keys = get_memory_keys()
     stored = _get_memory_persistence().get_memory_entries(principal.id)
@@ -986,7 +986,7 @@ def get_memory(principal: Principal = Depends(require_principal)) -> MemoryIndex
     return MemoryIndexResponse(entries=entries, rememberable=rememberable)
 
 
-@router.put("/memory/{key}", response_model=MemoryEntryResponse)
+@router.put("/memory/{key}")
 def put_memory(
     key: str, req: SetMemoryRequest, principal: Principal = Depends(require_principal),
 ) -> MemoryEntryResponse:

@@ -135,7 +135,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console  # noqa: E402
-import config as cfg  # noqa: E402 - loads .env, like every entry point
+import config as cfg  # noqa: E402  # loads .env, like every entry point
 from core.redaction import redact_error_text  # noqa: E402
 from schema_data.describe import (  # noqa: E402
     TableDraft,
@@ -490,7 +490,7 @@ def main(
         original = raw.decode("utf-8-sig")
         schema = validate_schema_yaml_text(original)
         targets = find_targets(original)
-    except (UnicodeDecodeError, ValueError) as exc:
+    except ValueError as exc:  # UnicodeDecodeError included
         print(f"cannot use {schema_path}: {_describe(exc)}", file=sys.stderr)
         return EXIT_ERROR
 
@@ -516,7 +516,7 @@ def main(
     # Prove the line editor can write every description before the model is asked anything.
     try:
         probe = [
-            TableDraft(t.key, "x" if t.describe_table else "", {c: "x" for c in t.columns}) for t in chosen
+            TableDraft(t.key, "x" if t.describe_table else "", dict.fromkeys(t.columns, "x")) for t in chosen
         ]
         verify_described(schema, validate_schema_yaml_text(render_described_text(original, schema, probe)), probe)
     except ValueError as exc:  # LayoutError is a ValueError
@@ -536,7 +536,7 @@ def main(
         try:
             earlier = output.read_bytes().decode("utf-8-sig")
             kept = carried_drafts(original, earlier)
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (OSError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
             print(f"cannot use {output} to resume: {_describe(exc)}", file=sys.stderr)
             return EXIT_ERROR
         # Every table drafted before is kept, also one outside this run's --tables: a
@@ -568,7 +568,7 @@ def main(
             )
             fetch_samples = fetch_samples or default_sample_fetcher()
         _draft_all(
-            pending, schema, original, schema_path, generate, args, run,
+            pending, schema, schema_path, generate, args, run,
             fetch_samples if args.samples else None,
             lambda: _save(output, original, schema, run, has_bom),
         )
@@ -599,7 +599,6 @@ def _save(output: Path, original: str, schema: SchemaConfig, run: _Run, has_bom:
 def _draft_all(
     pending: Sequence[TableTarget],
     schema: SchemaConfig,
-    original: str,
     schema_path: Path,
     generate: Generate,
     args: argparse.Namespace,

@@ -127,7 +127,7 @@ def _verify_one(
         return case, VerifyOutcome(case.id, "guard_rejected", f"expected_sql rejected by the guard: {exc}")
     try:
         df = execute_fn(case.expected_sql)
-    except Exception as exc:  # noqa: BLE001 - any database failure is a finding, not a crash
+    except Exception as exc:  # noqa: BLE001  # any database failure is a finding, not a crash
         return case, VerifyOutcome(
             case.id, "database_error", f"{type(exc).__name__}: {exc}"
         )
@@ -250,15 +250,13 @@ def verify_cases(
     return VerifyResult(new_cases, outcomes, skipped, changed)
 
 
-def render_verify_text(result: VerifyResult, *, accept: bool, written: bool) -> str:
+def render_verify_text(result: VerifyResult, *, written: bool) -> str:
     """Render *result* as a counts-and-ids summary (no questions, no rows).
 
     Parameters
     ----------
     result:
         From :func:`verify_cases`.
-    accept:
-        Whether ``--accept`` was given (changes the wording of the tail).
     written:
         Whether the golden file was rewritten.
 
@@ -271,7 +269,7 @@ def render_verify_text(result: VerifyResult, *, accept: bool, written: bool) -> 
     >>> case = GoldenCase(id="a", question="q", expected_sql="SELECT COUNT(*) AS n FROM Customer",
     ...                   status="reviewed")
     >>> res = verify_cases([case], lambda sql: pd.DataFrame({"n": [3]}), accept=True)
-    >>> print(render_verify_text(res, accept=True, written=True))
+    >>> print(render_verify_text(res, written=True))
     Verified 1 case(s), skipped 0 (not reviewed or active).
       ok: 1, with a problem: 0, accepted (reviewed -> active): 1
     Golden file rewritten (previous version kept as .bak).

@@ -455,7 +455,7 @@ def failure_taxonomy(
         "by_bucket": dict(by_bucket.most_common()),
     }
     if include_examples:
-        result["examples_by_error_code"] = {k: v for k, v in examples.items()}
+        result["examples_by_error_code"] = dict(examples)
     return result
 
 
@@ -780,7 +780,7 @@ def guard_rejection_report(
         "refused_statement_shapes_by_reason": shapes_result,
     }
     if include_examples:
-        result["refused_statement_examples_by_reason"] = {k: v for k, v in examples.items()}
+        result["refused_statement_examples_by_reason"] = dict(examples)
     return result
 
 
