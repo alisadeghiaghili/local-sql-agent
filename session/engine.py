@@ -95,6 +95,7 @@ from session.composer import (
 from session.memory import MemoryEntry, apply_memory_to_assumptions
 from session.models import (
     Ambiguity,
+    Assumption,
     Basis,
     GuardVerdict,
     ResultColumn,
@@ -506,20 +507,9 @@ class TurnEngine:
         # inherited filters it carries forward) and relabel `composition`
         # honestly: this turn no longer reuses the previous turn's SQL at
         # all, so it must not claim "cte" -- see docs/api-contract-v2.md §2.
-        demoted_from_cte_override = False
-        if basis_decision.kind == "refines" and basis_decision.composition == "cte":
-            overridden_inherited = _cte_override_conflict(
-                basis_decision.inherited_filters, assumption_overrides,
-            )
-            if overridden_inherited is not None:
-                demoted_from_cte_override = True
-                basis_decision = BasisDecision(
-                    kind="refines",
-                    refines_turn_id=basis_decision.refines_turn_id,
-                    composition="none",
-                    inherited_filters=overridden_inherited,
-                    period_delta=basis_decision.period_delta,
-                )
+        basis_decision, demoted_from_cte_override = _demote_overridden_refinement(
+            basis_decision, assumption_overrides,
+        )
 
         session_context_text = build_session_context_text(
             record.turns, cfg.settings.session_prompt_turns
@@ -529,7 +519,8 @@ class TurnEngine:
             memory_entries if (memory_entries and cfg.settings.memory_enabled) else None
         )
 
-        if basis_decision.kind == "refines" and basis_decision.composition == "cte":
+        is_cte_refinement = basis_decision.kind == "refines" and basis_decision.composition == "cte"
+        if is_cte_refinement:
             outcome, resolved_question, ambiguity_block, memory_filters, mem_warnings = (
                 self._handle_cte_refinement(
                     question, system_prompt, previous_turn, basis_decision,
@@ -547,25 +538,24 @@ class TurnEngine:
                     previous_source=previous_source,
                 )
             )
-        if basis_decision.kind == "refines" and basis_decision.composition == "cte":
+        if is_cte_refinement:
             # A §2 refinement composes over the previous turn's SQL, so it
             # reads what that statement read: it stays on that source with
             # no selection of its own.
             outcome.datasource_selection = continuity_audit(previous_source)
-        if mem_warnings:
-            outcome.warnings = list(outcome.warnings) + mem_warnings
-        # "The analyst must never be silently misled" (2026 hall-filter
-        # audit): `context` is computed above regardless of which path
-        # handled this turn, so a dimension the question plausibly named
-        # but the vocabulary had no chance to check (cold cache, or a
-        # stuck-failing background refresh -- see
+        # Memory warnings, then retrieval warnings. "The analyst must never be
+        # silently misled" (2026 hall-filter audit): `context` is computed
+        # above regardless of which path handled this turn, so a dimension
+        # the question plausibly named but the vocabulary had no chance to
+        # check (cold cache, or a stuck-failing background refresh -- see
         # ContextRetriever.retrieve's own docstring on RetrievalContext
         # .warnings) is surfaced here for both the fresh/carry-forward and
         # the CTE-refinement path, through the exact same `outcome
         # .warnings` an analyst already sees a truncated-scan or
         # policy-rejection warning through.
-        if context.warnings:
-            outcome.warnings = list(outcome.warnings) + context.warnings
+        for extra in (mem_warnings, context.warnings):
+            if extra:
+                outcome.warnings = list(outcome.warnings) + extra
 
         if outcome.error is not None:
             # Stamped here, once, rather than threaded as a parameter
@@ -596,12 +586,9 @@ class TurnEngine:
         # never ran an `interpret` stage at all, so that step could only
         # ever sit at "waiting" -- invisible while none of the five moved,
         # and conspicuous the moment the other four started ticking.
-        interpretation: str | None = None
-        if interpret and outcome.result is not None and outcome.result.rows:
-            with timer.stage("interpret"):
-                interpretation = interpret_rows(
-                    self._router, resolved_question or question, outcome.result.rows,
-                ) or None
+        interpretation = (
+            self._interpret(resolved_question or question, outcome, timer) if interpret else None
+        )
 
         turn = Turn(
             turn_id=turn_id,
@@ -623,28 +610,21 @@ class TurnEngine:
             error=outcome.error,
         )
 
-        memory = TurnMemory(
-            turn_id=turn_id,
-            filters=memory_filters,
-            result_columns=outcome.result_columns,
-            sql=outcome.sql,
-            injected_top=outcome.guard.injected_top if outcome.guard else None,
-            row_count=outcome.result.row_count if outcome.result else 0,
-            # The source this turn was answered from, for the next turn's
-            # selection (None with one source, and for a turn with no SQL).
-            datasource=(
-                outcome.datasource_selection["chosen"]
-                if outcome.datasource_selection and outcome.sql else None
-            ),
-        )
         record.turns.append(turn)
-        record.memory[turn_id] = memory
+        record.memory[turn_id] = _turn_memory(turn_id, memory_filters, outcome)
 
         self._write_audit(
             req_id, turn, outcome.datasource_selection, principal_id, outcome.value_check,
             outcome.value_spelling,
         )
         return turn
+
+    def _interpret(self, question: str, outcome: _GenOutcome, timer: StageTimer) -> str | None:
+        """A summary of the turn's rows, or ``None`` when there are none (or the model gives none)."""
+        if outcome.result is None or not outcome.result.rows:
+            return None
+        with timer.stage("interpret"):
+            return interpret_rows(self._router, question, outcome.result.rows) or None
 
     # ------------------------------------------------------------------
     # §2 CTE refinement path
@@ -862,15 +842,7 @@ class TurnEngine:
         previous_source: str | None = None,
     ) -> tuple[_GenOutcome, str | None, Ambiguity, dict[str, object], list[str]]:
         is_carry_forward = basis_decision.kind == "refines"
-        merged_filters: dict[str, object] = dict(basis_decision.inherited_filters)
-        merged_filters.update(context.filters)  # the question's own words win
-
-        if is_carry_forward and basis_decision.period_delta:
-            base_year = merged_filters.get("PersianYear")
-            if base_year is None:
-                _, base_year_str = ambiguity.default_period_label()
-                base_year = int(base_year_str)
-            merged_filters["PersianYear"] = int(base_year) + basis_decision.period_delta
+        merged_filters = _merged_filters(basis_decision, context)
 
         if is_carry_forward:
             assumptions = ambiguity.assumptions_for_carry_forward(merged_filters)
@@ -891,62 +863,17 @@ class TurnEngine:
 
         if is_carry_forward:
             ambiguity_block = Ambiguity(is_ambiguous=bool(assumptions), assumptions=assumptions, clarifications=[])
-            if demoted_from_cte_override:
-                # Overridden filter on a refinement: this turn was headed for §2 CTE composition until an
-                # override changed a filter already baked into the
-                # previous turn's SQL (see TurnEngine.ask). The generic
-                # carry-forward phrasing below only ever names the period
-                # -- useless here, since the override is almost always the
-                # ring/scope filter, not the period -- so build the same
-                # measure/ring/period sentence a fresh turn gets instead,
-                # reading the POST-override assumptions.
-                resolved_question = _resolved_question_for_fresh(question, assumptions, merged_filters)
-            else:
-                resolved_question = (
-                    f"همان پرسش قبلی، برای {merged_filters.get('PersianYear', '')}"
-                )
+            resolved_question = _carry_forward_question(
+                question, assumptions, merged_filters, demoted_from_cte_override,
+            )
         else:
             ambiguity_block = Ambiguity(
                 is_ambiguous=is_ambiguous, assumptions=assumptions, clarifications=clarifications,
             )
             resolved_question = _resolved_question_for_fresh(question, assumptions, merged_filters)
 
-        # An override may change a filter's resolved value directly (e.g.
-        # the user PATCHed "ring" to a different hall, or "period" to a
-        # different plain year) — feed that back into the filters handed
-        # to the prompt, not just the displayed assumption. A "period"
-        # value that is a plain integer year (the carry-forward shape, or
-        # a PATCHed override) is written back; a free-text default label
-        # ("سال جاری (۱۴۰۵)") is left alone -- there is no filter key to
-        # reconcile it with.
-        for a in assumptions:
-            if a.field == DEFAULT_SCOPE_FIELD_NAME:
-                merged_filters[DEFAULT_SCOPE_FILTER_KEY] = a.value
-            elif a.field == "period" and a.value.strip().isdigit():
-                merged_filters["PersianYear"] = int(a.value.strip())
-
-        # Filter-enforcement check: every STRING-valued dimension filter
-        # this turn presents to the analyst as applied -- resolved from the
-        # question or the vocabulary this turn (context.filters), or an
-        # override that changed the ring/scope assumption above -- must be
-        # checked, after generation, against what the SQL actually
-        # references (_generate_validate_execute, below). Numeric/period
-        # filters are out of scope (PersianYear is never a str); a filter
-        # only ever *inherited* from a previous turn and never touched by
-        # this one was already checked when it was first introduced.
-        filters_to_enforce: dict[str, str] = {
-            table: value for table, value in context.filters.items() if isinstance(value, str)
-        }
-        ring_value = merged_filters.get(DEFAULT_SCOPE_FILTER_KEY)
-        if isinstance(ring_value, str) and any(
-            a.field == DEFAULT_SCOPE_FIELD_NAME and a.source == "question" for a in assumptions
-        ):
-            filters_to_enforce[DEFAULT_SCOPE_FILTER_KEY] = ring_value
-        token_tier_filters = {
-            table: tokens
-            for table, tokens in context.token_tier_filters.items()
-            if table in filters_to_enforce
-        }
+        _write_back_overrides(assumptions, merged_filters)
+        filters_to_enforce, token_tier_filters = _filters_to_enforce(context, merged_filters, assumptions)
 
         ctx = RetrievalContext(
             entities=context.entities, facts=context.facts, dimensions=context.dimensions,
@@ -1039,320 +966,11 @@ class TurnEngine:
         rewritten one. *value_sink* receives what it did as
         ``value_sink["spelling"]``.
         """
-        static_prefix_tokens = static_prefix_token_estimate(system_prompt)
-        last_error: str | None = None
-        last_sql: str | None = None
-        raw = ""
-        filters_to_enforce = filters_to_enforce or {}
-        token_tier_filters = token_tier_filters or {}
-        # Filter-enforcement check: set once the first (and only) time a filter-enforcement
-        # regeneration is attempted -- this reuses the SAME correction
-        # budget as an ordinary guard-rejection retry (below), never a
-        # second, unbounded one, and never fires twice for one turn.
-        pending_filter_correction: list[str] | None = None
-        filter_correction_used = False
-        # The guard's rejection behind last_error, and the hint blocks the
-        # model has already been shown in this turn (llm/correction_hints.py).
-        last_exception: BaseException | None = None
-        seen_hints: set[str] = set()
-        # The filter value check (see the docstring): at most one extra model
-        # call per turn, outside the correction budget.
-        value_checked = False
-        extra_round = 0
-
-        def status_of(result: Any, corrections: int) -> dict[str, Any]:
-            return build_llm_status(
-                result.meta.get("raw"), model=result.provider,
-                endpoint=result.meta.get("endpoint"),
-                trusted=bool(result.meta.get("trusted", False)),
-                endpoint_status=result.meta.get("endpoint_status", 200),
-                attempts=result.meta.get("attempts", 1),
-                finish_reason=finish_reason_from_meta(result.meta),
-                structured_output=bool(result.meta.get("structured_output", False)),
-                static_prefix_tokens=static_prefix_tokens,
-                temperature=cfg.settings.llm_temperature, seed=cfg.settings.llm_seed,
-                total_ms=result.meta.get("total_ms"),
-                corrections=corrections,
-                provider=result.provider, fallback_used=result.fallback_used,
-                reasoning_detected=bool(result.meta.get("reasoning_detected", False)),
-                **latency_fields_from_meta(result.meta),
-            )
-
-        for correction_round in range(self._max_corrections + 1):
-            if value_sink is not None:
-                value_sink.pop("spelling", None)
-            gen_segments = segments
-            if pending_filter_correction is not None:
-                gen_segments = PromptSegments(
-                    static_prefix=segments.static_prefix,
-                    session_context=segments.session_context,
-                    question=segments.question
-                    + _FILTER_CORRECTION_SUFFIX_TEMPLATE.format(
-                        sql=last_sql or raw, missing=", ".join(pending_filter_correction),
-                    ),
-                )
-                pending_filter_correction = None
-            elif correction_round > 0:
-                gen_segments = PromptSegments(
-                    static_prefix=segments.static_prefix,
-                    session_context=segments.session_context,
-                    question=segments.question
-                    + _CORRECTION_SUFFIX_TEMPLATE.format(
-                        sql=last_sql or raw, error=last_error,
-                        hint=_correction_hint_block(
-                            last_exception, seen_hints, denied_columns,
-                            routing.current if routing is not None else None,
-                        ),
-                    ),
-                )
-
-            try:
-                with timer.stage("llm"):
-                    route_result, replaced = generate_with_source_fallback(
-                        lambda s: self._router.generate_for_task(TaskType.SQL_GENERATION, s),
-                        routing, gen_segments,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                code, message = _classify_router_failure(exc)
-                return _GenOutcome(error=TurnErrorInfo(code=code, message=message), tier=None)
-
-            if replaced is not None:
-                # The retry on the next source answered: from here on this
-                # request is that source's, prefix included, and nothing
-                # learned about the other source's tables carries over.
-                segments = replaced
-                last_sql = None
-                pending_filter_correction = None
-            if routing is not None:
-                # Each source has its own prefix; the cache-hit ratio is
-                # measured against the one actually in use.
-                static_prefix_tokens = static_prefix_token_estimate(system_prompt, routing.current)
-
-            raw = route_result.text or ""
-            llm_status = status_of(route_result, correction_round + extra_round)
-
-            if not raw.strip():
-                # A completion cut off at the token cap before it emitted
-                # anything is not a bad answer to correct -- it is a
-                # configuration ceiling, and the correction loop cannot
-                # move it. Retrying spends the same budget on the same
-                # reasoning to reach the same truncation, three times over,
-                # and then reports "empty response": a description of the
-                # symptom that points at the model rather than at the
-                # setting. Returned on the FIRST round for that reason.
-                if is_truncated_empty_completion(
-                    raw, finish_reason_from_meta(route_result.meta)
-                ):
-                    return _GenOutcome(
-                        error=TurnErrorInfo(
-                            code=TRUNCATED_OUTPUT_ERROR_CODE,
-                            message=truncated_output_message(cfg.settings.llm_num_predict),
-                        ),
-                        llm_status=llm_status, tier=None,
-                    )
-                last_error = "LLM returned an empty response."
-                last_exception = None
-                if correction_round == self._max_corrections:
-                    return _GenOutcome(
-                        error=TurnErrorInfo(code="EMPTY_SQL_RESPONSE", message=last_error),
-                        llm_status=llm_status, tier=None,
-                    )
-                continue
-
-            # Reset every round: if `clean_sql` itself is what raises this
-            # round (empty/non-SQL model output -- a `CorrectableRejection`,
-            # never a `PolicyRejection`), there is no cleaned candidate to
-            # show as "the statement that was refused" for THIS round, and a
-            # value left over from an earlier round would misattribute it.
-            cleaned: str | None = None
-            try:
-                with timer.stage("guard"):
-                    cleaned = clean_sql(raw)
-                    validate_sql(cleaned, denied_columns=denied_columns)
-                    capped = ensure_top(cleaned, cfg.settings.default_top_n)
-                    injected_top = cfg.settings.default_top_n if capped != cleaned else None
-                    # Multi-dialect: transpile the tsql-validated, capped SQL
-                    # to this deployment's target dialect and re-validate the
-                    # transpiled text before it is ever executed -- a no-op
-                    # passthrough when the target is "tsql" (the default).
-                    # See security.sql_guard.transpile_and_revalidate's
-                    # docstring. Raises the same
-                    # PolicyRejection/CorrectableRejection taxonomy as
-                    # validate_sql above, so the except clauses below
-                    # already handle it correctly (terminal vs. retried).
-                    capped = transpile_and_revalidate(
-                        capped,
-                        target_dialect=cfg.settings.sql_dialect,
-                        denied_columns=denied_columns,
-                    )
-            except PolicyRejection as exc:
-                # No re-prompt can fix this (a forbidden statement, a
-                # denied column, ...) -- the policy behind it is not in
-                # the prompt, so every further correction round would
-                # just spend another LLM round trip to reach this exact
-                # same rejection. Return the SAME outcome the
-                # correction_round == max_corrections branch below would
-                # have produced, immediately, on the very first
-                # occurrence -- see security.sql_guard's module docstring
-                # for the taxonomy this relies on.
-                last_error = str(exc)
-                reason, subject = _guard_reason_subject(exc)
-                return _GenOutcome(
-                    guard=GuardVerdict(
-                        verdict="rejected", rule=last_error, reason=reason, subject=subject,
-                        # `cleaned` -- after `clean_sql`, before `ensure_top`
-                        # -- is always set here: `PolicyRejection` can only
-                        # come from `validate_sql`/`transpile_and_revalidate`,
-                        # both of which run after this round's `cleaned`
-                        # assignment above.
-                        rejected_sql=cleaned,
-                        rejected_sql_display=_display_sql(cleaned),
-                    ),
-                    result=TurnResult(),
-                    warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
-                    llm_status=llm_status,
-                )
-            except ValueError as exc:
-                last_error = str(exc)
-                last_exception = exc
-                last_sql = None
-                if correction_round == self._max_corrections:
-                    reason, subject = _guard_reason_subject(exc)
-                    return _GenOutcome(
-                        guard=GuardVerdict(
-                            verdict="rejected", rule=last_error, reason=reason, subject=subject,
-                            # The LAST round's refused statement -- `None`
-                            # if this round's `clean_sql` itself is what
-                            # raised (nothing was ever handed to
-                            # `validate_sql` to refuse).
-                            rejected_sql=cleaned,
-                            rejected_sql_display=_display_sql(cleaned),
-                        ),
-                        result=TurnResult(),
-                        warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {last_error}"],
-                        llm_status=llm_status,
-                    )
-                continue
-
-            last_sql = capped
-
-            # Filter-enforcement check: a filter this turn presents as
-            # applied must actually be referenced by the SQL the guard just
-            # passed. Checked here, after the guard, before execution --
-            # regenerating once with the missing value(s) named explicitly
-            # is cheaper and more useful to the model than executing SQL
-            # already known not to filter on them. See
-            # _missing_dimension_filters's own docstring for what
-            # "referenced" means for a token-tier match.
-            missing_filters: dict[str, str] = (
-                _missing_dimension_filters(
-                    capped, filters_to_enforce, token_tier_filters, cfg.settings.sql_dialect,
-                )
-                if filters_to_enforce else {}
-            )
-            if (
-                missing_filters
-                and not filter_correction_used
-                and correction_round < self._max_corrections
-            ):
-                filter_correction_used = True
-                pending_filter_correction = list(missing_filters.values())
-                continue
-
-            # The filter value spelling fix: a literal spelled with other
-            # Arabic/Persian letter forms than the column stores becomes the
-            # stored value. See the docstring.
-            if cfg.settings.filter_value_spelling:
-                capped, spelling_audit = respell_filters(
-                    capped, denied_columns=denied_columns, dialect=cfg.settings.sql_dialect,
-                )
-                last_sql = capped
-                if value_sink is not None:
-                    value_sink["spelling"] = spelling_audit
-
-            # The filter value check (off by default): a literal this
-            # statement compares to a cached dimension column that is not one
-            # of its values gets one correction message. See the docstring.
-            value_df: pd.DataFrame | None = None
-            if cfg.settings.filter_value_check and not value_checked:
-                value_checked = True
-                value_round = self._filter_value_round(
-                    capped, gen_segments, timer=timer, status_of=status_of,
-                    correction_round=correction_round, denied_columns=denied_columns,
-                    filters_to_enforce=filters_to_enforce, token_tier_filters=token_tier_filters,
-                    missing_filters=missing_filters,
-                )
-                if value_sink is not None:
-                    value_sink["block"] = value_round.audit
-                if value_round.prompt is not None:
-                    extra_round = 1
-                    # The original statement keeps its own call's status, with
-                    # the round counted: the corrected one carries its own.
-                    llm_status = {**llm_status, "corrections": correction_round + 1}
-                if value_round.executed is not None:
-                    value_df, capped, injected_top, llm_status, missing_filters = value_round.executed
-                    last_sql = capped
-                    if value_sink is not None:
-                        value_sink["spelling"] = value_round.spelling
-
-            try:
-                with timer.stage("execute"):
-                    df = value_df if value_df is not None else self._execute(capped)
-            except Exception as exc:  # noqa: BLE001
-                # `last_error` keeps the raw text -- it feeds the next
-                # correction round's prompt (line ~781), which is a
-                # server-internal use the LLM needs the real error for.
-                # Only the client-facing TurnErrorInfo below goes through
-                # classify_database_error's sanitising (see the identical
-                # comment on the non-retry execute() failure above).
-                last_error = str(exc)
-                last_exception = None
-                if correction_round == self._max_corrections:
-                    classification = classify_database_error(exc)
-                    return _GenOutcome(
-                        sql=capped,
-                        guard=GuardVerdict(
-                            verdict="allowed", injected_top=injected_top,
-                            tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
-                        ),
-                        error=TurnErrorInfo(code=classification.code, message=classification.client_message),
-                        llm_status=llm_status,
-                    )
-                continue
-
-            columns = [str(c) for c in df.columns]
-            rows = df.to_dict(orient="records")
-            truncated = injected_top is not None and len(rows) >= injected_top
-            # Filter-enforcement check: the regeneration above (if it ran) is over budget or the
-            # rewritten SQL still misses one or more filters -- the answer
-            # is still returned (never blocked), but with one warning per
-            # filter the analyst was told applied and the SQL does not
-            # actually reference.
-            filter_warnings = [
-                _FILTER_NOT_APPLIED_WARNING.format(value=value)
-                for value in missing_filters.values()
-            ]
-            return _GenOutcome(
-                sql=capped,
-                # The same display form the refinement path sets above: the
-                # layout is the codebase's, not whatever the model emitted,
-                # and the streamed `sql` event and `done` then agree.
-                sql_display=pretty_sql(capped, cfg.settings.sql_dialect),
-                guard=GuardVerdict(
-                    verdict="allowed", injected_top=injected_top,
-                    tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
-                ),
-                result=TurnResult(
-                    columns=[ResultColumn(name=c, type=_infer_type(df[c])) for c in columns],
-                    rows=rows, row_count=len(rows), truncated=truncated,
-                ),
-                warnings=filter_warnings,
-                llm_status=llm_status,
-                corrections=correction_round + extra_round,
-                result_columns=columns,
-            )
-
-        raise RuntimeError("TurnEngine generation loop exited unexpectedly")  # pragma: no cover
+        return _CorrectionLoop(
+            self, segments, system_prompt, timer, denied_columns=denied_columns,
+            filters_to_enforce=filters_to_enforce, token_tier_filters=token_tier_filters,
+            routing=routing, value_sink=value_sink,
+        ).run()
 
     def _filter_value_round(
         self,
@@ -1566,6 +1184,128 @@ def _resolved_question_for_fresh(question: str, assumptions, filters: dict[str, 
     return f"{question} — بر اساس " + "، ".join(str(p) for p in parts)
 
 
+def _merged_filters(basis_decision: BasisDecision, context: RetrievalContext) -> dict[str, object]:
+    """The inherited filters with the question's own on top, and a carried-forward period moved."""
+    merged_filters: dict[str, object] = dict(basis_decision.inherited_filters)
+    merged_filters.update(context.filters)  # the question's own words win
+    if basis_decision.kind == "refines" and basis_decision.period_delta:
+        base_year = merged_filters.get("PersianYear")
+        if base_year is None:
+            _, base_year_str = ambiguity.default_period_label()
+            base_year = int(base_year_str)
+        merged_filters["PersianYear"] = int(base_year) + basis_decision.period_delta
+    return merged_filters
+
+
+def _carry_forward_question(
+    question: str,
+    assumptions: list[Assumption],
+    merged_filters: dict[str, object],
+    demoted_from_cte_override: bool,
+) -> str:
+    """The resolved question of a carry-forward turn."""
+    if demoted_from_cte_override:
+        # Overridden filter on a refinement: this turn was headed for §2 CTE
+        # composition until an override changed a filter already baked into
+        # the previous turn's SQL (see TurnEngine.ask). The generic
+        # carry-forward phrasing below only ever names the period -- useless
+        # here, since the override is almost always the ring/scope filter,
+        # not the period -- so build the same measure/ring/period sentence a
+        # fresh turn gets instead, reading the POST-override assumptions.
+        return _resolved_question_for_fresh(question, assumptions, merged_filters)
+    return f"همان پرسش قبلی، برای {merged_filters.get('PersianYear', '')}"
+
+
+def _write_back_overrides(assumptions: list[Assumption], merged_filters: dict[str, object]) -> None:
+    """Feed overridden values back into the filters handed to the prompt, in place.
+
+    An override may change a filter's resolved value directly (e.g. the user
+    PATCHed "ring" to a different hall, or "period" to a different plain
+    year) -- so the filters change, not just the displayed assumption. A
+    "period" value that is a plain integer year (the carry-forward shape, or
+    a PATCHed override) is written back; a free-text default label ("سال
+    جاری (۱۴۰۵)") is left alone -- there is no filter key to reconcile it
+    with.
+    """
+    for a in assumptions:
+        if a.field == DEFAULT_SCOPE_FIELD_NAME:
+            merged_filters[DEFAULT_SCOPE_FILTER_KEY] = a.value
+        elif a.field == "period" and a.value.strip().isdigit():
+            merged_filters["PersianYear"] = int(a.value.strip())
+
+
+def _filters_to_enforce(
+    context: RetrievalContext, merged_filters: dict[str, object], assumptions: list[Assumption],
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """The string filters the generated SQL must reference, and their token-tier matches.
+
+    Filter-enforcement check: every STRING-valued dimension filter this turn
+    presents to the analyst as applied -- resolved from the question or the
+    vocabulary this turn (context.filters), or an override that changed the
+    ring/scope assumption -- must be checked, after generation, against what
+    the SQL actually references (_CorrectionLoop). Numeric/period filters are
+    out of scope (PersianYear is never a str); a filter only ever *inherited*
+    from a previous turn and never touched by this one was already checked
+    when it was first introduced.
+    """
+    filters_to_enforce: dict[str, str] = {
+        table: value for table, value in context.filters.items() if isinstance(value, str)
+    }
+    ring_value = merged_filters.get(DEFAULT_SCOPE_FILTER_KEY)
+    if isinstance(ring_value, str) and any(
+        a.field == DEFAULT_SCOPE_FIELD_NAME and a.source == "question" for a in assumptions
+    ):
+        filters_to_enforce[DEFAULT_SCOPE_FILTER_KEY] = ring_value
+    token_tier_filters = {
+        table: tokens
+        for table, tokens in context.token_tier_filters.items()
+        if table in filters_to_enforce
+    }
+    return filters_to_enforce, token_tier_filters
+
+
+def _demote_overridden_refinement(
+    basis_decision: BasisDecision, assumption_overrides: dict[str, str] | None,
+) -> tuple[BasisDecision, bool]:
+    """A §2 CTE refinement whose inherited filter an override changes, routed to fresh generation.
+
+    Returns the decision to use and whether it was demoted (see the comment
+    in :meth:`TurnEngine.ask` for why such a refinement cannot compose).
+    """
+    if not (basis_decision.kind == "refines" and basis_decision.composition == "cte"):
+        return basis_decision, False
+    overridden_inherited = _cte_override_conflict(
+        basis_decision.inherited_filters, assumption_overrides,
+    )
+    if overridden_inherited is None:
+        return basis_decision, False
+    return BasisDecision(
+        kind="refines",
+        refines_turn_id=basis_decision.refines_turn_id,
+        composition="none",
+        inherited_filters=overridden_inherited,
+        period_delta=basis_decision.period_delta,
+    ), True
+
+
+def _turn_memory(turn_id: str, filters: dict[str, object], outcome: _GenOutcome) -> TurnMemory:
+    """The memory sidecar kept for a turn, for the turns that follow it."""
+    return TurnMemory(
+        turn_id=turn_id,
+        filters=filters,
+        result_columns=outcome.result_columns,
+        sql=outcome.sql,
+        injected_top=outcome.guard.injected_top if outcome.guard else None,
+        row_count=outcome.result.row_count if outcome.result else 0,
+        # The source this turn was answered from, for the next turn's
+        # selection (None with one source, and for a turn with no SQL).
+        datasource=(
+            outcome.datasource_selection["chosen"]
+            if outcome.datasource_selection and outcome.sql else None
+        ),
+    )
+
+
 def _cte_override_conflict(
     inherited_filters: dict[str, object], overrides: dict[str, str] | None,
 ) -> dict[str, object] | None:
@@ -1668,3 +1408,414 @@ def _missing_dimension_filters(
         if not referenced:
             missing[table] = value
     return missing
+
+
+@dataclass(frozen=True)
+class _Guarded:
+    """A statement the guard accepted this round: capped, transpiled, and the ``TOP`` it was given."""
+
+    capped: str
+    injected_top: int | None
+
+
+class _CorrectionLoop:
+    """One turn's generate -> guard -> execute loop, with its correction rounds.
+
+    The state of :meth:`TurnEngine._generate_validate_execute` (see its
+    docstring for the behaviour). Each round is :meth:`_round`; a round either
+    ends the turn with a :class:`_GenOutcome` or returns ``None`` to start the
+    next correction round.
+    """
+
+    def __init__(
+        self,
+        engine: TurnEngine,
+        segments: PromptSegments,
+        system_prompt: str,
+        timer: StageTimer,
+        *,
+        denied_columns: tuple[str, ...] | None,
+        filters_to_enforce: dict[str, str] | None,
+        token_tier_filters: dict[str, tuple[str, ...]] | None,
+        routing: SourceRouting | None,
+        value_sink: dict[str, Any] | None,
+    ) -> None:
+        self.engine = engine
+        self.segments = segments
+        self.system_prompt = system_prompt
+        self.timer = timer
+        self.denied_columns = denied_columns
+        self.filters_to_enforce = filters_to_enforce or {}
+        self.token_tier_filters = token_tier_filters or {}
+        self.routing = routing
+        self.value_sink = value_sink
+        self.static_prefix_tokens = static_prefix_token_estimate(system_prompt)
+        self.last_error: str | None = None
+        self.last_sql: str | None = None
+        self.raw = ""
+        # Filter-enforcement check: set once the first (and only) time a
+        # filter-enforcement regeneration is attempted -- this reuses the SAME
+        # correction budget as an ordinary guard-rejection retry, never a
+        # second, unbounded one, and never fires twice for one turn.
+        self.pending_filter_correction: list[str] | None = None
+        self.filter_correction_used = False
+        # The guard's rejection behind last_error, and the hint blocks the
+        # model has already been shown in this turn (llm/correction_hints.py).
+        self.last_exception: BaseException | None = None
+        self.seen_hints: set[str] = set()
+        # The filter value check (see the docstring): at most one extra model
+        # call per turn, outside the correction budget.
+        self.value_checked = False
+        self.extra_round = 0
+
+    @property
+    def max_corrections(self) -> int:
+        return self.engine._max_corrections
+
+    def run(self) -> _GenOutcome:
+        """Run rounds until one ends the turn."""
+        for correction_round in range(self.max_corrections + 1):
+            outcome = self._round(correction_round)
+            if outcome is not None:
+                return outcome
+        raise RuntimeError("TurnEngine generation loop exited unexpectedly")  # pragma: no cover
+
+    def status_of(self, result: Any, corrections: int) -> dict[str, Any]:
+        """The turn's ``llm`` block for one model call, against the prefix currently in use."""
+        return build_llm_status(
+            result.meta.get("raw"), model=result.provider,
+            endpoint=result.meta.get("endpoint"),
+            trusted=bool(result.meta.get("trusted", False)),
+            endpoint_status=result.meta.get("endpoint_status", 200),
+            attempts=result.meta.get("attempts", 1),
+            finish_reason=finish_reason_from_meta(result.meta),
+            structured_output=bool(result.meta.get("structured_output", False)),
+            static_prefix_tokens=self.static_prefix_tokens,
+            temperature=cfg.settings.llm_temperature, seed=cfg.settings.llm_seed,
+            total_ms=result.meta.get("total_ms"),
+            corrections=corrections,
+            provider=result.provider, fallback_used=result.fallback_used,
+            reasoning_detected=bool(result.meta.get("reasoning_detected", False)),
+            **latency_fields_from_meta(result.meta),
+        )
+
+    # -- one round -----------------------------------------------------------
+
+    def _round(self, correction_round: int) -> _GenOutcome | None:
+        if self.value_sink is not None:
+            self.value_sink.pop("spelling", None)
+        gen_segments = self._prompt_for(correction_round)
+
+        try:
+            with self.timer.stage("llm"):
+                route_result, replaced = generate_with_source_fallback(
+                    lambda s: self.engine._router.generate_for_task(TaskType.SQL_GENERATION, s),
+                    self.routing, gen_segments,
+                )
+        except Exception as exc:  # noqa: BLE001
+            code, message = _classify_router_failure(exc)
+            return _GenOutcome(error=TurnErrorInfo(code=code, message=message), tier=None)
+
+        if replaced is not None:
+            # The retry on the next source answered: from here on this
+            # request is that source's, prefix included, and nothing
+            # learned about the other source's tables carries over.
+            self.segments = replaced
+            self.last_sql = None
+            self.pending_filter_correction = None
+        if self.routing is not None:
+            # Each source has its own prefix; the cache-hit ratio is
+            # measured against the one actually in use.
+            self.static_prefix_tokens = static_prefix_token_estimate(
+                self.system_prompt, self.routing.current,
+            )
+
+        self.raw = route_result.text or ""
+        llm_status = self.status_of(route_result, correction_round + self.extra_round)
+
+        if not self.raw.strip():
+            return self._empty_reply(correction_round, route_result, llm_status)
+
+        guarded = self._guard(correction_round, llm_status)
+        if not isinstance(guarded, _Guarded):
+            return guarded
+        capped, injected_top = guarded.capped, guarded.injected_top
+        self.last_sql = capped
+
+        # Filter-enforcement check: a filter this turn presents as applied
+        # must actually be referenced by the SQL the guard just passed.
+        # Checked here, after the guard, before execution -- regenerating
+        # once with the missing value(s) named explicitly is cheaper and more
+        # useful to the model than executing SQL already known not to filter
+        # on them. See _missing_dimension_filters's own docstring for what
+        # "referenced" means for a token-tier match.
+        missing_filters: dict[str, str] = (
+            _missing_dimension_filters(
+                capped, self.filters_to_enforce, self.token_tier_filters,
+                cfg.settings.sql_dialect,
+            )
+            if self.filters_to_enforce else {}
+        )
+        if (
+            missing_filters
+            and not self.filter_correction_used
+            and correction_round < self.max_corrections
+        ):
+            self.filter_correction_used = True
+            self.pending_filter_correction = list(missing_filters.values())
+            return None
+
+        capped = self._respell(capped)
+        value_df, capped, injected_top, llm_status, missing_filters = self._check_values(
+            capped, gen_segments, correction_round, llm_status, injected_top, missing_filters,
+        )
+        return self._execute(correction_round, capped, injected_top, llm_status, missing_filters, value_df)
+
+    def _prompt_for(self, correction_round: int) -> PromptSegments:
+        """This round's prompt: the turn's own, or it plus a filter or guard correction."""
+        segments = self.segments
+        if self.pending_filter_correction is not None:
+            missing = self.pending_filter_correction
+            self.pending_filter_correction = None
+            return PromptSegments(
+                static_prefix=segments.static_prefix,
+                session_context=segments.session_context,
+                question=segments.question
+                + _FILTER_CORRECTION_SUFFIX_TEMPLATE.format(
+                    sql=self.last_sql or self.raw, missing=", ".join(missing),
+                ),
+            )
+        if correction_round == 0:
+            return segments
+        return PromptSegments(
+            static_prefix=segments.static_prefix,
+            session_context=segments.session_context,
+            question=segments.question
+            + _CORRECTION_SUFFIX_TEMPLATE.format(
+                sql=self.last_sql or self.raw, error=self.last_error,
+                hint=_correction_hint_block(
+                    self.last_exception, self.seen_hints, self.denied_columns,
+                    self.routing.current if self.routing is not None else None,
+                ),
+            ),
+        )
+
+    def _empty_reply(
+        self, correction_round: int, route_result: Any, llm_status: dict[str, Any],
+    ) -> _GenOutcome | None:
+        """A reply with no text: truncation ends the turn at once; otherwise retry until the budget runs out."""
+        # A completion cut off at the token cap before it emitted anything is
+        # not a bad answer to correct -- it is a configuration ceiling, and the
+        # correction loop cannot move it. Retrying spends the same budget on
+        # the same reasoning to reach the same truncation, three times over,
+        # and then reports "empty response": a description of the symptom that
+        # points at the model rather than at the setting. Returned on the
+        # FIRST round for that reason.
+        if is_truncated_empty_completion(self.raw, finish_reason_from_meta(route_result.meta)):
+            return _GenOutcome(
+                error=TurnErrorInfo(
+                    code=TRUNCATED_OUTPUT_ERROR_CODE,
+                    message=truncated_output_message(cfg.settings.llm_num_predict),
+                ),
+                llm_status=llm_status, tier=None,
+            )
+        self.last_error = "LLM returned an empty response."
+        self.last_exception = None
+        if correction_round == self.max_corrections:
+            return _GenOutcome(
+                error=TurnErrorInfo(code="EMPTY_SQL_RESPONSE", message=self.last_error),
+                llm_status=llm_status, tier=None,
+            )
+        return None
+
+    def _guard(self, correction_round: int, llm_status: dict[str, Any]) -> _Guarded | _GenOutcome | None:
+        """Clean, validate, cap and transpile this round's reply.
+
+        Returns the accepted statement, the turn's outcome (a policy
+        rejection, or a correctable one on the last round), or ``None`` to
+        retry.
+        """
+        # Reset every round: if `clean_sql` itself is what raises this round
+        # (empty/non-SQL model output -- a `CorrectableRejection`, never a
+        # `PolicyRejection`), there is no cleaned candidate to show as "the
+        # statement that was refused" for THIS round, and a value left over
+        # from an earlier round would misattribute it.
+        cleaned: str | None = None
+        try:
+            with self.timer.stage("guard"):
+                cleaned = clean_sql(self.raw)
+                validate_sql(cleaned, denied_columns=self.denied_columns)
+                capped = ensure_top(cleaned, cfg.settings.default_top_n)
+                injected_top = cfg.settings.default_top_n if capped != cleaned else None
+                # Multi-dialect: transpile the tsql-validated, capped SQL to
+                # this deployment's target dialect and re-validate the
+                # transpiled text before it is ever executed -- a no-op
+                # passthrough when the target is "tsql" (the default). See
+                # security.sql_guard.transpile_and_revalidate's docstring.
+                # Raises the same PolicyRejection/CorrectableRejection
+                # taxonomy as validate_sql above, so the except clauses below
+                # already handle it correctly (terminal vs. retried).
+                capped = transpile_and_revalidate(
+                    capped,
+                    target_dialect=cfg.settings.sql_dialect,
+                    denied_columns=self.denied_columns,
+                )
+        except PolicyRejection as exc:
+            # No re-prompt can fix this (a forbidden statement, a denied
+            # column, ...) -- the policy behind it is not in the prompt, so
+            # every further correction round would just spend another LLM
+            # round trip to reach this exact same rejection. Return the SAME
+            # outcome the last-round branch below would have produced,
+            # immediately, on the very first occurrence -- see
+            # security.sql_guard's module docstring for the taxonomy this
+            # relies on. `cleaned` is always set here: `PolicyRejection` can
+            # only come from `validate_sql`/`transpile_and_revalidate`, both
+            # of which run after this round's `cleaned` assignment above.
+            self.last_error = str(exc)
+            return _guard_rejection(exc, self.last_error, cleaned, llm_status)
+        except ValueError as exc:
+            self.last_error = str(exc)
+            self.last_exception = exc
+            self.last_sql = None
+            if correction_round == self.max_corrections:
+                # The LAST round's refused statement -- `None` if this round's
+                # `clean_sql` itself is what raised (nothing was ever handed
+                # to `validate_sql` to refuse).
+                return _guard_rejection(exc, self.last_error, cleaned, llm_status)
+            return None
+        return _Guarded(capped=capped, injected_top=injected_top)
+
+    def _respell(self, capped: str) -> str:
+        """The filter value spelling fix (see the docstring): stored spellings for filter literals."""
+        if not cfg.settings.filter_value_spelling:
+            return capped
+        capped, spelling_audit = respell_filters(
+            capped, denied_columns=self.denied_columns, dialect=cfg.settings.sql_dialect,
+        )
+        self.last_sql = capped
+        if self.value_sink is not None:
+            self.value_sink["spelling"] = spelling_audit
+        return capped
+
+    def _check_values(
+        self,
+        capped: str,
+        gen_segments: PromptSegments,
+        correction_round: int,
+        llm_status: dict[str, Any],
+        injected_top: int | None,
+        missing_filters: dict[str, str],
+    ) -> tuple[pd.DataFrame | None, str, int | None, dict[str, Any], dict[str, str]]:
+        """The filter value check (off by default; see the docstring), at most once per turn.
+
+        Returns ``(value_df, capped, injected_top, llm_status,
+        missing_filters)``: *value_df* is the corrected statement's rows when
+        that statement was used, and the other four are what then holds.
+        """
+        if not cfg.settings.filter_value_check or self.value_checked:
+            return None, capped, injected_top, llm_status, missing_filters
+        self.value_checked = True
+        value_round = self.engine._filter_value_round(
+            capped, gen_segments, timer=self.timer, status_of=self.status_of,
+            correction_round=correction_round, denied_columns=self.denied_columns,
+            filters_to_enforce=self.filters_to_enforce,
+            token_tier_filters=self.token_tier_filters,
+            missing_filters=missing_filters,
+        )
+        if self.value_sink is not None:
+            self.value_sink["block"] = value_round.audit
+        if value_round.prompt is not None:
+            self.extra_round = 1
+            # The original statement keeps its own call's status, with the
+            # round counted: the corrected one carries its own.
+            llm_status = {**llm_status, "corrections": correction_round + 1}
+        if value_round.executed is None:
+            return None, capped, injected_top, llm_status, missing_filters
+        value_df, capped, injected_top, llm_status, missing_filters = value_round.executed
+        self.last_sql = capped
+        if self.value_sink is not None:
+            self.value_sink["spelling"] = value_round.spelling
+        return value_df, capped, injected_top, llm_status, missing_filters
+
+    def _execute(
+        self,
+        correction_round: int,
+        capped: str,
+        injected_top: int | None,
+        llm_status: dict[str, Any],
+        missing_filters: dict[str, str],
+        value_df: pd.DataFrame | None,
+    ) -> _GenOutcome | None:
+        """Run *capped* (unless the value check already did) and build the turn's answer."""
+        try:
+            with self.timer.stage("execute"):
+                df = value_df if value_df is not None else self.engine._execute(capped)
+        except Exception as exc:  # noqa: BLE001
+            # `last_error` keeps the raw text -- it feeds the next correction
+            # round's prompt, which is a server-internal use the LLM needs the
+            # real error for. Only the client-facing TurnErrorInfo below goes
+            # through classify_database_error's sanitising (see the identical
+            # comment on the non-retry execute() failure in the refinement
+            # path).
+            self.last_error = str(exc)
+            self.last_exception = None
+            if correction_round != self.max_corrections:
+                return None
+            classification = classify_database_error(exc)
+            return _GenOutcome(
+                sql=capped,
+                guard=GuardVerdict(
+                    verdict="allowed", injected_top=injected_top,
+                    tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
+                ),
+                error=TurnErrorInfo(code=classification.code, message=classification.client_message),
+                llm_status=llm_status,
+            )
+
+        columns = [str(c) for c in df.columns]
+        rows = df.to_dict(orient="records")
+        truncated = injected_top is not None and len(rows) >= injected_top
+        # Filter-enforcement check: the regeneration (if it ran) is over budget
+        # or the rewritten SQL still misses one or more filters -- the answer
+        # is still returned (never blocked), but with one warning per filter
+        # the analyst was told applied and the SQL does not actually reference.
+        filter_warnings = [
+            _FILTER_NOT_APPLIED_WARNING.format(value=value)
+            for value in missing_filters.values()
+        ]
+        return _GenOutcome(
+            sql=capped,
+            # The same display form the refinement path sets: the layout is
+            # the codebase's, not whatever the model emitted, and the streamed
+            # `sql` event and `done` then agree.
+            sql_display=pretty_sql(capped, cfg.settings.sql_dialect),
+            guard=GuardVerdict(
+                verdict="allowed", injected_top=injected_top,
+                tables_touched=extract_touched_tables(capped, dialect=cfg.settings.sql_dialect),
+            ),
+            result=TurnResult(
+                columns=[ResultColumn(name=c, type=_infer_type(df[c])) for c in columns],
+                rows=rows, row_count=len(rows), truncated=truncated,
+            ),
+            warnings=filter_warnings,
+            llm_status=llm_status,
+            corrections=correction_round + self.extra_round,
+            result_columns=columns,
+        )
+
+
+def _guard_rejection(
+    exc: Exception, rule: str, cleaned: str | None, llm_status: dict[str, Any],
+) -> _GenOutcome:
+    """The turn's outcome when the guard refused the statement *cleaned* (``None``: nothing was cleaned)."""
+    reason, subject = _guard_reason_subject(exc)
+    return _GenOutcome(
+        guard=GuardVerdict(
+            verdict="rejected", rule=rule, reason=reason, subject=subject,
+            rejected_sql=cleaned,
+            rejected_sql_display=_display_sql(cleaned),
+        ),
+        result=TurnResult(),
+        warnings=[f"پرس‌وجوی تولیدشده توسط لایهٔ نگهبانی امنیتی رد شد: {rule}"],
+        llm_status=llm_status,
+    )
