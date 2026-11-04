@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **SonarQube analysis and quality gate in CI (`sonar-project.properties`, `.github/workflows/ci.yml`, `setup.cfg`).** A new `sonar` job runs after the test matrix, analyses the repository with the official scan action (pinned to the commit of v8.3.0) and fails when the project's quality gate fails (`sonar.qualitygate.wait`). It reads the `coverage.xml` the coverage leg already writes, handed over as an artifact, instead of running the suite again. `sonar-project.properties` keeps Sonar's view in step with the rest of the tooling: `tests/`, `eval/tests/` and the root `conftest.py` are test code; the coverage scope leaves out the same files `setup.cfg` omits (without that, Sonar would count about 14,600 lines as 0% covered and report about 61% instead of about 95%); the Python versions are the test matrix's 3.11, 3.12 and 3.13; the minified vendor bundles under `web/assets/vendor/` are not analysed. The project version comes from `core/version.py`, so a "previous version" new-code definition restarts at each release. `setup.cfg` now writes relative paths into the coverage report, so the paths match in the second job's checkout. The job needs the `SONAR_TOKEN` secret (and `SONAR_HOST_URL` for a self-hosted server); a run without the token, such as a pull request from a fork, skips the analysis with a warning on the run rather than passing silently.
+
 ## [6.17.1] — 2026-11-08
 
 **Issues fixed:** #244 (most questions got a `PersianMonthName = N'دی'` filter they never asked for); #237 (a data source variable missing from `.env` stopped the setup tools with no reason given).

@@ -609,7 +609,11 @@ Actions on Ubuntu, Windows and macOS across Python 3.11, 3.12 and 3.13, each
 combination once on the newest releases `requirements.txt` allows and once on
 the exact pins of `requirements.lock`, with doctests, coverage, a dependency
 audit of `requirements.lock` and an offline evaluation gate, plus a separate `lint` job
-that runs `ruff check .`. It runs
+that runs `ruff check .` and a `sonar` job that sends the analysis and the
+coverage report to SonarQube and fails when the project's quality gate fails
+(scope in [`sonar-project.properties`](sonar-project.properties); it needs the
+`SONAR_TOKEN` secret, and `SONAR_HOST_URL` as a repository variable for a
+self-hosted SonarQube Server). It runs
 with `PROJECT_CONFIG_DIR=project_config.example` and no `project_config/`
 present, so the suite never depends on real domain data.
 

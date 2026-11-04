@@ -42,3 +42,6 @@ eval_data/
 .coverage
 .coverage.*
 htmlcov/
+
+# SonarScanner working directory (local scans)
+.scannerwork/

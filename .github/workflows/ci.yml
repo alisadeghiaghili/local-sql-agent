@@ -213,6 +213,17 @@ jobs:
           PROJECT_CONFIG_DIR: project_config.example
         run: pytest tests/ eval/tests --cov --cov-report=term-missing --cov-report=xml
 
+      # The `sonar` job below reads this report instead of running the
+      # suite a second time.
+      - name: Keep coverage report for SonarQube
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' && matrix.deps == 'floors'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
       # Offline evaluation gate. Proves the harness, the guard and the
       # fingerprinting still work end to end; it is NOT an accuracy
       # measurement, because offline mode replays the golden set's own
@@ -236,3 +247,69 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  sonar:
+    # Static analysis and the SonarQube quality gate. A job of its own so
+    # its verdict shows as its own check, and so the analysis reads the
+    # coverage report the test job already produced rather than running the
+    # whole suite again. `needs: test` is what makes that report exist; it
+    # also means a red test run is not followed by an analysis of code that
+    # is already known to be broken.
+    #
+    # What is analysed, what counts as test code and what is left out of
+    # coverage are set in sonar-project.properties, kept in step with
+    # setup.cfg and the test matrix above.
+    name: SonarQube analysis
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # Secrets cannot be read in a job-level `if`, so the token is put in
+      # the environment and the steps test it there.
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # Empty for SonarQube Cloud. Set the repository variable to the
+      # server's URL for a self-hosted SonarQube Server.
+      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+    steps:
+      # A pull request from a fork, and a Dependabot run, get no secrets.
+      # Failing those would make every outside contribution red for a
+      # reason its author cannot fix, so the job is skipped there -- but
+      # visibly, as a warning on the run, never as a silent green.
+      - name: Report a missing SONAR_TOKEN
+        if: env.SONAR_TOKEN == ''
+        run: echo "::warning title=SonarQube skipped::SONAR_TOKEN is not available to this run, so no analysis was made and no quality gate was checked."
+
+      - name: Checkout
+        if: env.SONAR_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          # Full history: Sonar assigns each line to its commit to decide
+          # what is new code. A shallow clone makes every line look new,
+          # or none of it, and the gate measures the wrong thing.
+          fetch-depth: 0
+
+      - name: Fetch coverage report
+        if: env.SONAR_TOKEN != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      # The project version is the one release.yml tags, so a "previous
+      # version" new-code definition starts again at each release.
+      - name: Read project version
+        if: env.SONAR_TOKEN != ''
+        id: version
+        run: echo "version=$(sed -nE 's/^__version__ = "([^"]+)"$/\1/p' core/version.py)" >> "$GITHUB_OUTPUT"
+
+      # Pinned to the commit of v8.3.0 rather than to a moving tag: this
+      # step runs with SONAR_TOKEN in its environment, so what it executes
+      # must not change without a reviewed commit here.
+      # sonar.qualitygate.wait makes the step wait for the server's verdict
+      # and fail when the quality gate fails, instead of only uploading.
+      - name: SonarQube scan and quality gate
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        with:
+          args: >-
+            -Dsonar.projectVersion=${{ steps.version.outputs.version }}
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
