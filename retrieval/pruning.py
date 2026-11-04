@@ -40,6 +40,73 @@ from collections.abc import Sequence
 __all__ = ["prune_selection"]
 
 
+def _evidence_tier(
+    table: str,
+    ranked: dict[str, float],
+    named: set[str],
+    columns: dict[str, float],
+    forced_score: float,
+) -> str:
+    """How strongly the question supports *table*: ``"strong"``, ``"column"`` or ``"lexical"``.
+
+    Strong: named in the question, forced, or not ranked at all (nothing to
+    weigh it by). Column: a column name matched. Lexical: a description match
+    only.
+    """
+    score = ranked.get(table)
+    if table in named or score is None or score >= forced_score:
+        return "strong"
+    return "column" if columns.get(table, 0.0) > 0.0 else "lexical"
+
+
+def _supported_tables(
+    graph: object,
+    candidates: list[str],
+    anchors: set[str],
+    *,
+    hops: int,
+    hub: int,
+    corroborate: bool,
+) -> set[str]:
+    """The anchors, every candidate the join graph connects to them, and corroborated pairs.
+
+    A table joined to a kept table (an anchor, or one rescued a round
+    earlier) is kept: weak evidence is enough where the join graph agrees,
+    and a classification hangs from the dimension that hangs from the fact.
+    With *corroborate*, two candidates that no anchor supports but that are
+    joined to each other are kept too (each was matched on its own and agrees
+    with the join graph), and what joins to them is rescued in turn.
+    """
+    from retrieval.join_paths import connected_within
+
+    kept: set[str] = set(anchors)
+    pending = _rescue(graph, kept, [t for t in candidates if t not in kept], hops, hub)
+    if corroborate:
+        pairs = [
+            t for t in pending
+            if connected_within(graph, t, set(pending) - {t}, hops, max_hub_degree=hub)
+        ]
+        kept.update(pairs)
+        _rescue(graph, kept, [t for t in pending if t not in kept], hops, hub)
+    return kept
+
+
+def _rescue(graph: object, kept: set[str], pending: list[str], hops: int, hub: int) -> list[str]:
+    """Move to *kept*, round by round, every pending table connected to a kept one; the rest stay pending."""
+    from retrieval.join_paths import connected_within
+
+    while pending:
+        rescued = [
+            t for t in pending
+            if connected_within(graph, t, kept, hops, max_hub_degree=hub)
+        ]
+        if not rescued:
+            break
+        kept.update(rescued)
+        pending = [t for t in pending if t not in kept]
+    return pending
+
+
 def prune_selection(
     question: str, entities: Sequence[str], facts: Sequence[str],
 ) -> tuple[list[str], list[str]]:
@@ -67,7 +134,7 @@ def prune_selection(
     import config as cfg
     from knowledge.entities import ENTITIES
     from knowledge.retrieval_hints import FACT_PATTERNS
-    from retrieval.join_paths import build_join_graph, connected_within
+    from retrieval.join_paths import build_join_graph
     from retrieval.table_evidence import named_tables
     from schema_data.retriever import _FORCED_SCORE, column_evidence, rank_tables
 
@@ -81,54 +148,23 @@ def prune_selection(
     named |= set(named_tables(question, FACT_PATTERNS))
     columns = column_evidence(question)
 
-    def tier(table: str) -> str:
-        score = ranked.get(table)
-        if table in named or score is None or score >= _FORCED_SCORE:
-            return "strong"
-        return "column" if columns.get(table, 0.0) > 0.0 else "lexical"
-
     scores = {t: ranked[t] for t in candidates if t in ranked and ranked[t] < _FORCED_SCORE}
     if not scores:
         return list(entities), list(facts)
     top = max(scores.values())
     best = min(scores, key=lambda t: (-scores[t], t))
 
-    tiers = {t: tier(t) for t in candidates}
+    tiers = {t: _evidence_tier(t, ranked, named, columns, _FORCED_SCORE) for t in candidates}
     anchors = {
         t for t in candidates
         if tiers[t] == "strong"
         or (tiers[t] == "column" and scores[t] >= settings.retrieval_prune_score_ratio * top)
     } or {best}
 
-    graph = build_join_graph()
-    hops = settings.retrieval_prune_connect_hops
-    hub = settings.retrieval_join_max_hub_degree
-    kept: set[str] = set(anchors)
-    pending = [t for t in candidates if t not in kept]
-    # A table joined to a kept table (an anchor, or one rescued a round
-    # earlier) is kept: weak evidence is enough where the join graph agrees,
-    # and a classification hangs from the dimension that hangs from the fact.
-    def rescue() -> None:
-        nonlocal pending
-        while pending:
-            rescued = [
-                t for t in pending
-                if connected_within(graph, t, kept, hops, max_hub_degree=hub)
-            ]
-            if not rescued:
-                return
-            kept.update(rescued)
-            pending = [t for t in pending if t not in kept]
-
-    rescue()
-    if settings.retrieval_prune_corroborate:
-        # Two candidates that no anchor supports but that are joined to each
-        # other were each matched on their own and agree with the join graph.
-        pairs = [
-            t for t in pending
-            if connected_within(graph, t, set(pending) - {t}, hops, max_hub_degree=hub)
-        ]
-        kept.update(pairs)
-        pending = [t for t in pending if t not in kept]
-        rescue()
+    kept = _supported_tables(
+        build_join_graph(), candidates, anchors,
+        hops=settings.retrieval_prune_connect_hops,
+        hub=settings.retrieval_join_max_hub_degree,
+        corroborate=settings.retrieval_prune_corroborate,
+    )
     return [t for t in entities if t in kept], [t for t in facts if t in kept]
