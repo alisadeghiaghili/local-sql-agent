@@ -28,6 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`retrieval/` under cognitive complexity 15 (Sonar S3776), module by module.**
   - **`join_paths.py`:** `_best_path` (42), `_infer_edges` (24), `expand_join_paths` (24), `build_join_graph` (17). The per-source path search, the settle step, the inferred target of one column, the declared edges, the adjacency and the nearest pending table are functions of their own. Old and new agreed on 40,000 random graphs for `_best_path`/`connected_within` (with and without data sources, inferred edges and hubs), 15,000 `expand_join_paths` cases, 20,000 `_infer_edges` cases, and on the example configuration's graph.
+  - **`dimension_vocabulary.py`:** `match_question_against_vocabulary` (41), `_token_tier_winners` (17). Collecting a table's cached pool, choosing the winners, the generic tokens of a column and the token scores are functions of their own. Old and new agreed on 20,000 random vocabularies and questions (cold, stale and fresh caches, denied columns, token fallback on and off), including the background refreshes they trigger.
 
 ### Fixed
 
