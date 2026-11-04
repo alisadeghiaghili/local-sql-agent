@@ -253,7 +253,7 @@ def _parse(sql: str) -> list[exp.Expression]:
     """
     try:
         parsed = sqlglot.parse(sql, read=_DIALECT)
-    except Exception as exc:  # noqa: BLE001 - sqlglot errors, recursion limits
+    except Exception as exc:  # noqa: BLE001  # sqlglot errors, recursion limits
         raise _Unsupported(
             "parse_error", f"the statement does not parse as T-SQL ({type(exc).__name__})"
         ) from None

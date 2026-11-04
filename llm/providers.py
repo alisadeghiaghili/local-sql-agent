@@ -52,7 +52,9 @@ _TIMEOUT: int = 120
 _RETRIES: int = 3
 _BACKOFF_BASE: int = 2
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+# No "\s*" around the lazy body: _strip_fences() strips it, and the three
+# adjacent whitespace-matching parts backtrack quadratically otherwise.
+_FENCE_RE = re.compile(r"```(?:json)?(.*?)```", re.DOTALL | re.IGNORECASE)
 
 _OUT_OF_SCOPE_SENTINEL = "OUT_OF_SCOPE"
 

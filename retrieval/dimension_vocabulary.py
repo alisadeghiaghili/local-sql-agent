@@ -1136,7 +1136,7 @@ def manual_refresh(
     key = (table, column)
     try:
         values = refresh_vocabulary(table, column, execute_fn)
-    except Exception as exc:  # noqa: BLE001 - reported, not propagated -- see docstring
+    except Exception as exc:  # noqa: BLE001  # reported, not propagated -- see docstring
         _mark_attempt_failed(key)
         logger.warning(
             "dimension_vocabulary: manual refresh failed for %s.%s: %s",

@@ -450,7 +450,7 @@ class LLMRouter:
 
         provider = cfg.settings.llm_provider.strip().lower()
         budget = cfg.settings.llm_task_budget_seconds
-        budgets = {task: budget for task in TaskType} if budget is not None else None
+        budgets = dict.fromkeys(TaskType, budget) if budget is not None else None
 
         if provider == "mock":
             return cls(default_chain=[MockBackend()], budgets=budgets)

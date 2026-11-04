@@ -157,7 +157,7 @@ def admin_schema_drift(
         cached = admin_expensive_cache.get_or_compute(
             "schema_drift", cfg.settings.admin_expensive_cache_ttl_seconds, _run, force=refresh,
         )
-    except Exception as exc:  # noqa: BLE001 - the warehouse being unreachable is an operational fact, not a bug
+    except Exception as exc:  # noqa: BLE001  # the warehouse being unreachable is an operational fact, not a bug
         raise HTTPException(
             status_code=503,
             detail=f"Could not read the live warehouse for a schema drift check: {exc}",

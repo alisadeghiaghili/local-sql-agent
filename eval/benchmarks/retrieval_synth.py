@@ -543,7 +543,7 @@ def _config_files(builder: _Builder) -> dict[str, str]:
     rel_entries = []
     for e in builder.edges:
         # Declared in relationships.yaml, or mirrored there from schema.yaml.
-        if e.channel == "relationships" or (e.channel == "schema" and rel_rng.random() < 0.3):
+        if e.channel == "relationships" or (e.channel == "schema" and rel_rng.random() < 0.3):  # NOSONAR(S2245) seeded, for a reproducible benchmark
             s, d = tables[e.src], tables[e.dst]
             rel_entries.append({
                 "from_table": s.bare, "from_schema": s.schema, "from_column": e.column,
@@ -939,7 +939,7 @@ def write_benchmark(bench: Benchmark, out_dir: str | Path) -> Path:
     return config_dir
 
 
-def run_benchmark(out_dir: str | Path, *, bench: Benchmark | None = None) -> dict[str, Any]:
+def run_benchmark(out_dir: str | Path) -> dict[str, Any]:
     """Measure the benchmark under *out_dir* with ``eval.cli recall``.
 
     The configuration is read once per process, so the measurement runs in a
@@ -949,9 +949,6 @@ def run_benchmark(out_dir: str | Path, *, bench: Benchmark | None = None) -> dic
     ----------
     out_dir:
         Directory written by :func:`write_benchmark`.
-    bench:
-        Unused by the measurement itself; accepted so a caller that already
-        holds the benchmark can say so.
 
     Returns
     -------
@@ -1069,7 +1066,7 @@ def _add_generation_options(parser: argparse.ArgumentParser) -> None:
                         help="Data source names (at least two; the first is the default).")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # NOSONAR(S3516) exit status for the CLI: failures raise
     """Command line: ``generate`` writes the benchmark, ``run`` also measures it.
 
     Parameters

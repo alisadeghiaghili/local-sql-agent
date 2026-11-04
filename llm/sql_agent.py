@@ -746,7 +746,7 @@ class SQLAgent:
                     df = sql_cache_lookup(new_sql)
                 if df is None:
                     df = self._execute(new_sql)
-        except Exception as exc:  # noqa: BLE001 - whatever goes wrong, the original statement runs
+        except Exception as exc:  # noqa: BLE001  # whatever goes wrong, the original statement runs
             logger.info("Filter value correction not used (%s): %.120s", type(exc).__name__, exc)
             return _ValueRound(audit_block(check, corrected=False, fallback=True), prompt)
         return _ValueRound(

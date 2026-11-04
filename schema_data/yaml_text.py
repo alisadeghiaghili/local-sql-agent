@@ -64,24 +64,26 @@ Edit = tuple[int, int, list[str]]
 #: A ``tables:`` entry key line: a plain or quoted key, then ``:`` and
 #: nothing but a comment (the entry's body is the lines below it).
 KEY_LINE = re.compile(
-    r"""^(?P<indent>[ ]*)
-        (?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-][^#]*?)
-        [ \t]*:[ \t]*(?:\#.*)?\r?$""",
+    # One line of an operator-written schema.yaml: the worst case is quadratic
+    # in that line's length, which no real key line comes near.
+    r"^(?P<indent>[ ]*)"  # NOSONAR(S8786,S5843)
+    r"""(?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-][^#]*?)"""
+    r"[ \t]*:[ \t]*(?:\#.*)?\r?$",
     re.VERBOSE,
 )
 
 #: A ``columns:`` / ``column_types:`` entry line: a key, ``:`` and a value
 #: (possibly empty, possibly followed by a comment).
 ENTRY_LINE = re.compile(
-    r"""^(?P<indent>[ ]*)
-        (?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-](?:(?!:(?:\s|$))[^#])*?)
-        [ \t]*:(?P<rest>(?:[ \t].*)?)\r?$""",
+    r"^(?P<indent>[ ]*)"  # NOSONAR(S5843) the YAML key grammar, as KEY_LINE
+    r"""(?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-](?:(?!:(?:\s|$))[^#])*?)"""
+    r"[ \t]*:(?P<rest>(?:[ \t].*)?)\r?$",
     re.VERBOSE,
 )
 
 _TABLES_LINE = re.compile(r"^tables:[ \t]*(?:#.*)?\r?$")
 _TRAILING_COMMENT = re.compile(r"(?:^|\s)(#.*)$")
-_PLAIN_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PLAIN_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # NOSONAR(S6353) ASCII only: \w would admit non-ASCII letters
 _YAML_WORD = re.compile(r"^(?:y|n|yes|no|on|off|true|false|null|~)$", re.IGNORECASE)
 
 

@@ -522,7 +522,8 @@ class TestRetrievalPathRestrictedToTheSource:
 
     def test_the_same_source_gives_the_same_retrieval_prompt_twice(self, sources):
         ctx = RetrievalContext(entities=tables_of("sales", sources)[:2])
-        assert self._prompt("sales", ctx) == self._prompt("sales", ctx)
+        first_run = self._prompt("sales", ctx)
+        assert self._prompt("sales", ctx) == first_run
 
 
 class TestSchemaRegistryPerSource:

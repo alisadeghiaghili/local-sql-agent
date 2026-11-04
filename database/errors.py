@@ -502,7 +502,9 @@ _LEADING_BRACKET_TAGS_RE = re.compile(r"^(?:\[[^\]]*\]\s*)+")
 #: A trailing ODBC API-call name pyodbc appends, e.g. "(SQLExecDirectW)",
 #: "(SQLPrepare)", "(SQLDriverConnect)" -- implementation noise, not part
 #: of the database's own sentence.
-_TRAILING_ODBC_API_RE = re.compile(r"\s*\((?:SQL[A-Za-z]+)\)\s*$")
+#: (?<!\s) starts a match only where a whitespace run starts, so a long run
+#: is scanned once instead of once per position in it.
+_TRAILING_ODBC_API_RE = re.compile(r"(?<!\s)\s*\(SQL[A-Za-z]+\)\s*$")  # NOSONAR(S8786) linear: see tests/test_regex_linear_time.py
 #: Postgres prefixes its own message with a severity tag.
 _PG_SEVERITY_PREFIX_RE = re.compile(r"^(?:ERROR|FATAL|PANIC|WARNING):\s*", re.IGNORECASE)
 
@@ -533,9 +535,9 @@ def _scrub_statement_text(message: str) -> str:
 # the generic message instead of leaking.
 # ---------------------------------------------------------------------------
 
-_IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b")
+_IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b")  # NOSONAR(S5843) the standard dotted-quad grammar
 _IPV6_RE = re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{0,4}\b")
-_PORT_RE = re.compile(r"\bport\b\s*[:=]?\s*\d{1,5}\b", re.IGNORECASE)
+_PORT_RE = re.compile(r"\bport\b\s*(?:[:=]\s*)?\d{1,5}\b", re.IGNORECASE)
 #: `user@host` or MySQL's `'user'@'host'`.
 _USER_AT_HOST_RE = re.compile(r"'[^']+'@'[^']+'|\b[A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+\b")
 #: Standalone words/phrases that name infrastructure rather than describe

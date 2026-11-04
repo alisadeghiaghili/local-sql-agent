@@ -88,7 +88,7 @@ _DESCRIPTION_KEY = "description"
 #: The text after ``key:`` -- a quoted or plain value, then an optional comment.
 #: A ``#`` inside quotes belongs to the value, not to a comment.
 _VALUE_AND_COMMENT = re.compile(
-    r"""^\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|(?:(?!\s\#).)*?)\s*(?P<comment>\#.*)?$"""
+    r"""^\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|(?:(?!\s\#).)*?)\s*(?P<comment>\#.*)?$"""  # NOSONAR(S8786,S5843) one line of schema.yaml
 )
 
 

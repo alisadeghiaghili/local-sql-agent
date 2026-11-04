@@ -212,7 +212,8 @@ class TestDefaultAndCandidates:
 
     def test_the_selection_is_deterministic(self):
         ctx = RetrievalContext(entities=["stock_dim"], facts=["sales_fact"])
-        assert _select("q", ctx) == _select("q", ctx)
+        first_run = _select("q", ctx)
+        assert _select("q", ctx) == first_run
 
     def test_no_sources_is_refused(self):
         with pytest.raises(ValueError, match="no data source"):
