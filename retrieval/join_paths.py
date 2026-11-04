@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import heapq
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -155,26 +155,96 @@ def _infer_edges(
     found: list[tuple[str, str]] = []
     for table in sorted(columns):
         for column in sorted(columns[table]):
-            match = _KEY_COLUMN_RE.match(column)
-            if match is None:
+            target = _inferred_target(table, column, by_bare, lowered, qualifiers, sources)
+            if target is None:
                 continue
-            candidates = [
-                t for t in by_bare.get(match.group("stem").lower(), [])
-                if t != table and ("id" in lowered[t] or column.lower() in lowered[t])
-            ]
-            if sources:
-                candidates = [t for t in candidates if sources[t] & sources[table]]
-            if len(candidates) > 1:
-                same_schema = [t for t in candidates if qualifiers.get(t) == qualifiers.get(table)]
-                candidates = same_schema if len(same_schema) == 1 else []
-            if len(candidates) != 1:
-                continue
-            pair = frozenset((table, candidates[0]))
+            pair = frozenset((table, target))
             if pair in known:
                 continue
             known.add(pair)
-            found.append((table, candidates[0]))
+            found.append((table, target))
     return found
+
+
+def _inferred_target(
+    table: str,
+    column: str,
+    by_bare: dict[str, list[str]],
+    lowered: dict[str, set[str]],
+    qualifiers: dict[str, str],
+    sources: dict[str, frozenset[str]],
+) -> str | None:
+    """The one table *column* of *table* names by the ``X_ID`` convention, else ``None``.
+
+    The target must have an ``ID`` column or a column of the same name, share
+    a data source with *table*, and -- when several qualify -- be the only one
+    in *table*'s schema.
+    """
+    match = _KEY_COLUMN_RE.match(column)
+    if match is None:
+        return None
+    candidates = [
+        t for t in by_bare.get(match.group("stem").lower(), [])
+        if t != table and ("id" in lowered[t] or column.lower() in lowered[t])
+    ]
+    if sources:
+        candidates = [t for t in candidates if sources[t] & sources[table]]
+    if len(candidates) > 1:
+        same_schema = [t for t in candidates if qualifiers.get(t) == qualifiers.get(table)]
+        candidates = same_schema if len(same_schema) == 1 else []
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _mtime(path: Path) -> int:
+    """*path*'s modification time in nanoseconds; ``0`` when it cannot be read."""
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _declared_edges(
+    columns: dict[str, dict[str, str]],
+    relationships: Iterable[str],
+    by_bare: dict[str, list[str]],
+    qualifiers: dict[str, str],
+) -> tuple[list[JoinEdge], set[frozenset[str]]]:
+    """The edges ``schema.yaml`` and ``relationships.yaml`` declare, and the pairs they join.
+
+    A pair is kept once (the first declaration wins); a self-join or an edge
+    naming a table that is not loaded is skipped.
+    """
+    edges: list[JoinEdge] = []
+    known: set[frozenset[str]] = set()
+
+    def add(a: str, b: str, origin: str) -> None:
+        pair = frozenset((a, b))
+        if a == b or a not in columns or b not in columns or pair in known:
+            return
+        known.add(pair)
+        edges.append(JoinEdge(a, b, origin))
+
+    for name in relationships:
+        left, _, right = name.partition(" -> ")
+        add(left, right, "schema")
+    for entry in _relationships_yaml_entries():
+        a = _resolve_bare(str(entry.get("from_table", "")), entry.get("from_schema"), by_bare, qualifiers)
+        b = _resolve_bare(str(entry.get("to_table", "")), entry.get("to_schema"), by_bare, qualifiers)
+        if a and b:
+            add(a, b, "relationships")
+    return edges, known
+
+
+def _adjacency(
+    columns: dict[str, dict[str, str]], edges: list[JoinEdge],
+) -> dict[str, tuple[tuple[str, bool], ...]]:
+    """``table -> ((neighbour, inferred), ...)`` sorted by neighbour; tables with no edge left out."""
+    neighbours: dict[str, dict[str, bool]] = {t: {} for t in columns}
+    for edge in edges:
+        inferred = edge.origin == "inferred"
+        neighbours[edge.a][edge.b] = inferred
+        neighbours[edge.b][edge.a] = inferred
+    return {t: tuple(sorted(n.items())) for t, n in neighbours.items() if n}
 
 
 _CACHE: dict[tuple, JoinGraph] = {}
@@ -213,15 +283,9 @@ def build_join_graph() -> JoinGraph:
     rel_path = schema_yaml_path().parent / "relationships.yaml"
     ds_path = datasources_path()
 
-    def mtime(path: Path) -> int:
-        try:
-            return path.stat().st_mtime_ns
-        except OSError:
-            return 0
-
     infer = bool(cfg.settings.retrieval_infer_relationships)
     names = tuple(datasource_names())
-    key = (str(rel_path), id(columns), id(relationships), mtime(rel_path), mtime(ds_path), infer, names)
+    key = (str(rel_path), id(columns), id(relationships), _mtime(rel_path), _mtime(ds_path), infer, names)
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
@@ -235,37 +299,12 @@ def build_join_graph() -> JoinGraph:
     if len(names) > 1:
         sources = {t: frozenset(s) for t, s in table_datasource_sets().items() if t in columns}
 
-    edges: list[JoinEdge] = []
-    known: set[frozenset[str]] = set()
-
-    def add(a: str, b: str, origin: str) -> None:
-        pair = frozenset((a, b))
-        if a == b or a not in columns or b not in columns or pair in known:
-            return
-        known.add(pair)
-        edges.append(JoinEdge(a, b, origin))
-
-    for name in relationships:
-        left, _, right = name.partition(" -> ")
-        add(left, right, "schema")
-    for entry in _relationships_yaml_entries():
-        a = _resolve_bare(str(entry.get("from_table", "")), entry.get("from_schema"), by_bare, qualifiers)
-        b = _resolve_bare(str(entry.get("to_table", "")), entry.get("to_schema"), by_bare, qualifiers)
-        if a and b:
-            add(a, b, "relationships")
+    edges, known = _declared_edges(columns, relationships, by_bare, qualifiers)
     if infer:
         for a, b in _infer_edges(columns, by_bare, qualifiers, sources, known):
             edges.append(JoinEdge(a, b, "inferred"))
 
-    neighbours: dict[str, dict[str, bool]] = {t: {} for t in columns}
-    for edge in edges:
-        inferred = edge.origin == "inferred"
-        neighbours[edge.a][edge.b] = inferred
-        neighbours[edge.b][edge.a] = inferred
-    graph = JoinGraph(
-        adjacency={t: tuple(sorted(n.items())) for t, n in neighbours.items() if n},
-        sources=sources,
-    )
+    graph = JoinGraph(adjacency=_adjacency(columns, edges), sources=sources)
     _CACHE.clear()
     _CACHE[key] = graph
     return graph
@@ -274,6 +313,10 @@ def build_join_graph() -> JoinGraph:
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+
+
+_PathKey = tuple[int, int, tuple[str, ...]]
+"""``(hops, inferred edges, path)``: how paths are compared, smallest best."""
 
 
 def _best_path(
@@ -292,33 +335,78 @@ def _best_path(
     """
     own = graph.sources.get(start) if graph.sources else None
     candidates: list[str | None] = sorted(own) if own is not None else [None]
-    best: tuple[int, int, tuple[str, ...]] | None = None
+    best: _PathKey | None = None
     for source in candidates:
-        heap: list[tuple[int, int, tuple[str, ...]]] = [(0, 0, (start,))]
-        settled: dict[str, tuple[int, int]] = {}
-        while heap:
-            hops, inferred, path = heapq.heappop(heap)
-            node = path[-1]
-            if best is not None and (hops, inferred) > best[:2]:
-                break
-            if node in targets and node != start:
-                if best is None or (hops, inferred, path) < best:
-                    best = (hops, inferred, path)
-                continue
-            if node in settled and settled[node] < (hops, inferred):
-                continue
-            settled[node] = (hops, inferred)
-            if hops >= max_hops:
-                continue
-            if node != start and graph.degree(node) > max_hub_degree:
-                continue
-            for neighbour, is_inferred in graph.adjacency.get(node, ()):
-                if neighbour in path:
-                    continue
-                if source is not None and source not in graph.sources.get(neighbour, frozenset()):
-                    continue
-                heapq.heappush(heap, (hops + 1, inferred + int(is_inferred), path + (neighbour,)))
+        best = _best_path_in_source(
+            graph, start, targets, source, best,
+            max_hops=max_hops, max_hub_degree=max_hub_degree,
+        )
     return best[2] if best is not None else None
+
+
+def _best_path_in_source(
+    graph: JoinGraph,
+    start: str,
+    targets: set[str],
+    source: str | None,
+    best: _PathKey | None,
+    *,
+    max_hops: int,
+    max_hub_degree: int,
+) -> _PathKey | None:
+    """The best path key so far, after searching the paths inside data source *source*.
+
+    *source* ``None`` searches every table (one data source configured). The
+    search stops once its cheapest open path costs more than *best*.
+    """
+    heap: list[_PathKey] = [(0, 0, (start,))]
+    settled: dict[str, tuple[int, int]] = {}
+    while heap:
+        hops, inferred, path = heapq.heappop(heap)
+        node = path[-1]
+        if best is not None and (hops, inferred) > best[:2]:
+            break
+        if node in targets and node != start:
+            if best is None or (hops, inferred, path) < best:
+                best = (hops, inferred, path)
+            continue
+        if not _settle(graph, node, start, (hops, inferred), settled, max_hops, max_hub_degree):
+            continue
+        for neighbour, is_inferred in _steps(graph, node, path, source):
+            heapq.heappush(heap, (hops + 1, inferred + int(is_inferred), path + (neighbour,)))
+    return best
+
+
+def _settle(
+    graph: JoinGraph,
+    node: str,
+    start: str,
+    cost: tuple[int, int],
+    settled: dict[str, tuple[int, int]],
+    max_hops: int,
+    max_hub_degree: int,
+) -> bool:
+    """Record *node* as reached at *cost*; whether the search should step on from it.
+
+    Not when *node* was already reached more cheaply, when the path is at
+    *max_hops*, or when *node* is a hub that is not the start.
+    """
+    if node in settled and settled[node] < cost:
+        return False
+    settled[node] = cost
+    return cost[0] < max_hops and (node == start or graph.degree(node) <= max_hub_degree)
+
+
+def _steps(
+    graph: JoinGraph, node: str, path: tuple[str, ...], source: str | None,
+) -> Iterator[tuple[str, bool]]:
+    """The neighbours of *node* a path may step to: not already on *path*, and inside *source*."""
+    for neighbour, is_inferred in graph.adjacency.get(node, ()):
+        if neighbour in path:
+            continue
+        if source is not None and source not in graph.sources.get(neighbour, frozenset()):
+            continue
+        yield neighbour, is_inferred
 
 
 def connected_within(
@@ -352,6 +440,31 @@ def _default_fits(tables: Sequence[str]) -> bool:
 
     text = SchemaRegistry.build_schema_context(list(tables))
     return estimate_tokens(text) <= cfg.settings.prompt_retrieval_token_budget
+
+
+def _nearest_pending(
+    graph: JoinGraph, pending: list[str], component: set[str], settings: object,
+) -> tuple[str, tuple[str, ...]] | None:
+    """The pending table with the best path into *component*, and that path; ``None`` if none has one.
+
+    Compared like :func:`_best_path` compares paths: length, then inferred
+    edges, then the path itself; the first pending table wins a tie.
+    """
+    best: _PathKey | None = None
+    best_table = ""
+    for table in pending:
+        path = _best_path(
+            graph, table, component,
+            max_hops=settings.retrieval_join_max_hops,
+            max_hub_degree=settings.retrieval_join_max_hub_degree,
+        )
+        if path is None:
+            continue
+        inferred = sum(1 for x, y in zip(path, path[1:]) if graph.edge_is_inferred(x, y))
+        key = (len(path), inferred, path)
+        if best is None or key < best:
+            best, best_table = key, table
+    return (best_table, best[2]) if best is not None else None
 
 
 def expand_join_paths(
@@ -406,23 +519,10 @@ def expand_join_paths(
     added: list[str] = []
 
     while pending:
-        best: tuple[int, int, tuple[str, ...]] | None = None
-        best_table = ""
-        for table in pending:
-            path = _best_path(
-                graph, table, component,
-                max_hops=settings.retrieval_join_max_hops,
-                max_hub_degree=settings.retrieval_join_max_hub_degree,
-            )
-            if path is None:
-                continue
-            inferred = sum(1 for x, y in zip(path, path[1:]) if graph.edge_is_inferred(x, y))
-            key = (len(path), inferred, path)
-            if best is None or key < best:
-                best, best_table = key, table
-        if best is None:
+        nearest = _nearest_pending(graph, pending, component, settings)
+        if nearest is None:
             break
-        path = best[2]
+        best_table, path = nearest
         new = [t for t in reversed(path[1:-1]) if t not in chosen and t not in added]
         pending.remove(best_table)
         if new:
