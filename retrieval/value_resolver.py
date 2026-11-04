@@ -715,6 +715,30 @@ def resolve_value(
     # actual, stated answer rather than a silently-inherited default.
     scope = scope_key(principal, memory_used=None)
 
+    pairs, any_allowlisted = _searchable_columns(candidate_tables, denied, hidden)
+    if not pairs:
+        reason = "denied_by_acl" if any_allowlisted else "not_in_allowlist"
+        return ValueResolution(status="no_match", miss_reason=reason)
+
+    collected: dict[str, tuple[str, str]] = {}  # value -> (table, column) first seen
+    resolved_columns: list[str] = []
+    failures: set[str] = set()
+    for table, column in pairs:
+        resolved_columns.append(f"{table}.{column}")
+        values = _cached_values(mention, table, column, scope, execute_fn, failures)
+        for value in values or ():
+            collected.setdefault(value, (table, column))
+    return _resolution(mention, collected, tuple(resolved_columns), failures)
+
+
+def _searchable_columns(
+    candidate_tables: Sequence[str], denied: set[str], hidden: Any,
+) -> tuple[list[tuple[str, str]], bool]:
+    """``(table, column)`` pairs to search, and whether any candidate table was allowlisted at all.
+
+    A table outside :data:`RESOLVABLE_COLUMNS` is skipped; a denied or
+    join-only column of an allowlisted table is skipped too.
+    """
     any_allowlisted = False
     pairs: list[tuple[str, str]] = []
     for table in dict.fromkeys(candidate_tables):  # order-preserving dedup
@@ -722,61 +746,71 @@ def resolve_value(
         if columns is None:
             continue
         any_allowlisted = True
-        for column in columns:
-            if column.lower() in denied or (table, column.lower()) in hidden:
-                continue
-            pairs.append((table, column))
+        pairs.extend(
+            (table, column) for column in columns
+            if column.lower() not in denied and (table, column.lower()) not in hidden
+        )
+    return pairs, any_allowlisted
 
-    if not pairs:
-        reason = "denied_by_acl" if any_allowlisted else "not_in_allowlist"
-        return ValueResolution(status="no_match", miss_reason=reason)
 
-    collected: dict[str, tuple[str, str]] = {}  # value -> (table, column) first seen
-    resolved_columns: list[str] = []
-    timed_out = False
-    errored = False
+def _cached_values(
+    mention: str,
+    table: str,
+    column: str,
+    scope: str,
+    execute_fn: ExecuteParamsFn,
+    failures: set[str],
+) -> list[str] | None:
+    """The values of *table*.*column* matching *mention*, from the cache or the warehouse.
 
-    for table, column in pairs:
-        resolved_columns.append(f"{table}.{column}")
-        cache_key = (mention, table, column, scope)
-        values = _cache.get(cache_key)
-        if values is None:
-            try:
-                values = _query_one(table, column, mention, execute_fn)
-            except _ResolveTimeout as exc:
-                logger.warning(str(exc))
-                timed_out = True
-                continue
-            except Exception as exc:  # noqa: BLE001 - any execute_fn failure is a miss
-                logger.warning(
-                    "resolve_value: query failed for %s.%s: %s", table, column, exc,
-                )
-                errored = True
-                continue
-            _cache.set(cache_key, values)
+    ``None`` when the query failed; the kind of failure (``"timeout"`` or
+    ``"error"``) is added to *failures*. A successful query is cached under
+    the caller's scope.
+    """
+    cache_key = (mention, table, column, scope)
+    values = _cache.get(cache_key)
+    if values is not None:
+        return values
+    try:
+        values = _query_one(table, column, mention, execute_fn)
+    except _ResolveTimeout as exc:
+        logger.warning(str(exc))
+        failures.add("timeout")
+        return None
+    except Exception as exc:  # noqa: BLE001  # any execute_fn failure is a miss
+        logger.warning(
+            "resolve_value: query failed for %s.%s: %s", table, column, exc,
+        )
+        failures.add("error")
+        return None
+    _cache.set(cache_key, values)
+    return values
 
-        for value in values:
-            collected.setdefault(value, (table, column))
 
+def _resolution(
+    mention: str,
+    collected: dict[str, tuple[str, str]],
+    resolved_columns: tuple[str, ...],
+    failures: set[str],
+) -> ValueResolution:
+    """The outcome for the values found: no match (with why), one match, or a clarification."""
     if not collected:
-        if timed_out:
+        if "timeout" in failures:
             reason = "timeout"
-        elif errored:
+        elif "error" in failures:
             reason = "error"
         else:
             reason = "no_rows"
         return ValueResolution(
-            status="no_match", miss_reason=reason, resolved_columns=tuple(resolved_columns),
+            status="no_match", miss_reason=reason, resolved_columns=resolved_columns,
         )
-
     if len(collected) == 1:
         value, (table, _column) = next(iter(collected.items()))
         return ValueResolution(
             status="matched",
             filters={table: value},
-            resolved_columns=tuple(resolved_columns),
+            resolved_columns=resolved_columns,
         )
-
     tables_touched = {t for t, _c in collected.values()}
     field_name = next(iter(tables_touched)) if len(tables_touched) == 1 else "value"
     clarification = Clarification(
@@ -787,5 +821,5 @@ def resolve_value(
     return ValueResolution(
         status="ambiguous",
         clarification=clarification,
-        resolved_columns=tuple(resolved_columns),
+        resolved_columns=resolved_columns,
     )
