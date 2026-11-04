@@ -114,7 +114,7 @@ def _route(sql: str, datasource: str | None) -> str:
     try:
         return resolve_datasource(sql, cfg.settings.sql_dialect)
     except CrossDatasourceError as exc:
-        logger.error("Refusing to execute a cross-data-source statement: %s", exc)
+        logger.error("Refusing to execute a cross-data-source statement: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
         raise RuntimeError(f"Database error: {exc}") from exc
 
 

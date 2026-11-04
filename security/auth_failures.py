@@ -85,7 +85,7 @@ def record_auth_failure(source_ip: str, path: str) -> None:
     try:
         append_jsonl(_auth_failure_log_file(), record)
     except OSError as exc:  # pragma: no cover - defensive, mirrors admin_audit
-        logger.error("Failed to write auth-failure record: %s", exc)
+        logger.exception("Failed to write auth-failure record: %s", exc)
 
 
 def iter_auth_failures() -> list[dict[str, Any]]:

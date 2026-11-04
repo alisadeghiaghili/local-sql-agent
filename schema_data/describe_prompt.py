@@ -359,7 +359,7 @@ def read_listed_relationships(directory: Path) -> list[dict[str, Any]]:
     for filename, declared_only in (("relationships.yaml", False), ("relationships.proposed.yaml", True)):
         try:
             document = safe_load_strict((directory / filename).read_text(encoding="utf-8-sig")) or {}
-        except (OSError, ValueError, UnicodeDecodeError):
+        except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
             continue
         entries = document.get("relationships") if isinstance(document, dict) else None
         for entry in entries if isinstance(entries, list) else []:

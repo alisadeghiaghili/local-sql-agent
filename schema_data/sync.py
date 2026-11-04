@@ -1190,7 +1190,7 @@ def _only_records_types(original: str, schema: SchemaConfig, plan: SyncPlan) -> 
     if not any(t.recorded for t in plan.tables):
         return False
     bare = replace(plan, tables=tuple(replace(t, recorded=()) for t in plan.tables))
-    bare_text, _ = render_synced_text(original, schema, bare)
+    bare_text, _ = render_synced_text(original, schema, bare)  # NOSONAR(S5655) replace() keeps the SyncPlan type
     return bare_text == original
 
 

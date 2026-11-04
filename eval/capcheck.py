@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 
 import pandas as pd
 import sqlglot
@@ -53,6 +54,22 @@ from eval.models import MismatchDiagnosis
 __all__ = ["count_query", "verify_capped_match"]
 
 _COUNT_ALIAS = "q"
+
+
+def _amend(diagnosis: MismatchDiagnosis, **changes: Any) -> MismatchDiagnosis:
+    """:func:`dataclasses.replace`, typed: a copy of *diagnosis* with *changes*.
+
+    Static analysers that read ``replace()`` as returning a generic dataclass
+    would otherwise report every return of :func:`verify_capped_match` as
+    inconsistent with its ``MismatchDiagnosis`` annotation.
+
+    Examples
+    --------
+    >>> d = MismatchDiagnosis(mismatch_class="match_capped")
+    >>> _amend(d, capped=True).capped
+    True
+    """
+    return replace(diagnosis, **changes)  # NOSONAR(S5886) replace() returns the type it is given
 
 
 def _rightmost(tree: exp.Expression) -> exp.Expression:
@@ -220,7 +237,7 @@ def verify_capped_match(
     """
     if diagnosis.mismatch_class != "match_capped":
         return diagnosis
-    unverified = replace(
+    unverified = _amend(
         diagnosis, mismatch_class="actual_is_subset", capped=False, capped_unverified=True,
         uncapped_rows=None,
     )
@@ -228,7 +245,7 @@ def verify_capped_match(
         return unverified
     try:
         counted = _count_rows(precap_sql, execute_fn)
-    except Exception:  # noqa: BLE001 - whatever stopped the count, the case is not a pass
+    except Exception:  # noqa: BLE001  # whatever stopped the count, the case is not a pass
         return unverified
 
     target = diagnosis.expected_rows or 0
@@ -240,11 +257,11 @@ def verify_capped_match(
         try:
             reference_counted = _count_rows(reference_sql, execute_fn)
         except Exception:  # noqa: BLE001 - same rule as the model side
-            return replace(unverified, uncapped_rows=counted)
+            return _amend(unverified, uncapped_rows=counted)
         target = reference_counted
     if counted == target:
-        return replace(diagnosis, uncapped_rows=counted, reference_uncapped_rows=reference_counted)
-    return replace(
+        return _amend(diagnosis, uncapped_rows=counted, reference_uncapped_rows=reference_counted)
+    return _amend(
         diagnosis, mismatch_class="actual_is_subset", capped=False, uncapped_rows=counted,
         reference_uncapped_rows=reference_counted,
     )

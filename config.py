@@ -98,6 +98,7 @@ and were deliberately left alone rather than duplicated into ``Settings``.
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from contextlib import contextmanager
@@ -549,7 +550,8 @@ class Settings:
     db_connection_url: str = field(
         default_factory=lambda: os.getenv(
             "DB_CONNECTION_URL",
-            "mssql+pyodbc://username@server:1433/Auction_DM"
+            # A placeholder for Windows integrated authentication: no password by design.
+            "mssql+pyodbc://username@server:1433/Auction_DM"  # NOSONAR(S2115)
             "?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes",
         )
     )
@@ -2129,9 +2131,7 @@ class Settings:
             )
 
         keepwarm = self.llm_prefix_keepwarm_seconds
-        if keepwarm != keepwarm or keepwarm in (float("inf"), float("-inf")) or (
-            keepwarm != 0 and keepwarm < 30
-        ):
+        if not math.isfinite(keepwarm) or (keepwarm != 0 and keepwarm < 30):
             raise ValueError(
                 "LLM_PREFIX_KEEPWARM_SECONDS must be 0 (off) or at least 30 "
                 f"(got {keepwarm}); a shorter interval would send the model "

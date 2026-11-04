@@ -291,7 +291,8 @@ class TestRendering:
         assert data["source_selection"] is None
 
     def test_json_is_byte_identical_across_runs(self):
-        assert report_to_json(self._report()) == report_to_json(self._report())
+        first_run = report_to_json(self._report())
+        assert report_to_json(self._report()) == first_run
 
 
 # ---------------------------------------------------------------------------

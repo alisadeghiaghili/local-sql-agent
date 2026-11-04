@@ -88,7 +88,6 @@ from security.sql_guard import (
 
 from session import ambiguity
 from session.composer import (
-    CompositionError,
     check_scan_truncated,
     compose_refinement_sql,
     predicate_columns,
@@ -484,7 +483,7 @@ class TurnEngine:
         # only one of them's memory actually justifies. scope_key's
         # memory_used parameter has no default specifically so this
         # cannot be gotten wrong by omission.
-        cache_prefix_version = _prefix_version_of(system_prompt)  # noqa: F841 - reserved for a future T0 cache tier
+        cache_prefix_version = _prefix_version_of(system_prompt)  # noqa: F841  # NOSONAR(S1481) reserved for a future T0 cache tier
 
         with timer.stage("plan"):
             previous_turn = record.last_turn()
@@ -761,7 +760,7 @@ class TurnEngine:
                     target_dialect=cfg.settings.sql_dialect,
                     denied_columns=denied_columns,
                 )
-        except (CompositionError, ValueError) as exc:
+        except ValueError as exc:  # includes session.composer.CompositionError
             reason, subject = _guard_reason_subject(exc)
             outcome = _GenOutcome(
                 guard=GuardVerdict(
@@ -1414,7 +1413,7 @@ class TurnEngine:
                     raise ValueError("the corrected statement drops a filter the question named")
             with timer.stage("execute"):
                 df = self._execute(new_sql)
-        except Exception as exc:  # noqa: BLE001 - whatever goes wrong, the original statement runs
+        except Exception as exc:  # noqa: BLE001  # whatever goes wrong, the original statement runs
             logger.info("Filter value correction not used (%s): %.120s", type(exc).__name__, exc)
             return _ValueRound(audit_block(check, corrected=False, fallback=True), prompt)
         return _ValueRound(
@@ -1613,7 +1612,7 @@ def _string_literal_texts(sql: str, dialect: str) -> list[str]:
     """
     try:
         tree = sqlglot.parse_one(sql, dialect=dialect)
-    except Exception:  # noqa: BLE001 - best-effort only, see docstring
+    except Exception:  # noqa: BLE001  # best-effort only, see docstring
         return []
     if tree is None:
         return []

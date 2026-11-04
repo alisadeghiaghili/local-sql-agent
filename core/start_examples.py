@@ -104,7 +104,7 @@ def offered_questions(
             continue
         try:
             allowed = bool(is_allowed(sql, denied))
-        except Exception:  # noqa: BLE001 -- fail closed, as _guard_allows does
+        except Exception:  # noqa: BLE001  # fail closed, as _guard_allows does
             allowed = False
         if not allowed:
             continue

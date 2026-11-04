@@ -123,7 +123,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console
-import config as cfg  # noqa: E402 - loads .env, like every entry point
+import config as cfg  # noqa: E402  # loads .env, like every entry point
 from core.config_preflight import (  # noqa: E402
     PROMPT_BUDGET_IMPORT_FILES,
     exit_if_project_config_unusable,
@@ -194,7 +194,7 @@ PATH_RETRIEVAL = "retrieval"
 #: vLLM's ``max_model_len``, then the names other servers use.
 _CONTEXT_FIELDS = ("max_model_len", "context_length", "context_window")
 
-_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
+_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")  # NOSONAR(S8786) each scan stops at the "/" of the next "://": linear
 
 
 class ModelUnavailable(Exception):

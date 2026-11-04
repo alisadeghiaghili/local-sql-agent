@@ -277,7 +277,7 @@ def retrieval_scores(
     >>> retrieval_scores(ctx, sets, ["sales", "inventory"])
     {'sales': 1.5, 'inventory': 1.5}
     """
-    scores = {source: 0.0 for source in sources}
+    scores = dict.fromkeys(sources, 0.0)
 
     def credit(table: str | None) -> None:
         if table is None:
