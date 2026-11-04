@@ -256,6 +256,47 @@ def _op_prefix(col: int, op: str) -> str:
     return " " * (col - 1 - len(op)) + op + " "
 
 
+def _set_operator(node: exp.SetOperation) -> str:
+    """The operator keyword of one set operation in house spelling (``UNION ALL``, ``EXCEPT``, ...)."""
+    distinct = bool(node.args.get("distinct"))
+    if isinstance(node, exp.Union):
+        return "UNION" if distinct else "UNION ALL"
+    if distinct and isinstance(node, exp.Except):
+        return "EXCEPT"
+    if distinct and isinstance(node, exp.Intersect):
+        return "INTERSECT"
+    raise _Unsupported(f"{type(node).__name__} ALL")
+
+
+def _set_spine(
+    n: exp.Expression,
+    outermost: exp.SetOperation,
+    branches: list[exp.Expression],
+    operators: list[str],
+) -> None:
+    """Collect the branches and operators of the left-nested chain under *outermost*, in order."""
+    if not isinstance(n, exp.SetOperation):
+        branches.append(n)
+        return
+    # ``ORDER BY`` and ``OFFSET`` / ``FETCH`` written after the last
+    # branch apply to the whole chain. Where sqlglot stores them
+    # differs by release: older ones put them on the last branch,
+    # newer ones on the outermost set operation. Only that outermost
+    # node may carry them here.
+    allowed = {"this", "expression", "distinct", "with_", "with"}
+    if n is outermost:
+        allowed |= {"order", "offset", "limit"}
+    _require_only(n, allowed)
+    if isinstance(n.expression, exp.SetOperation):
+        # A right-nested chain only comes from parentheses, which
+        # parse as Subquery; anything else is not ours to flatten.
+        raise _Unsupported("right-nested set operation")
+    operator = _set_operator(n)
+    _set_spine(n.this, outermost, branches, operators)
+    operators.append(operator)
+    branches.append(n.expression)
+
+
 class _Layout:
     """Lays out one parsed statement; one instance per :func:`format_sql` call."""
 
@@ -309,39 +350,7 @@ class _Layout:
         with_ = _get(node, "with_", "with")
         branches: list[exp.Expression] = []
         operators: list[str] = []
-
-        def spine(n: exp.Expression) -> None:
-            """Collect branches and operators of the left-nested chain, in order."""
-            if not isinstance(n, exp.SetOperation):
-                branches.append(n)
-                return
-            # ``ORDER BY`` and ``OFFSET`` / ``FETCH`` written after the last
-            # branch apply to the whole chain. Where sqlglot stores them
-            # differs by release: older ones put them on the last branch,
-            # newer ones on the outermost set operation. Only that outermost
-            # node may carry them here.
-            allowed = {"this", "expression", "distinct", "with_", "with"}
-            if n is node:
-                allowed |= {"order", "offset", "limit"}
-            _require_only(n, allowed)
-            if isinstance(n.expression, exp.SetOperation):
-                # A right-nested chain only comes from parentheses, which
-                # parse as Subquery; anything else is not ours to flatten.
-                raise _Unsupported("right-nested set operation")
-            distinct = bool(n.args.get("distinct"))
-            if isinstance(n, exp.Union):
-                operator = "UNION" if distinct else "UNION ALL"
-            elif distinct and isinstance(n, exp.Except):
-                operator = "EXCEPT"
-            elif distinct and isinstance(n, exp.Intersect):
-                operator = "INTERSECT"
-            else:
-                raise _Unsupported(f"{type(n).__name__} ALL")
-            spine(n.this)
-            operators.append(operator)
-            branches.append(n.expression)
-
-        spine(node)
+        _set_spine(node, node, branches, operators)
         modifiers = ("order", "offset", "limit")
         if node.args.get("limit") and not isinstance(node.args["limit"], exp.Fetch):
             raise _Unsupported("row limit on a set operation")
@@ -561,36 +570,50 @@ class _Layout:
 
     def _joins(self, joins: list[exp.Join]) -> list[str]:
         """Lay out the join lines with aligned ``AS`` / ``ON`` / ``=`` columns."""
-        rows: list[_JoinRow] = []
-        for join in joins:
-            keyword = self._join_keyword(join)
-            target = join.this
-            if isinstance(target, exp.Lateral):
-                _require_only(target, {"this", "alias", "cross_apply"})
-                inner = target.this
-                alias = self._table_alias(target.args.get("alias"))
-                if alias is None or not (
-                    isinstance(inner, exp.Subquery) and isinstance(inner.this, exp.Query)
-                ):
-                    # ``APPLY`` of a function, or without the alias T-SQL requires.
-                    raise _Unsupported("APPLY form")
-                _require_only(inner, {"this"})
-                body: str | list[str] = ["("] + _indent(self.query(inner.this), _INDENT) + [")"]
-                suffix = ""
-            else:
-                body, alias, suffix = self._source(target)
-            cell = f"AS {alias}{suffix}" if alias else suffix.strip()
-            rows.append(_JoinRow(keyword, body, cell, join.args.get("on")))
+        rows = [self._join_row(join) for join in joins]
 
         # Column widths come from the single-line sources only; a derived
         # table spans lines and is laid out on its own.
         one_line = [r for r in rows if isinstance(r.body, str)]
         w_source = max((len(r.head) for r in one_line), default=0)
-        with_on = [r for r in one_line if r.on is not None]
-        w_alias = max((len(r.alias_cell) for r in with_on), default=0)
+        w_alias = max((len(r.alias_cell) for r in one_line if r.on is not None), default=0)
+        eq_parts = self._eq_parts(one_line)
+        w_left = max((len(left) for left, _ in eq_parts.values()), default=0)
 
-        # ``=`` alignment: only joins whose first condition is a plain
-        # ``left = right`` take part.
+        lines: list[str] = []
+        for r in rows:
+            if isinstance(r.body, str):
+                lines.extend(self._one_line_join(r, w_source, w_alias, eq_parts.get(id(r)), w_left))
+            else:
+                lines.extend(self._block_join(r))
+        return lines
+
+    def _join_row(self, join: exp.Join) -> _JoinRow:
+        """One join before alignment: keyword, source, ``AS alias`` cell and ``ON`` condition."""
+        keyword = self._join_keyword(join)
+        target = join.this
+        if isinstance(target, exp.Lateral):
+            _require_only(target, {"this", "alias", "cross_apply"})
+            inner = target.this
+            alias = self._table_alias(target.args.get("alias"))
+            if alias is None or not (
+                isinstance(inner, exp.Subquery) and isinstance(inner.this, exp.Query)
+            ):
+                # ``APPLY`` of a function, or without the alias T-SQL requires.
+                raise _Unsupported("APPLY form")
+            _require_only(inner, {"this"})
+            body: str | list[str] = ["("] + _indent(self.query(inner.this), _INDENT) + [")"]
+            suffix = ""
+        else:
+            body, alias, suffix = self._source(target)
+        cell = f"AS {alias}{suffix}" if alias else suffix.strip()
+        return _JoinRow(keyword, body, cell, join.args.get("on"))
+
+    def _eq_parts(self, one_line: list[_JoinRow]) -> dict[int, tuple[str, str]]:
+        """``(left, right)`` of each join whose first ``ON`` condition is a plain ``left = right``.
+
+        Only those joins take part in the ``=`` alignment; keyed by ``id(row)``.
+        """
         eq_parts: dict[int, tuple[str, str]] = {}
         for r in one_line:
             if r.on is None:
@@ -600,28 +623,33 @@ class _Layout:
                 left, right = self._sql(first.this), self._sql(first.expression)
                 if len(left) <= _EQ_ALIGN_MAX:
                     eq_parts[id(r)] = (left, right)
-        w_left = max((len(left) for left, _ in eq_parts.values()), default=0)
+        return eq_parts
 
-        lines: list[str] = []
-        for r in rows:
-            if isinstance(r.body, str):
-                head = r.head.ljust(w_source)
-                if r.on is None:
-                    lines.append(head + " " * _GAP + r.alias_cell if r.alias_cell else r.head)
-                    continue
-                head += " " * _GAP
-                if w_alias:
-                    head += r.alias_cell.ljust(w_alias) + " " * _GAP
-                lines.extend(self._on(head, r.on, eq_parts.get(id(r)), w_left))
-            else:
-                lines.append(f"{r.keyword} {r.body[0]}")
-                lines.extend(r.body[1:-1])
-                tail = r.body[-1] + (f" {r.alias_cell}" if r.alias_cell else "")
-                if r.on is None:
-                    lines.append(tail)
-                else:
-                    lines.extend(self._on(tail + " " * _GAP, r.on, None, 0))
-        return lines
+    def _one_line_join(
+        self,
+        r: _JoinRow,
+        w_source: int,
+        w_alias: int,
+        eq: tuple[str, str] | None,
+        w_left: int,
+    ) -> list[str]:
+        """The lines of a join whose source fits on one line, aligned to the given widths."""
+        head = r.head.ljust(w_source)
+        if r.on is None:
+            return [head + " " * _GAP + r.alias_cell if r.alias_cell else r.head]
+        head += " " * _GAP
+        if w_alias:
+            head += r.alias_cell.ljust(w_alias) + " " * _GAP
+        return self._on(head, r.on, eq, w_left)
+
+    def _block_join(self, r: _JoinRow) -> list[str]:
+        """The lines of a join whose source is a derived table spanning several lines."""
+        assert isinstance(r.body, list)
+        lines = [f"{r.keyword} {r.body[0]}", *r.body[1:-1]]
+        tail = r.body[-1] + (f" {r.alias_cell}" if r.alias_cell else "")
+        if r.on is None:
+            return [*lines, tail]
+        return lines + self._on(tail + " " * _GAP, r.on, None, 0)
 
     def _on(
         self,
@@ -702,21 +730,42 @@ class _Layout:
             return self._case(node, col, base)
 
         work = node.copy()
-        slots: dict[str, exp.Expression] = {}
-        scalar: dict[str, bool] = {}
-
         if isinstance(work, _QUERIES):
             raise _Unsupported("query used as an expression")
+        slots, scalar = self._cut_out_blocks(work, case_block)
+        # sqlglot writes ``EXISTS(``; the house style has the space.
+        text = self._sql(work).replace("EXISTS(__fmt_slot_", "EXISTS (__fmt_slot_")
+        if not slots:
+            return text
+        return self._fill_slots(text, slots, scalar, col, base)
 
+    def _is_block(self, n: exp.Expression, work: exp.Expression, case_block: bool) -> bool:
+        """Whether *n*, inside the expression *work*, is laid out as a block of its own."""
+        if isinstance(n, _QUERIES):
+            return True
+        if not isinstance(n, exp.Case) or n is work:
+            return False
+        # ``ORDER BY CASE ... END DESC``: the CASE is the whole item.
+        whole_item = case_block and isinstance(work, exp.Ordered) and n.parent is work
+        return whole_item or len(self._sql(n)) > _LONG_EXPR
+
+    def _cut_out_blocks(
+        self, work: exp.Expression, case_block: bool,
+    ) -> tuple[dict[str, exp.Expression], dict[str, bool]]:
+        """Replace each block inside *work* with a placeholder, in place.
+
+        Returns
+        -------
+        tuple
+            ``(slots, scalar)``: the placeholder name of each block mapped to
+            the block, and whether that block is a scalar subquery (one that
+            may stay on the line when it is short).
+        """
         def stop(n: exp.Expression) -> bool:
-            if isinstance(n, _QUERIES):
-                return True
-            if not isinstance(n, exp.Case) or n is work:
-                return False
-            # ``ORDER BY CASE ... END DESC``: the CASE is the whole item.
-            whole_item = case_block and isinstance(work, exp.Ordered) and n.parent is work
-            return whole_item or len(self._sql(n)) > _LONG_EXPR
+            return self._is_block(n, work, case_block)
 
+        slots: dict[str, exp.Expression] = {}
+        scalar: dict[str, bool] = {}
         targets = [n for n in work.walk(prune=stop) if n is not work and stop(n)]
         for i, target in enumerate(targets):
             name = f"__fmt_slot_{i}__"
@@ -727,11 +776,17 @@ class _Layout:
                 and not isinstance(parent.parent, (exp.In, exp.Exists, exp.Any, exp.All))
             )
             target.replace(exp.Var(this=name))
-        # sqlglot writes ``EXISTS(``; the house style has the space.
-        text = self._sql(work).replace("EXISTS(__fmt_slot_", "EXISTS (__fmt_slot_")
-        if not slots:
-            return text
+        return slots, scalar
 
+    def _fill_slots(
+        self,
+        text: str,
+        slots: dict[str, exp.Expression],
+        scalar: dict[str, bool],
+        col: int,
+        base: int,
+    ) -> str:
+        """Put the laid-out blocks back where :meth:`_cut_out_blocks` left their placeholders."""
         out = ""
         pos = 0
         used = 0
@@ -741,21 +796,22 @@ class _Layout:
                 raise _Unsupported("unknown placeholder")
             out += text[pos:match.start()]
             anchor = (len(out) - out.rfind("\n") - 1) if "\n" in out else col + len(out)
-            target = slots[name]
-            if isinstance(target, exp.Case):
-                out += self._case(target, anchor, base)
-            else:
-                flat = self._sql(target)
-                if scalar[name] and len(flat) <= _LONG_EXPR:
-                    out += flat
-                else:
-                    body = _indent(self.query(target), base + _INDENT)
-                    out += "\n" + "\n".join(body) + "\n" + " " * base
+            out += self._block_text(slots[name], scalar[name], anchor, base)
             pos = match.end()
             used += 1
         if used != len(slots):
             raise _Unsupported("placeholder lost")
         return out + text[pos:]
+
+    def _block_text(self, target: exp.Expression, is_scalar: bool, anchor: int, base: int) -> str:
+        """The text that replaces one placeholder: a ``CASE`` block, a short scalar subquery, or a query block."""
+        if isinstance(target, exp.Case):
+            return self._case(target, anchor, base)
+        flat = self._sql(target)
+        if is_scalar and len(flat) <= _LONG_EXPR:
+            return flat
+        body = _indent(self.query(target), base + _INDENT)
+        return "\n" + "\n".join(body) + "\n" + " " * base
 
     def _case(self, node: exp.Case, col: int, base: int) -> str:
         """Lay out a ``CASE`` as a block starting at column *col*."""
