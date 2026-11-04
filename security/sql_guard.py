@@ -272,13 +272,14 @@ from sqlglot.errors import SqlglotError
 from schema_data.columns import TABLE_COLUMNS
 from schema_data.registry import get_table_schema_qualifiers, table_ref_parts, table_reference_sql
 from security.column_policy import (
+    ColumnPolicy,
     ColumnPolicyError,
     JoinOnlyRestrictions,
     SchemaView,
     cached_column_policy,
     resolve_join_only,
 )
-from security.dialects import get_dialect_profile
+from security.dialects import DialectProfile, get_dialect_profile
 
 logger = logging.getLogger(__name__)
 
@@ -530,38 +531,26 @@ def _scan_structure(sql: str) -> tuple[list[int], list[bool]]:
     exclude it — a forbidden or structural keyword appearing as quoted
     *data* is not the same as it appearing as SQL syntax.
     """
+    # A quote toggles "inside a string". T-SQL's doubled quote inside a
+    # literal (``'it''s'``) closes the string and reopens it at once, which
+    # leaves it open, as it should be; both quotes are string characters.
     depth = 0
     in_string = False
     depths: list[int] = []
     in_str: list[bool] = []
-    i, n = 0, len(sql)
-    while i < n:
-        ch = sql[i]
-        if in_string:
-            depths.append(depth)
-            in_str.append(True)
-            if ch == "'":
-                if i + 1 < n and sql[i + 1] == "'":
-                    depths.append(depth)
-                    in_str.append(True)
-                    i += 2
-                    continue
-                in_string = False
-            i += 1
-            continue
-        if ch == "'":
-            in_string = True
-            depths.append(depth)
-            in_str.append(True)
-            i += 1
-            continue
+    for ch in sql:
         depths.append(depth)
-        in_str.append(False)
+        if ch == "'":
+            in_str.append(True)
+            in_string = not in_string
+            continue
+        in_str.append(in_string)
+        if in_string:
+            continue
         if ch == "(":
             depth += 1
         elif ch == ")":
             depth = max(0, depth - 1)
-        i += 1
     return depths, in_str
 
 
@@ -1113,6 +1102,26 @@ def _source_origins(
     return None
 
 
+def _all_or_none(parts: Iterable[list[ColumnOrigin] | None]) -> list[ColumnOrigin] | None:
+    """Concatenate *parts*, or ``None`` as soon as one of them is ``None`` ("cannot tell").
+
+    *parts* is consumed lazily, so nothing after the first unknown is computed.
+
+    Examples
+    --------
+    >>> _all_or_none(iter([[("T", "a")], [], [("U", "b")]]))
+    [('T', 'a'), ('U', 'b')]
+    >>> _all_or_none(iter([[("T", "a")], None, [("U", "b")]])) is None
+    True
+    """
+    origins: list[ColumnOrigin] = []
+    for part in parts:
+        if part is None:
+            return None
+        origins.extend(part)
+    return origins
+
+
 def _scope_origins(
     select: exp.Select | None,
     qualifier: str,
@@ -1139,13 +1148,10 @@ def _scope_origins(
         sources = _direct_from_sources(scope)
         chosen = [s for s in sources if _source_label(s) == qualifier] if qualifier else sources
         if chosen:
-            origins: list[ColumnOrigin] = []
-            for source in chosen:
-                found = _source_origins(source, name, ctes, depth)
-                if found is None:
-                    return None
-                origins.extend(found)
-            if origins or qualifier:
+            origins = _all_or_none(_source_origins(source, name, ctes, depth) for source in chosen)
+            # "cannot tell", a stored column, or a qualifier that named this
+            # source: the answer is final; otherwise look further out.
+            if origins is None or origins or qualifier:
                 return origins
         if not outward:
             return []
@@ -1159,35 +1165,52 @@ def _is_star(projection: exp.Expression) -> bool:
     )
 
 
+def _copied_column_origins(
+    select: exp.Select, projection: exp.Expression, ctes: dict[str, exp.Expression], depth: int,
+) -> list[ColumnOrigin] | None:
+    """Stored columns *projection* of *select* copies, or ``None`` when it is not a plain column copy."""
+    inner = projection.unalias()
+    if not isinstance(inner, exp.Column) or not inner.name or _is_star(inner):
+        return None
+    return _scope_origins(
+        select, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
+    )
+
+
+def _star_qualifier(star: exp.Expression) -> str:
+    """The lower-cased qualifier of ``t.*``, ``""`` for a bare ``*``."""
+    return (star.table or "").lower() if isinstance(star, exp.Column) else ""
+
+
 def _select_output_origins(
     select: exp.Select, name: str, ctes: dict[str, exp.Expression], depth: int,
 ) -> list[ColumnOrigin] | None:
     """Stored columns the output column *name* of *select* is a plain copy of, or ``None``."""
+    named = [
+        p for p in select.expressions
+        if not _is_star(p) and (p.alias_or_name or "").lower() == name
+    ]
+    if named:
+        return _all_or_none(_copied_column_origins(select, p, ctes, depth) for p in named)
     stars = [p for p in select.expressions if _is_star(p)]
-    origins: list[ColumnOrigin] = []
-    matched = False
-    for projection in select.expressions:
-        if _is_star(projection) or (projection.alias_or_name or "").lower() != name:
-            continue
-        matched = True
-        inner = projection.unalias()
-        if not isinstance(inner, exp.Column) or not inner.name or _is_star(inner):
-            return None
-        found = _scope_origins(
-            select, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
-        )
-        if found is None:
-            return None
-        origins.extend(found)
-    if matched:
-        return origins
-    for star in stars:
-        qualifier = (star.table or "").lower() if isinstance(star, exp.Column) else ""
-        found = _scope_origins(select, qualifier, name, ctes, depth + 1, outward=False)
-        if found is None:
-            return None
-        origins.extend(found)
-    return origins
+    return _all_or_none(
+        _scope_origins(select, _star_qualifier(star), name, ctes, depth + 1, outward=False)
+        for star in stars
+    )
+
+
+def _positional_origins(
+    branch: exp.Select, position: int, ctes: dict[str, exp.Expression], depth: int,
+) -> list[ColumnOrigin] | None:
+    """Stored columns output *position* of one set-operation *branch* copies, or ``None``."""
+    if len(branch.expressions) <= position or _is_star(branch.expressions[position]):
+        return None
+    inner = branch.expressions[position].unalias()
+    if not isinstance(inner, exp.Column) or not inner.name:
+        return None
+    return _scope_origins(
+        branch, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
+    )
 
 
 def _body_origins(
@@ -1205,26 +1228,12 @@ def _body_origins(
         return None
     first = branches[0]
     if any(_is_star(p) for p in first.expressions):
-        by_name = [_select_output_origins(b, name, ctes, depth) for b in branches]
-        return None if any(found is None for found in by_name) else [o for f in by_name for o in f]
+        return _all_or_none(_select_output_origins(b, name, ctes, depth) for b in branches)
     names = [(p.alias_or_name or "").lower() for p in first.expressions]
     if name not in names:
         return []
     position = names.index(name)
-    origins: list[ColumnOrigin] = []
-    for branch in branches:
-        if len(branch.expressions) <= position or _is_star(branch.expressions[position]):
-            return None
-        inner = branch.expressions[position].unalias()
-        if not isinstance(inner, exp.Column) or not inner.name:
-            return None
-        found = _scope_origins(
-            branch, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
-        )
-        if found is None:
-            return None
-        origins.extend(found)
-    return origins
+    return _all_or_none(_positional_origins(b, position, ctes, depth) for b in branches)
 
 
 def column_origins(column: exp.Column, tree: exp.Expression) -> tuple[ColumnOrigin, ...]:
@@ -1400,22 +1409,45 @@ def _restricted_tables_of(
     """
     name = column.name.lower()
     qualifier = (column.table or "").lower()
-    scope = _enclosing_select(column)
-
     if qualifier:
-        while scope is not None:
-            names, _ = _select_scope(scope, cte_names, cache)
-            if qualifier in names:
-                return [
-                    t for t in names[qualifier]
-                    if t is not None and restrictions.entry(t, name)
-                ]
-            scope = _enclosing_select(scope)
-        # Not a source of any enclosing select (a set operation's ORDER BY, say):
-        # fall back to the query-wide alias map.
-        canonical = alias_map.get(qualifier)
-        return [canonical] if canonical and restrictions.entry(canonical, name) else []
+        return _restricted_tables_by_qualifier(
+            column, qualifier, name, restrictions, cte_names, alias_map, cache,
+        )
+    return _restricted_tables_unqualified(column, name, restrictions, cte_names, all_tables, cache)
 
+
+def _restricted_tables_by_qualifier(
+    column: exp.Column,
+    qualifier: str,
+    name: str,
+    restrictions: JoinOnlyRestrictions,
+    cte_names: frozenset[str],
+    alias_map: dict[str, str],
+    cache: dict[int, _SelectScope],
+) -> list[str]:
+    """:func:`_restricted_tables_of` for a reference written ``qualifier.name``."""
+    scope = _enclosing_select(column)
+    while scope is not None:
+        names, _ = _select_scope(scope, cte_names, cache)
+        if qualifier in names:
+            return [t for t in names[qualifier] if t is not None and restrictions.entry(t, name)]
+        scope = _enclosing_select(scope)
+    # Not a source of any enclosing select (a set operation's ORDER BY, say):
+    # fall back to the query-wide alias map.
+    canonical = alias_map.get(qualifier)
+    return [canonical] if canonical and restrictions.entry(canonical, name) else []
+
+
+def _restricted_tables_unqualified(
+    column: exp.Column,
+    name: str,
+    restrictions: JoinOnlyRestrictions,
+    cte_names: frozenset[str],
+    all_tables: set[str],
+    cache: dict[int, _SelectScope],
+) -> list[str]:
+    """:func:`_restricted_tables_of` for a reference written without a qualifier."""
+    scope = _enclosing_select(column)
     if scope is None:
         # Outside every select (the ORDER BY of a UNION): any table of the query.
         return [t for t in sorted(all_tables) if restrictions.entry(t, name)]
@@ -1458,6 +1490,9 @@ def _enforce_join_only(
 ) -> None:
     """Refuse every use of a join-only column except as a ``JOIN ... ON`` key.
 
+    Three passes, in this order (the first refusal found is the one raised):
+    column references, then ``USING``/``NATURAL`` joins, then ``*``.
+
     Raises
     ------
     CorrectableRejection
@@ -1474,7 +1509,29 @@ def _enforce_join_only(
         for table in tree.find_all(exp.Table)
         if (canonical := _resolve_table_name(table, cte_names)) is not None
     }
+    _refuse_join_only_references(tree, cte_names, restrictions, alias_map, all_tables, cache)
+    for join in tree.find_all(exp.Join):
+        scope_select = _enclosing_select(join)
+        if scope_select is None:
+            continue
+        _, tables = _select_scope(scope_select, cte_names, cache)
+        _refuse_join_only_using(join, tables, restrictions)
+        _refuse_join_only_natural(join, tables, restrictions)
+    for star in tree.find_all(exp.Star):
+        if isinstance(star.parent, exp.Count):
+            continue  # COUNT(*) reads no column value
+        _refuse_join_only_star(star, cte_names, restrictions, alias_map, cache)
 
+
+def _refuse_join_only_references(
+    tree: exp.Expression,
+    cte_names: frozenset[str],
+    restrictions: JoinOnlyRestrictions,
+    alias_map: dict[str, str],
+    all_tables: set[str],
+    cache: dict[int, _SelectScope],
+) -> None:
+    """Refuse the first reference to a restricted column that is not a ``JOIN ... ON`` key."""
     for column in tree.find_all(exp.Column):
         name = column.name
         if not name or name == "*" or name.lower() not in restrictions.names:
@@ -1490,93 +1547,117 @@ def _enforce_join_only(
             unqualified=not column.table,
         )
 
-    for join in tree.find_all(exp.Join):
-        scope_select = _enclosing_select(join)
-        if scope_select is None:
+
+def _refuse_join_only_using(join: exp.Join, tables: list[str], restrictions: JoinOnlyRestrictions) -> None:
+    """Refuse a restricted column named in *join*'s ``USING (...)``."""
+    for ident in join.args.get("using") or ():
+        written = getattr(ident, "name", "") or ""
+        if written.lower() not in restrictions.names:
             continue
-        _, tables = _select_scope(scope_select, cte_names, cache)
-        for ident in join.args.get("using") or ():
-            written = getattr(ident, "name", "") or ""
-            if written.lower() in restrictions.names:
-                for table in tables:
-                    entry = restrictions.entry(table, written)
-                    if entry:
-                        raise _join_only_rejection(entry, table, written)
-        if str(join.args.get("method") or "").upper() == "NATURAL":
-            for table in tables:
-                columns = restrictions.by_table.get(table)
-                if columns:
-                    column_name, entry = next(iter(columns.items()))
-                    exc = CorrectableRejection(
-                        f"Forbidden keyword detected: NATURAL JOIN would join on every "
-                        f"column the tables share, including restricted column "
-                        f"'{column_name}' of table '{table}' (policy entry '{entry}'): "
-                        "write an explicit JOIN ... ON a.col = b.col instead",
-                        reason="join_only_column", subject=entry,
-                    )
-                    exc.is_refusal = True
-                    raise exc
+        for table in tables:
+            entry = restrictions.entry(table, written)
+            if entry:
+                raise _join_only_rejection(entry, table, written)
 
-    for star in tree.find_all(exp.Star):
-        if isinstance(star.parent, exp.Count):
-            continue  # COUNT(*) reads no column value
-        parent = star.parent
-        star_tables: list[str] = []
-        unresolved = False
-        if isinstance(parent, exp.Column) and parent.table:
-            label = f"{parent.table}.*"
-            qualifier = parent.table.lower()
-            scope = _enclosing_select(parent)
-            found = False
-            while scope is not None and not found:
-                names, _ = _select_scope(scope, cte_names, cache)
-                if qualifier in names:
-                    star_tables = [t for t in names[qualifier] if t is not None]
-                    found = True
-                scope = _enclosing_select(scope)
-            if not found and qualifier in alias_map:
-                star_tables = [alias_map[qualifier]]
-        else:
-            label = "*"
-            select = _enclosing_select(star)
-            if select is None:
+
+def _refuse_join_only_natural(join: exp.Join, tables: list[str], restrictions: JoinOnlyRestrictions) -> None:
+    """Refuse a ``NATURAL JOIN`` when one of *tables* has a restricted column."""
+    if str(join.args.get("method") or "").upper() != "NATURAL":
+        return
+    for table in tables:
+        columns = restrictions.by_table.get(table)
+        if columns:
+            column_name, entry = next(iter(columns.items()))
+            exc = CorrectableRejection(
+                f"Forbidden keyword detected: NATURAL JOIN would join on every "
+                f"column the tables share, including restricted column "
+                f"'{column_name}' of table '{table}' (policy entry '{entry}'): "
+                "write an explicit JOIN ... ON a.col = b.col instead",
+                reason="join_only_column", subject=entry,
+            )
+            exc.is_refusal = True
+            raise exc
+
+
+def _qualified_star_tables(
+    parent: exp.Column,
+    cte_names: frozenset[str],
+    alias_map: dict[str, str],
+    cache: dict[int, _SelectScope],
+) -> list[str]:
+    """The canonical tables ``alias.*`` (*parent*) expands to, through the nearest select that has the alias."""
+    qualifier = parent.table.lower()
+    scope = _enclosing_select(parent)
+    while scope is not None:
+        names, _ = _select_scope(scope, cte_names, cache)
+        if qualifier in names:
+            return [t for t in names[qualifier] if t is not None]
+        scope = _enclosing_select(scope)
+    return [alias_map[qualifier]] if qualifier in alias_map else []
+
+
+def _bare_star_tables(star: exp.Star, cte_names: frozenset[str]) -> tuple[list[str], bool]:
+    """The canonical tables a bare ``*`` expands to, and whether some source could not be enumerated.
+
+    A CTE or derived table cannot hold a restricted column: the body that
+    would have produced it was refused where it is written.
+    """
+    select = _enclosing_select(star)
+    if select is None:
+        return [], True
+    tables: list[str] = []
+    unresolved = False
+    for source in _direct_from_sources(select):
+        if isinstance(source, exp.Table):
+            canonical = _resolve_table_name(source, cte_names)
+            if canonical is not None:
+                tables.append(canonical)
+            elif (source.name or "").lower() not in cte_names:
                 unresolved = True
-            else:
-                for source in _direct_from_sources(select):
-                    if isinstance(source, exp.Table):
-                        canonical = _resolve_table_name(source, cte_names)
-                        if canonical is not None:
-                            star_tables.append(canonical)
-                        elif (source.name or "").lower() not in cte_names:
-                            unresolved = True
-                    elif not isinstance(source, exp.Subquery):
-                        unresolved = True
-            # A CTE or derived table cannot hold a restricted column: the
-            # body that would have produced it was refused where it is written.
+        elif not isinstance(source, exp.Subquery):
+            unresolved = True
+    return tables, unresolved
 
-        entries = sorted({
-            entry
-            for table in dict.fromkeys(star_tables)
-            for entry in restrictions.by_table.get(table, {}).values()
-        })
-        if entries:
-            exc = CorrectableRejection(
-                f"Forbidden keyword detected: '{label}' would expose restricted "
-                f"column(s) {entries}: name the columns instead of using '*' and leave "
-                "those out; they may only be used in JOIN ... ON a.col = b.col",
-                reason="join_only_column",
-                subject=entries[0] if len(entries) == 1 else None,
-            )
-            exc.is_refusal = True
-            raise exc
-        if unresolved:
-            exc = CorrectableRejection(
-                f"Forbidden keyword detected: cannot verify whether '{label}' exposes a "
-                "restricted column -- name the columns explicitly instead of using '*'",
-                reason="join_only_column",
-            )
-            exc.is_refusal = True
-            raise exc
+
+def _refuse_join_only_star(
+    star: exp.Star,
+    cte_names: frozenset[str],
+    restrictions: JoinOnlyRestrictions,
+    alias_map: dict[str, str],
+    cache: dict[int, _SelectScope],
+) -> None:
+    """Refuse a ``*``/``alias.*`` that would expose a restricted column, or that cannot be enumerated."""
+    parent = star.parent
+    if isinstance(parent, exp.Column) and parent.table:
+        label = f"{parent.table}.*"
+        star_tables, unresolved = _qualified_star_tables(parent, cte_names, alias_map, cache), False
+    else:
+        label = "*"
+        star_tables, unresolved = _bare_star_tables(star, cte_names)
+
+    entries = sorted({
+        entry
+        for table in dict.fromkeys(star_tables)
+        for entry in restrictions.by_table.get(table, {}).values()
+    })
+    if entries:
+        exc = CorrectableRejection(
+            f"Forbidden keyword detected: '{label}' would expose restricted "
+            f"column(s) {entries}: name the columns instead of using '*' and leave "
+            "those out; they may only be used in JOIN ... ON a.col = b.col",
+            reason="join_only_column",
+            subject=entries[0] if len(entries) == 1 else None,
+        )
+        exc.is_refusal = True
+        raise exc
+    if unresolved:
+        exc = CorrectableRejection(
+            f"Forbidden keyword detected: cannot verify whether '{label}' exposes a "
+            "restricted column -- name the columns explicitly instead of using '*'",
+            reason="join_only_column",
+        )
+        exc.is_refusal = True
+        raise exc
 
 
 # ---------------------------------------------------------------------------
@@ -1736,6 +1817,468 @@ def clean_sql(raw: str) -> str:
     )
 
     return sql.strip()
+
+
+# ---------------------------------------------------------------------------
+# validate_sql's rules, one function per rule group, in the order it runs them
+# ---------------------------------------------------------------------------
+
+
+def _forbidden_statement(label: str) -> PolicyRejection:
+    """The rejection for a forbidden statement kind or construct named *label*."""
+    return PolicyRejection(
+        f"Forbidden keyword detected: {label}",
+        reason="forbidden_statement", subject=label,
+    )
+
+
+def _parse_one_statement(sql: str, dialect: str) -> exp.Expression:
+    """Rule 3: *sql* parsed in *dialect*, refused unless it is exactly one statement."""
+    try:
+        raw_statements = sqlglot.parse(sql, read=dialect)
+    except SqlglotError as exc:
+        raise CorrectableRejection(f"SQL syntax error: {exc}", reason="other") from exc
+
+    statements = [stmt for stmt in raw_statements if stmt is not None]
+    if not statements:
+        raise CorrectableRejection("Empty SQL", reason="other")
+
+    if len(statements) > 1:
+        # Stacking is refused as a class regardless of content -- a known
+        # SQL-injection bypass vector, not a formatting mistake a retry
+        # could plausibly avoid by chance -- so both branches below are a
+        # PolicyRejection. Prefer naming the specific offending statement
+        # kind when one of the extra statements is recognisably dangerous
+        # (matches the pre-Phase-1 message shape for these cases); fall
+        # back to a generic message when every statement individually
+        # looks benign (e.g. "SELECT 1; SELECT 2").
+        for stmt in statements:
+            label = _forbidden_label(stmt)
+            if label is not None:
+                raise _forbidden_statement(label)
+        raise PolicyRejection(
+            "Forbidden keyword detected: multiple SQL statements are not "
+            f"allowed ({len(statements)} statements found)",
+            reason="forbidden_statement",
+        )
+    return statements[0]
+
+
+def _check_root(tree: exp.Expression) -> None:
+    """Rule 4: the statement itself is a read-only query."""
+    root_label = _forbidden_label(tree)
+    if root_label is not None:
+        raise _forbidden_statement(root_label)
+    if not isinstance(tree, _ALLOWED_ROOT_TYPES):
+        raise PolicyRejection(
+            "Forbidden keyword detected: only SELECT / WITH / set-operation "
+            f"queries are allowed, got {type(tree).__name__}",
+            reason="forbidden_statement", subject=type(tree).__name__,
+        )
+
+
+def _check_node(
+    node: exp.Expression, profile: DialectProfile, dialect: str, cte_names: frozenset[str],
+) -> None:
+    """Rules 5-8 for one node of the tree, in this order."""
+    label = _forbidden_label(node)
+    if label is not None:
+        raise _forbidden_statement(label)
+
+    # A comment is refused because it is present, not for what it
+    # says — scanning its text for keywords would just relocate the
+    # substring-matching mistake this module exists to get away from
+    # (see the module docstring). This intentionally does not reuse
+    # the "Forbidden keyword" phrasing: no keyword was found, the
+    # comment itself is the thing being refused. Classified as
+    # CorrectableRejection, not PolicyRejection: unlike a denied
+    # column or a forbidden statement, nothing about the *question*
+    # is out of bounds here -- the model can drop the comment and
+    # answer the exact same question on the very next attempt.
+    if node.comments:
+        raise CorrectableRejection(
+            "SQL comments are not allowed: a comment is not "
+            "executable SQL syntax, so its content is never inspected "
+            "for keywords -- the comment itself is refused outright.",
+            reason="other",
+        )
+
+    _check_dialect_portability(node, profile, dialect)
+
+    if isinstance(node, exp.Anonymous) and _is_dangerous_identifier(node.name or "", dialect):
+        raise _forbidden_statement((node.name or "").upper())
+
+    if isinstance(node, exp.Table):
+        _check_table_node(node, profile, dialect, cte_names)
+
+
+def _check_dialect_portability(node: exp.Expression, profile: DialectProfile, dialect: str) -> None:
+    """Refuse T-SQL constructs that sqlglot carries unchanged into a dialect where they mean something else."""
+    # T-SQL national-character literal (N'...') on a dialect that
+    # rejects it -- the finding that shapes this entire phase, found
+    # by direct execution against a real SQLite engine, not by
+    # reading: sqlglot's transpile leaves N'...' COMPLETELY UNCHANGED
+    # for every target dialect (it is not converted to a plain string
+    # literal), and its own parser silently ACCEPTS N'...' as valid
+    # input regardless of the `read=` dialect given -- so a naive
+    # "does the transpiled text still parse" check (this module's
+    # original re-validation plan) does not actually catch this at
+    # all; only an explicit rule does. Essentially every query this
+    # deployment generates filters on a Persian name, so essentially
+    # every query carries one of these -- this is not a rare edge
+    # case. See security.dialects.DialectProfile.supports_national_literal
+    # for exactly which dialects accept it (tsql, MySQL) and which
+    # reject it as a syntax error (PostgreSQL, SQLite).
+    if isinstance(node, exp.National) and not profile.supports_national_literal:
+        raise CorrectableRejection(
+            f"Forbidden keyword detected: T-SQL national-character "
+            f"literal ({node.sql(dialect=dialect)!r}) is not valid "
+            f"{dialect} syntax -- sqlglot leaves N'...' unchanged "
+            "under transpilation and its parser accepts it regardless "
+            "of dialect, so this is refused explicitly rather than "
+            "left to fail at the database",
+            reason="other",
+        )
+
+    # T-SQL string-concatenation-via-`+`, transpiled unchanged into a
+    # dialect where `+` is exclusively numeric addition -- found by
+    # direct execution against SQLite, not by reading: sqlglot parses
+    # `Name + ' (' + NationalID + ')'` as a generic arithmetic
+    # ``exp.Add`` expression in every dialect (T-SQL overloads `+` for
+    # both addition and concatenation with no distinct AST node), so
+    # transpiling it produces *identical*, syntactically valid-looking
+    # `+` text on the target dialect -- which then either raises a
+    # runtime type error (PostgreSQL) or, worse, silently coerces a
+    # non-numeric string operand to ``0`` and returns a plausible
+    # number instead of failing (confirmed for SQLite:
+    # ``'foo' + 'bar'`` evaluates to ``0``, not an error) -- exactly
+    # the "looks right, means something different" failure class this
+    # phase's verification exists to catch. Refusing every ``+`` is
+    # not viable (ordinary numeric addition, e.g. ``TotalPrice + Fee``,
+    # is common and legitimate), so this refuses only the *unambiguous*
+    # case: a ``+`` with a string-literal operand, which is never a
+    # legitimate numeric expression regardless of dialect. This does
+    # NOT catch the harder case of concatenating two *columns* typed
+    # as text with no literal present (``Name + NationalID``) --
+    # schema.yaml carries no column-type metadata this module could
+    # use to distinguish that from real numeric addition; that residual
+    # gap is reported, not silently left undocumented, in this phase's
+    # report. Scoped to non-tsql dialects only: this is exactly valid,
+    # correct T-SQL and must not be refused when *dialect* is "tsql".
+    if (
+        dialect != "tsql"
+        and isinstance(node, exp.Add)
+        and (_is_string_literal_operand(node.this) or _is_string_literal_operand(node.expression))
+    ):
+        raise CorrectableRejection(
+            "Forbidden keyword detected: '+' with a string-literal "
+            f"operand ({node.sql(dialect=dialect)!r}) is T-SQL string "
+            f"concatenation, which does not transpile to {dialect} -- "
+            "this dialect's '+' is exclusively numeric addition and "
+            "would silently coerce a string operand instead of "
+            "concatenating it",
+            reason="other",
+        )
+
+
+def _check_table_node(
+    node: exp.Table, profile: DialectProfile, dialect: str, cte_names: frozenset[str],
+) -> None:
+    """Rules 5, 7 and 8 for one table reference: dangerous name, system catalogue, allowlist."""
+    raw_name = node.name
+    if _is_dangerous_identifier(raw_name or "", dialect):
+        raise _forbidden_statement(raw_name.upper())
+    _check_system_catalogue((node.db or "").upper(), (raw_name or "").upper(), profile)
+
+    # Table allowlist: unlike the column check below, this is not
+    # lenient. A raw_name of "" (an exp.Anonymous table-valued
+    # function, e.g. OPENROWSET(...) or sp_who()) is skipped here
+    # -- it is already refused above, either by the dangerous
+    # function-name checks or because it can never match
+    # TABLE_COLUMNS anyway once it does something real.
+    if raw_name and raw_name.lower() not in cte_names:
+        _check_table_allowlist(node, raw_name)
+
+
+def _check_system_catalogue(db: str, name_upper: str, profile: DialectProfile) -> None:
+    """Rule 7: refuse a reference into *profile*'s system catalogues.
+
+    An exact-match schema/db qualifier (INFORMATION_SCHEMA, pg_catalog, mysql,
+    sqlite_master, ...) or a by-convention name PREFIX (postgres' pg_*,
+    sqlite's sqlite_*) -- see security.dialects.DialectProfile's docstring for
+    why these are two separate fields rather than one.
+    """
+    if db in profile.system_schemas:
+        subject = db
+    elif not db and name_upper in profile.system_schemas:
+        subject = name_upper
+    elif any(db.startswith(prefix) for prefix in profile.system_name_prefixes):
+        subject = db
+    elif any(name_upper.startswith(prefix) for prefix in profile.system_name_prefixes):
+        subject = name_upper
+    else:
+        return
+    raise PolicyRejection(
+        f"System catalogue forbidden: {subject}",
+        reason="system_catalogue", subject=subject,
+    )
+
+
+def _candidate_references(candidates: Iterable[str]) -> str:
+    """The ``[schema].[Table]`` references of *candidates*, for a "did you mean"."""
+    return ", ".join(
+        table_reference_sql(key, _QUALIFIER_STR.get(key, "")) for key in candidates
+    )
+
+
+def _check_table_allowlist(node: exp.Table, raw_name: str) -> None:
+    """Rule 8: refuse a table reference that does not resolve to exactly one known table.
+
+    A table's SCHEMA/DATABASE QUALIFIER, when the reference gives one, is part
+    of this check (see docs/design/TABLE-NAMES.md and :func:`_match_table_ref`
+    for the full rule): a query that writes some OTHER schema in front of an
+    allowlisted table's bare name (``[hr].[Customer]`` when only
+    ``sales.Customer`` is allowlisted) used to sail through unexamined, which
+    let a query reach a table NOT in the allowlist merely by naming a
+    different schema. A qualified reference must match a known qualifier
+    exactly (a candidate with no db_schema set at all still accepts any
+    qualifier -- a documented, residual gap; see that function's docstring).
+
+    Every rejection here is a CorrectableRejection with ``is_refusal`` set: a
+    retry can plausibly fix it by naming a real table, but the allowlist
+    violation, not the SQL's shape, is why it was rejected (see
+    SqlGuardRejection's docstring).
+    """
+    _, sql_qualifier = _table_ref_name_and_qualifier(node)
+    match = _match_table_ref(raw_name, sql_qualifier)
+    if match.status == "unknown":
+        # A hallucinated or misspelled table name is exactly the kind of
+        # small-model mistake a retry can plausibly fix -- unlike a denied
+        # column, nothing here says the question itself may not be asked.
+        message = (
+            f"Forbidden keyword detected: unknown table "
+            f"'{raw_name}' is not in the schema allowlist"
+        )
+        reason = "unknown_table"
+    elif match.status in ("qualifier_mismatch", "multi_part_only"):
+        # The bare name IS a real table (or more than one), but none of them
+        # is reachable the way this reference wrote it -- either the given
+        # qualifier names no known candidate, or the one candidate that
+        # exists lives in another database and an unqualified reference would
+        # read the wrong one. Reported as unknown_table with a "did you mean"
+        # naming every candidate's actual reference.
+        written = f"{'.'.join(sql_qualifier)}.{raw_name}" if sql_qualifier else raw_name
+        message = (
+            f"Forbidden keyword detected: table '{written}' is "
+            f"not in the schema allowlist; did you mean "
+            f"{_candidate_references(match.candidates)}?"
+        )
+        reason = "unknown_table"
+    elif match.status == "ambiguous":
+        # More than one candidate and no way to tell which one this reference
+        # means -- an unqualified mention of a bare name more than one
+        # schema.yaml key shares. Correctable: the question is answerable,
+        # just not phrased unambiguously yet.
+        message = (
+            f"Forbidden keyword detected: table '{raw_name}' "
+            f"exists in more than one schema; write one of "
+            f"{_candidate_references(match.candidates)} to say which"
+        )
+        reason = "ambiguous_table"
+    else:
+        return  # "resolved": a known table, nothing to reject
+    exc = CorrectableRejection(message, reason=reason, subject=raw_name)
+    exc.is_refusal = True
+    raise exc
+
+
+def _column_policy_or_refuse(denied_columns: Iterable[str] | None) -> ColumnPolicy:
+    """The parsed column policy for *denied_columns*; a malformed one is refused, never ignored."""
+    try:
+        return cached_column_policy(denied_columns)
+    except ColumnPolicyError as exc:
+        # Unreachable for a key that passed load-time checking; reached for a
+        # malformed entry that got into storage some other way. Refuse rather
+        # than ignore it: an entry that cannot be read is an entry that
+        # restricts nothing, and nothing is the wrong default for an ACL.
+        logger.error("column policy unreadable: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
+        raise PolicyRejection(
+            f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
+            reason="other",
+        ) from None
+
+
+def _check_column_references(
+    tree: exp.Expression, denied: frozenset[str], alias_map: dict[str, str],
+) -> None:
+    """Rules 9 and 10 (whole-name part) for every named column reference."""
+    for col in tree.find_all(exp.Column):
+        name = col.name
+        if not name or name == "*":
+            continue
+        if name.upper() in denied:
+            raise PolicyRejection(
+                f"Forbidden keyword detected: denied column '{name}'",
+                reason="denied_column", subject=name,
+            )
+        # An unqualified column can't be safely resolved to a single table in
+        # the general case (joins, CTEs, computed aliases in ORDER BY/GROUP
+        # BY) -- allow rather than risk a false positive. A qualifier that is
+        # a CTE name or a derived-table alias is unresolvable too, so allowed;
+        # it cannot be an unrecognised table name, since every non-CTE
+        # exp.Table was already checked against the allowlist.
+        qualifier = (col.table or "").lower()
+        canonical = alias_map.get(qualifier) if qualifier else None
+        if canonical is not None and name.lower() not in _COLUMNS_BY_TABLE[canonical]:
+            # CorrectableRejection: same reasoning as the unknown-table case
+            # -- a hallucinated column name, plausibly fixed by a retry that
+            # names a real one.
+            unknown_column = CorrectableRejection(
+                f"Unknown column '{name}' on table '{canonical}'",
+                reason="other", subject=name,
+            )
+            unknown_column.table = canonical
+            raise unknown_column
+
+
+def _check_denied_stars(
+    tree: exp.Expression, denied: frozenset[str], alias_map: dict[str, str], cte_names: frozenset[str],
+) -> None:
+    """Rule 10 for ``*``: it must not read around an active column denial.
+
+    Each ``*``/``alias.*`` is expanded against whatever it resolves to and the
+    expansion checked, or refused outright if it can't be resolved with
+    confidence (see _resolve_star_tables). Both branches enforce the same
+    policy as the named-column check, so both are PolicyRejection: no rewrite
+    of the query can make the underlying question answerable without touching
+    the denied column.
+    """
+    for star in tree.find_all(exp.Star):
+        parent = star.parent
+        if isinstance(parent, exp.Column) and parent.table:
+            canonical = alias_map.get(parent.table.lower())
+            table_names = [canonical] if canonical else None
+            ref_label = f"{parent.table}.*"
+        else:
+            table_names = _resolve_star_tables(_enclosing_select(star), cte_names)
+            ref_label = "*"
+
+        if table_names is None:
+            # `subject` stays `None`: no single column can be named here at
+            # all -- that is exactly *why* this branch fires, so there is
+            # nothing for a caller to build a targeted "ask without that
+            # column" action around.
+            raise PolicyRejection(
+                f"Forbidden keyword detected: cannot verify whether "
+                f"'{ref_label}' exposes a denied column -- name the "
+                "columns explicitly instead of using '*'",
+                reason="denied_column",
+            )
+
+        exposed_denied = sorted(
+            col
+            for table_name in table_names
+            for col in _COLUMNS_BY_TABLE[table_name]
+            if col.upper() in denied
+        )
+        if exposed_denied:
+            # `subject` names the one column a caller can offer to drop only
+            # when exactly one is exposed; with several there is no single
+            # column whose removal would fix the question.
+            raise PolicyRejection(
+                f"Forbidden keyword detected: '{ref_label}' would "
+                f"expose denied column(s): {exposed_denied}",
+                reason="denied_column",
+                subject=exposed_denied[0] if len(exposed_denied) == 1 else None,
+            )
+
+
+def _check_join_only_policy(
+    tree: exp.Expression, policy: ColumnPolicy, cte_names: frozenset[str], alias_map: dict[str, str],
+) -> None:
+    """Rule 10, scoped entries: join-only columns, for the data source this query will run on.
+
+    Resolving the entries checks them against the schema and the configured
+    sources again (cheap), so a key whose entries were never checked at load
+    fails here, loudly, instead of restricting nothing.
+    """
+    try:
+        restrictions = resolve_join_only(
+            policy,
+            SchemaView(columns_by_table=_COLUMNS_BY_TABLE, qualifiers=_QUALIFIER_STR),
+            _executing_source(tree, cte_names),
+        )
+    except ColumnPolicyError as exc:
+        logger.error("column policy invalid: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
+        raise PolicyRejection(
+            f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
+            reason="other",
+        ) from None
+    if restrictions:
+        _enforce_join_only(tree, cte_names, restrictions, alias_map)
+
+
+def _check_projection_allowlist(node: exp.Expression, dialect: str) -> None:
+    """ADR-001 R2 and R3 for one node: no server/session state, only allowlisted anonymous functions."""
+    # R2 -- server/session/connection *state* nodes, anywhere in the tree (a
+    # WHERE clause, an ORDER BY, a CTE body, a scalar subquery -- not just the
+    # projection). Each of these has its own typed sqlglot node; deliberately
+    # excludes exp.CurrentTimestamp, which is ordinary, legitimate
+    # GETDATE()/CURRENT_TIMESTAMP syntax with no reconnaissance value. A
+    # PolicyRejection: no rephrasing makes reading server/session state an
+    # in-bounds question for this application.
+    if isinstance(node, _FORBIDDEN_STATE_NODE_TYPES):
+        # The label is the node's own rendered SQL, not its Python class name
+        # (``PARAMETER`` for ``@@version``): ``GuardVerdict.subject`` is
+        # analyst-facing (see session/models.py). The argument list is cut at
+        # the first ``(`` so a model-generated literal argument (e.g.
+        # ``OBJECT_ID('x')``) never ends up in the structured ``subject``.
+        raise _forbidden_statement(node.sql(dialect=dialect).split("(", 1)[0].strip().upper())
+
+    # R3 -- Anonymous function allowlist. Every T-SQL function sqlglot gives a
+    # dedicated exp.Func subclass to (SUM, CAST, DATEADD, ROW_NUMBER, ...)
+    # never reaches this branch; what's left as exp.Anonymous is exactly the
+    # measured legitimate data-function residue in _SAFE_ANONYMOUS_FUNCTIONS,
+    # or a metadata/reconnaissance function this rule exists to catch
+    # (SERVERPROPERTY, OBJECT_NAME, COL_NAME, DB_NAME, ...). The
+    # dangerous-function-name / xp_*/sp_* check fires first for its own
+    # specific names; this is the broader catch-all behind it, keyed on an
+    # allowlist rather than another denylist.
+    if isinstance(node, exp.Anonymous):
+        name = (node.name or "").upper()
+        if name not in _SAFE_ANONYMOUS_FUNCTIONS:
+            raise PolicyRejection(
+                f"Forbidden keyword detected: {name or 'ANONYMOUS'}",
+                reason="forbidden_statement", subject=name or None,
+            )
+
+
+def _require_table_reference(tree: exp.Expression, cte_names: frozenset[str]) -> None:
+    """ADR-001 R1: at least one non-CTE table reference.
+
+    By this point every non-CTE exp.Table in the tree has already been
+    allowlist-checked (rule 8), so finding one is sufficient proof "a real
+    table exists" -- this does not re-check allowlist membership. A query with
+    no non-CTE table reference at all (SELECT 1, or SELECT * FROM a derived
+    table with no real source) has escaped the table allowlist entirely rather
+    than passed it, a distinct failure mode from an unknown table name.
+    CorrectableRejection + is_refusal=True, matching the unknown_table shape:
+    naming a real table is a fix a retry can plausibly make, but the allowlist
+    violation -- not the SQL's shape -- is why this was rejected.
+    """
+    if any(
+        isinstance(node, exp.Table) and (node.name or "").lower() not in cte_names
+        for node in tree.walk()
+    ):
+        return
+    exc = CorrectableRejection(
+        "Forbidden keyword detected: query has no table reference -- "
+        "a warehouse-reading query must select from at least one "
+        "allowlisted table",
+        reason="no_table_reference",
+    )
+    exc.is_refusal = True
+    raise exc
 
 
 def validate_sql(
@@ -2024,403 +2567,22 @@ def validate_sql(
         raise CorrectableRejection("LIMIT is not valid T-SQL — use TOP instead", reason="other")
 
     profile = get_dialect_profile(dialect)
-
-    try:
-        raw_statements = sqlglot.parse(sql, read=dialect)
-    except SqlglotError as exc:
-        raise CorrectableRejection(f"SQL syntax error: {exc}", reason="other") from exc
-
-    statements = [stmt for stmt in raw_statements if stmt is not None]
-    if not statements:
-        raise CorrectableRejection("Empty SQL", reason="other")
-
-    if len(statements) > 1:
-        # Stacking is refused as a class regardless of content -- a known
-        # SQL-injection bypass vector, not a formatting mistake a retry
-        # could plausibly avoid by chance -- so both branches below are a
-        # PolicyRejection. Prefer naming the specific offending statement
-        # kind when one of the extra statements is recognisably dangerous
-        # (matches the pre-Phase-1 message shape for these cases); fall
-        # back to a generic message when every statement individually
-        # looks benign (e.g. "SELECT 1; SELECT 2").
-        for stmt in statements:
-            label = _forbidden_label(stmt)
-            if label is not None:
-                raise PolicyRejection(
-                    f"Forbidden keyword detected: {label}",
-                    reason="forbidden_statement", subject=label,
-                )
-        raise PolicyRejection(
-            "Forbidden keyword detected: multiple SQL statements are not "
-            f"allowed ({len(statements)} statements found)",
-            reason="forbidden_statement",
-        )
-
-    tree = statements[0]
-
-    root_label = _forbidden_label(tree)
-    if root_label is not None:
-        raise PolicyRejection(
-            f"Forbidden keyword detected: {root_label}",
-            reason="forbidden_statement", subject=root_label,
-        )
-    if not isinstance(tree, _ALLOWED_ROOT_TYPES):
-        raise PolicyRejection(
-            "Forbidden keyword detected: only SELECT / WITH / set-operation "
-            f"queries are allowed, got {type(tree).__name__}",
-            reason="forbidden_statement", subject=type(tree).__name__,
-        )
+    tree = _parse_one_statement(sql, dialect)
+    _check_root(tree)
 
     cte_names = _cte_names(tree)
-
     for node in tree.walk():
-        label = _forbidden_label(node)
-        if label is not None:
-            raise PolicyRejection(
-                f"Forbidden keyword detected: {label}",
-                reason="forbidden_statement", subject=label,
-            )
-
-        # A comment is refused because it is present, not for what it
-        # says — scanning its text for keywords would just relocate the
-        # substring-matching mistake this module exists to get away from
-        # (see the module docstring). This intentionally does not reuse
-        # the "Forbidden keyword" phrasing: no keyword was found, the
-        # comment itself is the thing being refused. Classified as
-        # CorrectableRejection, not PolicyRejection: unlike a denied
-        # column or a forbidden statement, nothing about the *question*
-        # is out of bounds here -- the model can drop the comment and
-        # answer the exact same question on the very next attempt.
-        if node.comments:
-            raise CorrectableRejection(
-                "SQL comments are not allowed: a comment is not "
-                "executable SQL syntax, so its content is never inspected "
-                "for keywords -- the comment itself is refused outright.",
-                reason="other",
-            )
-
-        # T-SQL national-character literal (N'...') on a dialect that
-        # rejects it -- the finding that shapes this entire phase, found
-        # by direct execution against a real SQLite engine, not by
-        # reading: sqlglot's transpile leaves N'...' COMPLETELY UNCHANGED
-        # for every target dialect (it is not converted to a plain string
-        # literal), and its own parser silently ACCEPTS N'...' as valid
-        # input regardless of the `read=` dialect given -- so a naive
-        # "does the transpiled text still parse" check (this module's
-        # original re-validation plan) does not actually catch this at
-        # all; only an explicit rule does. Essentially every query this
-        # deployment generates filters on a Persian name, so essentially
-        # every query carries one of these -- this is not a rare edge
-        # case. See security.dialects.DialectProfile.supports_national_literal
-        # for exactly which dialects accept it (tsql, MySQL) and which
-        # reject it as a syntax error (PostgreSQL, SQLite).
-        if isinstance(node, exp.National) and not profile.supports_national_literal:
-            raise CorrectableRejection(
-                f"Forbidden keyword detected: T-SQL national-character "
-                f"literal ({node.sql(dialect=dialect)!r}) is not valid "
-                f"{dialect} syntax -- sqlglot leaves N'...' unchanged "
-                "under transpilation and its parser accepts it regardless "
-                "of dialect, so this is refused explicitly rather than "
-                "left to fail at the database",
-                reason="other",
-            )
-
-        # T-SQL string-concatenation-via-`+`, transpiled unchanged into a
-        # dialect where `+` is exclusively numeric addition -- found by
-        # direct execution against SQLite, not by reading: sqlglot parses
-        # `Name + ' (' + NationalID + ')'` as a generic arithmetic
-        # ``exp.Add`` expression in every dialect (T-SQL overloads `+` for
-        # both addition and concatenation with no distinct AST node), so
-        # transpiling it produces *identical*, syntactically valid-looking
-        # `+` text on the target dialect -- which then either raises a
-        # runtime type error (PostgreSQL) or, worse, silently coerces a
-        # non-numeric string operand to ``0`` and returns a plausible
-        # number instead of failing (confirmed for SQLite:
-        # ``'foo' + 'bar'`` evaluates to ``0``, not an error) -- exactly
-        # the "looks right, means something different" failure class this
-        # phase's verification exists to catch. Refusing every ``+`` is
-        # not viable (ordinary numeric addition, e.g. ``TotalPrice + Fee``,
-        # is common and legitimate), so this refuses only the *unambiguous*
-        # case: a ``+`` with a string-literal operand, which is never a
-        # legitimate numeric expression regardless of dialect. This does
-        # NOT catch the harder case of concatenating two *columns* typed
-        # as text with no literal present (``Name + NationalID``) --
-        # schema.yaml carries no column-type metadata this module could
-        # use to distinguish that from real numeric addition; that residual
-        # gap is reported, not silently left undocumented, in this phase's
-        # report. Scoped to non-tsql dialects only: this is exactly valid,
-        # correct T-SQL and must not be refused when *dialect* is "tsql".
-        if (
-            dialect != "tsql"
-            and isinstance(node, exp.Add)
-            and (_is_string_literal_operand(node.this) or _is_string_literal_operand(node.expression))
-        ):
-            raise CorrectableRejection(
-                "Forbidden keyword detected: '+' with a string-literal "
-                f"operand ({node.sql(dialect=dialect)!r}) is T-SQL string "
-                f"concatenation, which does not transpile to {dialect} -- "
-                "this dialect's '+' is exclusively numeric addition and "
-                "would silently coerce a string operand instead of "
-                "concatenating it",
-                reason="other",
-            )
-
-        if isinstance(node, exp.Anonymous) and _is_dangerous_identifier(node.name or "", dialect):
-            label = (node.name or "").upper()
-            raise PolicyRejection(
-                f"Forbidden keyword detected: {label}",
-                reason="forbidden_statement", subject=label,
-            )
-
-        if isinstance(node, exp.Table):
-            raw_name = node.name
-            if _is_dangerous_identifier(raw_name or "", dialect):
-                label = raw_name.upper()
-                raise PolicyRejection(
-                    f"Forbidden keyword detected: {label}",
-                    reason="forbidden_statement", subject=label,
-                )
-            db = (node.db or "").upper()
-            name_upper = (raw_name or "").upper()
-            # System-catalogue check for *this* dialect: an exact-match
-            # schema/db qualifier (INFORMATION_SCHEMA, pg_catalog, mysql,
-            # sqlite_master, ...) or a by-convention name PREFIX
-            # (postgres' pg_*, sqlite's sqlite_*) -- see
-            # security.dialects.DialectProfile's docstring for why these
-            # are two separate fields rather than one.
-            if db in profile.system_schemas:
-                raise PolicyRejection(
-                    f"System catalogue forbidden: {db}",
-                    reason="system_catalogue", subject=db,
-                )
-            if not db and name_upper in profile.system_schemas:
-                raise PolicyRejection(
-                    f"System catalogue forbidden: {name_upper}",
-                    reason="system_catalogue", subject=name_upper,
-                )
-            if any(db.startswith(prefix) for prefix in profile.system_name_prefixes):
-                raise PolicyRejection(
-                    f"System catalogue forbidden: {db}",
-                    reason="system_catalogue", subject=db,
-                )
-            if any(name_upper.startswith(prefix) for prefix in profile.system_name_prefixes):
-                raise PolicyRejection(
-                    f"System catalogue forbidden: {name_upper}",
-                    reason="system_catalogue", subject=name_upper,
-                )
-
-            # Table allowlist: unlike the column check below, this is not
-            # lenient. A raw_name of "" (an exp.Anonymous table-valued
-            # function, e.g. OPENROWSET(...) or sp_who()) is skipped here
-            # -- it is already refused above, either by the dangerous
-            # function-name checks or because it can never match
-            # TABLE_COLUMNS anyway once it does something real.
-            #
-            # A table's SCHEMA/DATABASE QUALIFIER, when the reference gives
-            # one, is now part of this check too (see docs/design/TABLE-NAMES.md
-            # and _match_table_ref's own docstring for the full rule):
-            # a query that writes some OTHER schema in front of an
-            # allowlisted table's bare name (``[hr].[Customer]`` when only
-            # ``sales.Customer`` is allowlisted) used to sail through this
-            # check unexamined -- the qualifier was simply never looked at
-            # -- which let a query reach a table NOT in the allowlist merely
-            # by naming a different schema. :func:`_match_table_ref` closes
-            # that hole: a qualified reference must match a known qualifier
-            # exactly (a candidate with no db_schema set at all still
-            # accepts any qualifier -- a documented, residual gap; see that
-            # function's docstring).
-            if raw_name and raw_name.lower() not in cte_names:
-                _, sql_qualifier = _table_ref_name_and_qualifier(node)
-                match = _match_table_ref(raw_name, sql_qualifier)
-                if match.status == "resolved":
-                    pass  # a known table: nothing to reject
-                elif match.status == "unknown":
-                    # CorrectableRejection: a hallucinated or misspelled
-                    # table name is exactly the kind of small-model mistake
-                    # a retry can plausibly fix by naming a real table --
-                    # unlike a denied column, nothing here says the
-                    # question itself may not be asked. It is, however,
-                    # STILL a refusal on the other axis (is_refusal): the
-                    # allowlist violation, not the SQL's shape, is why this
-                    # was rejected, so this specific instance overrides the
-                    # class default -- see SqlGuardRejection's docstring.
-                    exc = CorrectableRejection(
-                        f"Forbidden keyword detected: unknown table "
-                        f"'{raw_name}' is not in the schema allowlist",
-                        reason="unknown_table", subject=raw_name,
-                    )
-                    exc.is_refusal = True
-                    raise exc
-                elif match.status in ("qualifier_mismatch", "multi_part_only"):
-                    # The bare name IS a real table (or more than one), but
-                    # none of them is reachable the way this reference wrote
-                    # it -- either the given qualifier names no known
-                    # candidate, or the one candidate that exists lives in
-                    # another database and an unqualified reference would
-                    # read the wrong one. Reported as unknown_table (a
-                    # retry can plausibly fix it by writing the right
-                    # qualifier) with a "did you mean" naming every
-                    # candidate's actual reference.
-                    suggestions = ", ".join(
-                        table_reference_sql(key, _QUALIFIER_STR.get(key, ""))
-                        for key in match.candidates
-                    )
-                    written = (
-                        f"{'.'.join(sql_qualifier)}.{raw_name}" if sql_qualifier else raw_name
-                    )
-                    exc = CorrectableRejection(
-                        f"Forbidden keyword detected: table '{written}' is "
-                        f"not in the schema allowlist; did you mean "
-                        f"{suggestions}?",
-                        reason="unknown_table", subject=raw_name,
-                    )
-                    exc.is_refusal = True
-                    raise exc
-                elif match.status == "ambiguous":
-                    # More than one candidate and no way to tell which one
-                    # this reference means -- an unqualified mention of a
-                    # bare name more than one schema.yaml key shares. A
-                    # retry can plausibly fix this by writing one of the
-                    # qualified references named in the message, so this is
-                    # correctable, not a PolicyRejection (the question
-                    # itself is answerable, just not phrased unambiguously
-                    # yet).
-                    suggestions = ", ".join(
-                        table_reference_sql(key, _QUALIFIER_STR.get(key, ""))
-                        for key in match.candidates
-                    )
-                    exc = CorrectableRejection(
-                        f"Forbidden keyword detected: table '{raw_name}' "
-                        f"exists in more than one schema; write one of "
-                        f"{suggestions} to say which",
-                        reason="ambiguous_table", subject=raw_name,
-                    )
-                    exc.is_refusal = True
-                    raise exc
+        _check_node(node, profile, dialect, cte_names)
 
     _require_single_datasource(tree, cte_names)
 
-    try:
-        policy = cached_column_policy(denied_columns)
-    except ColumnPolicyError as exc:
-        # Unreachable for a key that passed load-time checking; reached for a
-        # malformed entry that got into storage some other way. Refuse rather
-        # than ignore it: an entry that cannot be read is an entry that
-        # restricts nothing, and nothing is the wrong default for an ACL.
-        logger.error("column policy unreadable: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
-        raise PolicyRejection(
-            f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
-            reason="other",
-        ) from None
-    denied = policy.denied
+    policy = _column_policy_or_refuse(denied_columns)
     alias_map = _collect_table_alias_map(tree, cte_names)
-
-    for col in tree.find_all(exp.Column):
-        name = col.name
-        if not name or name == "*":
-            continue
-        if name.upper() in denied:
-            raise PolicyRejection(
-                f"Forbidden keyword detected: denied column '{name}'",
-                reason="denied_column", subject=name,
-            )
-
-        qualifier = (col.table or "").lower()
-        if not qualifier:
-            # An unqualified column can't be safely resolved to a single
-            # table in the general case (joins, CTEs, computed aliases in
-            # ORDER BY/GROUP BY) — allow rather than risk a false positive.
-            continue
-        canonical = alias_map.get(qualifier)
-        if canonical is None:
-            # Qualifier is a CTE name or a derived-table alias --
-            # unresolvable, so allow. (It cannot be an unrecognised table
-            # name: every non-CTE exp.Table was already checked against
-            # the allowlist above.)
-            continue
-        if name.lower() not in _COLUMNS_BY_TABLE[canonical]:
-            # CorrectableRejection: same reasoning as the unknown-table
-            # case above -- a hallucinated column name, plausibly fixed
-            # by a retry that names a real one.
-            unknown_column = CorrectableRejection(
-                f"Unknown column '{name}' on table '{canonical}'",
-                reason="other", subject=name,
-            )
-            unknown_column.table = canonical
-            raise unknown_column
-
-    if denied:
-        # "*" must not be usable to silently read around an active
-        # column-denial policy -- expand it against whatever it resolves
-        # to and check the expansion, or refuse it outright if it can't be
-        # resolved with confidence (see _resolve_star_tables). Both
-        # branches enforce the same denied-column policy as the named-
-        # column check above, so both are PolicyRejection: no rewrite of
-        # the query can make the underlying question answerable without
-        # touching the denied column.
-        for star in tree.find_all(exp.Star):
-            parent = star.parent
-            if isinstance(parent, exp.Column) and parent.table:
-                canonical = alias_map.get(parent.table.lower())
-                table_names = [canonical] if canonical else None
-                ref_label = f"{parent.table}.*"
-            else:
-                table_names = _resolve_star_tables(_enclosing_select(star), cte_names)
-                ref_label = "*"
-
-            if table_names is None:
-                # `subject` stays `None`: no single column can be named
-                # here at all -- that is exactly *why* this branch fires
-                # (an unresolvable `*`/`alias.*`), so there is nothing for
-                # a caller to build a targeted "ask without that column"
-                # action around; the generic rephrase action is the only
-                # honest one for this specific rejection.
-                raise PolicyRejection(
-                    f"Forbidden keyword detected: cannot verify whether "
-                    f"'{ref_label}' exposes a denied column -- name the "
-                    "columns explicitly instead of using '*'",
-                    reason="denied_column",
-                )
-
-            exposed_denied = sorted(
-                col
-                for table_name in table_names
-                for col in _COLUMNS_BY_TABLE[table_name]
-                if col.upper() in denied
-            )
-            if exposed_denied:
-                # `subject` names the one column a caller can offer to drop
-                # only when exactly one is exposed -- when `*` unmasks
-                # several at once there is no single column whose removal
-                # would fix the question, so `subject` is left `None`
-                # rather than picking one of several arbitrarily.
-                raise PolicyRejection(
-                    f"Forbidden keyword detected: '{ref_label}' would "
-                    f"expose denied column(s): {exposed_denied}",
-                    reason="denied_column",
-                    subject=exposed_denied[0] if len(exposed_denied) == 1 else None,
-                )
-
+    _check_column_references(tree, policy.denied, alias_map)
+    if policy.denied:
+        _check_denied_stars(tree, policy.denied, alias_map, cte_names)
     if policy.join_only:
-        # Scoped entries: join-only columns, for the data source this query
-        # will run on. Resolving the entries checks them against the schema
-        # and the configured sources again (cheap), so a key whose entries
-        # were never checked at load fails here, loudly, instead of
-        # restricting nothing.
-        try:
-            restrictions = resolve_join_only(
-                policy,
-                SchemaView(columns_by_table=_COLUMNS_BY_TABLE, qualifiers=_QUALIFIER_STR),
-                _executing_source(tree, cte_names),
-            )
-        except ColumnPolicyError as exc:
-            logger.error("column policy invalid: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
-            raise PolicyRejection(
-                f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
-                reason="other",
-            ) from None
-        if restrictions:
-            _enforce_join_only(tree, cte_names, restrictions, alias_map)
+        _check_join_only_policy(tree, policy, cte_names, alias_map)
 
     # -------------------------------------------------------------------
     # ADR-001 -- the projection-allowlist rule (R1/R2/R3, run last)
@@ -2451,72 +2613,8 @@ def validate_sql(
     # AND reads session state -- it is reported for the state read, the
     # more specific violation).
     for node in tree.walk():
-        # R2 -- server/session/connection *state* nodes, anywhere in the
-        # tree (a WHERE clause, an ORDER BY, a CTE body, a scalar
-        # subquery -- not just the projection). Each of these has its own
-        # typed sqlglot node; deliberately excludes exp.CurrentTimestamp,
-        # which is ordinary, legitimate GETDATE()/CURRENT_TIMESTAMP syntax
-        # with no reconnaissance value. This is a PolicyRejection: no
-        # rephrasing makes reading server/session state an in-bounds
-        # question for this application.
-        if isinstance(node, _FORBIDDEN_STATE_NODE_TYPES):
-            # The label is the node's own rendered SQL, not its Python
-            # class name (``type(node).__name__`` would give ``PARAMETER``
-            # for ``@@version`` or ``CURRENTUSER`` for ``SYSTEM_USER``) --
-            # ``GuardVerdict.subject`` is contractually analyst-facing (see
-            # its docstring in session/models.py) and a sqlglot class name
-            # is internal implementation detail, meaningless to an analyst
-            # and never something they typed. The argument list is cut at
-            # the first ``(`` so a model-generated literal argument (e.g.
-            # ``SCHEMA_NAME(1)``, ``OBJECT_ID('x')``) never ends up
-            # embedded in the structured ``subject`` field.
-            label = node.sql(dialect=dialect).split("(", 1)[0].strip().upper()
-            raise PolicyRejection(
-                f"Forbidden keyword detected: {label}",
-                reason="forbidden_statement", subject=label,
-            )
-
-        # R3 -- Anonymous function allowlist. Every T-SQL function
-        # sqlglot gives a dedicated exp.Func subclass to (SUM, CAST,
-        # DATEADD, ROW_NUMBER, ...) never reaches this branch; what's left
-        # as exp.Anonymous is exactly the measured legitimate data-function
-        # residue in _SAFE_ANONYMOUS_FUNCTIONS, or a metadata/
-        # reconnaissance function this rule exists to catch
-        # (SERVERPROPERTY, OBJECT_NAME, COL_NAME, DB_NAME, ...). The
-        # dangerous-function-name / xp_*/sp_* check above already fires
-        # first for its own specific names; this is the broader catch-all
-        # behind it, keyed on an allowlist rather than another denylist.
-        if isinstance(node, exp.Anonymous):
-            name = (node.name or "").upper()
-            if name not in _SAFE_ANONYMOUS_FUNCTIONS:
-                raise PolicyRejection(
-                    f"Forbidden keyword detected: {name or 'ANONYMOUS'}",
-                    reason="forbidden_statement", subject=name or None,
-                )
-
-    # R1 -- table reference required. By this point every non-CTE
-    # exp.Table in the tree has already been allowlist-checked above (rule
-    # 8), so finding at least one is sufficient proof "a real table exists"
-    # -- this rule does not re-check allowlist membership. A query with no
-    # non-CTE table reference at all (SELECT 1, or SELECT * FROM a derived
-    # table with no real source) has escaped the table allowlist entirely
-    # rather than passed it, which is a distinct failure mode from an
-    # unknown table name. CorrectableRejection + is_refusal=True, matching
-    # the unknown_table raise site's shape: naming a real table is a fix a
-    # retry can plausibly make, but the allowlist violation -- not the
-    # SQL's shape -- is why this was rejected.
-    if not any(
-        isinstance(node, exp.Table) and (node.name or "").lower() not in cte_names
-        for node in tree.walk()
-    ):
-        exc = CorrectableRejection(
-            "Forbidden keyword detected: query has no table reference -- "
-            "a warehouse-reading query must select from at least one "
-            "allowlisted table",
-            reason="no_table_reference",
-        )
-        exc.is_refusal = True
-        raise exc
+        _check_projection_allowlist(node, dialect)
+    _require_table_reference(tree, cte_names)
 
 
 def extract_touched_tables(sql: str, dialect: str = _DIALECT) -> list[str]:
