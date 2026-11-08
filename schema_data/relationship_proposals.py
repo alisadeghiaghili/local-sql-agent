@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from database.catalogue import TableInfo, table_location
 from schema_data.registry import (
@@ -277,84 +278,124 @@ def propose_relationships(
     by_bare: dict[str, list[_Table]] = {}
     for t in tables.values():
         by_bare.setdefault(t.bare.lower(), []).append(t)
-    pairs, inline = _known_pairs(schema, existing)
-
-    proposals: list[Proposal] = []
-    skipped: list[tuple[str, str]] = []
-    declared = inferred = known = 0
-
-    def add(proposal: Proposal, kind: str) -> None:
-        nonlocal declared, inferred, known
-        if _is_known(proposal, pairs, inline):
-            known += 1
-            return
-        proposals.append(proposal)
-        if kind == "declared":
-            declared += 1
-        else:
-            inferred += 1
-
+    collector = _Collector(*_known_pairs(schema, existing))
     for table in tables.values():
-        covered: set[str] = set()
-        # Declared foreign keys, merged across the sources that declare them.
-        merged: dict[tuple[tuple[str, ...], str, tuple[str, ...]], tuple[str, list[str], _Table]] = {}
-        for source in table.sources:
-            for fk in table.info[source].foreign_keys:
-                label = f"{table.key}.{', '.join(fk.columns)} -> {fk.ref_location[1]}"
-                target = by_location.get(fk.ref_location)
-                if target is None:
-                    skipped.append((label, "the referenced table is not in schema.yaml with columns"))
-                    continue
-                if not all(c.lower() in table.columns for c in fk.columns) or not all(
-                    c.lower() in target.columns for c in fk.ref_columns
-                ):
-                    skipped.append((label, "a key column is not listed in schema.yaml"))
-                    continue
-                covered.update(c.lower() for c in fk.columns)
-                ident = (tuple(c.lower() for c in fk.columns), target.key,
-                         tuple(c.lower() for c in fk.ref_columns))
-                if ident in merged:
-                    merged[ident][1].append(source)
-                else:
-                    merged[ident] = (fk.name, [source], target)
-        for (from_low, _, to_low), (name, found_in, target) in merged.items():
-            first = table.info[found_in[0]]
-            from_cols = [next(c.name for c in first.columns if c.name.lower() == low) for low in from_low]
-            ref = target.info[found_in[0]] if found_in[0] in target.info else next(iter(target.info.values()))
-            to_cols = [next(c.name for c in ref.columns if c.name.lower() == low) for low in to_low]
-            add(
-                _make(table, target, from_cols, to_cols, f"declared foreign key {name}".strip(),
-                      "declared", found_in, multi_source),
-                "declared",
-            )
-
-        # Naming convention, for columns no foreign key already explains.
-        first_source = table.sources[0]
-        for column in table.info[first_source].columns:
-            low = column.name.lower()
-            if low not in table.columns or low in covered or low == "id":
-                continue
-            match = _ID_COLUMN.match(column.name)
-            if match is None:
-                continue
-            guess = _infer(table, column.name, column.data_type, match.group("stem"), by_bare)
-            if guess is None:
-                continue
-            if isinstance(guess, str):
-                skipped.append((f"{table.key}.{column.name}", guess))
-                continue
-            target, to_column, confidence = guess
-            shared = [s for s in table.sources if s in target.sources]
-            add(
-                _make(table, target, [column.name], [to_column],
-                      f"naming convention: {column.name} -> {target.bare}.{to_column}",
-                      confidence, shared, multi_source),
-                "inferred",
-            )
+        covered = _add_declared(table, by_location, collector, multi_source)
+        _add_by_convention(table, covered, by_bare, collector, multi_source)
     return ProposalSet(
-        proposals=tuple(proposals), declared=declared, inferred=inferred,
-        already_known=known, skipped=tuple(skipped),
+        proposals=tuple(collector.proposals), declared=collector.declared,
+        inferred=collector.inferred, already_known=collector.known,
+        skipped=tuple(collector.skipped),
     )
+
+
+class _Collector:
+    """What :func:`propose_relationships` has found so far: proposals, skips and the counts."""
+
+    def __init__(self, pairs: Any, inline: Any) -> None:
+        self.pairs = pairs
+        self.inline = inline
+        self.proposals: list[Proposal] = []
+        self.skipped: list[tuple[str, str]] = []
+        self.declared = 0
+        self.inferred = 0
+        self.known = 0
+
+    def add(self, proposal: Proposal, kind: str) -> None:
+        """Keep *proposal* (counted as *kind*) unless the configuration already has it."""
+        if _is_known(proposal, self.pairs, self.inline):
+            self.known += 1
+            return
+        self.proposals.append(proposal)
+        if kind == "declared":
+            self.declared += 1
+        else:
+            self.inferred += 1
+
+
+_ForeignKeyId = tuple[tuple[str, ...], str, tuple[str, ...]]
+
+
+def _merged_foreign_keys(
+    table: _Table, by_location: dict[Any, _Table], collector: _Collector,
+) -> tuple[dict[_ForeignKeyId, tuple[str, list[str], _Table]], set[str]]:
+    """*table*'s declared foreign keys merged across the sources that declare them, and the columns they cover.
+
+    A key whose referenced table is not in ``schema.yaml`` with columns, or
+    whose columns are not all listed there, is recorded as skipped.
+    """
+    covered: set[str] = set()
+    merged: dict[_ForeignKeyId, tuple[str, list[str], _Table]] = {}
+    for source in table.sources:
+        for fk in table.info[source].foreign_keys:
+            label = f"{table.key}.{', '.join(fk.columns)} -> {fk.ref_location[1]}"
+            target = by_location.get(fk.ref_location)
+            if target is None:
+                collector.skipped.append((label, "the referenced table is not in schema.yaml with columns"))
+                continue
+            if not all(c.lower() in table.columns for c in fk.columns) or not all(
+                c.lower() in target.columns for c in fk.ref_columns
+            ):
+                collector.skipped.append((label, "a key column is not listed in schema.yaml"))
+                continue
+            covered.update(c.lower() for c in fk.columns)
+            ident = (tuple(c.lower() for c in fk.columns), target.key,
+                     tuple(c.lower() for c in fk.ref_columns))
+            if ident in merged:
+                merged[ident][1].append(source)
+            else:
+                merged[ident] = (fk.name, [source], target)
+    return merged, covered
+
+
+def _add_declared(
+    table: _Table, by_location: dict[Any, _Table], collector: _Collector, multi_source: bool,
+) -> set[str]:
+    """Propose *table*'s declared foreign keys; return the (lower-cased) columns they cover."""
+    merged, covered = _merged_foreign_keys(table, by_location, collector)
+    for (from_low, _, to_low), (name, found_in, target) in merged.items():
+        first = table.info[found_in[0]]
+        from_cols = [next(c.name for c in first.columns if c.name.lower() == low) for low in from_low]
+        ref = target.info[found_in[0]] if found_in[0] in target.info else next(iter(target.info.values()))
+        to_cols = [next(c.name for c in ref.columns if c.name.lower() == low) for low in to_low]
+        collector.add(
+            _make(table, target, from_cols, to_cols, f"declared foreign key {name}".strip(),
+                  "declared", found_in, multi_source),
+            "declared",
+        )
+    return covered
+
+
+def _add_by_convention(
+    table: _Table,
+    covered: set[str],
+    by_bare: dict[str, list[_Table]],
+    collector: _Collector,
+    multi_source: bool,
+) -> None:
+    """Propose links by the naming convention, for the columns no foreign key already explains."""
+    first_source = table.sources[0]
+    for column in table.info[first_source].columns:
+        low = column.name.lower()
+        if low not in table.columns or low in covered or low == "id":
+            continue
+        match = _ID_COLUMN.match(column.name)
+        if match is None:
+            continue
+        guess = _infer(table, column.name, column.data_type, match.group("stem"), by_bare)
+        if guess is None:
+            continue
+        if isinstance(guess, str):
+            collector.skipped.append((f"{table.key}.{column.name}", guess))
+            continue
+        target, to_column, confidence = guess
+        shared = [s for s in table.sources if s in target.sources]
+        collector.add(
+            _make(table, target, [column.name], [to_column],
+                  f"naming convention: {column.name} -> {target.bare}.{to_column}",
+                  confidence, shared, multi_source),
+            "inferred",
+        )
 
 
 def _infer(
@@ -366,19 +407,7 @@ def _infer(
     name, or it is the table's own key), and a sentence saying why when it
     looks like one but cannot be trusted.
     """
-    stem_low = stem.lower()
-    kind = "exact"
-    pool = list(by_bare.get(stem_low, ()))
-    if not pool:
-        kind = "suffix"
-        matches = [
-            (bare, items) for bare, items in by_bare.items()
-            if len(bare) >= 3 and len(stem) > len(bare) and stem_low.endswith(bare)
-            and _boundary(stem, len(stem) - len(bare))
-        ]
-        if matches:
-            longest = max(len(bare) for bare, _ in matches)
-            pool = [t for bare, items in matches if len(bare) == longest for t in items]
+    pool, kind = _stem_matches(stem, by_bare)
     if not pool:
         return None
     if kind == "exact" and any(t.key == table.key for t in pool):
@@ -394,19 +423,10 @@ def _infer(
     target = pool[0]
     source = next(s for s in table.sources if s in target.sources)
     info = target.info[source]
-    if len(info.primary_key) > 1:
-        return f"{target.key} has a composite primary key"
-    if info.primary_key:
-        to_column, declared_key = info.primary_key[0], True
-    else:
-        names = {c.name.lower(): c.name for c in info.columns}
-        wanted = next(
-            (names[n] for n in ("id", f"{target.bare.lower()}id", f"{target.bare.lower()}_id") if n in names),
-            None,
-        )
-        if wanted is None:
-            return f"{target.key} has no primary key and no ID column"
-        to_column, declared_key = wanted, False
+    key = _key_column(target, info)
+    if isinstance(key, str):
+        return key
+    to_column, declared_key = key
     if to_column.lower() not in target.columns:
         return f"{target.key}.{to_column} is not listed in schema.yaml"
     target_type = next((c.data_type for c in info.columns if c.name == to_column), "")
@@ -414,6 +434,47 @@ def _infer(
         return f"types differ ({data_type} vs {target_type})"
     confidence = "high" if kind == "exact" and declared_key else "medium"
     return target, to_column, confidence
+
+
+def _stem_matches(stem: str, by_bare: dict[str, list[_Table]]) -> tuple[list[_Table], str]:
+    """The tables a column stem names, and how: ``"exact"`` (same bare name) or ``"suffix"``.
+
+    A suffix match is a bare name of at least three letters that ends the
+    stem at a word boundary; only the longest such names count.
+    """
+    stem_low = stem.lower()
+    pool = list(by_bare.get(stem_low, ()))
+    if pool:
+        return pool, "exact"
+    matches = [
+        (bare, items) for bare, items in by_bare.items()
+        if len(bare) >= 3 and len(stem) > len(bare) and stem_low.endswith(bare)
+        and _boundary(stem, len(stem) - len(bare))
+    ]
+    if not matches:
+        return [], "suffix"
+    longest = max(len(bare) for bare, _ in matches)
+    return [t for bare, items in matches if len(bare) == longest for t in items], "suffix"
+
+
+def _key_column(target: _Table, info: TableInfo) -> tuple[str, bool] | str:
+    """``(column, is_declared_primary_key)`` a link to *target* points at, or why there is none.
+
+    The declared primary key when it is one column; else an ``ID``,
+    ``<Table>ID`` or ``<Table>_ID`` column.
+    """
+    if len(info.primary_key) > 1:
+        return f"{target.key} has a composite primary key"
+    if info.primary_key:
+        return info.primary_key[0], True
+    names = {c.name.lower(): c.name for c in info.columns}
+    wanted = next(
+        (names[n] for n in ("id", f"{target.bare.lower()}id", f"{target.bare.lower()}_id") if n in names),
+        None,
+    )
+    if wanted is None:
+        return f"{target.key} has no primary key and no ID column"
+    return wanted, False
 
 
 def render_proposals_yaml(proposals: Sequence[Proposal]) -> str:
