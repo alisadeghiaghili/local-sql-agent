@@ -522,10 +522,12 @@ def render_proposals_yaml(proposals: Sequence[Proposal]) -> str:
         lines.append(f"    to_table: {quote(p.to_table)}")
         if p.to_schema:
             lines.append(f"    to_schema: {quote(p.to_schema)}")
-        lines.append(f"    to_column: {quote(p.to_column)}")
-        lines.append(f"    join_hint: {quote(p.join_hint)}")
-        lines.append(f"    basis: {quote(p.basis)}")
-        lines.append(f"    confidence: {quote(p.confidence)}")
+        lines.extend([
+            f"    to_column: {quote(p.to_column)}",
+            f"    join_hint: {quote(p.join_hint)}",
+            f"    basis: {quote(p.basis)}",
+            f"    confidence: {quote(p.confidence)}",
+        ])
         if p.datasource:
             lines.append(f"    datasource: {quote(', '.join(p.datasource))}")
         lines.append("")
