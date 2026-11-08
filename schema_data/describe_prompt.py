@@ -361,15 +361,27 @@ def read_listed_relationships(directory: Path) -> list[dict[str, Any]]:
             document = safe_load_strict((directory / filename).read_text(encoding="utf-8-sig")) or {}
         except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
             continue
-        entries = document.get("relationships") if isinstance(document, dict) else None
-        for entry in entries if isinstance(entries, list) else []:
-            if not isinstance(entry, dict):
-                continue
-            basis = str(entry.get("basis") or "").lower()
-            if (declared_only or basis) and not basis.startswith("declared"):
-                continue
-            found.append(entry)
+        found.extend(_declared_entries(document, declared_only))
     return found
+
+
+def _declared_entries(document: object, declared_only: bool) -> list[dict[str, Any]]:
+    """The relationship entries of one parsed file that count as declared.
+
+    With *declared_only* (the proposals file) only an entry whose ``basis``
+    starts with ``declared`` counts; otherwise an entry with no basis counts
+    too.
+    """
+    entries = document.get("relationships") if isinstance(document, dict) else None
+    kept: list[dict[str, Any]] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        basis = str(entry.get("basis") or "").lower()
+        if (declared_only or basis) and not basis.startswith("declared"):
+            continue
+        kept.append(entry)
+    return kept
 
 
 #: The ``entities.yaml`` shipped in ``project_config.example/``. On a first
@@ -484,6 +496,18 @@ def label_samples(
 # The question
 # ---------------------------------------------------------------------------
 
+def _column_line(column: Any) -> str:
+    """One column's line of the prompt: name, then type, a person's note and sample values when known."""
+    line = f"  {column.name}"
+    if column.type:
+        line += f" ({column.type})"
+    if column.note:
+        line += f" -- {column.note}"
+    if column.samples:
+        line += " -- values seen: " + ", ".join(f'"{v}"' for v in column.samples)
+    return line
+
+
 def build_prompt(facts: TableFacts, language: str = "fa") -> str:
     """The question for one table.
 
@@ -535,15 +559,7 @@ def build_prompt(facts: TableFacts, language: str = "fa") -> str:
     if facts.aliases:
         out.append(f"Names users already call it by: {', '.join(facts.aliases)}")
     out += ["", "Columns (name, type; a note a person already wrote, if any):"]
-    for column in facts.columns:
-        line = f"  {column.name}"
-        if column.type:
-            line += f" ({column.type})"
-        if column.note:
-            line += f" -- {column.note}"
-        if column.samples:
-            line += " -- values seen: " + ", ".join(f'"{v}"' for v in column.samples)
-        out.append(line)
+    out += [_column_line(column) for column in facts.columns]
     if facts.relationships:
         out += ["", "Relationships that name this table (the columns they join are keys):"]
         out += [f"  {line}" for line in facts.relationships]
