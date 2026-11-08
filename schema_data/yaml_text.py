@@ -260,15 +260,30 @@ def parse_tables(lines: Sequence[str], expected: Sequence[str]) -> TablesLayout 
         if expected:
             raise LayoutError("no block-style `tables:` mapping found in schema.yaml")
         return None
-    stop = len(lines)
-    for i in range(start + 1, len(lines)):
-        if not is_blank_or_comment(lines[i]) and indent_of(lines[i]) == 0:
-            stop = i
-            break
+    stop = next(
+        (i for i in range(start + 1, len(lines))
+         if not is_blank_or_comment(lines[i]) and indent_of(lines[i]) == 0),
+        len(lines),
+    )
     body = [i for i in range(start + 1, stop) if not is_blank_or_comment(lines[i])]
     key_indent = indent_of(lines[body[0]]) if body else 0
     content_end = (body[-1] + 1) if body else start + 1
 
+    entries = _table_key_lines(lines, body, key_indent)
+    unplaced = [key for key in expected if key not in entries]
+    if unplaced:
+        raise LayoutError(
+            "cannot find these tables as `Name:` lines with an indented body "
+            f"in schema.yaml (flow-style entries are not edited): {', '.join(unplaced)}"
+        )
+    return TablesLayout(
+        start=start, stop=stop, key_indent=key_indent, content_end=content_end,
+        tables=_table_blocks(lines, entries, stop, key_indent),
+    )
+
+
+def _table_key_lines(lines: Sequence[str], body: list[int], key_indent: int) -> dict[str, int]:
+    """``{table key: line index}`` for each ``Name:`` line at *key_indent* among the *body* lines."""
     entries: dict[str, int] = {}
     for i in body:
         if indent_of(lines[i]) != key_indent:
@@ -281,13 +296,13 @@ def parse_tables(lines: Sequence[str], expected: Sequence[str]) -> TablesLayout 
         except yaml.YAMLError:
             continue
         entries[key] = i
-    unplaced = [key for key in expected if key not in entries]
-    if unplaced:
-        raise LayoutError(
-            "cannot find these tables as `Name:` lines with an indented body "
-            f"in schema.yaml (flow-style entries are not edited): {', '.join(unplaced)}"
-        )
+    return entries
 
+
+def _table_blocks(
+    lines: Sequence[str], entries: dict[str, int], stop: int, key_indent: int,
+) -> dict[str, TableBlock]:
+    """Each table's :class:`TableBlock`, in file order: it runs to the next table (or *stop*)."""
     ordered = sorted(entries.items(), key=lambda item: item[1])
     tables: dict[str, TableBlock] = {}
     for n, (key, at) in enumerate(ordered):
@@ -300,9 +315,7 @@ def parse_tables(lines: Sequence[str], expected: Sequence[str]) -> TablesLayout 
             content_end=(inner[-1] + 1) if inner else at + 1,
             child_indent=indent_of(lines[inner[0]]) if inner else key_indent + 2,
         )
-    return TablesLayout(
-        start=start, stop=stop, key_indent=key_indent, content_end=content_end, tables=tables,
-    )
+    return tables
 
 
 # ---------------------------------------------------------------------------
@@ -329,23 +342,35 @@ def datasource_span(lines: Sequence[str], start: int, end: int, indent: int) -> 
         if match is None:
             continue
         rest = _TRAILING_COMMENT.sub("", match.group("rest")).strip()
-        stop = first + 1
-        if rest.startswith("[") and "]" not in rest:
-            while stop < end and "]" not in lines[stop - 1]:
-                stop += 1
-        elif not rest:
-            while stop < end:
-                nxt = lines[stop]
-                if is_blank_or_comment(nxt):
-                    break
-                if indent_of(nxt) > indent or (
-                    indent_of(nxt) == indent and nxt.lstrip().startswith("- ")
-                ):
-                    stop += 1
-                else:
-                    break
-        return first, stop
+        return first, _datasource_stop(lines, first, end, indent, rest)
     return None
+
+
+def _datasource_stop(lines: Sequence[str], first: int, end: int, indent: int, rest: str) -> int:
+    """One past the last line of the ``datasource:`` entry on line *first*, whose value starts *rest*.
+
+    A flow list whose ``]`` is on a later line runs to that line; an empty
+    value runs over the block list (``- name`` lines, or anything indented
+    deeper) below it; anything else is one line.
+    """
+    stop = first + 1
+    if rest.startswith("[") and "]" not in rest:
+        while stop < end and "]" not in lines[stop - 1]:
+            stop += 1
+        return stop
+    if rest:
+        return stop
+    while stop < end:
+        nxt = lines[stop]
+        if is_blank_or_comment(nxt):
+            break
+        if indent_of(nxt) > indent or (
+            indent_of(nxt) == indent and nxt.lstrip().startswith("- ")
+        ):
+            stop += 1
+        else:
+            break
+    return stop
 
 
 def child_span(
