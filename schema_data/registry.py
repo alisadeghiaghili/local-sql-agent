@@ -79,7 +79,7 @@ allowlists from ever drifting out of sync with ``schema.yaml``'s own
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -481,18 +481,23 @@ def normalise_datasource_names(value: Any) -> tuple[str, ...]:  # NOSONAR(S8495)
     if isinstance(value, str):
         return (value,)
     if isinstance(value, (list, tuple)):
-        if not value:
-            raise ValueError("datasource: a list must name at least one data source")
-        for item in value:
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    "datasource: every entry in a list must be a data source name"
-                )
-        for item in value:
-            if list(value).count(item) > 1:
-                raise ValueError(f"datasource: {item!r} is listed more than once")
-        return tuple(value)
+        return _datasource_name_list(value)
     raise ValueError("datasource: must be a data source name or a list of names")
+
+
+def _datasource_name_list(value: list | tuple) -> tuple[str, ...]:
+    """:func:`normalise_datasource_names` for a list: non-empty, every entry a name, none twice."""
+    if not value:
+        raise ValueError("datasource: a list must name at least one data source")
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                "datasource: every entry in a list must be a data source name"
+            )
+    for item in value:
+        if list(value).count(item) > 1:
+            raise ValueError(f"datasource: {item!r} is listed more than once")
+    return tuple(value)
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +602,51 @@ class RelationshipDefinition(BaseModel):
     join_sql: str
 
 
+def _check_table_definition(name: str, table: TableDefinition) -> None:
+    """The per-table rules of :meth:`SchemaConfig._resolvable_and_prefetchable_columns_are_consistent`.
+
+    Raises
+    ------
+    ValueError
+        For a ``column_types``/``column_units`` key that is not a column, a
+        malformed multi-part ``db_schema``, a resolvable/prefetchable column
+        that is not a column, or such columns on a table with no qualifier.
+    """
+    known_columns = set(table.columns or {})
+    for field_name, keys in (("column_types", table.column_types), ("column_units", table.column_units)):
+        unknown = sorted(set(keys) - known_columns)
+        if unknown:
+            raise ValueError(
+                f"table '{name}': {field_name} names column(s) {unknown} "
+                f"that are not in this table's `columns` map"
+            )
+    if table.db_schema:
+        parts = table.db_schema.split(".")
+        if any(not part.strip() for part in parts) or len(parts) > 3:
+            raise ValueError(
+                f"table '{name}': db_schema {table.db_schema!r} must be "
+                f"one to three non-empty parts separated by '.', e.g. "
+                f"'sales' or 'OtherDb.dbo'"
+            )
+    flagged = set(table.resolvable_columns) | set(table.prefetchable_columns)
+    if not flagged:
+        return
+    unknown = sorted(flagged - known_columns)
+    if unknown:
+        raise ValueError(
+            f"table '{name}': resolvable_columns/prefetchable_columns "
+            f"name column(s) {unknown} that are not in this table's "
+            f"`columns` map"
+        )
+    if not effective_qualifier(name, table.db_schema):
+        raise ValueError(
+            f"table '{name}': resolvable_columns/prefetchable_columns "
+            f"is set but this table has no qualifier (neither the key "
+            f"nor `db_schema` names one) -- a schema qualifier is "
+            f"required to build a query for this table"
+        )
+
+
 class SchemaConfig(BaseModel):
     """Validated, top-level shape of ``schema.yaml``."""
 
@@ -642,44 +692,7 @@ class SchemaConfig(BaseModel):
         columns the table declares; they never add one).
         """
         for name, table in self.tables.items():
-            unknown_types = sorted(set(table.column_types) - set(table.columns or {}))
-            if unknown_types:
-                raise ValueError(
-                    f"table '{name}': column_types names column(s) {unknown_types} "
-                    f"that are not in this table's `columns` map"
-                )
-            unknown_units = sorted(set(table.column_units) - set(table.columns or {}))
-            if unknown_units:
-                raise ValueError(
-                    f"table '{name}': column_units names column(s) {unknown_units} "
-                    f"that are not in this table's `columns` map"
-                )
-            if table.db_schema:
-                parts = table.db_schema.split(".")
-                if any(not part.strip() for part in parts) or len(parts) > 3:
-                    raise ValueError(
-                        f"table '{name}': db_schema {table.db_schema!r} must be "
-                        f"one to three non-empty parts separated by '.', e.g. "
-                        f"'sales' or 'OtherDb.dbo'"
-                    )
-            flagged = set(table.resolvable_columns) | set(table.prefetchable_columns)
-            if not flagged:
-                continue
-            known_columns = set(table.columns or {})
-            unknown = sorted(flagged - known_columns)
-            if unknown:
-                raise ValueError(
-                    f"table '{name}': resolvable_columns/prefetchable_columns "
-                    f"name column(s) {unknown} that are not in this table's "
-                    f"`columns` map"
-                )
-            if not effective_qualifier(name, table.db_schema):
-                raise ValueError(
-                    f"table '{name}': resolvable_columns/prefetchable_columns "
-                    f"is set but this table has no qualifier (neither the key "
-                    f"nor `db_schema` names one) -- a schema qualifier is "
-                    f"required to build a query for this table"
-                )
+            _check_table_definition(name, table)
         return self
 
     @model_validator(mode="after")
@@ -1172,6 +1185,59 @@ def _source_heading(source: str) -> str:
     return f"Data source: {source} \u2014 {description}" if description else f"Data source: {source}"
 
 
+def _table_context_lines(
+    table_name: str,
+    description: str,
+    columns: Mapping[str, str],
+    qualifier: str,
+    sources: tuple[str, ...] | None,
+    *,
+    shared_bare_name: bool,
+) -> list[str]:
+    """One table's lines of :meth:`SchemaRegistry.build_schema_context`, ending with a blank line."""
+    lines = [f"Table: {table_name}"]
+    if sources is not None:
+        lines.append(f"Data source: {', '.join(sources)}")
+    if "." in qualifier or shared_bare_name:
+        # Either another database on the same server (a multi-part
+        # qualifier -- the model must write the full name for the
+        # query to resolve) or a bare name this table shares with
+        # another key (schema.yaml has more than one "Customer",
+        # distinguished only by qualifier) -- either way "Table:
+        # <key>" alone is not enough to know what to write in FROM.
+        lines.append(f"Reference as: {table_reference_sql(table_name, qualifier)}")
+    if description:
+        lines.append(f"Description: {description}")
+    if columns:
+        lines.append("Columns:")
+        # No indentation before the bullet: it carried no meaning (a
+        # column line is a column line either way) and cost two
+        # characters, and in the usual BPE vocabularies a token,
+        # on every column line of every prompt.
+        lines.extend(f"- {col_name}: {col_desc}" for col_name, col_desc in columns.items())
+    lines.append("")
+    return lines
+
+
+def _cross_source_rule(shown_source_sets: set[tuple[str, ...]]) -> list[str]:
+    """The closing rule about data sources, when the shown tables do not all live in the same ones."""
+    if len(shown_source_sets) <= 1:
+        return []
+    lines = [
+        "Rule: every table in one query must come from the same "
+        "data source. Tables in different data sources cannot be "
+        "joined or combined in one query."
+    ]
+    if any(len(sources) > 1 for sources in shown_source_sets):
+        lines.append(
+            "A table with several data sources listed exists in each "
+            "of them, and can be combined with tables from any one of "
+            "those sources."
+        )
+    lines.append("")
+    return lines
+
+
 class SchemaRegistry:
     """Stateless registry that renders schema and relationship data.
 
@@ -1321,59 +1387,18 @@ class SchemaRegistry:
             if table_name not in table_columns:
                 # silently skip unknown tables
                 continue
-
-            description = table_descriptions.get(table_name, "")
-            columns = table_columns.get(table_name, {})
-
-            lines.append(f"Table: {table_name}")
-
-            if table_sources and scoped_source is None:
-                sources = table_sources[table_name]
+            sources = table_sources[table_name] if table_sources and scoped_source is None else None
+            if sources is not None:
                 shown_source_sets.add(sources)
-                lines.append(f"Data source: {', '.join(sources)}")
-
-            qualifier = table_schemas.get(table_name, "")
-            bare_name = bare_table_name(table_name)
-            needs_reference = "." in qualifier or bare_name_counts.get(bare_name, 0) > 1
-            if needs_reference:
-                # Either another database on the same server (a multi-part
-                # qualifier -- the model must write the full name for the
-                # query to resolve) or a bare name this table shares with
-                # another key (schema.yaml has more than one "Customer",
-                # distinguished only by qualifier) -- either way "Table:
-                # <key>" alone is not enough to know what to write in FROM.
-                lines.append(f"Reference as: {table_reference_sql(table_name, qualifier)}")
-
-            if description:
-                lines.append(f"Description: {description}")
-
-            if columns:
-                lines.append("Columns:")
-                # No indentation before the bullet: it carried no meaning (a
-                # column line is a column line either way) and cost two
-                # characters, and in the usual BPE vocabularies a token,
-                # on every column line of every prompt.
-                for col_name, col_desc in columns.items():
-                    lines.append(f"- {col_name}: {col_desc}")
-
-            lines.append("")
-
-        # The rule is about what THIS block shows: it matters once the
-        # shown tables do not all live in exactly the same sources.
-        if len(shown_source_sets) > 1:
-            lines.append(
-                "Rule: every table in one query must come from the same "
-                "data source. Tables in different data sources cannot be "
-                "joined or combined in one query."
-            )
-            if any(len(sources) > 1 for sources in shown_source_sets):
-                lines.append(
-                    "A table with several data sources listed exists in each "
-                    "of them, and can be combined with tables from any one of "
-                    "those sources."
-                )
-            lines.append("")
-
+            lines.extend(_table_context_lines(
+                table_name,
+                table_descriptions.get(table_name, ""),
+                table_columns.get(table_name, {}),
+                table_schemas.get(table_name, ""),
+                sources,
+                shared_bare_name=bare_name_counts.get(bare_table_name(table_name), 0) > 1,
+            ))
+        lines.extend(_cross_source_rule(shown_source_sets))
         return "\n".join(lines)
 
     # Alias so tests and callers that use build_context() still work.
