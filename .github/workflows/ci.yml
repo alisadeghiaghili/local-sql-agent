@@ -259,9 +259,19 @@ jobs:
     # What is analysed, what counts as test code and what is left out of
     # coverage are set in sonar-project.properties, kept in step with
     # setup.cfg and the test matrix above.
+    #
+    # The gate is checked in one of two ways, and exactly one of them runs:
+    #
+    #   * with SONAR_TOKEN  -> on the SonarQube Cloud project (or the server
+    #     named by SONAR_HOST_URL), which keeps history and a dashboard;
+    #   * without it        -> on a SonarQube Community Build server that
+    #     scripts/sonar_gate.py starts for this run and throws away. Same
+    #     analyzers, same built-in "Sonar way" gate, no account and no
+    #     secret, so it also runs for a pull request from a fork.
     name: SonarQube analysis
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # Secrets cannot be read in a job-level `if`, so the token is put in
       # the environment and the steps test it there.
@@ -270,28 +280,21 @@ jobs:
       # server's URL for a self-hosted SonarQube Server.
       SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
     steps:
-      # A pull request from a fork, and a Dependabot run, get no secrets.
-      # Failing those would make every outside contribution red for a
-      # reason its author cannot fix, so the job is skipped there -- but
-      # visibly, as a warning on the run, never as a silent green.
-      - name: Report a missing SONAR_TOKEN
-        if: env.SONAR_TOKEN == ''
-        run: echo "::warning title=SonarQube skipped::SONAR_TOKEN is not available to this run, so no analysis was made and no quality gate was checked."
-
       - name: Checkout
-        if: env.SONAR_TOKEN != ''
         uses: actions/checkout@v4
         with:
-          # Full history: Sonar assigns each line to its commit to decide
-          # what is new code. A shallow clone makes every line look new,
-          # or none of it, and the gate measures the wrong thing.
+          # Full history. With a token, Sonar assigns each line to its
+          # commit to decide what is new code, and a shallow clone makes
+          # every line look new, or none of it. Without one, the script
+          # needs the commit this run is compared with.
           fetch-depth: 0
 
       - name: Fetch coverage report
-        if: env.SONAR_TOKEN != ''
         uses: actions/download-artifact@v4
         with:
           name: coverage-xml
+
+      # -- With a token: the project on SonarQube Cloud or Server ----------
 
       # The project version is the one release.yml tags, so a "previous
       # version" new-code definition starts again at each release.
@@ -313,3 +316,18 @@ jobs:
             -Dsonar.projectVersion=${{ steps.version.outputs.version }}
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
+
+      # -- Without a token: a throwaway server ------------------------------
+
+      # New code is what this run adds. For a pull request the checkout is
+      # GitHub's merge commit, whose first parent is the base branch as it
+      # is now, so HEAD^1 leaves exactly the pull request's changes; it is
+      # also the tree the coverage report was measured on. For a push it is
+      # the commit the branch pointed at before.
+      # The script needs Docker and the runner's own Python, nothing from
+      # requirements. Its report goes to the log and to the job summary.
+      - name: Quality gate on a throwaway SonarQube
+        if: env.SONAR_TOKEN == ''
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+        run: python3 scripts/sonar_gate.py --base "$BASE" --coverage coverage.xml
