@@ -106,7 +106,8 @@ class TestUnknownColumn:
 
     def test_it_is_deterministic(self):
         exc = _rejection(_bad_column_sql(_wide_table()))
-        assert correction_hint(exc) == correction_hint(exc)
+        first_run = correction_hint(exc)
+        assert correction_hint(exc) == first_run
 
     def test_a_long_list_is_bounded(self):
         table = _wide_table()

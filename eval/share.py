@@ -275,7 +275,7 @@ def _pct(passed: int, total: int) -> float:
 
 
 def _summary(report: EvalReport, records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    classes = {name: 0 for name in MISMATCH_CLASSES}
+    classes = dict.fromkeys(MISMATCH_CLASSES, 0)
     unclassified = 0
     for record in records:
         name = record["diagnosis"]["mismatch_class"]

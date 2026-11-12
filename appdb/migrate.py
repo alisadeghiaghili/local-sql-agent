@@ -606,15 +606,11 @@ def _reset_autoincrement(conn, engine: Engine, table: Table, pk_column: str) -> 
             text("SELECT setval(pg_get_serial_sequence(:t, :c), :v, true)"),
             {"t": table.name, "c": pk_column, "v": max_id},
         )
-    elif dialect == "mssql":
-        # DBCC CHECKIDENT does not accept the reseed value as a bind parameter.
-        # Use _build_reseed_statement to safely quote the table name.
-        stmt = _build_reseed_statement(
-            dialect, engine.dialect.identifier_preparer, table.name, max_id
-        )
-        conn.execute(text(stmt))
-    elif dialect == "mysql":
-        # ALTER TABLE accepts identifiers. Use _build_reseed_statement to safely quote.
+    elif dialect in ("mssql", "mysql"):
+        # Neither DBCC CHECKIDENT (mssql) nor ALTER TABLE ... AUTO_INCREMENT
+        # (mysql) accepts the reseed value as a bind parameter, so the
+        # statement is built as text; _build_reseed_statement quotes the
+        # table name safely for either dialect.
         stmt = _build_reseed_statement(
             dialect, engine.dialect.identifier_preparer, table.name, max_id
         )

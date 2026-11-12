@@ -103,7 +103,7 @@ class ComparisonOptions:
     tolerance: float = 1e-6
 
     def __post_init__(self) -> None:
-        if not (self.tolerance >= 0.0) or math.isinf(self.tolerance):
+        if not (self.tolerance >= 0.0) or math.isinf(self.tolerance):  # NOSONAR(S1940) "not >=" is also true for NaN
             raise ValueError(f"tolerance must be a finite number >= 0, got {self.tolerance!r}")
 
 

@@ -89,7 +89,8 @@ class TestScoredExtras:
 
     def test_result_is_deterministic(self):
         question = "customer broker supplier ring symbol"
-        assert scored_extras(question, fact=False) == scored_extras(question, fact=False)
+        first_run = scored_extras(question, fact=False)
+        assert scored_extras(question, fact=False) == first_run
 
 
 class TestRetrieversKeepSearchingAfterAnAliasHit:

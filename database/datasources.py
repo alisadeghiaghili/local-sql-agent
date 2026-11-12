@@ -188,7 +188,7 @@ _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 #: An environment variable name, as ``url_env``, ``username_env`` and
 #: ``password_env`` must give one.
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # NOSONAR(S6353) ASCII only: \w would admit non-ASCII letters
 
 #: What each ``*_env`` field must name, and an example variable, for the
 #: message that refuses a value written in its place.
@@ -1468,7 +1468,7 @@ def _in_config_order(names: Iterable[str]) -> tuple[str, ...]:
     ('default', 'other')
     """
     configured = datasource_names()
-    given = tuple(dict.fromkeys(names))
+    given = tuple(dict.fromkeys(names))  # NOSONAR(S7508) de-duplicates, keeping order
     rank = {name: index for index, name in enumerate(configured)}
     return tuple(sorted(given, key=lambda name: rank.get(name, len(rank))))
 

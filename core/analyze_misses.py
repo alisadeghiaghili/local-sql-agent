@@ -37,7 +37,7 @@ class MissReport:
 # ---------------------------------------------------------------------------
 
 _TABLE_RE = re.compile(
-    r"(?:\[?[\w]+\]?\.)?\[?([A-Za-z_][\w]*)\]?",
+    r"(?:\[?\w+\]?\.)?\[?([a-z_]\w*)\]?",
     re.IGNORECASE,
 )
 
@@ -46,7 +46,7 @@ def _tables_in_sql(sql: str) -> set[str]:
     """Return the set of table/object names referenced in *sql*."""
     # Match patterns like [Schema].[Table], Schema.Table, [Table], Table
     pattern = re.compile(
-        r"\[?[\w]+\]?\.\[?([A-Za-z_][\w]*)\]?|FROM\s+\[?([A-Za-z_][\w]*)\]?|JOIN\s+\[?([A-Za-z_][\w]*)\]?",
+        r"\[?\w+\]?\.\[?([a-z_]\w*)\]?|FROM\s+\[?([a-z_]\w*)\]?|JOIN\s+\[?([a-z_]\w*)\]?",  # NOSONAR(S5843) three alternatives of one shape
         re.IGNORECASE,
     )
     tables: set[str] = set()

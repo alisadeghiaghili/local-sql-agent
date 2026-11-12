@@ -241,7 +241,7 @@ async def lifespan(app: FastAPI):
 
     try:
         get_app_engine()  # builds the engine and creates its tables (checkfirst)
-    except Exception as exc:  # noqa: BLE001 - re-raised as a clear, fail-closed RuntimeError
+    except Exception as exc:  # noqa: BLE001  # re-raised as a clear, fail-closed RuntimeError
         raise RuntimeError(
             f"Application database unreachable or unusable at startup "
             f"(APP_DB_URL resolved to {app_db_url!r}): {exc}"
@@ -329,7 +329,7 @@ async def lifespan(app: FastAPI):
             from llm.warmup import start_background_warmup
 
             start_background_warmup(_system_prompt, runner.get_llm_router)
-        except Exception as exc:  # noqa: BLE001 - an optimisation, startup must not fail on it
+        except Exception as exc:  # noqa: BLE001  # an optimisation, startup must not fail on it
             logger.warning("LLM prefix warm-up could not be started: %s", type(exc).__name__)
 
     # ── Phase 5b: prefetch the small-dimension value vocabulary ────────────
@@ -363,7 +363,7 @@ async def lifespan(app: FastAPI):
         try:
             counts = warm_all()
             logger.info("dimension_vocabulary: startup warm-up complete: %s", counts)
-        except Exception as exc:  # noqa: BLE001 - a cold cache degrades gracefully, startup must not fail
+        except Exception as exc:  # noqa: BLE001  # a cold cache degrades gracefully, startup must not fail
             logger.warning("dimension_vocabulary: startup warm-up failed: %s", exc)
 
     # ── Latency: keep the prefix cache warm while the server runs ──────────
@@ -379,7 +379,7 @@ async def lifespan(app: FastAPI):
             _system_prompt, runner.get_llm_router,
             paused=lambda: bool(maintenance.get_state()["active"]),
         )
-    except Exception as exc:  # noqa: BLE001 - an optimisation, startup must not fail on it
+    except Exception as exc:  # noqa: BLE001  # an optimisation, startup must not fail on it
         logger.warning("LLM prefix keep-warm could not be started: %s", type(exc).__name__)
 
     try:
@@ -444,7 +444,11 @@ app.add_middleware(RequestIDMiddleware)
 # unblock the bundled web/ UI when it is served from a different
 # origin/port than this API, e.g. CORS_ALLOWED_ORIGINS=http://localhost:8080.
 _cors_allowed_origins = list(cfg.settings.cors_allowed_origins)
-app.add_middleware(
+# Not the last add_middleware() call, deliberately: the two layers added after
+# it (RejectedOriginLogMiddleware, SecurityHeadersMiddleware) only observe or
+# add response headers and never answer a request themselves, so a preflight
+# still reaches CORSMiddleware before anything that could refuse it.
+app.add_middleware(  # NOSONAR(S8414)
     CORSMiddleware,
     allow_origins=_cors_allowed_origins,
     allow_credentials=False,
@@ -526,7 +530,6 @@ def redoc_docs(_: None = Depends(_require_docs_access)):
 
 @app.post(
     "/query",
-    response_model=QueryResponse,
     summary="Translate a question to SQL and/or execute it",
     responses={
         400: {"description": "Bad request (forbidden SQL, injection attempt, invalid input)"},
@@ -724,7 +727,6 @@ def index() -> dict[str, object]:
 
 @app.get(
     "/health",
-    response_model=HealthResponse,
     response_model_exclude_none=True,
     summary="Liveness check",
 )
@@ -753,7 +755,6 @@ def health(request: Request) -> HealthResponse:
 
 @app.get(
     "/cache/stats",
-    response_model=CacheStatsResponse,
     summary="Return current cache metrics",
     tags=["cache"],
 )
@@ -765,7 +766,6 @@ def cache_stats(principal: Principal = Depends(require_principal)) -> CacheStats
 
 @app.post(
     "/cache/clear",
-    response_model=CacheStatsResponse,
     summary="Flush the entire query-result cache",
     tags=["cache"],
 )
@@ -778,7 +778,6 @@ def cache_clear(principal: Principal = Depends(require_principal)) -> CacheStats
 
 @app.post(
     "/cache/invalidate",
-    response_model=CacheStatsResponse,
     summary="Evict a single cache entry",
     tags=["cache"],
     responses={404: {"description": "Entry not found in cache"}},

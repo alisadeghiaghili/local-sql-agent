@@ -281,7 +281,7 @@ def bare_table_name(key: str) -> str:
     return split_table_key(key).name
 
 
-_PLAIN_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PLAIN_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # NOSONAR(S6353) ASCII only: \w would admit non-ASCII letters
 
 
 def table_key_for(schema: str, name: str, qualified: bool) -> str | None:
@@ -438,7 +438,7 @@ def table_reference_sql(key: str, qualifier: str = "") -> str:
     return f"{quote_tsql_qualifier(qualifier)}.{ident}"
 
 
-def normalise_datasource_names(value: Any) -> tuple[str, ...]:
+def normalise_datasource_names(value: Any) -> tuple[str, ...]:  # NOSONAR(S8495) a variable-length tuple by contract
     """Normalise a ``datasource:`` value to a tuple of source names.
 
     Parameters

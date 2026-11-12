@@ -938,7 +938,7 @@ def _safe_generate_sql_only(
                         lambda s: agent._router.generate_for_task(TaskType.SQL_GENERATION, s),
                         routing, segments,
                     )
-                except Exception as exc:  # noqa: BLE001 - unwrapped, then translated below
+                except Exception as exc:  # noqa: BLE001  # unwrapped, then translated below
                     raise exc.__cause__ or exc
         finally:
             # Reported whether the call answered or raised, so the audit

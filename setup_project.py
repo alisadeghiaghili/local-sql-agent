@@ -198,8 +198,8 @@ try:
 except ImportError:  # pragma: no cover
     _RICH = False
     class Console:  # type: ignore[no-redef]
-        def print(self, *a, **kw): print(*a)
-        def rule(self, *a, **kw): print("-" * 60)
+        def print(self, *a, **kw): print(*a)  # NOSONAR(S1172) mirrors rich.Console
+        def rule(self, *a, **kw): print("-" * 60)  # NOSONAR(S1172) mirrors rich.Console
     rprint = print  # type: ignore[assignment]
 
 try:
@@ -340,8 +340,8 @@ def _spinner(message: str):
         def __enter__(self):
             print(message)
             return self
-        def __exit__(self, *_): pass
-        def add_task(self, *a, **kw): return None
+        def __exit__(self, *_): pass  # nothing to tear down
+        def add_task(self, *a, **kw): return None  # NOSONAR(S1172) mirrors rich.Progress
     return _NoOp()
 
 
@@ -555,7 +555,7 @@ def _union_sources(old: list[str], new: list[str], order: Iterable[str] = ()) ->
         >>> _union_sources(["a"], ["a", "x"])
         ['a', 'x']
     """
-    names = list(dict.fromkeys([*old, *new]))
+    names = list(dict.fromkeys([*old, *new]))  # NOSONAR(S7508) de-duplicates, keeping order
     ranking = list(order)
     return sorted(names, key=lambda n: ranking.index(n) if n in ranking else len(ranking))
 
@@ -580,7 +580,7 @@ def _entities_yaml(
     """
     header = (
         _FILE_HEADER
-        + f"# Generated: {generated_at or datetime.utcnow().isoformat(timespec='seconds')}\n"
+        + f"# Generated: {generated_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}\n"
         f"# Source: {source_url}\n\n"
     )
     data: dict[str, Any] = {"entities": {}}
@@ -602,7 +602,7 @@ def _entities_yaml(
 def _aliases_yaml(ring_aliases: dict, synonyms: dict, generated_at: str = "") -> str:
     header = (
         _FILE_HEADER
-        + f"# Generated: {generated_at or datetime.utcnow().isoformat(timespec='seconds')}\n\n"
+        + f"# Generated: {generated_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}\n\n"
     )
     data = {"ring_aliases": ring_aliases, "synonyms": synonyms}
     return header + yaml.dump(data, allow_unicode=True, sort_keys=False)
@@ -611,7 +611,7 @@ def _aliases_yaml(ring_aliases: dict, synonyms: dict, generated_at: str = "") ->
 def _business_rules_yaml(rules: dict[str, str], generated_at: str = "") -> str:
     header = (
         _FILE_HEADER
-        + f"# Generated: {generated_at or datetime.utcnow().isoformat(timespec='seconds')}\n\n"
+        + f"# Generated: {generated_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}\n\n"
     )
     data: dict[str, Any] = {
         "rules": {k: {"rule_text": v} for k, v in rules.items()}
@@ -622,7 +622,7 @@ def _business_rules_yaml(rules: dict[str, str], generated_at: str = "") -> str:
 def _examples_yaml(examples: list[dict], generated_at: str = "") -> str:
     header = (
         _FILE_HEADER
-        + f"# Generated: {generated_at or datetime.utcnow().isoformat(timespec='seconds')}\n\n"
+        + f"# Generated: {generated_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}\n\n"
     )
     clean = [
         {
@@ -670,7 +670,7 @@ def _relationships_yaml(relationships: list[dict], generated_at: str = "") -> st
     inferred = sum(1 for r in relationships if r.get("basis"))
     header = (
         _FILE_HEADER
-        + f"# Generated: {generated_at or datetime.utcnow().isoformat(timespec='seconds')}\n"
+        + f"# Generated: {generated_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='seconds')}\n"
     )
     if inferred:
         header += (
@@ -715,7 +715,7 @@ def _config_loader():
     """
     try:
         import knowledge.config_loader as module
-    except Exception as exc:  # noqa: BLE001 - ImportError, a broken install, ...
+    except Exception as exc:  # noqa: BLE001  # ImportError, a broken install, ...
         raise ImportError(
             f"could not import knowledge.config_loader ({type(exc).__name__}: {exc}); "
             "run the wizard from a complete checkout"
@@ -773,7 +773,7 @@ def _review_file(
     content: str,
     non_interactive: bool,
     dry_run: bool,
-    output_dir: Path,
+    output_dir: Path,  # NOSONAR(S1172) part of the review contract; documented as unused here
     llm_regenerate_fn: Callable[[], str] | None = None,
 ) -> str | None:
     """Show *content* to the user and return the accepted version (or None to skip).
@@ -2749,7 +2749,7 @@ def _read_existing(
             continue
         try:
             _parse_existing(filename, path.read_text(encoding="utf-8"), existing)
-        except Exception as exc:  # noqa: BLE001 - YAMLError, ValueError, OSError, ...
+        except Exception as exc:  # noqa: BLE001  # YAMLError, ValueError, OSError, ...
             problems[filename] = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
     return existing, problems
 
@@ -2977,7 +2977,7 @@ def _combine_snapshots(parts, names: tuple[str, ...]):
     )
 
 
-def step1_sources(args, log: dict, configured) -> _Sources:
+def step1_sources(args, log: dict, configured) -> _Sources:  # NOSONAR(S1172) every step takes args
     """Open the configured data sources and prove each connects.
 
     The sources are read through the application's own engines
@@ -3767,7 +3767,7 @@ def _example_pairs(result: Any) -> tuple[list[dict[str, Any]], int]:
             continue
         question = _first_text(item, _EXAMPLE_QUESTION_KEYS)
         sql = _first_text(item, _EXAMPLE_SQL_KEYS)
-        if not (question and sql) or not re.match(r"(?is)\s*(?:--[^\n]*\n\s*)*\(?\s*(select|with)\b", sql):
+        if not (question and sql) or not re.match(r"(?is)\s*(?:--[^\n]*\n\s*)*(?:\(\s*)?(select|with)\b", sql):
             continue
         tags = item.get("tags")
         if isinstance(tags, str):
@@ -3798,7 +3798,7 @@ def _example_groups(snapshot) -> list[tuple[str | None, str]]:
     return [(name, name) for name in names] or [(None, "all tables")]
 
 
-def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:
+def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:  # NOSONAR(S1172) every step takes args
     """Generate NLQ→SQL example pairs, one model call for each data source.
 
     The tables of each data source are summarised for the model apart (fact

@@ -278,7 +278,7 @@ def get_active_principals() -> dict[str, Principal]:
     try:
         env_principals = auth.load_api_keys()
     except ApiKeyConfigError as exc:
-        logger.error("API keys could not be loaded while resolving keys: %s", exc)
+        logger.error("API keys could not be loaded while resolving keys: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
         env_principals = {}
 
     merged: dict[str, Principal] = {}

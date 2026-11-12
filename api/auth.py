@@ -111,7 +111,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:
             keys = load_all_principals()
         except ApiKeyConfigError as exc:
-            logger.error("API keys could not be loaded at request time: %s", exc)
+            logger.error("API keys could not be loaded at request time: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
             return None
         return resolve_principal(request.headers.get("authorization"), keys)
 
