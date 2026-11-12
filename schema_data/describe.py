@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass, field
 
 from core import config_doctor as doctor
@@ -352,6 +353,39 @@ def render_described_text(
     return "\n".join(out)
 
 
+def _expected_table(want: dict[str, Any], draft: TableDraft | None) -> dict[str, Any]:
+    """The original table's fields (*want*, changed in place) with *draft*'s descriptions applied."""
+    if draft is None:
+        return want
+    if draft.description:
+        want["description"] = draft.description
+    if draft.columns:
+        columns = dict(want["columns"] or {})
+        columns.update(draft.columns)
+        want["columns"] = columns
+    return want
+
+
+def _check_described_table(key: str, got: dict[str, Any], want: dict[str, Any]) -> None:
+    """Refuse a rendered table *got* that is not exactly *want*: same fields, same columns, same order."""
+    for name, expected in want.items():
+        if name == "columns":
+            continue
+        if got[name] != expected:
+            raise ValueError(f"the described file changed {name!r} of table {key!r} unexpectedly")
+    if (got["columns"] is None) != (want["columns"] is None):
+        raise ValueError(f"the described file changed the columns of table {key!r} unexpectedly")
+    if got["columns"] is None:
+        return
+    if list(got["columns"]) != list(want["columns"]):
+        raise ValueError(f"the described file reordered the columns of table {key!r}")
+    for column, note in got["columns"].items():
+        if note != want["columns"][column]:
+            raise ValueError(
+                f"the described file changed the column {column!r} of table {key!r} unexpectedly"
+            )
+
+
 def verify_described(
     original: SchemaConfig, rendered: SchemaConfig, drafts: Sequence[TableDraft],
 ) -> None:
@@ -389,31 +423,8 @@ def verify_described(
     if list(rendered.tables) != list(original.tables):
         raise ValueError("the described file lists different tables than the original")
     for key, table in rendered.tables.items():
-        want = original.tables[key].model_dump()
-        draft = wanted.get(key)
-        if draft is not None:
-            if draft.description:
-                want["description"] = draft.description
-            if draft.columns:
-                columns = dict(want["columns"] or {})
-                columns.update(draft.columns)
-                want["columns"] = columns
-        got = table.model_dump()
-        for name, expected in want.items():
-            if name == "columns":
-                continue
-            if got[name] != expected:
-                raise ValueError(f"the described file changed {name!r} of table {key!r} unexpectedly")
-        if (got["columns"] is None) != (want["columns"] is None):
-            raise ValueError(f"the described file changed the columns of table {key!r} unexpectedly")
-        if got["columns"] is not None:
-            if list(got["columns"]) != list(want["columns"]):
-                raise ValueError(f"the described file reordered the columns of table {key!r}")
-            for column, note in got["columns"].items():
-                if note != want["columns"][column]:
-                    raise ValueError(
-                        f"the described file changed the column {column!r} of table {key!r} unexpectedly"
-                    )
+        want = _expected_table(original.tables[key].model_dump(), wanted.get(key))
+        _check_described_table(key, table.model_dump(), want)
     if rendered.relationships != original.relationships:
         raise ValueError("the described file changed schema.yaml's relationships")
 

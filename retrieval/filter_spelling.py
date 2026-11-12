@@ -318,60 +318,22 @@ def fix_filter_spelling(
         return SpellingFix(sql)
 
 
+#: node id -> (node, text it had, text it gets, columns compared with)
+_Edits = dict[int, tuple[exp.Expression, str, str, list[str]]]
+
+
 def _fix(sql: str, denied_columns: Iterable[str] | None, dialect: str) -> SpellingFix:
     """:func:`fix_filter_spelling` without the guard against failure (any exception propagates)."""
     tree = sqlglot.parse_one(sql, read=dialect)
     if tree is None:
         return SpellingFix(sql)
     policy = cached_column_policy(denied_columns)
-    hidden = hidden_value_columns(policy)
-
-    def pool_of(column: exp.Column) -> tuple[list[str], list[str]] | None:
-        origins = column_origins(column, tree)
-        if not origins:
-            return None
-        vocabularies = usable_vocabularies(origins, policy.denied, hidden, refresh=False)
-        if not vocabularies:
-            return None
-        return (
-            [value for _t, _c, values in vocabularies for value in values],
-            [f"{table}.{name}" for table, name, _v in vocabularies],
-        )
-
-    # node id -> (node, text it had, text it gets, columns)
-    edits: dict[int, tuple[exp.Expression, str, str, list[str]]] = {}
-    for column, literals, _operator in comparison_literals(tree):
-        pool = pool_of(column)
-        if pool is None:
-            continue
-        for node, text in literals:
-            replacement = respell_literal(text, pool[0])
-            if replacement is not None:
-                edits[id(node)] = (node, text, replacement, pool[1])
-    for column, node, text, _negated in like_patterns(tree):
-        pool = pool_of(column)
-        if pool is None:
-            continue
-        replacement = respell_like_pattern(text, pool[0])
-        if replacement is not None:
-            edits[id(node)] = (node, text, replacement, pool[1])
+    edits = _spelling_edits(tree, policy, hidden_value_columns(policy))
     if not edits:
         return SpellingFix(sql)
-
-    spans: list[tuple[int, int, str]] = []
-    for node, text, replacement, _columns in edits.values():
-        span = _source_span(sql, node, text)
-        if span is None:
-            return SpellingFix(sql)
-        start, end, prefix = span
-        quoted = replacement.replace("'", "''")
-        spans.append((start, end, f"{prefix}'{quoted}'"))
-    spans.sort(reverse=True)
-    if any(smaller[1] >= larger[0] for smaller, larger in zip(spans[1:], spans)):
+    rewritten = _rewritten_text(sql, edits)
+    if rewritten is None:
         return SpellingFix(sql)
-    rewritten = sql
-    for start, end, source in spans:
-        rewritten = rewritten[:start] + source + rewritten[end + 1:]
 
     # The new text must read as the old tree with just those literals changed.
     for node, _text, replacement, _columns in edits.values():
@@ -381,6 +343,62 @@ def _fix(sql: str, denied_columns: Iterable[str] | None, dialect: str) -> Spelli
 
     columns = sorted({name for *_rest, names in edits.values() for name in names})
     return SpellingFix(rewritten, len(edits), tuple(columns))
+
+
+def _value_pool(
+    column: exp.Column, tree: exp.Expression, policy: Any, hidden: Any,
+) -> tuple[list[str], list[str]] | None:
+    """``(stored values, "Table.Column" names)`` *column* is compared with, or ``None`` when unknown or not readable."""
+    origins = column_origins(column, tree)
+    if not origins:
+        return None
+    vocabularies = usable_vocabularies(origins, policy.denied, hidden, refresh=False)
+    if not vocabularies:
+        return None
+    return (
+        [value for _t, _c, values in vocabularies for value in values],
+        [f"{table}.{name}" for table, name, _v in vocabularies],
+    )
+
+
+def _spelling_edits(tree: exp.Expression, policy: Any, hidden: Any) -> _Edits:
+    """Every comparison literal and ``LIKE`` pattern of *tree* that a stored spelling replaces."""
+    edits: _Edits = {}
+    for column, literals, _operator in comparison_literals(tree):
+        pool = _value_pool(column, tree, policy, hidden)
+        if pool is None:
+            continue
+        for node, text in literals:
+            replacement = respell_literal(text, pool[0])
+            if replacement is not None:
+                edits[id(node)] = (node, text, replacement, pool[1])
+    for column, node, text, _negated in like_patterns(tree):
+        pool = _value_pool(column, tree, policy, hidden)
+        if pool is None:
+            continue
+        replacement = respell_like_pattern(text, pool[0])
+        if replacement is not None:
+            edits[id(node)] = (node, text, replacement, pool[1])
+    return edits
+
+
+def _rewritten_text(sql: str, edits: _Edits) -> str | None:
+    """*sql* with each edited literal replaced in its own source span; ``None`` when a span cannot be placed."""
+    spans: list[tuple[int, int, str]] = []
+    for node, text, replacement, _columns in edits.values():
+        span = _source_span(sql, node, text)
+        if span is None:
+            return None
+        start, end, prefix = span
+        quoted = replacement.replace("'", "''")
+        spans.append((start, end, f"{prefix}'{quoted}'"))
+    spans.sort(reverse=True)
+    if any(smaller[1] >= larger[0] for smaller, larger in zip(spans[1:], spans)):
+        return None
+    rewritten = sql
+    for start, end, source in spans:
+        rewritten = rewritten[:start] + source + rewritten[end + 1:]
+    return rewritten
 
 
 def audit_block(fix: SpellingFix) -> dict[str, Any] | None:

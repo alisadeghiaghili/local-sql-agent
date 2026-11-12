@@ -69,6 +69,7 @@ import fnmatch
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from database.catalogue import ColumnInfo, TableInfo, table_location
 from database.schema_filter import SYSTEM_SCHEMAS, schema_is_excluded, table_is_excluded
@@ -90,6 +91,7 @@ from schema_data.yaml_text import (
     Edit,
     LayoutError,
     TableBlock,
+    TablesLayout,
     apply_edits,
     child_span,
     parse_entries,
@@ -582,15 +584,31 @@ def _plan_table(
     )
 
     flagged = set(table.resolvable_columns) | set(table.prefetchable_columns)
+    pruned, kept = _prunable_columns(stale, flagged) if options.prune else ([], [])
+    recorded, changed = _type_records(table, schema_columns, live_columns)
+    return TablePlan(
+        key=key, placement=placement, stale=stale, pruned=tuple(pruned), kept=tuple(kept),
+        live=live, adds=adds, recorded=tuple(recorded), changed=tuple(changed),
+        shape=tuple(_shape_notes(live_columns, len(found))),
+    )
+
+
+def _prunable_columns(stale: Sequence[str], flagged: set[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """``(pruned, kept)`` of the *stale* columns: a column still flagged resolvable or prefetchable is kept."""
     pruned: list[str] = []
     kept: list[tuple[str, str]] = []
-    if options.prune:
-        for column in stale:
-            if column in flagged:
-                kept.append((column, "still named in resolvable_columns or prefetchable_columns"))
-            else:
-                pruned.append(column)
+    for column in stale:
+        if column in flagged:
+            kept.append((column, "still named in resolvable_columns or prefetchable_columns"))
+        else:
+            pruned.append(column)
+    return pruned, kept
 
+
+def _type_records(
+    table: TableDefinition, schema_columns: list[str], live_columns: Mapping[str, Any],
+) -> tuple[list[tuple[str, str]], list[TypeChange]]:
+    """``(recorded, changed)``: live columns with no ``column_types`` entry yet, and those whose type moved."""
     recorded: list[tuple[str, str]] = []
     changed: list[TypeChange] = []
     for column in schema_columns:
@@ -602,20 +620,81 @@ def _plan_table(
             recorded.append((column, item.data_type))
         elif _norm_type(old) != _norm_type(item.data_type):
             changed.append(TypeChange(column, old, item.data_type))
+    return recorded, changed
 
+
+def _shape_notes(live_columns: Mapping[str, Any], source_count: int) -> list[str]:
+    """How a table's columns differ between its data sources: missing from some, or typed differently."""
     shape: list[str] = []
     for item in live_columns.values():
-        if len(item.sources) < len(found):
+        if len(item.sources) < source_count:
             shape.append(f"{item.name}: only in {', '.join(item.sources)}")
         elif len({_norm_type(t) for _, t in item.types}) > 1:
             shape.append(
                 f"{item.name}: type differs ({', '.join(f'{s} {t}' for s, t in item.types)})"
             )
-    return TablePlan(
-        key=key, placement=placement, stale=stale, pruned=tuple(pruned), kept=tuple(kept),
-        live=live, adds=adds, recorded=tuple(recorded), changed=tuple(changed),
-        shape=tuple(shape),
-    )
+    return shape
+
+
+_Located = dict[tuple[str, str], list[tuple[str, TableInfo]]]
+
+
+def _sort_catalogues(
+    sources: Sequence[str],
+    catalogues: Mapping[str, SourceTables],
+    in_schema: set[tuple[str, str]],
+    options: SyncOptions,
+) -> tuple[_Located, dict[tuple[str, str], TableInfo], dict[tuple[str, str], TableInfo]]:
+    """``(seen, left_out, left_out_tables)`` over the tables ``schema.yaml`` does not have.
+
+    *seen* holds each candidate with the sources that have it; a table in an
+    excluded schema goes to *left_out*, one named by an excluded table
+    pattern to *left_out_tables* (first source wins for both).
+    """
+    seen: _Located = {}
+    left_out: dict[tuple[str, str], TableInfo] = {}
+    left_out_tables: dict[tuple[str, str], TableInfo] = {}
+    for source in sources:
+        patterns = (*SYSTEM_SCHEMAS, *options.exclude_schemas.get(source, ()))
+        table_patterns = options.exclude_tables.get(source, ())
+        for location, info in catalogues[source].items():
+            if location in in_schema:
+                continue
+            if schema_is_excluded(info.schema, patterns):
+                left_out.setdefault(location, info)
+            elif table_is_excluded(info.schema, info.name, table_patterns):
+                left_out_tables.setdefault(location, info)
+            else:
+                seen.setdefault(location, []).append((source, info))
+    return seen, left_out, left_out_tables
+
+
+def _new_table_entries(
+    chosen: list[tuple[tuple[str, str], list[tuple[str, TableInfo]]]],
+    bare_counts: dict[str, int],
+    taken: set[str],
+) -> tuple[list[NewTable], list[tuple[str, str]]]:
+    """``(new_tables, skipped)`` for the chosen tables; *taken* (the keys in use) grows as keys are given."""
+    new_tables: list[NewTable] = []
+    skipped: list[tuple[str, str]] = []
+    for _location, found in chosen:
+        info = found[0][1]
+        merged = _merge_columns(found)
+        if not merged:
+            skipped.append((_display(info), "the login sees none of its columns"))
+            continue
+        qualified = bare_counts.get(info.name.lower(), 0) > 1
+        key = _table_key(info.schema, info.name, qualified)
+        if key is None or key in taken:
+            skipped.append((_display(info), "its name cannot be written as a table key"))
+            continue
+        taken.add(key)
+        new_tables.append(NewTable(
+            key=key, schema=info.schema, name=info.name, is_view=info.is_view,
+            sources=tuple(source for source, _ in found),
+            columns=tuple(ColumnInfo(m.name, m.data_type, True) for m in merged.values()),
+        ))
+    return new_tables, skipped
 
 
 def _plan_new_tables(
@@ -632,21 +711,7 @@ def _plan_new_tables(
 
     The last two lists are the tables left out by schema exclusion and by table exclusion.
     """
-    seen: dict[tuple[str, str], list[tuple[str, TableInfo]]] = {}
-    left_out: dict[tuple[str, str], TableInfo] = {}
-    left_out_tables: dict[tuple[str, str], TableInfo] = {}
-    for source in sources:
-        patterns = (*SYSTEM_SCHEMAS, *options.exclude_schemas.get(source, ()))
-        table_patterns = options.exclude_tables.get(source, ())
-        for location, info in catalogues[source].items():
-            if location in in_schema:
-                continue
-            if schema_is_excluded(info.schema, patterns):
-                left_out.setdefault(location, info)
-            elif table_is_excluded(info.schema, info.name, table_patterns):
-                left_out_tables.setdefault(location, info)
-            else:
-                seen.setdefault(location, []).append((source, info))
+    seen, left_out, left_out_tables = _sort_catalogues(sources, catalogues, in_schema, options)
     # A table one source excludes and another does not is a candidate (from the other).
     excluded = [(info.schema, info.name) for location, info in left_out.items() if location not in seen]
     excluded_tables = [
@@ -670,26 +735,7 @@ def _plan_new_tables(
         low = found[0][1].name.lower()
         bare_counts[low] = bare_counts.get(low, 0) + 1
 
-    new_tables: list[NewTable] = []
-    skipped: list[tuple[str, str]] = []
-    taken = set(schema.tables)
-    for location, found in chosen:
-        info = found[0][1]
-        merged = _merge_columns(found)
-        if not merged:
-            skipped.append((_display(info), "the login sees none of its columns"))
-            continue
-        qualified = bare_counts.get(info.name.lower(), 0) > 1
-        key = _table_key(info.schema, info.name, qualified)
-        if key is None or key in taken:
-            skipped.append((_display(info), "its name cannot be written as a table key"))
-            continue
-        taken.add(key)
-        new_tables.append(NewTable(
-            key=key, schema=info.schema, name=info.name, is_view=info.is_view,
-            sources=tuple(source for source, _ in found),
-            columns=tuple(ColumnInfo(m.name, m.data_type, True) for m in merged.values()),
-        ))
+    new_tables, skipped = _new_table_entries(chosen, bare_counts, set(schema.tables))
     chosen_locations = {location for location, _ in chosen}
     unlisted = [
         (_display(found[0][1]), tuple(source for source, _ in found))
@@ -799,39 +845,60 @@ def render_synced_text(
     cr = "\r" if "\r\n" in original else ""
     stats = RenderStats()
     layout = parse_tables(lines, list(schema.tables))
-    edits: list[Edit] = []
     unit = 2
     if layout is not None and layout.tables:
         first = next(iter(layout.tables.values()))
         unit = (first.child_indent - layout.key_indent) or 2
+    edits: list[Edit] = []
     for table_plan in plan.tables:
         if layout is None:  # pragma: no cover - parse_tables raises first
             raise LayoutError("no block-style `tables:` mapping found in schema.yaml")
-        block = layout.tables[table_plan.key]
-        if table_plan.prune_table:
-            # Its own lines, plus the blank lines after it when another
-            # table follows; the comments around it stay.
-            end = block.content_end
-            if block.end != layout.stop:
-                while end < block.end and not lines[end].strip():
-                    end += 1
-            edits.append((block.line, end, []))
-            continue
-        edits.extend(_datasource_and_marker_edits(lines, block, table_plan, plan, cr, stats))
-        if schema.tables[table_plan.key].columns is not None and not (
-            table_plan.nowhere or table_plan.unverifiable or table_plan.described_only
-        ):
-            edits.extend(_column_edits(lines, block, schema.tables[table_plan.key], table_plan, unit, cr, stats))
+        edits.extend(_table_plan_edits(
+            lines, layout, schema.tables[table_plan.key], table_plan, plan, unit, cr, stats,
+        ))
     if plan.new_tables:
         if layout is None:
             raise LayoutError("no block-style `tables:` mapping to append the new tables to")
-        indent = layout.key_indent if layout.tables else 2
-        appended: list[str] = []
-        for table in plan.new_tables:
-            appended.append(cr)
-            appended.extend(_new_table_lines(table, plan.multi_source, indent, unit, cr))
-        edits.append((layout.content_end, layout.content_end, appended))
+        edits.append(_new_tables_edit(layout, plan, unit, cr))
     return "\n".join(apply_edits(lines, edits)), stats
+
+
+def _table_plan_edits(
+    lines: list[str],
+    layout: TablesLayout,
+    table: TableDefinition,
+    table_plan: TablePlan,
+    plan: SyncPlan,
+    unit: int,
+    cr: str,
+    stats: RenderStats,
+) -> list[Edit]:
+    """The line edits for one planned table: its removal, or its datasource, markers and columns."""
+    block = layout.tables[table_plan.key]
+    if table_plan.prune_table:
+        # Its own lines, plus the blank lines after it when another
+        # table follows; the comments around it stay.
+        end = block.content_end
+        if block.end != layout.stop:
+            while end < block.end and not lines[end].strip():
+                end += 1
+        return [(block.line, end, [])]
+    edits = list(_datasource_and_marker_edits(lines, block, table_plan, plan, cr, stats))
+    if table.columns is not None and not (
+        table_plan.nowhere or table_plan.unverifiable or table_plan.described_only
+    ):
+        edits.extend(_column_edits(lines, block, table, table_plan, unit, cr, stats))
+    return edits
+
+
+def _new_tables_edit(layout: TablesLayout, plan: SyncPlan, unit: int, cr: str) -> Edit:
+    """The insertion of the new tables after the last line of the ``tables:`` block."""
+    indent = layout.key_indent if layout.tables else 2
+    appended: list[str] = []
+    for table in plan.new_tables:
+        appended.append(cr)
+        appended.extend(_new_table_lines(table, plan.multi_source, indent, unit, cr))
+    return (layout.content_end, layout.content_end, appended)
 
 
 def _datasource_and_marker_edits(
@@ -873,8 +940,41 @@ def _column_edits(
     pad = " " * indent
     edits: list[Edit] = []
 
+    pruned = set(table_plan.pruned)
+    edits.extend(_marker_edits(lines, entries, first, table_plan, pad, cr, stats))
+
+    appended = [
+        f"{pad}{yaml_key(add.name)}: {quote(draft_description(add.data_type))}  {DRAFT_COMMENT}{cr}"
+        for add in table_plan.adds
+    ]
+    if appended:
+        edits.append((stop, stop, appended))
+
+    # A pruned column takes its hand-written unit with it: `column_units:` may
+    # name only columns the table still has.
+    units_span = child_span(lines, block, "column_units")
+    if units_span is not None and pruned:
+        edits.extend(
+            (entry.line, entry.stop, []) for entry in parse_entries(lines, *units_span)
+            if entry.name in pruned
+        )
+    edits.extend(_type_edits(lines, block, table_plan, stop, indent, cr))
+    return edits
+
+
+def _marker_edits(
+    lines: Sequence[str],
+    entries: Sequence[Any],
+    first: int,
+    table_plan: TablePlan,
+    pad: str,
+    cr: str,
+    stats: RenderStats,
+) -> list[Edit]:
+    """Remove pruned columns, mark stale ones, unmark those that came back (counted in *stats*)."""
     stale = set(table_plan.stale)
     pruned = set(table_plan.pruned)
+    edits: list[Edit] = []
     for entry in entries:
         marker_at = entry.line - 1
         has_marker = marker_at > first and lines[marker_at].strip().startswith(_STALE_PREFIX)
@@ -888,47 +988,38 @@ def _column_edits(
         elif has_marker:
             edits.append((marker_at, entry.line, []))
             stats.unmarked_columns.append(label)
+    return edits
 
-    appended = [
-        f"{pad}{yaml_key(add.name)}: {quote(draft_description(add.data_type))}  {DRAFT_COMMENT}{cr}"
-        for add in table_plan.adds
-    ]
-    if appended:
-        edits.append((stop, stop, appended))
 
-    # A pruned column takes its hand-written unit with it: `column_units:` may
-    # name only columns the table still has.
-    units_span = child_span(lines, block, "column_units")
-    if units_span is not None and pruned:
-        for entry in parse_entries(lines, *units_span):
-            if entry.name in pruned:
-                edits.append((entry.line, entry.stop, []))
+def _type_edits(
+    lines: Sequence[str], block: TableBlock, table_plan: TablePlan, stop: int, indent: int, cr: str,
+) -> list[Edit]:
+    """The ``column_types:`` edits: new types recorded, changed ones corrected, pruned ones removed.
 
+    With no ``column_types:`` block yet, one is added after the columns
+    (at *stop*) when there is anything to record.
+    """
+    pad = " " * indent
     types_span = child_span(lines, block, "column_types")
     new_types = [*table_plan.recorded, *((a.name, a.data_type) for a in table_plan.adds)]
     if types_span is None:
-        if new_types:
-            body = [f"{' ' * block.child_indent}column_types:{cr}"]
-            body += [f"{pad}{yaml_key(n)}: {quote(t)}{cr}" for n, t in new_types]
-            edits.append((stop, stop, body))
-        return edits
+        if not new_types:
+            return []
+        body = [f"{' ' * block.child_indent}column_types:{cr}"]
+        body += [f"{pad}{yaml_key(n)}: {quote(t)}{cr}" for n, t in new_types]
+        return [(stop, stop, body)]
     types_first, types_stop = types_span
     type_entries = {e.name: e for e in parse_entries(lines, types_first, types_stop)}
     type_indent = next(iter(type_entries.values())).indent if type_entries else indent
-    for change in table_plan.changed:
-        entry = type_entries[change.column]
-        raw = lines[entry.line].rstrip("\r")
-        head = raw[: len(raw) - len(entry.rest)]
-        comment = trailing_comment(entry.rest)
-        tail = ""
-        if comment:
-            before = entry.rest[: entry.rest.rindex(comment)]
-            tail = before[len(before.rstrip()):] + comment  # keep the original gap
-        edits.append((entry.line, entry.stop, [f"{head} {quote(change.new)}{tail}{cr}"]))
-    for name in table_plan.pruned:
-        entry = type_entries.get(name)
-        if entry is not None:
-            edits.append((entry.line, entry.stop, []))
+    edits: list[Edit] = [
+        (type_entries[change.column].line, type_entries[change.column].stop,
+         [_retyped_line(lines, type_entries[change.column], change.new, cr)])
+        for change in table_plan.changed
+    ]
+    edits.extend(
+        (type_entries[name].line, type_entries[name].stop, [])
+        for name in table_plan.pruned if name in type_entries
+    )
     if new_types:
         edits.append((
             types_stop, types_stop,
@@ -937,9 +1028,37 @@ def _column_edits(
     return edits
 
 
+def _retyped_line(lines: Sequence[str], entry: Any, new_type: str, cr: str) -> str:
+    """A ``column_types:`` line with its value replaced by *new_type*, keeping its trailing comment and gap."""
+    raw = lines[entry.line].rstrip("\r")
+    head = raw[: len(raw) - len(entry.rest)]
+    comment = trailing_comment(entry.rest)
+    tail = ""
+    if comment:
+        before = entry.rest[: entry.rest.rindex(comment)]
+        tail = before[len(before.rstrip()):] + comment  # keep the original gap
+    return f"{head} {quote(new_type)}{tail}{cr}"
+
+
 # ---------------------------------------------------------------------------
 # Proving the result changed only what it should
 # ---------------------------------------------------------------------------
+
+def _apply_column_plan(data: dict[str, object], table_plan: TablePlan) -> None:
+    """Change one table's dumped definition *data* in place to what its column plan says it becomes."""
+    pruned = set(table_plan.pruned)
+    columns = {c: d for c, d in data["columns"].items() if c not in pruned}
+    types = {c: t for c, t in data["column_types"].items() if c not in pruned}
+    data["column_units"] = {c: u for c, u in data["column_units"].items() if c not in pruned}
+    for name, data_type in table_plan.recorded:
+        types[name] = data_type
+    for change in table_plan.changed:
+        types[change.column] = change.new
+    for add in table_plan.adds:
+        columns[add.name] = draft_description(add.data_type)
+        types[add.name] = add.data_type
+    data["columns"], data["column_types"] = columns, types
+
 
 def expected_tables(
     schema: SchemaConfig, plan: SyncPlan,
@@ -974,18 +1093,7 @@ def expected_tables(
         if data["columns"] is not None and not (
             table_plan.nowhere or table_plan.unverifiable or table_plan.described_only
         ):
-            pruned = set(table_plan.pruned)
-            columns = {c: d for c, d in data["columns"].items() if c not in pruned}
-            types = {c: t for c, t in data["column_types"].items() if c not in pruned}
-            data["column_units"] = {c: u for c, u in data["column_units"].items() if c not in pruned}
-            for name, data_type in table_plan.recorded:
-                types[name] = data_type
-            for change in table_plan.changed:
-                types[change.column] = change.new
-            for add in table_plan.adds:
-                columns[add.name] = draft_description(add.data_type)
-                types[add.name] = add.data_type
-            data["columns"], data["column_types"] = columns, types
+            _apply_column_plan(data, table_plan)
         out[table_plan.key] = data
     for table in plan.new_tables:
         out[table.key] = _new_table_definition(table, plan.multi_source).model_dump()
@@ -1198,6 +1306,36 @@ def _only_records_types(original: str, schema: SchemaConfig, plan: SyncPlan) -> 
 # Report
 # ---------------------------------------------------------------------------
 
+def _report_section(out: list[str], title: str, rows: Sequence[str], count: int | None = None) -> None:
+    """Append one ``== title: n ==`` section to *out*: at most ``REPORT_LIST_LIMIT`` rows, then how many more."""
+    if out:
+        out.append("")
+    out.append(f"== {title}: {len(rows) if count is None else count} ==")
+    out.extend(f"  {row}" for row in rows[:REPORT_LIST_LIMIT])
+    if len(rows) > REPORT_LIST_LIMIT:
+        out.append(f"  ... and {len(rows) - REPORT_LIST_LIMIT} more")
+
+
+def _per_schema_rows(tables: Sequence[tuple[str, str]]) -> list[str]:
+    """``schema: count`` rows for ``(schema, table)`` pairs, schemas sorted without regard to case."""
+    per_schema: dict[str, int] = {}
+    for schema_name, _ in tables:
+        per_schema[schema_name] = per_schema.get(schema_name, 0) + 1
+    return [
+        f"{name}: {count}"
+        for name, count in sorted(per_schema.items(), key=lambda item: item[0].lower())
+    ]
+
+
+def _nowhere_outcome(table_plan: TablePlan) -> str:
+    """What became of a table found in no data source: removed, kept (and why), or kept and marked."""
+    if table_plan.prune_table:
+        return "removed"
+    if table_plan.kept_table:
+        return "kept: " + table_plan.kept_table
+    return "kept, marked"
+
+
 def build_report(result: SyncResult) -> str:
     """The human-readable report: names, types and counts only.
 
@@ -1222,12 +1360,7 @@ def build_report(result: SyncResult) -> str:
     out: list[str] = []
 
     def section(title: str, rows: Sequence[str], count: int | None = None) -> None:
-        if out:
-            out.append("")
-        out.append(f"== {title}: {len(rows) if count is None else count} ==")
-        out.extend(f"  {row}" for row in rows[:REPORT_LIST_LIMIT])
-        if len(rows) > REPORT_LIST_LIMIT:
-            out.append(f"  ... and {len(rows) - REPORT_LIST_LIMIT} more")
+        _report_section(out, title, rows, count)
 
     section(
         "datasource: lines set or repaired",
@@ -1264,35 +1397,20 @@ def build_report(result: SyncResult) -> str:
         + [f"{name}: not added ({why})" for name, why in plan.skipped_new],
     )
     if plan.excluded:
-        per_schema: dict[str, int] = {}
-        for schema_name, _ in plan.excluded:
-            per_schema[schema_name] = per_schema.get(schema_name, 0) + 1
         section(
             "tables in excluded schemas, not listed or added (EXCLUDE_SCHEMAS, exclude_schemas:, --exclude-schemas)",
-            [
-                f"{name}: {count}"
-                for name, count in sorted(per_schema.items(), key=lambda item: item[0].lower())
-            ],
+            _per_schema_rows(plan.excluded),
             count=len(plan.excluded),
         )
     if plan.excluded_tables:
-        per_schema_tables: dict[str, int] = {}
-        for schema_name, _ in plan.excluded_tables:
-            per_schema_tables[schema_name] = per_schema_tables.get(schema_name, 0) + 1
         section(
             "tables named by an excluded table pattern, not listed or added (EXCLUDE_TABLES, exclude_tables:)",
-            [
-                f"{name}: {count}"
-                for name, count in sorted(per_schema_tables.items(), key=lambda item: item[0].lower())
-            ],
+            _per_schema_rows(plan.excluded_tables),
             count=len(plan.excluded_tables),
         )
     section(
         "tables in schema.yaml found in no data source",
-        [
-            f"{t.key} ({'removed' if t.prune_table else 'kept: ' + t.kept_table if t.kept_table else 'kept, marked'})"
-            for t in plan.tables if t.nowhere
-        ],
+        [f"{t.key} ({_nowhere_outcome(t)})" for t in plan.tables if t.nowhere],
     )
     section(
         "columns that differ between data sources",

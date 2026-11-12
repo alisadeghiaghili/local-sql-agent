@@ -841,49 +841,10 @@ def _token_tier_winners(
         winning value's tokens to report.
     """
     question_tokens = set(question_normalized.split())
-
-    # A token is generic for a column when it occurs in at least half of
-    # that column's own cached values AND the column holds at least 3
-    # values — a column with fewer than 3 values never has a generic
-    # token at all (there is no meaningful "common to most of them" with
-    # that few data points), so every one of its values' tokens stays
-    # distinctive.
-    generic_by_column: dict[str, set[str]] = {}
-    for column, raw_values in column_values.items():
-        if len(raw_values) < 3:
-            generic_by_column[column] = set()
-            continue
-        occurrence: dict[str, int] = {}
-        for raw_value in raw_values:
-            value_tokens = {
-                tok for tok in normalize_for_matching(raw_value).split()
-                if len(tok) >= MIN_MATCH_LENGTH
-            }
-            for tok in value_tokens:
-                occurrence[tok] = occurrence.get(tok, 0) + 1
-        half = len(raw_values) / 2.0
-        generic_by_column[column] = {tok for tok, n in occurrence.items() if n >= half}
-
-    scores: dict[str, int] = {}
-    distinctive_by_value: dict[str, tuple[str, ...]] = {}
-    for norm, raw, column in pool:
-        value_tokens = [tok for tok in norm.split() if len(tok) >= MIN_MATCH_LENGTH]
-        generic = generic_by_column.get(column, set())
-        distinctive = tuple(dict.fromkeys(tok for tok in value_tokens if tok not in generic))
-        if not distinctive:
-            # No distinctive tokens at all -- can never match in this
-            # tier, whatever the question says (see the module docstring).
-            continue
-        score = len({tok for tok in distinctive if tok in question_tokens})
-        if score < 1:
-            continue
-        # A raw value could in principle be cached under more than one
-        # column of the same table -- keep the higher-scoring reading
-        # rather than whichever column happened to be seen last.
-        if score > scores.get(raw, -1):
-            scores[raw] = score
-            distinctive_by_value[raw] = distinctive
-
+    generic_by_column = {
+        column: _generic_tokens(raw_values) for column, raw_values in column_values.items()
+    }
+    scores, distinctive_by_value = _token_scores(pool, generic_by_column, question_tokens)
     if not scores:
         return {}, None
 
@@ -893,6 +854,117 @@ def _token_tier_winners(
         (only_value,) = winners
         return winners, distinctive_by_value[only_value]
     return winners, None
+
+
+def _generic_tokens(raw_values: list[str]) -> set[str]:
+    """The tokens generic for one column: in at least half of its cached values.
+
+    A column with fewer than 3 values never has a generic token at all (there
+    is no meaningful "common to most of them" with that few data points), so
+    every one of its values' tokens stays distinctive.
+    """
+    if len(raw_values) < 3:
+        return set()
+    occurrence: dict[str, int] = {}
+    for raw_value in raw_values:
+        value_tokens = {
+            tok for tok in normalize_for_matching(raw_value).split()
+            if len(tok) >= MIN_MATCH_LENGTH
+        }
+        for tok in value_tokens:
+            occurrence[tok] = occurrence.get(tok, 0) + 1
+    half = len(raw_values) / 2.0
+    return {tok for tok, n in occurrence.items() if n >= half}
+
+
+def _token_scores(
+    pool: list[tuple[str, str, str]],
+    generic_by_column: dict[str, set[str]],
+    question_tokens: set[str],
+) -> tuple[dict[str, int], dict[str, tuple[str, ...]]]:
+    """``(scores, distinctive_by_value)``: how many of each value's distinctive tokens the question has.
+
+    Only values scoring at least 1 are kept. A raw value could in principle
+    be cached under more than one column of the same table -- the
+    higher-scoring reading is kept rather than whichever column happened to
+    be seen last.
+    """
+    scores: dict[str, int] = {}
+    distinctive_by_value: dict[str, tuple[str, ...]] = {}
+    for norm, raw, column in pool:
+        value_tokens = [tok for tok in norm.split() if len(tok) >= MIN_MATCH_LENGTH]
+        generic = generic_by_column.get(column, set())
+        distinctive = tuple(dict.fromkeys(tok for tok in value_tokens if tok not in generic))
+        # No distinctive tokens at all can never match in this tier,
+        # whatever the question says (see the module docstring).
+        score = len({tok for tok in distinctive if tok in question_tokens})
+        if score >= 1 and score > scores.get(raw, -1):
+            scores[raw] = score
+            distinctive_by_value[raw] = distinctive
+    return scores, distinctive_by_value
+
+
+def _cached_pool(
+    table: str, allowed_columns: list[str], resolved_columns: list[str],
+) -> tuple[list[tuple[str, str, str]], dict[str, list[str]]]:
+    """``(pool, column_values)`` for *table*'s cached columns; refreshes what is cold or stale.
+
+    *pool* holds ``(normalised_value, raw_value, column)`` for every value
+    long enough to match; *column_values* every cached value per column (an
+    empty dict: no column was cached at all). Each cached column is appended
+    to *resolved_columns* as ``table.column``. Never blocks: a cold or stale
+    column only triggers a background refresh.
+    """
+    pool: list[tuple[str, str, str]] = []
+    column_values: dict[str, list[str]] = {}
+    for column in allowed_columns:
+        values, fresh = _cache.get_with_state(table, column)
+        if values is None:
+            logger.debug(
+                "dimension_vocabulary: %s.%s never cached -- no "
+                "candidates this request, background refresh triggered",
+                table, column,
+            )
+            _trigger_background_refresh(table, column)
+            continue
+        if not fresh:
+            logger.debug(
+                "dimension_vocabulary: %s.%s cache stale -- serving "
+                "%d previous value(s) while a background refresh runs",
+                table, column, len(values),
+            )
+            _trigger_background_refresh(table, column)
+
+        resolved_columns.append(f"{table}.{column}")
+        column_values[column] = values
+        for raw in values:
+            normalized = normalize_for_matching(raw)
+            if len(normalized) >= MIN_MATCH_LENGTH:
+                pool.append((normalized, raw, column))
+    return pool, column_values
+
+
+def _vocabulary_winners(
+    pool: list[tuple[str, str, str]],
+    column_values: dict[str, list[str]],
+    question_normalized: str,
+) -> tuple[dict[str, None], tuple[str, ...] | None]:
+    """The values of *pool* the question names, and the token-tier tokens of a unique token-tier winner.
+
+    Longest match wins: only values tied at the longest length found are
+    candidates; a shorter value that also happens to be a substring of the
+    question loses outright, not just the tie-break. Only when no value is a
+    substring at all, and the fallback is enabled, does the token tier run
+    (see the module docstring's "Matching rules" bullet and
+    :func:`_token_tier_winners`).
+    """
+    matches = [(norm, raw) for norm, raw, _col in pool if norm in question_normalized]
+    if matches:
+        max_len = max(len(norm) for norm, _raw in matches)
+        return {raw: None for norm, raw in matches if len(norm) == max_len}, None
+    if cfg.settings.dimension_vocabulary_token_fallback_enabled:
+        return _token_tier_winners(pool, column_values, question_normalized)
+    return {}, None
 
 
 def match_question_against_vocabulary(
@@ -966,75 +1038,25 @@ def match_question_against_vocabulary(
         # (normalised_value, raw_value, source_column) pool merged across
         # every allowed, cached (fresh or stale) column for this table --
         # the source column travels with each value so the token tier
-        # below (_token_tier_winners) can apply that column's own
-        # genericity profile to it.
-        pool: list[tuple[str, str, str]] = []
-        column_values: dict[str, list[str]] = {}
-        any_cached = False
-        for column in allowed_columns:
-            values, fresh = _cache.get_with_state(table, column)
-            if values is None:
-                logger.debug(
-                    "dimension_vocabulary: %s.%s never cached -- no "
-                    "candidates this request, background refresh triggered",
-                    table, column,
-                )
-                _trigger_background_refresh(table, column)
-                continue
-            any_cached = True
-            if not fresh:
-                logger.debug(
-                    "dimension_vocabulary: %s.%s cache stale -- serving "
-                    "%d previous value(s) while a background refresh runs",
-                    table, column, len(values),
-                )
-                _trigger_background_refresh(table, column)
-
-            resolved_columns.append(f"{table}.{column}")
-            column_values[column] = values
-            for raw in values:
-                normalized = normalize_for_matching(raw)
-                if len(normalized) >= MIN_MATCH_LENGTH:
-                    pool.append((normalized, raw, column))
-
-        if not any_cached:
+        # (_token_tier_winners) can apply that column's own genericity
+        # profile to it.
+        pool, column_values = _cached_pool(table, allowed_columns, resolved_columns)
+        if not column_values:
             # Cold on every allowed column: there is no pool at all to
             # search the question against, as opposed to "searched and
             # nothing matched". See VocabularyMatchResult.unavailable_tables.
             unavailable_tables.append(table)
             continue
 
-        matches = [(norm, raw) for norm, raw, _col in pool if norm in question_normalized]
-        winners: dict[str, None] = {}
-        winning_distinctive_tokens: tuple[str, ...] | None = None
-
-        if matches:
-            max_len = max(len(norm) for norm, _raw in matches)
-            # Longest match wins: only values tied at the longest length
-            # found are candidates; a shorter value that also happens to
-            # be a substring of the question loses outright, not just the
-            # tie-break.
-            for norm, raw in matches:
-                if len(norm) == max_len:
-                    winners.setdefault(raw, None)
-        elif cfg.settings.dimension_vocabulary_token_fallback_enabled:
-            # Token-fallback tier -- only reached when the full-value pass
-            # above found nothing for this table. See the module
-            # docstring's "Matching rules" bullet and
-            # _token_tier_winners's own docstring for the algorithm.
-            winners, winning_distinctive_tokens = _token_tier_winners(
-                pool, column_values, question_normalized,
-            )
-
-        if not winners:
-            continue
-
+        winners, winning_distinctive_tokens = _vocabulary_winners(
+            pool, column_values, question_normalized,
+        )
         if len(winners) == 1:
             (value,) = winners
             filters[table] = value
             if winning_distinctive_tokens is not None:
                 token_tier_filters[table] = winning_distinctive_tokens
-        else:
+        elif winners:
             clarifications.append(
                 Clarification(
                     field=table,

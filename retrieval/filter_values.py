@@ -256,23 +256,38 @@ def comparison_literals(
     [('Name', ['a', 'b'], 'IN')]
     """
     for node in tree.find_all(exp.EQ, exp.NEQ, exp.In, bfs=False):
-        if isinstance(node, exp.In):
-            column, texts = _unparen(node.this), [(_unparen(e), _literal_text(e)) for e in node.expressions]
-            operator = "NOT IN" if isinstance(node.parent, exp.Not) else "IN"
-        else:
-            left, right = _unparen(node.this), _unparen(node.expression)
-            if isinstance(left, exp.Column):
-                column, texts = left, [(right, _literal_text(right))]
-            elif isinstance(right, exp.Column):
-                column, texts = right, [(left, _literal_text(left))]
-            else:
-                continue
-            operator = "=" if isinstance(node, exp.EQ) else "<>"
-        if not isinstance(column, exp.Column):
+        comparison = _comparison(node)
+        if comparison is None:
             continue
+        column, texts, operator = comparison
         literals = [(n, text) for n, text in texts if n is not None and text is not None]
         if literals:
             yield column, literals, operator
+
+
+def _comparison(
+    node: exp.Expression,
+) -> tuple[exp.Column, list[tuple[exp.Expression | None, str | None]], str] | None:
+    """``(column, [(operand node, literal text or None), ...], operator)`` of one ``=``/``<>``/``IN`` node.
+
+    ``None`` when no side of it is a column.
+    """
+    if isinstance(node, exp.In):
+        column = _unparen(node.this)
+        texts = [(_unparen(e), _literal_text(e)) for e in node.expressions]
+        operator = "NOT IN" if isinstance(node.parent, exp.Not) else "IN"
+    else:
+        left, right = _unparen(node.this), _unparen(node.expression)
+        if isinstance(left, exp.Column):
+            column, texts = left, [(right, _literal_text(right))]
+        elif isinstance(right, exp.Column):
+            column, texts = right, [(left, _literal_text(left))]
+        else:
+            return None
+        operator = "=" if isinstance(node, exp.EQ) else "<>"
+    if not isinstance(column, exp.Column):
+        return None
+    return column, texts, operator
 
 
 def like_patterns(tree: exp.Expression) -> Iterator[tuple[exp.Column, exp.Expression, str, bool]]:
