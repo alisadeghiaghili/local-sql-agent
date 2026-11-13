@@ -70,3 +70,45 @@ class TestEmptyRetrievalShowsTheWholeSchemaCoherently:
         assert f"Table: {table}" in _schema_block(prompt)
         assert f"Table: {other}" not in _schema_block(prompt)
         assert not caplog.records
+
+
+class TestSessionContextReachesTheRetrievalPrompt:
+    def test_the_session_context_is_rendered_under_its_heading(self):
+        text = "Previous question: how many customers?"
+        prompt = _retrieval_prompt("and by month?", RetrievalContext(), session_context=text)
+
+        assert text in prompt
+        heading = prompt.index("SESSION CONTEXT")
+        assert prompt.index("RESOLVED WAREHOUSE VALUES") < heading < prompt.index("EXAMPLES")
+        assert heading < prompt.index(text) < prompt.index("USER QUESTION")
+
+    def test_the_section_sits_before_the_column_access_notes(self):
+        prompt = _retrieval_prompt(
+            "q", RetrievalContext(), session_context="prior turn", access_notes="Use X only in JOIN.",
+        )
+
+        assert prompt.index("SESSION CONTEXT") < prompt.index("COLUMN ACCESS") < prompt.index("EXAMPLES")
+
+    def test_an_empty_session_context_keeps_the_section_layout(self):
+        prompt = _retrieval_prompt("q", RetrievalContext())
+
+        assert "SESSION CONTEXT" in prompt
+        after = prompt.split("SESSION CONTEXT", 1)[1]
+        # the same layout the static suffix gives an empty session context:
+        # the heading's rule, an empty value line, then the next heading
+        assert after.startswith(
+            "\n==================================================\n\n\n\n"
+            "==================================================\nEXAMPLES"
+        )
+
+    def test_both_paths_use_the_same_heading_block(self):
+        from prompt_engine.templates import PROMPT_TEMPLATE, SUFFIX_TEMPLATE
+
+        block = (
+            "==================================================\n"
+            "SESSION CONTEXT\n"
+            "==================================================\n\n"
+            "{session_context}\n{access_notes}\n"
+        )
+        assert block in PROMPT_TEMPLATE
+        assert block in SUFFIX_TEMPLATE

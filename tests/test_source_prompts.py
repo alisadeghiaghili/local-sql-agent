@@ -110,8 +110,8 @@ _GOLDEN = {
     "prefix_version": "29ca520c1b25",
     "static_full_sha": "a323fd0776594e75501f480e9caf68343a7e2a10f5ac626254796f307ed09952",
     "seg_question_sha": "1d77a0f1ec95c3df16f07159b30ca9c95988321626d7e89b3458187137fab0a7",
-    "retrieval_sha": "88c5907176ad131618c8979ae4f33b8801067ba7d268ae075a351ab7d2cf0efc",
-    "retrieval_empty_sha": "0689d75f71e80471eb1d6ece29e0e47afc643e88163d2c7e3167884fd7465296",
+    "retrieval_sha": "0e97be1e45257b83576fcf8ec5545833e0fc6612a8e79b8f7bbf2a51d5155b55",
+    "retrieval_empty_sha": "b6204c9df8e63ef74c77fa4af6b3e976fa49ecd9ddd049ea6aa8389134f17511",
 }
 
 
@@ -180,6 +180,7 @@ class TestSingleSourceIsByteForByteUnchanged:
             relationships="\n".join(ctx.relationships),
             filters="PersianYear: 1402",
             resolved_values="",
+            session_context="",
             access_notes="",
             examples="Question:\nq\n\nSQL:\nSELECT 1",
             question="how many?",

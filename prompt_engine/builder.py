@@ -191,8 +191,10 @@ class PromptBuilder:
             question, SQL, and result *column names* for the last
             ``session_prompt_turns`` turns; never row data). Empty string
             when there is no session, which is every call today —
-            sessions are not yet implemented. Always placed in the
-            variable suffix, never the static prefix.
+            sessions are not yet implemented. Placed in the variable
+            suffix on the static path (never in the cached prefix), and
+            under the same ``SESSION CONTEXT`` heading on the retrieval
+            path.
         resolved_values:
             ``{"Table.Column": [value, ...]}`` for warehouse values that
             matched the question (Finding 19, 2026 audit) — the same
@@ -475,6 +477,7 @@ class PromptBuilder:
             relationships=relationships,
             filters=filter_context,
             resolved_values=_render_resolved_values(resolved_values),
+            session_context=session_context,
             access_notes=_render_access_notes(access_notes),
             examples=example_context,
             question=question,
