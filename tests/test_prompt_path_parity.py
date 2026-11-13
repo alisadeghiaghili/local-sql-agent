@@ -436,6 +436,17 @@ class TestAMentionedMetricBringsItsTable:
         assert table in _tables(retrieval)
         assert _body(static, "METRICS") == _body(retrieval, "METRICS")
 
+    def test_the_context_records_it_as_a_metric_table_not_a_join_table(self, configure_metrics):
+        configure_metrics({})
+        table = _table_missing_from(self._QUESTION)
+        configure_metrics(_yield_metric(table))
+
+        context = ContextRetriever.retrieve(self._QUESTION)
+
+        assert table in context.metric_tables
+        assert table not in context.join_tables
+        assert table in context.selected_tables
+
     def test_a_question_that_does_not_name_the_metric_gets_the_same_schema(self, configure_metrics):
         question = "how many customers?"
         configure_metrics({})

@@ -554,8 +554,9 @@ because the path did. The two paths therefore share one contract, pinned by
   retrievers. A metric a question names, by key or alias as whole words
   (`retrieval/metric_retriever.py`), also brings the tables its `expression`
   uses. They join the retrieved set after pruning and before the join
-  expansion, are listed in `join_tables`, and so get schema and relationship
-  lines. The expression is the single source for them: `metrics.yaml` has no
+  expansion, are kept in their own field, `RetrievalContext.metric_tables`
+  (not `join_tables`, which holds only tables that connect the others), and
+  are part of `selected_tables`, so they get schema and relationship lines. The expression is the single source for them: `metrics.yaml` has no
   table list that could drift from it.
 - **Rules.** A rule whose key is not in `RULE_MAPPING` (every rule a
   deployment adds in `business_rules.yaml`) has no trigger, so it always
