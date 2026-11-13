@@ -531,3 +531,50 @@ that is not in `prefetchable_columns`, and a column inside an expression.
 **Not covered.** A real stored value that is exactly a table key, letter case
 aside, cannot be told apart from a wizard entry: it is ignored and the preflight
 fails. There is no setting to switch the rule off.
+
+## 13. What the retrieval prompt carries besides tables
+
+Everything above decides which **tables** the retrieval path shows. A prompt
+holds more than tables, and what is not scoped to a table must not shrink just
+because the path did. The two paths therefore share one contract, pinned by
+`tests/test_prompt_path_parity.py`:
+
+| Knowledge | Static path | Retrieval path |
+|---|---|---|
+| `METRICS` | every metric | every metric, the same lines (`all_metrics_text`) |
+| `BUSINESS RULES`, a rule with no entry in `RuleRetriever.RULE_MAPPING` | always | always |
+| `BUSINESS RULES`, a rule with trigger keywords | always | only when a keyword is in the question |
+| `SESSION CONTEXT`, `RESOLVED WAREHOUSE VALUES`, column access notes, detected filters | in the suffix | the same text, the same headings |
+| `DATABASE SCHEMA` | every table | the retrieved tables |
+| `RELATIONSHIPS` | every relationship | those between the retrieved tables |
+| `EXAMPLES` | every example | the retrieved ones |
+
+- **Metrics.** A metric is one line, so there is nothing to select; choosing
+  among them by relevance would bring back the recall failure of the table
+  retrievers. A metric a question names, by key or alias as whole words
+  (`retrieval/metric_retriever.py`), also brings the tables its `expression`
+  uses. They join the retrieved set after pruning and before the join
+  expansion, are listed in `join_tables`, and so get schema and relationship
+  lines. The expression is the single source for them: `metrics.yaml` has no
+  table list that could drift from it.
+- **Rules.** A rule whose key is not in `RULE_MAPPING` (every rule a
+  deployment adds in `business_rules.yaml`) has no trigger, so it always
+  applies. Rules appear in `business_rules.yaml` order, stripped, as on the
+  static path.
+- **Empty retrieval.** When no table is retrieved the prompt shows every table
+  of the schema (of the source, with several data sources) and the
+  relationships between those tables, not between none, and logs one warning,
+  `retrieval selected no table for the question; showing the whole schema`.
+- **Over budget.** The retrieval prompt is not capped. After it is built, its
+  `len(text) // 4` estimate is compared with `PROMPT_RETRIEVAL_TOKEN_BUDGET`
+  (`prompt_engine/prompt_size.py`), and a prompt above it logs `Retrieval
+  prompt over budget: estimated N tokens > PROMPT_RETRIEVAL_TOKEN_BUDGET B
+  (over by M), data source 'S'`. This is observability only: nothing is
+  trimmed or refused. The estimate undercounts Persian by about 15%, so a
+  prompt reported within budget may still be over it in real tokens;
+  `python scripts/prompt_budget.py` measures real ones.
+
+The two paths keep the same section headings. Their order differs in one place
+(`EXAMPLES` sits in the cached prefix on the static path and after the session
+notes on the retrieval path), and the test pins both orders so a change to
+either is deliberate.
