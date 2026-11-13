@@ -125,19 +125,19 @@ class ContextRetriever:
         # evidence does not support (retrieval.pruning).
         entities, facts = prune_selection(question, entities, facts)
 
-        selected_tables = list(dict.fromkeys(entities + facts))  # order-preserving dedup
+        named = list(dict.fromkeys(entities + facts))  # order-preserving dedup
 
         # A metric the question mentions is only usable with the tables its
         # expression references, whether or not the question named them.
         # Added after pruning, which judges a table by the question's own
         # words and would take them back, and before the join expansion, so
         # the paths from them to the rest are found too.
-        from_metrics = [t for t in metric_tables(question) if t not in selected_tables]
-        selected_tables += from_metrics
+        from_metrics = [t for t in metric_tables(question) if t not in named]
+        selected_tables = named + from_metrics
 
         # Tables the question needs joined but did not name (a bridge table,
         # the dimension a classification hangs from) -- see retrieval.join_paths.
-        join_tables = from_metrics + expand_join_paths(selected_tables)
+        join_tables = expand_join_paths(selected_tables)
 
         relationships = RelationshipRetriever.retrieve(
             list(dict.fromkeys(selected_tables + join_tables))
@@ -208,6 +208,7 @@ class ContextRetriever:
             entities=entities,
             facts=facts,
             join_tables=join_tables,
+            metric_tables=from_metrics,
             dimensions=entities,          # kept for backward compat; PromptBuilder does NOT read this
             relationships=relationships,
             business_rules=rules,

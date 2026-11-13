@@ -251,7 +251,8 @@ class TestMentionedMetricBringsItsTables:
         prompt = _retrieval_prompt(self._QUESTION, context)
 
         assert table in context.selected_tables
-        assert table in context.join_tables
+        assert table in context.metric_tables
+        assert table not in context.join_tables
         assert table not in context.entities + context.facts
         assert f"Table: {table}" in _schema_block(prompt)
 
@@ -266,6 +267,7 @@ class TestMentionedMetricBringsItsTables:
         after = ContextRetriever.retrieve("how many customers?")
 
         assert after.selected_tables == before.selected_tables
+        assert after.metric_tables == before.metric_tables == []
         assert after.join_tables == before.join_tables
 
     def test_the_tables_are_added_after_pruning_and_before_the_join_expansion(
@@ -288,7 +290,8 @@ class TestMentionedMetricBringsItsTables:
 
         assert seen == [[first, second]]
         assert context.entities == [first]
-        assert context.join_tables == [second]
+        assert context.metric_tables == [second]
+        assert context.join_tables == []
         assert context.selected_tables == [first, second]
 
     def test_a_metric_table_the_question_already_named_is_not_repeated(
@@ -304,6 +307,7 @@ class TestMentionedMetricBringsItsTables:
         context = module.ContextRetriever.retrieve(self._QUESTION)
 
         assert context.selected_tables == [first]
+        assert context.metric_tables == []
         assert context.join_tables == []
 
     def test_the_join_lines_cover_the_metric_table(self, configure_metrics, fixed_selection):

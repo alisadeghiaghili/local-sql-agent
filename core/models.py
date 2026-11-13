@@ -14,10 +14,10 @@ entities       : dimension table names matched to the question
                  (e.g. ["Ring", "Customer", "Symbol"])
 facts          : fact table names matched to the question
                  (e.g. ["Order"])
-join_tables    : tables added beyond the ones the question named: those a
-                 mentioned metric's expression references, and those that
-                 join the retrieved ones together (a bridge table, a
-                 classification's parent)
+join_tables    : tables added because they join the retrieved ones together
+                 (a bridge table, a classification's parent)
+metric_tables  : tables a mentioned metric's expression references, which the
+                 question itself did not name
 dimensions     : alias for *entities* — kept for PromptBuilder compatibility
 relationships  : JOIN SQL clauses relevant to the selected tables
 business_rules : domain rules injected into the prompt as plain text
@@ -55,15 +55,27 @@ class RetrievalContext:
     ``entities`` or ``selected_tables``."""
 
     join_tables: list[str] = field(default_factory=list)
-    """Tables added beyond the ones the question named, in two groups: first
-    the tables a mentioned metric's expression references
-    (:func:`retrieval.metric_retriever.metric_tables`), then the tables that
-    connect the retrieved ones -- a bridge table, the dimension a
-    classification hangs from -- found on the foreign-key graph
+    """Tables added because they connect the retrieved ones -- a bridge table,
+    the dimension a classification hangs from -- found on the foreign-key graph
     (:func:`retrieval.join_paths.expand_join_paths`). Part of
     :attr:`selected_tables`, so the prompt shows them; not part of
     :attr:`entities` or :attr:`facts`, so value matching and the "vocabulary
     unavailable" warning, which key on what the question named, are unchanged."""
+
+    metric_tables: list[str] = field(default_factory=list)
+    """Tables the metrics a question names need, and the question did not name
+    itself: the ones their ``expression`` references
+    (:func:`retrieval.metric_retriever.metric_tables`). A metric is always in
+    the prompt, so a question that says "total value" holds a definition it
+    cannot use unless the table it sums is shown too. Part of
+    :attr:`selected_tables`, so the prompt shows them with their relationship
+    lines; not part of :attr:`entities`, :attr:`facts` or :attr:`join_tables`,
+    which keep their meaning (what the question named, and what only connects
+    the others). Counts as a table match for :meth:`is_empty`: the question
+    named a metric, so there is something to answer with and no fallback to the
+    whole schema is needed. Every code path that rebuilds a context field by
+    field must carry it (``session.engine``); ``tests/test_session_context_rebuild.py``
+    fails when one does not."""
 
     # ── join layer ────────────────────────────────────────────────────────────
     relationships: list[str] = field(default_factory=list)
@@ -165,15 +177,21 @@ class RetrievalContext:
     # ── convenience ──────────────────────────────────────────────────────────
     @property
     def selected_tables(self) -> list[str]:
-        """Deduplicated union of entities + facts + join tables — the full table set."""
+        """Deduplicated union of entities, facts, metric tables and join tables, in that order."""
         seen: set[str] = set()
         result: list[str] = []
-        for t in self.entities + self.facts + self.join_tables:
+        for t in self.entities + self.facts + self.metric_tables + self.join_tables:
             if t not in seen:
                 seen.add(t)
                 result.append(t)
         return result
 
     def is_empty(self) -> bool:
-        """True when no tables were matched — signals a fallback is needed."""
-        return not self.entities and not self.facts
+        """True when no tables were matched — signals a fallback is needed.
+
+        A context holding only :attr:`metric_tables` is not empty: the question
+        named a metric, whose tables are enough to answer from. (Nothing in the
+        production code calls this today; the builder tests
+        :attr:`selected_tables` instead, which is the same set.)
+        """
+        return not self.entities and not self.facts and not self.metric_tables
