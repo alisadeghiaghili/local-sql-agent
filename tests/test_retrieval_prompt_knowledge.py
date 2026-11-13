@@ -112,3 +112,217 @@ class TestSessionContextReachesTheRetrievalPrompt:
         )
         assert block in PROMPT_TEMPLATE
         assert block in SUFFIX_TEMPLATE
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+_RULE = "=" * 50
+
+
+def _section(prompt: str, title: str) -> str:
+    """The body of the *title* section of a prompt."""
+    after = prompt.split(f"{title}\n{_RULE}\n\n", 1)[1]
+    return after.split(f"\n\n{_RULE}", 1)[0]
+
+
+def _table_missing_from(question: str) -> str:
+    """A table the retrievers do not select for *question* and whose bare name is unambiguous."""
+    from retrieval.context_retriever import ContextRetriever
+    from retrieval.table_keys import resolve_table_ref
+    from schema_data.registry import bare_table_name
+
+    chosen = set(ContextRetriever.retrieve(question).selected_tables)
+    for table in TABLE_COLUMNS:
+        if table not in chosen and resolve_table_ref(bare_table_name(table)) == (table,):
+            return table
+    pytest.skip("every table of the loaded schema is retrieved for the question")
+
+
+def _yield_metric(table: str) -> dict:
+    """A metric named ``zyxwv yield`` whose expression uses *table*."""
+    from schema_data.registry import bare_table_name
+
+    return {
+        "zyx_yield": {
+            "aliases": ["zyxwv yield"],
+            "expression": f"SUM({bare_table_name(table)}.Amount)",
+        },
+    }
+
+
+@pytest.fixture()
+def configure_metrics(monkeypatch):
+    """Replace the configured metrics, for the prompt renderer and the retriever alike."""
+    import prompt_engine.static_prefix as static_prefix
+    import retrieval.metric_retriever as metric_retriever
+
+    def apply(metrics: dict) -> None:
+        monkeypatch.setattr(static_prefix, "METRICS", metrics)
+        monkeypatch.setattr(metric_retriever, "METRICS", metrics)
+        static_prefix.build_static_prefix.cache_clear()
+
+    yield apply
+    monkeypatch.undo()
+    static_prefix.build_static_prefix.cache_clear()
+
+
+@pytest.fixture()
+def fixed_selection(monkeypatch):
+    """Make the table retrievers return a chosen selection, and pruning keep it as is."""
+    import retrieval.context_retriever as module
+
+    def apply(entities: list[str]) -> None:
+        monkeypatch.setattr(module.EntityRetriever, "retrieve", staticmethod(lambda q: list(entities)))
+        monkeypatch.setattr(module.FactRetriever, "retrieve", staticmethod(lambda q: []))
+        monkeypatch.setattr(module, "prune_selection", lambda q, e, f: (e, f))
+
+    return apply
+
+
+_TWO_METRICS = {
+    "total_value": {"aliases": ["total value", "sum of value"], "expression": "SUM(T.Amount)"},
+    "average_price": {"aliases": ["average price"], "expression": "AVG(T.Price)"},
+}
+
+
+class TestEveryMetricIsInTheRetrievalPrompt:
+    def test_each_configured_metric_line_appears(self, configure_metrics):
+        configure_metrics(_TWO_METRICS)
+
+        prompt = _retrieval_prompt("how many customers?", RetrievalContext())
+
+        assert "total_value: SUM(T.Amount) (aliases: total value, sum of value)" in prompt
+        assert "average_price: AVG(T.Price) (aliases: average price)" in prompt
+
+    def test_the_section_sits_between_business_rules_and_the_schema(self, configure_metrics):
+        configure_metrics(_TWO_METRICS)
+
+        prompt = _retrieval_prompt("q", RetrievalContext(business_rules=["Only settled contracts."]))
+
+        assert (
+            prompt.index("BUSINESS RULES")
+            < prompt.index("Only settled contracts.")
+            < prompt.index("METRICS")
+            < prompt.index("total_value:")
+            < prompt.index("DATABASE SCHEMA")
+        )
+
+    def test_the_metrics_do_not_depend_on_what_the_question_mentions(self, configure_metrics):
+        configure_metrics(_TWO_METRICS)
+
+        about_one = _retrieval_prompt("total value by month", RetrievalContext())
+        about_none = _retrieval_prompt("how many customers?", RetrievalContext())
+
+        assert _section(about_one, "METRICS") == _section(about_none, "METRICS")
+        assert "average_price:" in _section(about_one, "METRICS")
+
+    def test_the_section_is_the_one_the_static_prefix_renders(self, configure_metrics):
+        from prompt_engine.static_prefix import build_static_prefix
+
+        configure_metrics(_TWO_METRICS)
+
+        retrieval = _retrieval_prompt("q", RetrievalContext())
+        static = build_static_prefix(_SYSTEM_PROMPT)
+
+        assert _section(retrieval, "METRICS") == _section(static, "METRICS")
+
+    def test_no_configured_metric_renders_an_empty_section(self, configure_metrics):
+        configure_metrics({})
+
+        prompt = _retrieval_prompt("q", RetrievalContext())
+
+        assert _section(prompt, "METRICS") == ""
+        assert prompt.index("METRICS") < prompt.index("DATABASE SCHEMA")
+
+
+class TestMentionedMetricBringsItsTables:
+    _QUESTION = "show the zyxwv yield per month"
+
+    def test_the_schema_block_covers_a_table_only_the_expression_names(self, configure_metrics):
+        from retrieval.context_retriever import ContextRetriever
+
+        configure_metrics({})
+        table = _table_missing_from(self._QUESTION)
+        configure_metrics(_yield_metric(table))
+
+        context = ContextRetriever.retrieve(self._QUESTION)
+        prompt = _retrieval_prompt(self._QUESTION, context)
+
+        assert table in context.selected_tables
+        assert table in context.join_tables
+        assert table not in context.entities + context.facts
+        assert f"Table: {table}" in _schema_block(prompt)
+
+    def test_a_question_that_does_not_mention_the_metric_is_unaffected(self, configure_metrics):
+        from retrieval.context_retriever import ContextRetriever
+
+        configure_metrics({})
+        table = _table_missing_from(self._QUESTION)
+        before = ContextRetriever.retrieve("how many customers?")
+        configure_metrics(_yield_metric(table))
+
+        after = ContextRetriever.retrieve("how many customers?")
+
+        assert after.selected_tables == before.selected_tables
+        assert after.join_tables == before.join_tables
+
+    def test_the_tables_are_added_after_pruning_and_before_the_join_expansion(
+        self, configure_metrics, fixed_selection, monkeypatch,
+    ):
+        import retrieval.context_retriever as module
+
+        first, second = list(TABLE_COLUMNS)[:2]
+        configure_metrics(_yield_metric(second))
+        fixed_selection([first])
+        seen: list[list[str]] = []
+
+        def record(selected, **kwargs):
+            seen.append(list(selected))
+            return []
+
+        monkeypatch.setattr(module, "expand_join_paths", record)
+
+        context = module.ContextRetriever.retrieve(self._QUESTION)
+
+        assert seen == [[first, second]]
+        assert context.entities == [first]
+        assert context.join_tables == [second]
+        assert context.selected_tables == [first, second]
+
+    def test_a_metric_table_the_question_already_named_is_not_repeated(
+        self, configure_metrics, fixed_selection, monkeypatch,
+    ):
+        import retrieval.context_retriever as module
+
+        first = next(iter(TABLE_COLUMNS))
+        configure_metrics(_yield_metric(first))
+        fixed_selection([first])
+        monkeypatch.setattr(module, "expand_join_paths", lambda selected, **kwargs: [])
+
+        context = module.ContextRetriever.retrieve(self._QUESTION)
+
+        assert context.selected_tables == [first]
+        assert context.join_tables == []
+
+    def test_the_join_lines_cover_the_metric_table(self, configure_metrics, fixed_selection):
+        import retrieval.context_retriever as module
+
+        names = list(TABLE_COLUMNS)
+        pairs = [
+            (a, b) for a in names for b in names
+            if a != b and SchemaRegistry.get_relationships([a, b])
+        ]
+        if not pairs:
+            pytest.skip("the loaded schema declares no relationship")
+        first, second = pairs[0]
+        configure_metrics(_yield_metric(second))
+        fixed_selection([first])
+
+        context = module.ContextRetriever.retrieve(self._QUESTION)
+        prompt = _retrieval_prompt(self._QUESTION, context)
+
+        for clause in SchemaRegistry.get_relationships([first, second]):
+            assert clause in context.relationships
+            assert clause in prompt

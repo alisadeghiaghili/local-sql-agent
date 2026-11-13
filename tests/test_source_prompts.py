@@ -110,8 +110,8 @@ _GOLDEN = {
     "prefix_version": "29ca520c1b25",
     "static_full_sha": "a323fd0776594e75501f480e9caf68343a7e2a10f5ac626254796f307ed09952",
     "seg_question_sha": "1d77a0f1ec95c3df16f07159b30ca9c95988321626d7e89b3458187137fab0a7",
-    "retrieval_sha": "0e97be1e45257b83576fcf8ec5545833e0fc6612a8e79b8f7bbf2a51d5155b55",
-    "retrieval_empty_sha": "b6204c9df8e63ef74c77fa4af6b3e976fa49ecd9ddd049ea6aa8389134f17511",
+    "retrieval_sha": "6275800f63a0d45b6342e0093df66fddc9b3f0072a6df9207c2958b3187d1aee",
+    "retrieval_empty_sha": "a5f31539289f8bf7f13fc24cffee06b9f50e40afe29ff3d4957ea99a6831fb26",
 }
 
 
@@ -125,7 +125,7 @@ def _legacy_static_prefix(system_prompt: str) -> str:
     return STATIC_PREFIX_TEMPLATE.format(
         system_prompt=system_prompt,
         business_rules="\n\n".join(rule.strip() for rule in BUSINESS_RULES.values()),
-        metrics=sp_module._all_metrics_text(),
+        metrics=sp_module.all_metrics_text(),
         schema=SchemaRegistry.build_schema_context(None),
         relationships="\n".join(SchemaRegistry.get_relationships(list(TABLE_COLUMNS.keys()))),
         examples="\n\n".join(
@@ -176,6 +176,7 @@ class TestSingleSourceIsByteForByteUnchanged:
         legacy = PROMPT_TEMPLATE.format(
             system_prompt=SYSTEM_PROMPT,
             business_rules="A rule.",
+            metrics=sp_module.all_metrics_text(),
             schema=SchemaRegistry.build_schema_context(ctx.selected_tables),
             relationships="\n".join(ctx.relationships),
             filters="PersianYear: 1402",

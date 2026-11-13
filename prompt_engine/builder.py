@@ -24,7 +24,10 @@ re-assembles prompt content per question. It picks one of two paths via
 * **Retrieval path** (the scaling escape hatch) — the original
   per-question behaviour: only the tables the six-retriever pipeline
   matched go into the prompt. Used automatically once the knowledge base
-  grows past ``cfg.settings.prompt_retrieval_token_budget``.
+  grows past ``cfg.settings.prompt_retrieval_token_budget``. Every
+  metric definition is still listed (one line each, so there is nothing
+  worth selecting), and the tables a mentioned metric uses are among the
+  retrieved ones.
 
 One data source per prompt
 --------------------------
@@ -57,7 +60,11 @@ import logging
 
 from core.models import RetrievalContext
 from prompt_engine.source_scope import examples_for_source, scoped_source
-from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
+from prompt_engine.static_prefix import (
+    all_metrics_text,
+    build_static_prefix,
+    should_use_static_prefix,
+)
 from prompt_engine.templates import PROMPT_TEMPLATE, SUFFIX_TEMPLATE
 from prompt_engine.untrusted import UNTRUSTED_INSTRUCTION, fence_untrusted
 from schema_data.registry import SchemaRegistry
@@ -416,6 +423,10 @@ class PromptBuilder:
         not dead code, it is the scaling path for later phases with a
         bigger schema.
 
+        Every configured metric is listed, as on the static path: a metric
+        is one line, and choosing among them by relevance would bring back
+        the recall failure this path is already prone to.
+
         When retrieval selected no table, every table is shown together with
         the relationships between them, and a warning is logged: the schema
         block and the JOIN lines always describe the same set of tables.
@@ -473,6 +484,7 @@ class PromptBuilder:
         return PROMPT_TEMPLATE.format(
             system_prompt=system_prompt,
             business_rules=rules,
+            metrics=all_metrics_text(),
             schema=schema_context,
             relationships=relationships,
             filters=filter_context,

@@ -14,8 +14,10 @@ entities       : dimension table names matched to the question
                  (e.g. ["Ring", "Customer", "Symbol"])
 facts          : fact table names matched to the question
                  (e.g. ["Order"])
-join_tables    : tables added because they join the retrieved ones together
-                 (a bridge table, a classification's parent)
+join_tables    : tables added beyond the ones the question named: those a
+                 mentioned metric's expression references, and those that
+                 join the retrieved ones together (a bridge table, a
+                 classification's parent)
 dimensions     : alias for *entities* — kept for PromptBuilder compatibility
 relationships  : JOIN SQL clauses relevant to the selected tables
 business_rules : domain rules injected into the prompt as plain text
@@ -53,8 +55,11 @@ class RetrievalContext:
     ``entities`` or ``selected_tables``."""
 
     join_tables: list[str] = field(default_factory=list)
-    """Tables added because they connect the retrieved ones -- a bridge table,
-    the dimension a classification hangs from -- found on the foreign-key graph
+    """Tables added beyond the ones the question named, in two groups: first
+    the tables a mentioned metric's expression references
+    (:func:`retrieval.metric_retriever.metric_tables`), then the tables that
+    connect the retrieved ones -- a bridge table, the dimension a
+    classification hangs from -- found on the foreign-key graph
     (:func:`retrieval.join_paths.expand_join_paths`). Part of
     :attr:`selected_tables`, so the prompt shows them; not part of
     :attr:`entities` or :attr:`facts`, so value matching and the "vocabulary
