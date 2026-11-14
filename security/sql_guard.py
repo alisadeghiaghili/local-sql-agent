@@ -970,43 +970,32 @@ def resolve_table_key(
 
 def _collect_table_alias_map(
     tree: exp.Expression, dialect: str
-) -> dict[str, str]:
-    """Map every resolvable alias/name (lower-cased) to its canonical table name.
+) -> dict[str, tuple[str, ...]]:
+    """Map every alias and bare table name (lower-cased) to the tables written under it.
 
-    By the time this runs, every non-CTE ``exp.Table`` in *tree* has
-    already been checked against the schema allowlist (see
-    ``validate_sql``'s main walk) and either resolved or caused a
-    rejection — so in practice every table this function sees does
-    resolve. It re-resolves defensively via :func:`_resolve_table_name`
-    rather than assuming that, so it stays correct on its own if ever
-    called before that check.
+    The statement-wide fallback for a qualifier that is not a source of any
+    select enclosing the reference (the ``ORDER BY`` of a set operation).
+    Everywhere else :func:`_qualifier_tables` decides, from the select the
+    reference is written in.
 
-    An alias always maps to its table. A bare, unqualified table name maps
-    to its table only when exactly one ``FROM``/``JOIN`` source in *tree*
-    writes that bare name -- a self-join of two same-bare-name, different-
-    qualifier tables (``[sales].[Customer] c1 JOIN [ref].[Customer] c2``)
-    writes ``Customer`` twice, so neither is entered under the bare name
-    here; a later qualified column reference (``Customer.Name``, with no
-    alias) is then genuinely ambiguous and is left for the lenient
-    unresolved-qualifier path in :func:`validate_sql`'s column check to
-    allow rather than mis-attribute to one side of the join.
+    One statement may use a name for different tables in different
+    subqueries (``... FROM Customer c ...`` here, ``... FROM [Order] c ...``
+    there), so a name maps to *every* canonical table written under it, in
+    first-seen order. A caller that needs one table must check that there is
+    exactly one; a caller enforcing a policy must apply it to all of them.
+
+    CTE references and unresolvable names are left out.
     """
-    alias_map: dict[str, str] = {}
-    entries: list[tuple[str, str]] = []
-    bare_name_counts: dict[str, int] = {}
+    found: dict[str, list[str]] = {}
     for table in tree.find_all(exp.Table):
         canonical = _resolve_table_name(table, dialect)
         if canonical is None:
             continue
-        name_lower = table.name.lower()
-        entries.append((name_lower, canonical))
-        bare_name_counts[name_lower] = bare_name_counts.get(name_lower, 0) + 1
-        if table.alias:
-            alias_map[table.alias.lower()] = canonical
-    for name_lower, canonical in entries:
-        if bare_name_counts[name_lower] == 1:
-            alias_map[name_lower] = canonical
-    return alias_map
+        for label in {table.name.lower(), (table.alias or "").lower()} - {""}:
+            tables = found.setdefault(label, [])
+            if canonical not in tables:
+                tables.append(canonical)
+    return {label: tuple(tables) for label, tables in found.items()}
 
 
 def _enclosing_select(node: exp.Expression) -> exp.Select | None:
@@ -1329,6 +1318,35 @@ def _select_scope(
     return result
 
 
+def _qualifier_tables(
+    node: exp.Expression,
+    qualifier: str,
+    dialect: str,
+    alias_map: dict[str, tuple[str, ...]],
+    cache: dict[int, _SelectScope],
+) -> list[str | None]:
+    """What the lower-cased *qualifier* of a reference at *node* names.
+
+    Looked up in the nearest enclosing select that has a source of that name
+    or alias, so the same alias used for different tables in two subqueries
+    resolves to the right one in each, and a correlated reference reaches the
+    outer query's table. Each entry is a canonical table, or ``None`` for a
+    derived table or CTE. More than one entry means the select itself uses
+    the name twice.
+
+    A qualifier no enclosing select has (the ``ORDER BY`` of a set operation)
+    falls back to every table the statement writes under that name; an empty
+    list means the name is unknown.
+    """
+    scope = _enclosing_select(node)
+    while scope is not None:
+        names, _ = _select_scope(scope, dialect, cache)
+        if qualifier in names:
+            return list(names[qualifier])
+        scope = _enclosing_select(scope)
+    return list(alias_map.get(qualifier, ()))
+
+
 def _executing_source(tree: exp.Expression, dialect: str) -> str | None:
     """The data source the query will execute on, as the executor picks it.
 
@@ -1376,7 +1394,7 @@ def _restricted_tables_of(
     column: exp.Column,
     restrictions: JoinOnlyRestrictions,
     dialect: str,
-    alias_map: dict[str, str],
+    alias_map: dict[str, tuple[str, ...]],
     all_tables: set[str],
     cache: dict[int, _SelectScope],
 ) -> list[str]:
@@ -1396,22 +1414,13 @@ def _restricted_tables_of(
     """
     name = column.name.lower()
     qualifier = (column.table or "").lower()
-    scope = _enclosing_select(column)
-
     if qualifier:
-        while scope is not None:
-            names, _ = _select_scope(scope, dialect, cache)
-            if qualifier in names:
-                return [
-                    t for t in names[qualifier]
-                    if t is not None and restrictions.entry(t, name)
-                ]
-            scope = _enclosing_select(scope)
-        # Not a source of any enclosing select (a set operation's ORDER BY, say):
-        # fall back to the query-wide alias map.
-        canonical = alias_map.get(qualifier)
-        return [canonical] if canonical and restrictions.entry(canonical, name) else []
+        return [
+            t for t in _qualifier_tables(column, qualifier, dialect, alias_map, cache)
+            if t is not None and restrictions.entry(t, name)
+        ]
 
+    scope = _enclosing_select(column)
     if scope is None:
         # Outside every select (the ORDER BY of a UNION): any table of the query.
         return [t for t in sorted(all_tables) if restrictions.entry(t, name)]
@@ -1450,7 +1459,7 @@ def _enforce_join_only(
     tree: exp.Expression,
     dialect: str,
     restrictions: JoinOnlyRestrictions,
-    alias_map: dict[str, str],
+    alias_map: dict[str, tuple[str, ...]],
 ) -> None:
     """Refuse every use of a join-only column except as a ``JOIN ... ON`` key.
 
@@ -1521,17 +1530,12 @@ def _enforce_join_only(
         unresolved = False
         if isinstance(parent, exp.Column) and parent.table:
             label = f"{parent.table}.*"
-            qualifier = parent.table.lower()
-            scope = _enclosing_select(parent)
-            found = False
-            while scope is not None and not found:
-                names, _ = _select_scope(scope, dialect, cache)
-                if qualifier in names:
-                    star_tables = [t for t in names[qualifier] if t is not None]
-                    found = True
-                scope = _enclosing_select(scope)
-            if not found and qualifier in alias_map:
-                star_tables = [alias_map[qualifier]]
+            star_tables = [
+                t for t in _qualifier_tables(
+                    parent, parent.table.lower(), dialect, alias_map, cache,
+                )
+                if t is not None
+            ]
         else:
             label = "*"
             select = _enclosing_select(star)
@@ -2308,6 +2312,7 @@ def validate_sql(
         ) from None
     denied = policy.denied
     alias_map = _collect_table_alias_map(tree, dialect)
+    scope_cache: dict[int, _SelectScope] = {}
 
     for col in tree.find_all(exp.Column):
         name = col.name
@@ -2325,12 +2330,13 @@ def validate_sql(
             # table in the general case (joins, CTEs, computed aliases in
             # ORDER BY/GROUP BY) — allow rather than risk a false positive.
             continue
-        canonical = alias_map.get(qualifier)
+        sources = _qualifier_tables(col, qualifier, dialect, alias_map, scope_cache)
+        canonical = sources[0] if len(sources) == 1 else None
         if canonical is None:
-            # Qualifier is a CTE name or a derived-table alias --
-            # unresolvable, so allow. (It cannot be an unrecognised table
-            # name: every non-CTE exp.Table was already checked against
-            # the allowlist above.)
+            # The qualifier is a CTE name or a derived-table alias, or it
+            # names more than one table -- unresolvable, so allow. (It
+            # cannot be an unrecognised table name: every non-CTE exp.Table
+            # was already checked against the allowlist above.)
             continue
         if name.lower() not in _COLUMNS_BY_TABLE[canonical]:
             # CorrectableRejection: same reasoning as the unknown-table
@@ -2355,8 +2361,15 @@ def validate_sql(
         for star in tree.find_all(exp.Star):
             parent = star.parent
             if isinstance(parent, exp.Column) and parent.table:
-                canonical = alias_map.get(parent.table.lower())
-                table_names = [canonical] if canonical else None
+                # Every table the qualifier may name is expanded; a derived
+                # table, a CTE or an unknown name cannot be, and is refused.
+                sources = _qualifier_tables(
+                    parent, parent.table.lower(), dialect, alias_map, scope_cache,
+                )
+                table_names = (
+                    [t for t in sources if t is not None]
+                    if sources and None not in sources else None
+                )
                 ref_label = f"{parent.table}.*"
             else:
                 table_names = _resolve_star_tables(_enclosing_select(star), dialect)
