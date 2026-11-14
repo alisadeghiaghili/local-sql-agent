@@ -154,6 +154,7 @@ def gold_tables_from_sql(sql: str, dialect: str = "tsql") -> GoldTables:
         ...
     ValueError: empty SQL
     """
+    from security.cte_scope import is_cte_reference
     from security.sql_guard import resolve_table_key
 
     if not sql or not sql.strip():
@@ -168,12 +169,10 @@ def gold_tables_from_sql(sql: str, dialect: str = "tsql") -> GoldTables:
     resolved: set[str] = set()
     unresolved: set[str] = set()
     for tree in statements:
-        cte_names = {cte.alias.lower() for cte in tree.find_all(exp.CTE) if cte.alias}
         for table in tree.find_all(exp.Table):
-            name = table.name
-            if not name or name.lower() in cte_names:
+            if not table.name or is_cte_reference(table, dialect):
                 continue  # a table-valued function, or a CTE reference
-            key = resolve_table_key(table, tree)
+            key = resolve_table_key(table, tree, dialect=dialect)
             if key is None:
                 unresolved.add(table.sql(dialect=dialect))
             else:

@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **A CTE name no longer exempts a stored table of the same name from the allowlist (`security/cte_scope.py`, `security/sql_guard.py`).** The guard collected every CTE name in the statement and skipped the table allowlist for any reference with that bare name, wherever it was written and whatever schema qualified it. With `Broker` allowlisted and `Secret` not, all of these were accepted: `WITH Secret AS (SELECT 1 AS a) SELECT ... FROM Broker JOIN hr.Secret s ON 1=1` (a qualified name is never a CTE), a CTE defined inside one subquery with `Secret` read in another, a reference to a CTE defined later in the same `WITH`, and, outside T-SQL, `WITH Secret AS (SELECT * FROM Secret)` without `RECURSIVE`. A reference now counts as a CTE reference only when it is unqualified and a CTE of that name is visible where it is written: the `WITH` of an enclosing query, or an earlier member of the same `WITH`; itself only under `WITH RECURSIVE` or in T-SQL, where self-reference is recursion. On a dialect with case-sensitive identifiers a quoted name must match exactly. Everything else goes through the allowlist as a stored table.
+  - **One decision, one place.** `security.cte_scope.cte_binding` and `is_cte_reference` replace the statement-wide name set in the guard, the separate walk in `database/table_hints.py` and the one in `eval/recall.py`. `column_origins` follows the CTE a name actually binds to, not the last CTE of that name in the statement.
+  - **API.** `resolve_table_key` and `column_origins` take a keyword-only `dialect` (default `tsql`); `retrieval/filter_values.py` and `retrieval/filter_spelling.py` pass the configured one.
+  - **Not covered.** T-SQL identifiers are compared case-insensitively, which is wrong for a database created with a case-sensitive collation.
+
 ## [6.17.1] — 2026-11-08
 
 **Issues fixed:** #244 (most questions got a `PersianMonthName = N'دی'` filter they never asked for); #237 (a data source variable missing from `.env` stopped the setup tools with no reason given).

@@ -278,6 +278,7 @@ from security.column_policy import (
     cached_column_policy,
     resolve_join_only,
 )
+from security.cte_scope import cte_binding, is_cte_reference
 from security.dialects import get_dialect_profile
 
 logger = logging.getLogger(__name__)
@@ -820,17 +821,6 @@ def refresh_schema_lookup() -> None:
     ) = _build_schema_lookup()
 
 
-def _cte_names(tree: exp.Expression) -> frozenset[str]:
-    """Lower-cased names of every CTE defined in *tree*.
-
-    A reference to one of these is a reference to a CTE, not to a real
-    table — it must be excluded from both the table allowlist check and
-    table-name resolution, since the CTE's own body (not
-    ``TABLE_COLUMNS``) is what actually defines its shape.
-    """
-    return frozenset(cte.alias.lower() for cte in tree.find_all(exp.CTE) if cte.alias)
-
-
 @dataclass(frozen=True)
 class _TableMatch:
     """The outcome of matching one SQL table reference against the schema
@@ -916,7 +906,7 @@ def _table_ref_name_and_qualifier(table: exp.Table) -> tuple[str, tuple[str, ...
     return parts[-1], tuple(p.lower() for p in parts[:-1])
 
 
-def _resolve_table_name(table: exp.Table, cte_names: frozenset[str]) -> str | None:
+def _resolve_table_name(table: exp.Table, dialect: str) -> str | None:
     """Best-effort canonical key for *table*, or ``None``.
 
     A thin, non-raising wrapper around :func:`_match_table_ref` for every
@@ -934,12 +924,14 @@ def _resolve_table_name(table: exp.Table, cte_names: frozenset[str]) -> str | No
     ``exp.Anonymous`` rather than an ``exp.Identifier``).
     """
     name, qualifier = _table_ref_name_and_qualifier(table)
-    if not name or name.lower() in cte_names:
+    if not name or is_cte_reference(table, dialect):
         return None
     return _match_table_ref(name, qualifier).canonical
 
 
-def resolve_table_key(table: exp.Table, tree: exp.Expression) -> str | None:
+def resolve_table_key(
+    table: exp.Table, tree: exp.Expression, *, dialect: str = _DIALECT,
+) -> str | None:
     """Return the ``schema.yaml`` key *table* refers to within *tree*, or ``None``.
 
     The public form of the resolution :func:`validate_sql` applies, for a
@@ -953,7 +945,12 @@ def resolve_table_key(table: exp.Table, tree: exp.Expression) -> str | None:
     table:
         A table reference inside *tree*.
     tree:
-        The statement containing *table*; its CTE names are excluded.
+        The statement containing *table*. *table* must still be attached
+        to it: whether it is a CTE reference is decided from where it
+        sits (see :mod:`security.cte_scope`).
+    dialect:
+        The dialect *tree* was parsed in; it decides CTE self-reference
+        and identifier case rules.
 
     Returns
     -------
@@ -968,11 +965,11 @@ def resolve_table_key(table: exp.Table, tree: exp.Expression) -> str | None:
     >>> resolve_table_key(next(tree.find_all(exp.Table)), tree) is None
     True
     """
-    return _resolve_table_name(table, _cte_names(tree))
+    return _resolve_table_name(table, dialect)
 
 
 def _collect_table_alias_map(
-    tree: exp.Expression, cte_names: frozenset[str]
+    tree: exp.Expression, dialect: str
 ) -> dict[str, str]:
     """Map every resolvable alias/name (lower-cased) to its canonical table name.
 
@@ -998,7 +995,7 @@ def _collect_table_alias_map(
     entries: list[tuple[str, str]] = []
     bare_name_counts: dict[str, int] = {}
     for table in tree.find_all(exp.Table):
-        canonical = _resolve_table_name(table, cte_names)
+        canonical = _resolve_table_name(table, dialect)
         if canonical is None:
             continue
         name_lower = table.name.lower()
@@ -1042,7 +1039,7 @@ def _direct_from_sources(select: exp.Select) -> list[exp.Expression]:
 
 
 def _resolve_star_tables(
-    select: exp.Select | None, cte_names: frozenset[str]
+    select: exp.Select | None, dialect: str
 ) -> list[str] | None:
     """Canonical table names a bare ``*`` in *select* expands to, or ``None``.
 
@@ -1059,7 +1056,7 @@ def _resolve_star_tables(
     for source in _direct_from_sources(select):
         if not isinstance(source, exp.Table):
             return None
-        canonical = _resolve_table_name(source, cte_names)
+        canonical = _resolve_table_name(source, dialect)
         if canonical is None:
             return None
         resolved.append(canonical)
@@ -1090,20 +1087,21 @@ def _source_label(source: exp.Expression) -> str:
 def _source_origins(
     source: exp.Expression,
     name: str,
-    ctes: dict[str, exp.Expression],
+    dialect: str,
     depth: int,
 ) -> list[ColumnOrigin] | None:
     """The stored columns column *name* of one ``FROM``/``JOIN`` *source* is, or ``None`` when unknown."""
     if isinstance(source, exp.Table):
         table_name, qualifier = _table_ref_name_and_qualifier(source)
-        if not qualifier and table_name.lower() in ctes:
-            return _body_origins(ctes[table_name.lower()], name, ctes, depth + 1)
-        canonical = _resolve_table_name(source, frozenset(ctes))
+        cte = cte_binding(source, dialect)
+        if cte is not None:
+            return _body_origins(cte.this, name, dialect, depth + 1)
+        canonical = _resolve_table_name(source, dialect)
         if canonical is None:
             return None
         return [(canonical, name)] if name in _COLUMNS_BY_TABLE[canonical] else []
     if isinstance(source, exp.Subquery):
-        return _body_origins(source.this, name, ctes, depth + 1)
+        return _body_origins(source.this, name, dialect, depth + 1)
     return None
 
 
@@ -1111,7 +1109,7 @@ def _scope_origins(
     select: exp.Select | None,
     qualifier: str,
     name: str,
-    ctes: dict[str, exp.Expression],
+    dialect: str,
     depth: int,
     *,
     outward: bool,
@@ -1135,7 +1133,7 @@ def _scope_origins(
         if chosen:
             origins: list[ColumnOrigin] = []
             for source in chosen:
-                found = _source_origins(source, name, ctes, depth)
+                found = _source_origins(source, name, dialect, depth)
                 if found is None:
                     return None
                 origins.extend(found)
@@ -1154,7 +1152,7 @@ def _is_star(projection: exp.Expression) -> bool:
 
 
 def _select_output_origins(
-    select: exp.Select, name: str, ctes: dict[str, exp.Expression], depth: int,
+    select: exp.Select, name: str, dialect: str, depth: int,
 ) -> list[ColumnOrigin] | None:
     """Stored columns the output column *name* of *select* is a plain copy of, or ``None``."""
     stars = [p for p in select.expressions if _is_star(p)]
@@ -1168,7 +1166,7 @@ def _select_output_origins(
         if not isinstance(inner, exp.Column) or not inner.name or _is_star(inner):
             return None
         found = _scope_origins(
-            select, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
+            select, (inner.table or "").lower(), inner.name.lower(), dialect, depth + 1, outward=False,
         )
         if found is None:
             return None
@@ -1177,7 +1175,7 @@ def _select_output_origins(
         return origins
     for star in stars:
         qualifier = (star.table or "").lower() if isinstance(star, exp.Column) else ""
-        found = _scope_origins(select, qualifier, name, ctes, depth + 1, outward=False)
+        found = _scope_origins(select, qualifier, name, dialect, depth + 1, outward=False)
         if found is None:
             return None
         origins.extend(found)
@@ -1185,7 +1183,7 @@ def _select_output_origins(
 
 
 def _body_origins(
-    body: exp.Expression, name: str, ctes: dict[str, exp.Expression], depth: int,
+    body: exp.Expression, name: str, dialect: str, depth: int,
 ) -> list[ColumnOrigin] | None:
     """Stored columns the output column *name* of a derived table or CTE *body* is, or ``None``."""
     if depth > 6:
@@ -1193,13 +1191,13 @@ def _body_origins(
     while isinstance(body, (exp.Subquery, exp.Paren)):
         body = body.this
     if isinstance(body, exp.Select):
-        return _select_output_origins(body, name, ctes, depth)
+        return _select_output_origins(body, name, dialect, depth)
     branches = _setop_branches(body)
     if len(branches) < 2 or not all(isinstance(b, exp.Select) for b in branches):
         return None
     first = branches[0]
     if any(_is_star(p) for p in first.expressions):
-        by_name = [_select_output_origins(b, name, ctes, depth) for b in branches]
+        by_name = [_select_output_origins(b, name, dialect, depth) for b in branches]
         return None if any(found is None for found in by_name) else [o for f in by_name for o in f]
     names = [(p.alias_or_name or "").lower() for p in first.expressions]
     if name not in names:
@@ -1213,7 +1211,7 @@ def _body_origins(
         if not isinstance(inner, exp.Column) or not inner.name:
             return None
         found = _scope_origins(
-            branch, (inner.table or "").lower(), inner.name.lower(), ctes, depth + 1, outward=False,
+            branch, (inner.table or "").lower(), inner.name.lower(), dialect, depth + 1, outward=False,
         )
         if found is None:
             return None
@@ -1221,7 +1219,9 @@ def _body_origins(
     return origins
 
 
-def column_origins(column: exp.Column, tree: exp.Expression) -> tuple[ColumnOrigin, ...]:
+def column_origins(
+    column: exp.Column, tree: exp.Expression, *, dialect: str = _DIALECT,
+) -> tuple[ColumnOrigin, ...]:
     """The stored columns *column* reads, as ``(table key, lower-cased column)`` pairs.
 
     The question the guard asks of a reference when it checks a denied or
@@ -1240,6 +1240,9 @@ def column_origins(column: exp.Column, tree: exp.Expression) -> tuple[ColumnOrig
         A column reference inside *tree*.
     tree:
         The statement containing *column*.
+    dialect:
+        The dialect *tree* was parsed in; it decides which CTE, if any, a
+        source name refers to (see :mod:`security.cte_scope`).
 
     Returns
     -------
@@ -1266,9 +1269,8 @@ def column_origins(column: exp.Column, tree: exp.Expression) -> tuple[ColumnOrig
     name = (column.name or "").lower()
     if not name or _is_star(column):
         return ()
-    ctes = {cte.alias.lower(): cte.this for cte in tree.find_all(exp.CTE) if cte.alias}
     found = _scope_origins(
-        _enclosing_select(column), (column.table or "").lower(), name, ctes, 0, outward=True,
+        _enclosing_select(column), (column.table or "").lower(), name, dialect, 0, outward=True,
     )
     return tuple(dict.fromkeys(found or ()))
 
@@ -1302,7 +1304,7 @@ _SelectScope = tuple[dict[str, list[str | None]], list[str]]
 
 
 def _select_scope(
-    select: exp.Select, cte_names: frozenset[str], cache: dict[int, _SelectScope],
+    select: exp.Select, dialect: str, cache: dict[int, _SelectScope],
 ) -> _SelectScope:
     """The sources *select* reads directly (memoised in *cache* by node id)."""
     cached = cache.get(id(select))
@@ -1313,7 +1315,7 @@ def _select_scope(
     for source in _direct_from_sources(select):
         canonical: str | None = None
         if isinstance(source, exp.Table):
-            canonical = _resolve_table_name(source, cte_names)
+            canonical = _resolve_table_name(source, dialect)
             if canonical is not None:
                 tables.append(canonical)
             # An aliased table is addressed by its alias only.
@@ -1327,7 +1329,7 @@ def _select_scope(
     return result
 
 
-def _executing_source(tree: exp.Expression, cte_names: frozenset[str]) -> str | None:
+def _executing_source(tree: exp.Expression, dialect: str) -> str | None:
     """The data source the query will execute on, as the executor picks it.
 
     The same rule as :func:`_require_single_datasource` and the executor
@@ -1338,7 +1340,7 @@ def _executing_source(tree: exp.Expression, cte_names: frozenset[str]) -> str | 
     tables = {
         canonical
         for table in tree.find_all(exp.Table)
-        if (canonical := _resolve_table_name(table, cte_names)) is not None
+        if (canonical := _resolve_table_name(table, dialect)) is not None
     }
     if not tables:
         return None
@@ -1373,7 +1375,7 @@ def _is_join_key_operand(column: exp.Column) -> bool:
 def _restricted_tables_of(
     column: exp.Column,
     restrictions: JoinOnlyRestrictions,
-    cte_names: frozenset[str],
+    dialect: str,
     alias_map: dict[str, str],
     all_tables: set[str],
     cache: dict[int, _SelectScope],
@@ -1398,7 +1400,7 @@ def _restricted_tables_of(
 
     if qualifier:
         while scope is not None:
-            names, _ = _select_scope(scope, cte_names, cache)
+            names, _ = _select_scope(scope, dialect, cache)
             if qualifier in names:
                 return [
                     t for t in names[qualifier]
@@ -1414,7 +1416,7 @@ def _restricted_tables_of(
         # Outside every select (the ORDER BY of a UNION): any table of the query.
         return [t for t in sorted(all_tables) if restrictions.entry(t, name)]
     while scope is not None:
-        _, tables = _select_scope(scope, cte_names, cache)
+        _, tables = _select_scope(scope, dialect, cache)
         hit = [t for t in tables if restrictions.entry(t, name)]
         if hit:
             return hit
@@ -1446,7 +1448,7 @@ def _join_only_rejection(
 
 def _enforce_join_only(
     tree: exp.Expression,
-    cte_names: frozenset[str],
+    dialect: str,
     restrictions: JoinOnlyRestrictions,
     alias_map: dict[str, str],
 ) -> None:
@@ -1466,7 +1468,7 @@ def _enforce_join_only(
     all_tables = {
         canonical
         for table in tree.find_all(exp.Table)
-        if (canonical := _resolve_table_name(table, cte_names)) is not None
+        if (canonical := _resolve_table_name(table, dialect)) is not None
     }
 
     for column in tree.find_all(exp.Column):
@@ -1474,7 +1476,7 @@ def _enforce_join_only(
         if not name or name == "*" or name.lower() not in restrictions.names:
             continue
         tables = _restricted_tables_of(
-            column, restrictions, cte_names, alias_map, all_tables, cache,
+            column, restrictions, dialect, alias_map, all_tables, cache,
         )
         if not tables or _is_join_key_operand(column):
             continue
@@ -1488,7 +1490,7 @@ def _enforce_join_only(
         scope_select = _enclosing_select(join)
         if scope_select is None:
             continue
-        _, tables = _select_scope(scope_select, cte_names, cache)
+        _, tables = _select_scope(scope_select, dialect, cache)
         for ident in join.args.get("using") or ():
             written = getattr(ident, "name", "") or ""
             if written.lower() in restrictions.names:
@@ -1523,7 +1525,7 @@ def _enforce_join_only(
             scope = _enclosing_select(parent)
             found = False
             while scope is not None and not found:
-                names, _ = _select_scope(scope, cte_names, cache)
+                names, _ = _select_scope(scope, dialect, cache)
                 if qualifier in names:
                     star_tables = [t for t in names[qualifier] if t is not None]
                     found = True
@@ -1538,10 +1540,10 @@ def _enforce_join_only(
             else:
                 for source in _direct_from_sources(select):
                     if isinstance(source, exp.Table):
-                        canonical = _resolve_table_name(source, cte_names)
+                        canonical = _resolve_table_name(source, dialect)
                         if canonical is not None:
                             star_tables.append(canonical)
-                        elif (source.name or "").lower() not in cte_names:
+                        elif not is_cte_reference(source, dialect):
                             unresolved = True
                     elif not isinstance(source, exp.Subquery):
                         unresolved = True
@@ -1578,7 +1580,7 @@ def _enforce_join_only(
 # ---------------------------------------------------------------------------
 
 
-def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) -> None:
+def _require_single_datasource(tree: exp.Expression, dialect: str) -> None:
     """Refuse a query no single data source can run.
 
     Every table has already passed the allowlist when this runs. The
@@ -1596,7 +1598,7 @@ def _require_single_datasource(tree: exp.Expression, cte_names: frozenset[str]) 
     tables = {
         canonical
         for table in tree.find_all(exp.Table)
-        if (canonical := _resolve_table_name(table, cte_names)) is not None
+        if (canonical := _resolve_table_name(table, dialect)) is not None
     }
     if len(tables) < 2:
         return
@@ -2065,8 +2067,6 @@ def validate_sql(
             reason="forbidden_statement", subject=type(tree).__name__,
         )
 
-    cte_names = _cte_names(tree)
-
     for node in tree.walk():
         label = _forbidden_label(node)
         if label is not None:
@@ -2223,7 +2223,7 @@ def validate_sql(
             # exactly (a candidate with no db_schema set at all still
             # accepts any qualifier -- a documented, residual gap; see that
             # function's docstring).
-            if raw_name and raw_name.lower() not in cte_names:
+            if raw_name and not is_cte_reference(node, dialect):
                 _, sql_qualifier = _table_ref_name_and_qualifier(node)
                 match = _match_table_ref(raw_name, sql_qualifier)
                 if match.status == "resolved":
@@ -2292,7 +2292,7 @@ def validate_sql(
                     exc.is_refusal = True
                     raise exc
 
-    _require_single_datasource(tree, cte_names)
+    _require_single_datasource(tree, dialect)
 
     try:
         policy = cached_column_policy(denied_columns)
@@ -2307,7 +2307,7 @@ def validate_sql(
             reason="other",
         ) from None
     denied = policy.denied
-    alias_map = _collect_table_alias_map(tree, cte_names)
+    alias_map = _collect_table_alias_map(tree, dialect)
 
     for col in tree.find_all(exp.Column):
         name = col.name
@@ -2359,7 +2359,7 @@ def validate_sql(
                 table_names = [canonical] if canonical else None
                 ref_label = f"{parent.table}.*"
             else:
-                table_names = _resolve_star_tables(_enclosing_select(star), cte_names)
+                table_names = _resolve_star_tables(_enclosing_select(star), dialect)
                 ref_label = "*"
 
             if table_names is None:
@@ -2405,7 +2405,7 @@ def validate_sql(
             restrictions = resolve_join_only(
                 policy,
                 SchemaView(columns_by_table=_COLUMNS_BY_TABLE, qualifiers=_QUALIFIER_STR),
-                _executing_source(tree, cte_names),
+                _executing_source(tree, dialect),
             )
         except ColumnPolicyError as exc:
             logger.error("column policy invalid: %s", exc)
@@ -2414,7 +2414,7 @@ def validate_sql(
                 reason="other",
             ) from None
         if restrictions:
-            _enforce_join_only(tree, cte_names, restrictions, alias_map)
+            _enforce_join_only(tree, dialect, restrictions, alias_map)
 
     # -------------------------------------------------------------------
     # ADR-001 -- the projection-allowlist rule (R1/R2/R3, run last)
@@ -2500,7 +2500,7 @@ def validate_sql(
     # retry can plausibly make, but the allowlist violation -- not the
     # SQL's shape -- is why this was rejected.
     if not any(
-        isinstance(node, exp.Table) and (node.name or "").lower() not in cte_names
+        isinstance(node, exp.Table) and not is_cte_reference(node, dialect)
         for node in tree.walk()
     ):
         exc = CorrectableRejection(
@@ -2587,9 +2587,8 @@ def extract_touched_tables(sql: str, dialect: str = _DIALECT) -> list[str]:
 
     touched: set[str] = set()
     for tree in statements:
-        cte_names = _cte_names(tree)
         for node in tree.find_all(exp.Table):
-            canonical = _resolve_table_name(node, cte_names)
+            canonical = _resolve_table_name(node, dialect)
             if canonical:
                 touched.add(canonical)
     return sorted(touched)
