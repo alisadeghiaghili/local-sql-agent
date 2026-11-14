@@ -117,8 +117,6 @@ def expression_tables(expression: str) -> list[str]:
             expression, exc,
         )
         return []
-    if tree is None:
-        return []
     tables: list[str] = []
     for column in tree.find_all(exp.Column):
         if not column.table:
