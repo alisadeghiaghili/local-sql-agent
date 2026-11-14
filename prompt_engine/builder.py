@@ -24,7 +24,10 @@ re-assembles prompt content per question. It picks one of two paths via
 * **Retrieval path** (the scaling escape hatch) — the original
   per-question behaviour: only the tables the six-retriever pipeline
   matched go into the prompt. Used automatically once the knowledge base
-  grows past ``cfg.settings.prompt_retrieval_token_budget``.
+  grows past ``cfg.settings.prompt_retrieval_token_budget``. Every
+  metric definition is still listed (one line each, so there is nothing
+  worth selecting), and the tables a mentioned metric uses are among the
+  retrieved ones.
 
 One data source per prompt
 --------------------------
@@ -53,12 +56,20 @@ Typical usage::
 
 from __future__ import annotations
 
+import logging
+
 from core.models import RetrievalContext
 from prompt_engine.source_scope import examples_for_source, scoped_source
-from prompt_engine.static_prefix import build_static_prefix, should_use_static_prefix
+from prompt_engine.static_prefix import (
+    all_metrics_text,
+    build_static_prefix,
+    should_use_static_prefix,
+)
 from prompt_engine.templates import PROMPT_TEMPLATE, SUFFIX_TEMPLATE
 from prompt_engine.untrusted import UNTRUSTED_INSTRUCTION, fence_untrusted
 from schema_data.registry import SchemaRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def _render_access_notes(access_notes: str) -> str:
@@ -187,8 +198,10 @@ class PromptBuilder:
             question, SQL, and result *column names* for the last
             ``session_prompt_turns`` turns; never row data). Empty string
             when there is no session, which is every call today —
-            sessions are not yet implemented. Always placed in the
-            variable suffix, never the static prefix.
+            sessions are not yet implemented. Placed in the variable
+            suffix on the static path (never in the cached prefix), and
+            under the same ``SESSION CONTEXT`` heading on the retrieval
+            path.
         resolved_values:
             ``{"Table.Column": [value, ...]}`` for warehouse values that
             matched the question (Finding 19, 2026 audit) — the same
@@ -410,6 +423,14 @@ class PromptBuilder:
         not dead code, it is the scaling path for later phases with a
         bigger schema.
 
+        Every configured metric is listed, as on the static path: a metric
+        is one line, and choosing among them by relevance would bring back
+        the recall failure this path is already prone to.
+
+        When retrieval selected no table, every table is shown together with
+        the relationships between them, and a warning is logged: the schema
+        block and the JOIN lines always describe the same set of tables.
+
         With a *source* (several data sources configured) the retrieved
         tables are narrowed to that source's, and when none are left --
         retrieval found nothing, or only tables of other sources -- every
@@ -424,7 +445,20 @@ class PromptBuilder:
         retrieved_examples = context.examples
 
         if source is None:
-            schema_context = SchemaRegistry.build_schema_context(selected_tables)
+            if selected_tables:
+                schema_context = SchemaRegistry.build_schema_context(selected_tables)
+            else:
+                # build_schema_context reads an empty selection as "every
+                # table", while context.relationships was computed from that
+                # same empty selection. Say so, and derive the JOIN lines from
+                # the tables actually shown.
+                logger.warning(
+                    "retrieval selected no table for the question; "
+                    "showing the whole schema"
+                )
+                everything = SchemaRegistry.tables_for_source(None)
+                schema_context = SchemaRegistry.build_schema_context(everything)
+                relationships = "\n".join(SchemaRegistry.get_relationships(everything))
         else:
             in_source = set(SchemaRegistry.tables_for_source(source))
             kept = [t for t in selected_tables if t in in_source]
@@ -450,10 +484,12 @@ class PromptBuilder:
         return PROMPT_TEMPLATE.format(
             system_prompt=system_prompt,
             business_rules=rules,
+            metrics=all_metrics_text(),
             schema=schema_context,
             relationships=relationships,
             filters=filter_context,
             resolved_values=_render_resolved_values(resolved_values),
+            session_context=session_context,
             access_notes=_render_access_notes(access_notes),
             examples=example_context,
             question=question,

@@ -133,8 +133,13 @@ def _all_business_rules_text() -> str:
     return "\n\n".join(text for text in (rule.strip() for rule in BUSINESS_RULES.values()) if text)
 
 
-def _all_metrics_text() -> str:
-    """Every configured metric as ``key: expression (aliases: ...)`` lines."""
+def all_metrics_text() -> str:
+    """Every configured metric as ``key: expression (aliases: ...)`` lines.
+
+    The one renderer of the ``METRICS`` section, used by the static prefix and
+    by the retrieval prompt alike, so the two paths cannot describe a metric
+    differently.
+    """
     lines: list[str] = []
     for key, spec in METRICS.items():
         expression = spec.get("expression", "")
@@ -233,7 +238,7 @@ def build_static_prefix(system_prompt: str, source: str | None = None) -> str:
     return STATIC_PREFIX_TEMPLATE.format(
         system_prompt=system_prompt,
         business_rules=_all_business_rules_text(),
-        metrics=_all_metrics_text(),
+        metrics=all_metrics_text(),
         schema=_full_schema_text(source),
         relationships=_full_relationships_text(source),
         examples=_all_examples_text(source),

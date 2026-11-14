@@ -201,6 +201,7 @@ to `main` goes through a pull request whose required checks are green.
 | §2.2 drawer fully hidden | `tests/web_ui/test_web_ui_rtl_layout.py` |
 | §3 tap targets | `tests/web_ui/test_web_ui_rtl_layout.py` |
 | §5 breakpoints | `tests/web_ui/test_web_ui_rtl_layout.py` |
+| §13 knowledge parity of the prompt paths | `tests/test_prompt_path_parity.py` |
 
 A policy with no test is a preference. These have tests.
 
@@ -365,3 +366,27 @@ than as a proposal to make light the default.
 This makes §11's light-mode failures live for roughly half the users rather
 than none, which is why they are listed as defects and not as theme-selection
 notes.
+
+---
+
+## 13. Knowledge that is not table-scoped is present on both prompt paths
+
+The prompt is built on a static path (the whole knowledge base in a cached
+prefix) or, once that prefix exceeds `PROMPT_RETRIEVAL_TOKEN_BUDGET`, on a
+retrieval path that shows a per-question subset. The retrieval path used to
+drop what it had no retriever for: rules without trigger keywords, the
+metrics, the session context. The model then answered without a rule it was
+meant to follow, and nothing in the answer said so.
+
+> **Rule.** Only knowledge that is scoped to a table (the schema, the
+> relationships between tables, the examples) and a rule that has a trigger
+> keyword may be narrowed by retrieval. Everything else (every metric, every
+> rule without a trigger, the session context, the resolved warehouse values,
+> the column access notes, the detected filters) is on both paths, with the
+> same headings and the same text. A section added to one prompt template
+> is added to the other in the same change.
+
+`tests/test_prompt_path_parity.py` builds both prompts for one question and
+fails when a heading is on one path only, or an identical section differs.
+Which knowledge is narrowed, and how a metric brings its tables, is in
+`RETRIEVAL.md` §13.

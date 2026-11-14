@@ -7,7 +7,8 @@ Pipeline
     question
         ├── EntityRetriever      → dimension tables (Ring, Customer, Symbol …)
         ├── FactRetriever        → fact tables (Order …)
-        ├── expand_join_paths    → tables that join the two above (bridge tables …)
+        ├── metric_tables        → tables a mentioned metric's expression uses
+        ├── expand_join_paths    → tables that join the ones above (bridge tables …)
         ├── RelationshipRetriever → JOIN clauses for selected tables
         ├── RuleRetriever        → business rules injected into the prompt
         ├── ExampleRetriever     → few-shot SQL examples ranked by tag overlap
@@ -31,6 +32,7 @@ from retrieval.dimension_vocabulary import match_question_against_vocabulary
 from retrieval.entity_retriever import EntityRetriever
 from retrieval.fact_retriever import FactRetriever
 from retrieval.join_paths import expand_join_paths
+from retrieval.metric_retriever import metric_tables
 from retrieval.pruning import prune_selection
 from retrieval.relationship_retriever import RelationshipRetriever
 from retrieval.rule_retriever import RuleRetriever
@@ -123,13 +125,23 @@ class ContextRetriever:
         # evidence does not support (retrieval.pruning).
         entities, facts = prune_selection(question, entities, facts)
 
-        selected_tables = list(dict.fromkeys(entities + facts))  # order-preserving dedup
+        named = list(dict.fromkeys(entities + facts))  # order-preserving dedup
+
+        # A metric the question mentions is only usable with the tables its
+        # expression references, whether or not the question named them.
+        # Added after pruning, which judges a table by the question's own
+        # words and would take them back, and before the join expansion, so
+        # the paths from them to the rest are found too.
+        from_metrics = [t for t in metric_tables(question) if t not in named]
+        selected_tables = named + from_metrics
 
         # Tables the question needs joined but did not name (a bridge table,
         # the dimension a classification hangs from) -- see retrieval.join_paths.
         join_tables = expand_join_paths(selected_tables)
 
-        relationships = RelationshipRetriever.retrieve(selected_tables + join_tables)
+        relationships = RelationshipRetriever.retrieve(
+            list(dict.fromkeys(selected_tables + join_tables))
+        )
         rules = RuleRetriever.retrieve(question)
         examples = ExampleRetriever.retrieve(question)
         filters = ValueRetriever.retrieve(question)
@@ -196,6 +208,7 @@ class ContextRetriever:
             entities=entities,
             facts=facts,
             join_tables=join_tables,
+            metric_tables=from_metrics,
             dimensions=entities,          # kept for backward compat; PromptBuilder does NOT read this
             relationships=relationships,
             business_rules=rules,
