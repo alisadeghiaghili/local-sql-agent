@@ -951,7 +951,7 @@ class TurnEngine:
 
         ctx = RetrievalContext(
             entities=context.entities, facts=context.facts, dimensions=context.dimensions,
-            join_tables=context.join_tables,
+            join_tables=context.join_tables, metric_tables=context.metric_tables,
             relationships=context.relationships, business_rules=context.business_rules,
             examples=context.examples, filters=merged_filters,
             # Without this, `resolved_values`

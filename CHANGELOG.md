@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The retrieval prompt no longer drops knowledge that is not about a table (`prompt_engine/`, `retrieval/`).** With `PROMPT_RETRIEVAL_TOKEN_BUDGET` exceeded, the prompt is built per question, and it had been missing some of what the static prompt carries. This is what changes in a retrieval prompt:
+  - **Business rules without trigger keywords always appear (`retrieval/rule_retriever.py`).** A rule whose key is not one of the built-in trigger keys (every rule a deployment adds in `business_rules.yaml`) was never returned, so it applied on the static path and nowhere else. It is now returned for every question. Rules follow the order of `business_rules.yaml` and are stripped of surrounding whitespace, as on the static path; before, they came in the order of the built-in keys.
+  - **A `METRICS` section lists every metric (`prompt_engine/builder.py`).** The retrieval template had no such section, so a metric defined in `metrics.yaml` was unknown to the model. Both paths now render it with the same function, `all_metrics_text`.
+  - **A `SESSION CONTEXT` section carries the conversation (`prompt_engine/templates.py`).** The retrieval path left out the previous turns of a session, so a follow-up question («و برای ماه بعد؟») had nothing to follow. The section is the one the static suffix has.
+  - **A metric the question names brings its tables (`retrieval/metric_retriever.py`, `retrieval/context_retriever.py`).** The tables a metric's `expression` references are added to the retrieved ones, with their relationship lines, so the definition can be used. A question that names no metric selects the same tables as before.
+  - **An empty retrieval shows the relationships of the whole schema.** It showed every table with no JOIN lines; it now shows every table (of the source, with several data sources) and the relationships between them.
+
+### Added
+
+- **Two warnings in the log for the retrieval path (`prompt_engine/builder.py`, `prompt_engine/prompt_size.py`, `llm/router.py`).** `retrieval selected no table for the question; showing the whole schema` is logged each time retrieval finds nothing. `Retrieval prompt over budget: estimated N tokens > PROMPT_RETRIEVAL_TOKEN_BUDGET B (over by M), data source 'S'` is logged when a retrieval prompt is larger than the budget. Both are observability only: no prompt is trimmed or refused, and the estimate is `len(text) // 4`, which undercounts Persian by about 15%.
+
+### Documentation
+
+- **The prompt-path contract is written down (`docs/design/RETRIEVAL.md` §13, `docs/design/DESIGN-INVARIANTS.md` §13, `technical_readme.md`, `README.md`).** It says what both paths carry, what retrieval may narrow, and how a metric brings its tables. `tests/test_prompt_path_parity.py` enforces it: a section added to one prompt template and forgotten on the other fails a test.
+
+### Upgrading
+
+- **Nothing to configure; the retrieval prompt is longer.** A deployment on the static path sees no change. On the retrieval path, expect the metrics, every always-on rule and the session context to add to the prompt, so a prompt near `PROMPT_RETRIEVAL_TOKEN_BUDGET` may now cross it and log the over-budget warning. `python scripts/prompt_budget.py` measures only the static prefix, so the warning in the log is the signal for a retrieval prompt.
+
 ## [6.17.1] — 2026-11-08
 
 **Issues fixed:** #244 (most questions got a `PersianMonthName = N'دی'` filter they never asked for); #237 (a data source variable missing from `.env` stopped the setup tools with no reason given).
