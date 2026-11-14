@@ -222,7 +222,7 @@ def string_comparisons(sql: str, dialect: str = "tsql") -> list[StringComparison
 
     found: list[StringComparison] = []
     for column, literals, operator in comparison_literals(tree):
-        origins = column_origins(column, tree)
+        origins = column_origins(column, tree, dialect=dialect)
         found.extend(StringComparison(origins, text, operator) for _node, text in literals)
     return found
 
