@@ -176,59 +176,37 @@ dialect where ``LIMIT`` is the *correct* syntax (every other dialect this
 module supports): rejecting it there would refuse the majority of valid
 queries, not close a bypass.
 
-``clean_sql`` — always tsql, deliberately still string/structure based
+``clean_sql`` — always tsql; located from tokens, never regenerated
 --------------------------------------------------------------------------
 :func:`clean_sql` has no ``dialect`` parameter and is not part of the
 multi-dialect surface described below: the model always generates ``tsql``
 regardless of the deployment's target dialect (see
-:data:`config.Settings.sql_dialect`'s docstring for why), so the raw text
-this function cleans is always tsql, unconditionally. It still locates the
-query's outermost ``SELECT`` (or top-level set operation) using a
-paren-depth / string-literal-aware scan rather than a naive "first
-occurrence of the word SELECT" search — the Phase 0 fix (commit
-``ad44b93``) for the CTE / ``DISTINCT`` / subquery / ``UNION`` bugs
-documented in ``tests/test_sql_guard_bypass.py`` — because its LIMIT-to-TOP
-rewrite must land on the correct SELECT without disturbing the rest of the
-model's original text (:func:`ensure_top`, below, is a different function
-covering the already-has-a-cap detection; ``clean_sql`` only ever calls it
-to have that placement logic run once, not to regenerate its own output).
+:data:`config.Settings.sql_dialect`'s docstring for why). Its two rewrites
+(LIMIT to TOP, and ``SELECT TOP n DISTINCT`` to ``SELECT DISTINCT TOP n``)
+take their positions from sqlglot's tokenizer, so text inside a string
+literal, a bracketed or quoted identifier or a comment is never edited, and
+every other character of the model's text is returned as written. The cap
+itself is placed by :func:`ensure_top`, below.
 
-``ensure_top`` — AST row cap for every dialect except tsql
-------------------------------------------------------------------
-This phase set out to replace this function's hand-written paren-depth /
-string-literal-aware scanner with a genuine sqlglot AST cap
-(``exp.Select.limit()``, rendered with ``Expression.sql(dialect=...)``) —
-a scanner that would otherwise need to grow a second, per-dialect opinion
-about row-limiting syntax is exactly the "second, hand-written dialect
-layer beside sqlglot" this project's own review history warns against.
+``ensure_top`` — tsql decides on the AST and splices at token offsets; other dialects render the tree
+----------------------------------------------------------------------------------------------------
+Every dialect is parsed with sqlglot, and the decisions are made on the tree:
+whether a row cap is already present (the tree's ``limit`` argument), and
+whether the outermost query is one SELECT or a set operation (the root
+node). The dialects differ in how the cap is written back to text.
 
-That rewrite was verified by running it against every existing assertion
-in ``tests/test_sql_guard.py`` and ``tests/test_sql_guard_bypass.py``, not
-by inspection — and running it surfaced a real cost the earlier,
-text-splicing implementation's own docstring had already predicted: a
-full AST render does not reproduce the exact input text whenever a query
-contains an unaliased CTE/derived-table column (``SELECT 1`` inside a CTE
-becomes ``SELECT 1 AS [1]``) or an operator sqlglot re-spaces
-(``Active=1`` becomes ``Active = 1``). For **tsql**, that turned out not
-to be a narrow edge case confined to this function's own tests:
-:func:`clean_sql`'s LIMIT-to-TOP conversion also calls this function, so
-the same reformatting leaked into ordinary ``clean_sql`` output for the
-common production case (any generated query needing a cap injected,
-i.e. lacking its own ``TOP``) — a real behavioural change to this
-deployment's default and, before this phase, *only* dialect, with
-consequences this module's own tests do not fully capture (cache keys,
-audit-log SQL text, golden-set fixtures).
+* **tsql** keeps the model's text. The cap goes in at a character offset
+  taken from sqlglot's tokens, after the outermost ``SELECT`` (or after its
+  ``DISTINCT`` or ``ALL``), and the rest of the text is unchanged. The result
+  is parsed again and must equal the original tree apart from the new cap, or
+  the call is refused. A full render would change ordinary queries (``Active=1``
+  becomes ``Active = 1``), and that text feeds cache keys, audit records and
+  golden-set fixtures.
+* **Every other dialect** renders the whole tree with ``exp.Select.limit()``
+  and ``Expression.sql(dialect=...)``. No production text exists for those
+  dialects, so a full, correct render is the simpler and safer choice.
 
-So the AST rewrite is used for every dialect **except** tsql, which keeps
-its original text-splicing implementation completely unchanged — see
-:func:`ensure_top`'s own docstring for the full reasoning and
-:func:`_ensure_top_ast` for the AST implementation used for
-postgres/mysql/sqlite. This is reported, not quietly decided: the
-multi-dialect phase report asked for this function's *implementation* to
-be replaced outright, and this is the one place that request could not be
-honoured literally without a regression risk to tsql's existing,
-already-verified production behaviour that this project's own review
-history would equally object to.
+:func:`ensure_top` documents the behaviour both share.
 
 Multi-dialect: ``dialect`` parameters and :mod:`security.dialects`
 ------------------------------------------------------------------------
@@ -268,6 +246,7 @@ from dataclasses import dataclass
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
+from sqlglot.tokens import Token, TokenType
 
 from schema_data.columns import TABLE_COLUMNS
 from schema_data.registry import get_table_schema_qualifiers, table_ref_parts, table_reference_sql
@@ -497,94 +476,142 @@ class PolicyRejection(SqlGuardRejection):
 #: exactly as it did before this module supported any other target.
 _DIALECT = "tsql"
 
-_LIMIT_RE        = re.compile(r"\bLIMIT\s+(\d+)", re.IGNORECASE)
 _FENCE_RE        = re.compile(r"```(?:sql)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _SELECT_START_RE = re.compile(r"(SELECT|WITH)\b", re.IGNORECASE)
-_TOP_DISTINCT_RE = re.compile(r"SELECT\s+TOP\s+(\d+)\s+DISTINCT", re.IGNORECASE)
-_LIMIT_STRIP_RE  = re.compile(r"\s*\bLIMIT\s+\d+\b", re.IGNORECASE)
-
-# ensure_top() tsql helpers — locate the query's structurally OUTERMOST
-# SELECT instead of naively matching the first literal "SELECT" in the
-# string (see ensure_top's docstring for why that matters for CTEs,
-# subqueries, and DISTINCT ordering, and for why the tsql path keeps this
-# text-based approach rather than the AST-based one used for every other
-# dialect).
-_SELECT_TOKEN_RE           = re.compile(r"\bSELECT\b", re.IGNORECASE)
-_ORDER_BY_RE               = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
-_DISTINCT_AFTER_SELECT_RE  = re.compile(r"\s+DISTINCT\b", re.IGNORECASE)
-_TOP_AFTER_RE              = re.compile(r"\s+TOP\s+\d+\b", re.IGNORECASE)
 
 
-def _scan_structure(sql: str) -> tuple[list[int], list[bool]]:
-    """Return parallel per-character ``(paren_depth, in_string)`` arrays.
+# ---------------------------------------------------------------------------
+# Token helpers for the tsql row cap and LIMIT handling.
+#
+# sqlglot's tokenizer tells keywords apart from string literals, bracketed
+# and quoted identifiers and comments, so none of them is mistaken for SQL.
+# A token's ``start`` and ``end`` are the offsets of its first and last
+# character in the tokenized text, ``end`` inclusive.
+# ---------------------------------------------------------------------------
 
-    ``'...'`` string literals (T-SQL escapes an embedded quote by
-    doubling it, e.g. ``N'it''s'``) are treated as opaque: a ``(``/``)``
-    inside one does not affect ``paren_depth``, and a keyword match
-    starting inside one is reported via ``in_string`` so callers can
-    exclude it — a forbidden or structural keyword appearing as quoted
-    *data* is not the same as it appearing as SQL syntax.
+def _tokens(sql: str) -> list[Token]:
+    """Tokenize *sql* as T-SQL.
+
+    Raises
+    ------
+    SqlglotError
+        If the text does not tokenize, such as an unterminated string literal.
+    """
+    return sqlglot.tokenize(sql, read=_DIALECT)
+
+
+def _paren_depth(tokens: list[Token]) -> int:
+    """Parenthesis depth after *tokens*: 0 when every ``(`` has its ``)``."""
+    depth = 0
+    for token in tokens:
+        if token.token_type == TokenType.L_PAREN:
+            depth += 1
+        elif token.token_type == TokenType.R_PAREN:
+            depth -= 1
+    return depth
+
+
+def _top_level_select_indexes(tokens: list[Token]) -> list[int]:
+    """Indexes of the ``SELECT`` tokens at parenthesis depth 0.
+
+    A CTE body's SELECT and a subquery's SELECT sit inside parentheses and
+    are not returned. More than one index means a top-level set operation.
     """
     depth = 0
-    in_string = False
-    depths: list[int] = []
-    in_str: list[bool] = []
-    i, n = 0, len(sql)
-    while i < n:
-        ch = sql[i]
-        if in_string:
-            depths.append(depth)
-            in_str.append(True)
-            if ch == "'":
-                if i + 1 < n and sql[i + 1] == "'":
-                    depths.append(depth)
-                    in_str.append(True)
-                    i += 2
-                    continue
-                in_string = False
-            i += 1
-            continue
-        if ch == "'":
-            in_string = True
-            depths.append(depth)
-            in_str.append(True)
-            i += 1
-            continue
-        depths.append(depth)
-        in_str.append(False)
-        if ch == "(":
+    indexes: list[int] = []
+    for index, token in enumerate(tokens):
+        if token.token_type == TokenType.L_PAREN:
             depth += 1
-        elif ch == ")":
-            depth = max(0, depth - 1)
-        i += 1
-    return depths, in_str
+        elif token.token_type == TokenType.R_PAREN:
+            depth -= 1
+        elif token.token_type == TokenType.SELECT and depth == 0:
+            indexes.append(index)
+    return indexes
 
 
-def _top_level_select_matches(sql: str) -> list[re.Match[str]]:
-    """Return ``SELECT`` keyword matches at paren depth 0, outside strings.
+def _trailing_limit(tokens: list[Token]) -> tuple[int, int, str] | None:
+    """The ``LIMIT n`` that ends the statement at depth 0, if there is one.
 
-    These are the query's outermost SELECT(s) — a CTE body's inner
-    SELECT (inside the CTE's own parentheses) and any subquery's SELECT
-    sit at depth >= 1 and are excluded. More than one match means a
-    top-level ``UNION``/``INTERSECT``/``EXCEPT``.
+    An optional final semicolon may follow the number. Returns the offset of
+    the LIMIT keyword, the offset one past the number, and the number's
+    digits; ``None`` for any other statement.
     """
-    depths, in_str = _scan_structure(sql)
-    matches = []
-    for m in _SELECT_TOKEN_RE.finditer(sql):
-        pos = m.start()
-        if pos < len(depths) and depths[pos] == 0 and not in_str[pos]:
-            matches.append(m)
-    return matches
+    last = len(tokens) - 1
+    if last >= 0 and tokens[last].token_type == TokenType.SEMICOLON:
+        last -= 1
+    if last < 1:
+        return None
+    limit_token, number = tokens[last - 1], tokens[last]
+    if limit_token.token_type != TokenType.LIMIT or number.token_type != TokenType.NUMBER:
+        return None
+    if not number.text.isdigit() or _paren_depth(tokens[: last - 1]) != 0:
+        return None
+    return limit_token.start, number.end + 1, number.text
 
 
-def _has_top_level_order_by(sql: str) -> bool:
-    """True if *sql* has an ``ORDER BY`` at paren depth 0, outside strings."""
-    depths, in_str = _scan_structure(sql)
-    for m in _ORDER_BY_RE.finditer(sql):
-        pos = m.start()
-        if pos < len(depths) and depths[pos] == 0 and not in_str[pos]:
-            return True
-    return False
+def _has_limit_clause(sql: str) -> bool:
+    """True if the tokens hold ``LIMIT`` followed by a number.
+
+    That is a LIMIT clause. A LIMIT keyword token on its own is not enough:
+    sqlglot reads a column named ``Limit`` as a LIMIT token too, and the same
+    letters inside a string literal or a bracketed identifier are no keyword
+    at all. If the text does not tokenize this returns ``False``, and
+    :func:`validate_sql` goes on to its parser, which decides.
+    """
+    try:
+        tokens = _tokens(sql)
+    except SqlglotError:
+        return False
+    return any(
+        current.token_type == TokenType.LIMIT and following.token_type == TokenType.NUMBER
+        for current, following in zip(tokens, tokens[1:])
+    )
+
+
+def _limit_to_top(sql: str) -> str:
+    """Turn a ``LIMIT n`` that ends the statement into a row cap.
+
+    The clause and the whitespace before it are removed, then
+    :func:`ensure_top` places ``TOP n``. A LIMIT anywhere else is left in
+    place for :func:`validate_sql` to reject. Text that does not tokenize is
+    returned unchanged.
+    """
+    try:
+        tokens = _tokens(sql)
+    except SqlglotError:
+        return sql
+    trailing = _trailing_limit(tokens)
+    if trailing is None:
+        return sql
+    start, end, digits = trailing
+    while start > 0 and sql[start - 1].isspace():
+        start -= 1
+    return ensure_top(sql[:start] + sql[end:], int(digits))
+
+
+def _reorder_top_distinct(sql: str) -> str:
+    """Rewrite ``SELECT TOP n DISTINCT`` as ``SELECT DISTINCT TOP n``.
+
+    Matched on the token sequence at any depth, so the same words inside a
+    string literal or an identifier are left alone. Text that does not
+    tokenize is returned unchanged.
+    """
+    try:
+        tokens = _tokens(sql)
+    except SqlglotError:
+        return sql
+    spans = [
+        (first.start, fourth.end + 1, third.text)
+        for first, second, third, fourth in zip(tokens, tokens[1:], tokens[2:], tokens[3:])
+        if first.token_type == TokenType.SELECT
+        and second.token_type == TokenType.TOP
+        and third.token_type == TokenType.NUMBER
+        and third.text.isdigit()
+        and fourth.token_type == TokenType.DISTINCT
+    ]
+    for start, end, digits in reversed(spans):
+        sql = f"{sql[:start]}SELECT DISTINCT TOP {digits}{sql[end:]}"
+    return sql
 
 
 # ---------------------------------------------------------------------------
@@ -1629,29 +1656,25 @@ def clean_sql(raw: str) -> str:
        extracted and the surrounding markdown is discarded.
     3. **Preamble removal** — any text before the first ``SELECT`` or ``WITH``
        keyword is discarded (handles "Here is the SQL: SELECT …").
-    4. **LIMIT → TOP conversion** — ``LIMIT n`` is MySQL syntax, invalid in
-       T-SQL.  Conversion rules (delegated to :func:`ensure_top`, which
-       locates the query's OUTERMOST ``SELECT`` — skipping CTE bodies and
-       subqueries — rather than blindly the first literal ``SELECT`` in
-       the string; see its docstring for the full CTE / DISTINCT /
-       subquery / ``UNION`` handling):
+    4. **LIMIT → TOP conversion** — a ``LIMIT n`` that ends the statement (at
+       parenthesis depth 0, with at most a semicolon after it) is removed and
+       :func:`ensure_top` places ``TOP n`` on the outermost ``SELECT``. If the
+       query already has a ``TOP``, only the ``LIMIT`` is removed. Any other
+       LIMIT (inside a subquery, ``LIMIT n OFFSET m``, ``LIMIT m, n``) is left
+       in place for :func:`validate_sql` to reject.
+    5. **TOP DISTINCT fix** — ``SELECT TOP n DISTINCT`` becomes
+       ``SELECT DISTINCT TOP n``, wherever it occurs.
 
-       * ``TOP n`` already present on the outermost ``SELECT`` → strip
-         ``LIMIT n`` clause only.
-       * ``TOP n`` absent → inject ``SELECT TOP n`` on the outermost
-         ``SELECT`` and strip ``LIMIT n``.
+    Both rewrites take their positions from sqlglot's tokens, so text inside a
+    string literal, a bracketed or quoted identifier or a comment is never
+    edited. Text that does not tokenize skips them and goes on to
+    :func:`validate_sql`, which rejects it.
 
-    5. **TOP DISTINCT fix** — reorders ``SELECT TOP n DISTINCT`` to the
-       valid T-SQL form ``SELECT DISTINCT TOP n``, for cases where the
-       LLM emitted that ordering directly (step 4's ``ensure_top`` call
-       already produces the correct order when *it* is the one adding
-       ``TOP``).
-
-    This is deliberately still text surgery rather than parse-and-regenerate
-    — see the module docstring for why a sqlglot round trip is unsafe here
-    (it does not reproduce the input text exactly). :func:`validate_sql`,
-    which runs immediately after this function in the pipeline, is the
-    parser-based half of the guard.
+    Only those two clauses change. Every other character of the model's text
+    is returned as written: a sqlglot round trip would reformat it (``Active=1``
+    becomes ``Active = 1``), and that text feeds cache keys and the audit log.
+    :func:`validate_sql`, which runs immediately after this function in the
+    pipeline, is the parser-based half of the guard.
 
     Parameters
     ----------
@@ -1688,6 +1711,9 @@ def clean_sql(raw: str) -> str:
     >>> clean_sql("SELECT * FROM Contract LIMIT 5")
     'SELECT TOP 5 * FROM Contract'
 
+    >>> clean_sql("SELECT a FROM t LIMIT 10;")
+    'SELECT TOP 10 a FROM t;'
+
     >>> clean_sql("SELECT TOP 10 * FROM Contract LIMIT 5")
     'SELECT TOP 10 * FROM Contract'
 
@@ -1696,6 +1722,9 @@ def clean_sql(raw: str) -> str:
 
     >>> clean_sql("WITH c AS (SELECT x FROM t) SELECT * FROM c LIMIT 5")
     'WITH c AS (SELECT x FROM t) SELECT TOP 5 * FROM c'
+
+    >>> clean_sql("SELECT a FROM t WHERE n = 'LIMIT 5'")
+    "SELECT a FROM t WHERE n = 'LIMIT 5'"
 
     >>> clean_sql("")
     Traceback (most recent call last):
@@ -1719,22 +1748,8 @@ def clean_sql(raw: str) -> str:
             f"No SELECT / CTE found in model response: {sql[:200]!r}", reason="other",
         )
     sql = sql[start.start():].strip()
-
-    if _LIMIT_RE.search(sql):
-        limit_n = int(_LIMIT_RE.search(sql).group(1))   # type: ignore[union-attr]
-        sql = _LIMIT_STRIP_RE.sub("", sql)
-        # Delegate the actual placement of TOP to ensure_top(), which
-        # locates the OUTERMOST SELECT (skipping CTE bodies and
-        # subqueries) and is a no-op if that SELECT already has a TOP —
-        # exactly "TOP n absent -> inject" / "TOP n present -> strip
-        # LIMIT only" from the docstring above, without duplicating the
-        # CTE/DISTINCT/subquery-aware placement logic here too.
-        sql = ensure_top(sql, limit_n)
-
-    sql = _TOP_DISTINCT_RE.sub(
-        lambda m: f"SELECT DISTINCT TOP {m.group(1)}", sql
-    )
-
+    sql = _limit_to_top(sql)
+    sql = _reorder_top_distinct(sql)
     return sql.strip()
 
 
@@ -2020,7 +2035,7 @@ def validate_sql(
     if not sql or not sql.strip():
         raise CorrectableRejection("Empty SQL", reason="other")
 
-    if dialect == "tsql" and _LIMIT_RE.search(sql):
+    if dialect == "tsql" and _has_limit_clause(sql):
         raise CorrectableRejection("LIMIT is not valid T-SQL — use TOP instead", reason="other")
 
     profile = get_dialect_profile(dialect)
@@ -2670,8 +2685,8 @@ def _ensure_top_ast(sql: str, n: int, dialect: str) -> str:
         # A trailing top-level ORDER BY attaches to different nodes
         # depending on dialect -- confirmed by direct parsing, not
         # assumed: tsql attaches it to the rightmost branch's own Select
-        # (see the tsql-only text-splicing path's _has_top_level_order_by
-        # helper), while postgres/mysql/sqlite attach it directly to the
+        # (the tsql path, _cap_set_operation_tsql, checks the same two
+        # places), while postgres/mysql/sqlite attach it directly to the
         # Union/Intersect/Except node itself (`tree.args["order"]`). Both
         # locations must be checked -- checking only one silently missed
         # the other for exactly the dialects this function is used for.
@@ -2720,6 +2735,144 @@ def _ensure_top_ast(sql: str, n: int, dialect: str) -> str:
     )
 
 
+def _is_percent_limit(limit: exp.Expression) -> bool:
+    """True for ``TOP n PERCENT``, whose limit is a share of the rows, not a count."""
+    options = limit.args.get("limit_options")
+    return isinstance(options, exp.LimitOptions) and bool(options.args.get("percent"))
+
+
+def _verify_capped(capped: str, original: exp.Expression | None, sql: str) -> None:
+    """Re-parse *capped* and check that it carries a row cap.
+
+    When *original* is given, the re-parsed tree must also equal it once the
+    cap is removed, so the splice changed nothing but the cap.
+
+    Raises
+    ------
+    CorrectableRejection
+        If *capped* does not parse back, has no usable row cap, or differs
+        from *original* in more than the cap.
+    """
+    try:
+        reparsed = sqlglot.parse_one(capped, read=_DIALECT)
+    except SqlglotError:
+        reparsed = None
+    limit = reparsed.args.get("limit") if isinstance(reparsed, exp.Select) else None
+    ok = isinstance(limit, exp.Limit) and not _is_percent_limit(limit)
+    if ok and original is not None and isinstance(reparsed, exp.Select):
+        reparsed.set("limit", None)
+        ok = reparsed == original
+    if not ok:
+        raise CorrectableRejection(
+            f"ensure_top: could not place a row cap safely in {sql[:200]!r} — the "
+            "rewritten text does not parse back to the same query — refusing to "
+            "emit unverified SQL",
+            reason="other",
+        )
+
+
+def _cap_single_select_tsql(
+    sql: str, tokens: list[Token], selects: list[int], tree: exp.Select, n: int,
+) -> str:
+    """Cap a single tsql SELECT. See :func:`ensure_top`."""
+    limit = tree.args.get("limit")
+    if isinstance(limit, exp.Fetch):
+        return sql  # OFFSET ... FETCH NEXT n ROWS ONLY is a row cap
+    if isinstance(limit, exp.Limit):
+        if _is_percent_limit(limit):
+            raise CorrectableRejection(
+                "ensure_top: TOP n PERCENT is not a row cap (it returns a share of "
+                "the rows, not at most n); write TOP n instead",
+                reason="other",
+            )
+        return sql  # TOP n, TOP (n) and TOP n WITH TIES are row caps
+    if limit is not None:
+        raise CorrectableRejection(
+            f"ensure_top: unrecognised row limit in {sql[:200]!r} — refusing to "
+            "guess where to inject TOP",
+            reason="other",
+        )
+    if len(selects) != 1:
+        raise CorrectableRejection(
+            f"ensure_top: {sql[:200]!r} has {len(selects)} top-level SELECTs but is "
+            "not a set operation — refusing to guess where to inject TOP",
+            reason="other",
+        )
+    end = tokens[selects[0]].end + 1
+    following = tokens[selects[0] + 1] if selects[0] + 1 < len(tokens) else None
+    if following is not None and following.token_type in (TokenType.DISTINCT, TokenType.ALL):
+        end = following.end + 1  # SELECT DISTINCT TOP n ... / SELECT ALL TOP n ...
+    capped = f"{sql[:end]} TOP {n}{sql[end:]}"
+    _verify_capped(capped, tree, sql)
+    return capped
+
+
+def _cap_set_operation_tsql(
+    sql: str, tokens: list[Token], selects: list[int], tree: exp.Expression, n: int,
+) -> str:
+    """Wrap a top-level set operation in a capped outer SELECT. See :func:`ensure_top`."""
+    branches = _setop_branches(tree)
+    has_order_by = tree.args.get("order") is not None or any(
+        isinstance(branch, exp.Select) and branch.args.get("order") for branch in branches
+    )
+    if has_order_by:
+        # CorrectableRejection: a fixable structural limitation of this
+        # function, not a refusal of the question.
+        raise CorrectableRejection(
+            "ensure_top: cannot safely cap a UNION/INTERSECT/EXCEPT "
+            "query that also has a top-level ORDER BY (wrapping it in "
+            "a derived table would make that ORDER BY invalid T-SQL) — "
+            "refusing to emit unsafe SQL",
+            reason="other",
+        )
+    # TOP after only the first branch would cap that branch, not the combined
+    # result, so the whole (post-CTE) query goes inside the capped SELECT.
+    start = tokens[selects[0]].start
+    capped = f"{sql[:start]}SELECT TOP {n} * FROM ({sql[start:]}) AS _ensure_top_capped"
+    _verify_capped(capped, None, sql)
+    return capped
+
+
+def _ensure_top_tsql(sql: str, n: int) -> str:
+    """tsql row cap: decide on the parsed tree, splice at a token offset, verify.
+
+    See :func:`ensure_top`.
+    """
+    try:
+        tokens = _tokens(sql)
+    except SqlglotError as exc:
+        raise CorrectableRejection(
+            f"ensure_top: {sql[:200]!r} does not tokenize as tsql SQL ({exc}) "
+            "— refusing to guess where to inject TOP",
+            reason="other",
+        ) from exc
+    selects = _top_level_select_indexes(tokens)
+    if not selects:
+        # CorrectableRejection: the same refusal as when no SELECT parses.
+        raise CorrectableRejection(
+            f"ensure_top: no top-level SELECT found in {sql[:200]!r} — "
+            "refusing to guess where to inject TOP",
+            reason="other",
+        )
+    try:
+        tree = sqlglot.parse_one(sql, read=_DIALECT)
+    except SqlglotError as exc:
+        raise CorrectableRejection(
+            f"ensure_top: {sql[:200]!r} does not parse as tsql SQL ({exc}) "
+            "— refusing to guess where to inject TOP",
+            reason="other",
+        ) from exc
+    if isinstance(tree, exp.Select):
+        return _cap_single_select_tsql(sql, tokens, selects, tree, n)
+    if isinstance(tree, (exp.Union, exp.Intersect, exp.Except)):
+        return _cap_set_operation_tsql(sql, tokens, selects, tree, n)
+    raise CorrectableRejection(
+        f"ensure_top: {sql[:200]!r} is not a SELECT/WITH/set-operation query in tsql "
+        f"(parsed as {type(tree).__name__}) — refusing to guess where to inject a row cap",
+        reason="other",
+    )
+
+
 def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
     """Inject a row cap into *sql* if no row-limiting clause is already present.
 
@@ -2727,64 +2880,37 @@ def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
     the database never returns an unbounded result set to the API layer,
     regardless of whether the model's own SQL included one.
 
-    Two implementations, chosen by *dialect* — and why
-    -------------------------------------------------------
-    This function was rewritten for multi-dialect support to use a genuine
-    sqlglot AST cap (``exp.Select.limit()``, rendered with
-    ``Expression.sql(dialect=...)``) instead of the original hand-written
-    paren-depth / string-literal-aware scanner — that scanner is real,
-    tested, and correct, but it is also "a parser with extra steps" (see
-    the module docstring), and it would need to grow a second, per-dialect
-    opinion about row-limiting syntax to serve any target besides tsql.
+    How it works, per dialect
+    -------------------------
+    Every dialect is parsed with sqlglot, and the decisions are made on the
+    tree: whether a row cap is already present, and whether the outermost
+    query is one SELECT or a set operation. For **tsql** the cap is then
+    spliced into the model's own text at a token offset, and the result is
+    parsed again to check it. Every other dialect renders the whole tree with
+    ``exp.Select.limit()``. The module docstring says why tsql keeps its text.
 
-    That AST rewrite was verified — by running it, not by reading it —
-    against every existing test in ``tests/test_sql_guard.py`` and
-    ``tests/test_sql_guard_bypass.py``, and it changes the **rendered
-    text** of any query that (a) actually needs a cap injected (not
-    already capped) **and** (b) contains an unaliased CTE/derived-table
-    column (``SELECT 1`` inside a CTE becomes ``SELECT 1 AS [1]``) **or**
-    any operator sqlglot re-spaces on render (``Active=1`` becomes
-    ``Active = 1``). For *tsql specifically*, that is not a narrow edge
-    case confined to this function's own tests: ``clean_sql``'s
-    LIMIT-to-TOP conversion also calls this function, so the same
-    reformatting leaked into ordinary ``clean_sql`` output too (e.g.
-    ``WHERE Active=1`` silently became ``WHERE Active = 1``) — semantically
-    identical SQL, but a **different string**, for what is the common case
-    in production (any generated query that doesn't already carry its own
-    ``TOP``). That is a real behavioural change for this deployment's
-    default and only dialect before this phase, with consequences beyond
-    this module's own tests (cache keys, audit-log SQL text, golden-set
-    fixtures) — not something "keep the existing tests passing unchanged
-    for tsql" can be read to permit.
-
-    So: **tsql keeps the original text-splicing implementation, completely
-    unchanged** (delegated to the module-private helpers this function
-    used before this phase — see their docstrings), and the new AST-based
-    cap (:func:`_ensure_top_ast`) is used for every *other* dialect, where
-    there is no pre-existing byte-exact production text to protect and a
-    full AST render is unambiguously the right tool. This is the same
-    shape of exception as the tsql-only ``LIMIT`` rejection in
-    :func:`validate_sql`: one condition on *dialect*, not a per-dialect
-    branching ladder, kept deliberately narrow and explained at the one
-    place it exists.
-
-    Behaviour (both implementations)
-    ------------------------------------
-    * **Plain query** — a row cap is added to the outermost query.
+    Behaviour
+    ---------
+    * **Plain query** — a row cap is added to the outermost query, after its
+      ``SELECT``, or after its ``DISTINCT`` or ``ALL``: ``SELECT DISTINCT TOP n
+      Name`` and, in tsql, ``SELECT ALL TOP n a``.
     * **CTE** (``WITH x AS (...) SELECT ...``) — the cap lands on the
       outer query following the CTE definition(s), not the CTE body's own
       ``SELECT``.
     * **Subquery** (``SELECT ... FROM (SELECT TOP n ...) z``) — the outer
       query is still capped even though a subquery already has its own
       row-limiting clause.
-    * **Already capped** — if the outermost query already has a
-      row-limiting clause, *sql* is returned **completely unchanged**,
-      preserving both an existing limit even if higher than *n* and the
-      input's exact original text.
+    * **Already capped** — if the outermost query already has a row-limiting
+      clause, *sql* is returned **completely unchanged**, preserving both an
+      existing limit even if higher than *n* and the input's exact original
+      text. In tsql the clauses are ``TOP n``, ``TOP (n)``, ``TOP n WITH TIES``
+      and ``OFFSET ... FETCH``.
+    * **tsql ``TOP n PERCENT``** is not a row cap: it returns a share of the
+      rows, so the call is refused and the model is asked to write ``TOP n``.
     * **Top-level** ``UNION``/``INTERSECT``/``EXCEPT`` — a cap on only the
-      first branch would cap that branch, not the combined result
-      actually returned, so the whole (post-CTE) query is wrapped in a
-      capped outer ``SELECT * FROM (...) AS _ensure_top_capped`` instead.
+      first branch would cap that branch, not the combined result actually
+      returned, so the whole (post-CTE) query is wrapped in a capped outer
+      ``SELECT * FROM (...) AS _ensure_top_capped`` instead.
 
     Parameters
     ----------
@@ -2811,17 +2937,17 @@ def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
     Raises
     ------
     CorrectableRejection
-        A :class:`ValueError` subclass (see the module docstring's
-        exception taxonomy) — neither case below is a policy refusal of
-        the question, just a structural limit of this function, so a
+        A :class:`ValueError` subclass (see the module docstring's exception
+        taxonomy). None of these is a policy refusal of the question, so a
         differently-shaped retry can plausibly get past it:
 
-        * If no top-level query can be found/parsed at all.
+        * If no top-level query can be found or parsed at all, or the tsql
+          text does not tokenize.
         * If *sql* is a top-level ``UNION``/``INTERSECT``/``EXCEPT`` that
-          also has a top-level ``ORDER BY`` — wrapping it in a derived
-          table would make that ``ORDER BY`` invalid, and correctly
-          hoisting it out of the wrapper is out of scope for a row-cap
-          injector.
+          also has a top-level ``ORDER BY`` — wrapping it in a derived table
+          would make that ``ORDER BY`` invalid.
+        * If, in tsql, the outermost query's limit is ``TOP n PERCENT``, or the
+          cap cannot be placed in a way that parses back to the same query.
 
     Examples
     --------
@@ -2831,14 +2957,25 @@ def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
     >>> ensure_top("SELECT TOP 10 * FROM Contract", n=50)
     'SELECT TOP 10 * FROM Contract'
 
+    >>> ensure_top("SELECT TOP (5) * FROM Contract", n=50)
+    'SELECT TOP (5) * FROM Contract'
+
     >>> ensure_top("SELECT DISTINCT Name FROM Customer", n=20)
     'SELECT DISTINCT TOP 20 Name FROM Customer'
+
+    >>> ensure_top("SELECT ALL Name FROM Customer", n=20)
+    'SELECT ALL TOP 20 Name FROM Customer'
 
     >>> ensure_top("WITH cte AS (SELECT 1) SELECT * FROM cte", n=20)
     'WITH cte AS (SELECT 1) SELECT TOP 20 * FROM cte'
 
     >>> ensure_top("SELECT * FROM (SELECT TOP 1 a FROM t) z", n=10)
     'SELECT TOP 10 * FROM (SELECT TOP 1 a FROM t) z'
+
+    >>> ensure_top("SELECT TOP 100 PERCENT * FROM Contract", n=50)
+    Traceback (most recent call last):
+        ...
+    security.sql_guard.CorrectableRejection: ensure_top: TOP n PERCENT is not a row cap (it returns a share of the rows, not at most n); write TOP n instead
 
     >>> ensure_top("SELECT a FROM t1 UNION SELECT b FROM t2", n=5)
     'SELECT TOP 5 * FROM (SELECT a FROM t1 UNION SELECT b FROM t2) AS _ensure_top_capped'
@@ -2851,56 +2988,7 @@ def ensure_top(sql: str, n: int = 100, dialect: str = _DIALECT) -> str:
     """
     if dialect != "tsql":
         return _ensure_top_ast(sql, n, dialect)
-
-    matches = _top_level_select_matches(sql)
-    if not matches:
-        # CorrectableRejection: this is a mismatch between the regex-based
-        # scanner here and what validate_sql's parser already accepted as
-        # a well-formed query -- not a policy call about the question
-        # itself, so a differently-structured (but still valid) retry can
-        # plausibly get past it.
-        raise CorrectableRejection(
-            f"ensure_top: no top-level SELECT found in {sql[:200]!r} — "
-            "refusing to guess where to inject TOP",
-            reason="other",
-        )
-
-    if len(matches) > 1:
-        # Top-level UNION / INTERSECT / EXCEPT: two or more SELECTs at
-        # paren depth 0. TOP after only the first branch would cap that
-        # branch, not the combined result actually returned — wrap the
-        # whole (post-CTE) query in a capped outer SELECT instead.
-        prefix = sql[: matches[0].start()]
-        body = sql[matches[0].start():]
-        if _has_top_level_order_by(body):
-            # CorrectableRejection: same reasoning as above -- a query
-            # shaped without a top-level ORDER BY on the set operation
-            # would sail through, so this is a fixable structural
-            # limitation of this function, not a refusal of the question.
-            raise CorrectableRejection(
-                "ensure_top: cannot safely cap a UNION/INTERSECT/EXCEPT "
-                "query that also has a top-level ORDER BY without a full "
-                "SQL parser (wrapping it in a derived table would make "
-                "that ORDER BY invalid T-SQL) — refusing to emit unsafe SQL",
-                reason="other",
-            )
-        return f"{prefix}SELECT TOP {n} * FROM ({body}) AS _ensure_top_capped"
-
-    match = matches[0]
-    pos = match.end()
-    rest = sql[pos:]
-
-    distinct_match = _DISTINCT_AFTER_SELECT_RE.match(rest)
-    if distinct_match:
-        after = distinct_match.end()
-        if _TOP_AFTER_RE.match(rest[after:]):
-            return sql  # already 'SELECT DISTINCT TOP n ...'
-        return sql[:pos] + rest[:after] + f" TOP {n}" + rest[after:]
-
-    if _TOP_AFTER_RE.match(rest):
-        return sql  # outermost SELECT already capped
-
-    return sql[:pos] + f" TOP {n}" + rest
+    return _ensure_top_tsql(sql, n)
 
 
 # ---------------------------------------------------------------------------
