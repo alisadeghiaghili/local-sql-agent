@@ -6,10 +6,10 @@
  * web/README.md's offline-requirement note; no CDN, ever).
  *
  * This file is NOT Prism's official theme CSS. The SQL box (.sql-box)
- * is an always-dark code surface in BOTH UI themes — same as most code
- * editors — so the token colours below are a fixed editor palette, not
- * aliases of the chrome brand tokens. Brand teal is right for a button;
- * it is the wrong hue family for reading a SELECT list against near-black.
+ * follows the selected theme: tokens.css declares --sql-* per theme (warm
+ * paper in light mode, graphite in dark). The syntax palette is its own
+ * narrow colour axis — a code surface needs legible token contrast, not
+ * brand orange on every keyword.
  *
  * Palette (aligned to a conventional dark editor / terminal SQL look):
  *   keyword   — cool blue   (SELECT, FROM, WHERE, TOP, AS, DESC, …)

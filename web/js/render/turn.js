@@ -24,6 +24,7 @@
 "use strict";
 
 import { fmt } from "../num.js";
+import { icon } from "../icons.js";
 import { copySourceOfTruth, displaySqlForTurn, formatSqlForDisplay, highlightSql } from "../sql-display.js";
 
 import { renderPipeline, renderStageStrip } from "./pipeline.js";
@@ -37,6 +38,65 @@ function el(tag, className, text) {
   if (className) e.className = className;
   if (text !== undefined) e.textContent = text;
   return e;
+}
+
+/** The guard verdict's one word, per document language. Kept beside the
+ * card rather than in i18n.js for the reason the rest of render/* keeps its
+ * copy here: the turn card is deliberately standalone (its module graph in
+ * tests/web_ui carries no i18n import), and it reads the language the shell
+ * already set on <html lang> via i18n.js's applyLang. */
+const GUARD_WORD = { fa: ["مجاز", "غیرمجاز"], en: ["Allowed", "Blocked"] };
+
+/** The card's own chrome (panel titles and the buttons inside them), per
+ * document language — same reason and same source as GUARD_WORD. Only the
+ * shell around the answer is translated; the answer itself, the SQL and
+ * anything the analyst typed stay exactly as they came back. */
+const CARD_WORD = {
+  fa: {
+    sql: "SQL تولیدشده",
+    guard: "گارد",
+    copy: "کپی",
+    copied: "کپی شد ✓",
+    hide: "پنهان",
+    showSql: "نمایش SQL",
+    viewSql: "دیدن SQL",
+    result: "نتیجه",
+    interpretation: "تفسیر",
+    details: "جزئیات — pipeline، مدل، بازخورد",
+    pipeline: "مراحل پردازش",
+  },
+  en: {
+    sql: "Generated SQL",
+    guard: "guard",
+    copy: "Copy",
+    copied: "Copied ✓",
+    hide: "Hide",
+    showSql: "Show SQL",
+    viewSql: "View SQL",
+    result: "Result",
+    interpretation: "Interpretation",
+    details: "Details — pipeline, model, feedback",
+    pipeline: "Pipeline stages",
+  },
+};
+
+/** @param {keyof CARD_WORD["fa"]} key */
+function cardWord(key) {
+  const lang = document.documentElement && document.documentElement.lang === "en" ? "en" : "fa";
+  return CARD_WORD[lang][key];
+}
+
+/** The SQL guard's verdict as a shield plus ONE word — «مجاز» / «غیرمجاز»
+ * in Persian, "Allowed" / "Blocked" in English — instead of the sentence
+ * «گارد مجاز». The shield is what says "guard"; the word says only whether
+ * it passed, so the verdict reads at a glance and never repeats the noun
+ * beside its own icon. */
+function guardBadge(className, ok) {
+  const lang = document.documentElement && document.documentElement.lang === "en" ? "en" : "fa";
+  const badge = el("span", className);
+  badge.appendChild(icon("shield", { size: 13 }));
+  badge.appendChild(document.createTextNode(GUARD_WORD[lang][ok ? 0 : 1]));
+  return badge;
 }
 
 /**
@@ -109,6 +169,7 @@ export function createTurnCard(turn, ctx) {
     turn.ambiguity && turn.ambiguity.assumptions,
     (field, value) => ctx.onEditAssumption(turn.turn_id, field, value),
     ctx.onPin ? (field, value) => ctx.onPin(turn.turn_id, field, value) : undefined,
+    ctx.getRingOptions ? ctx.getRingOptions() : null,
   );
   if (assumptions) body.appendChild(tagEarly(assumptions));
 
@@ -147,19 +208,19 @@ export function createTurnCard(turn, ctx) {
     const titleRow = el("div", "card-title-row");
     const sqlTitle = el("span", "card-title");
     sqlTitle.textContent = turn.guard && turn.guard.verdict === "allowed"
-      ? "SQL تولیدشده · گارد ✓"
+      ? `${cardWord("sql")} · ${cardWord("guard")} ✓`
       : turn.guard && turn.guard.verdict === "rejected"
-        ? "SQL تولیدشده · گارد ✕"
-        : "SQL تولیدشده";
+        ? `${cardWord("sql")} · ${cardWord("guard")} ✕`
+        : cardWord("sql");
     titleRow.appendChild(sqlTitle);
 
     const acts = el("div", "sql-title-acts");
-    const copyBtn = el("button", "btn-copy", "کپی");
+    const copyBtn = el("button", "btn-copy", cardWord("copy"));
     copyBtn.type = "button";
     copyBtn.addEventListener("click", () => copyToClipboard(copySourceOfTruth(turn), copyBtn));
     acts.appendChild(copyBtn);
 
-    const toggleBtn = el("button", "btn-copy sql-collapse", "پنهان");
+    const toggleBtn = el("button", "btn-copy sql-collapse", cardWord("hide"));
     toggleBtn.type = "button";
     toggleBtn.setAttribute("aria-expanded", "true");
     acts.appendChild(toggleBtn);
@@ -177,9 +238,8 @@ export function createTurnCard(turn, ctx) {
 
     const meta = el("div", "sql-meta");
     if (turn.guard) {
-      const guardPill = el("span", `guard-pill ${turn.guard.verdict}`,
-        turn.guard.verdict === "allowed" ? "✓ مجاز" : "✕ رد شد");
-      meta.appendChild(guardPill);
+      meta.appendChild(guardBadge(
+        `guard-pill ${turn.guard.verdict}`, turn.guard.verdict === "allowed"));
       if (turn.guard.injected_top !== null && turn.guard.injected_top !== undefined) {
         meta.appendChild(el("span", "meta-tag", `TOP ${turn.guard.injected_top}`));
       }
@@ -207,14 +267,14 @@ export function createTurnCard(turn, ctx) {
       pre.hidden = true;
       meta.hidden = true;
       toggleBtn.setAttribute("aria-expanded", "false");
-      toggleBtn.textContent = "نمایش SQL";
+      toggleBtn.textContent = cardWord("showSql");
     }
     toggleBtn.addEventListener("click", () => {
       const open = pre.hidden;
       pre.hidden = !open;
       meta.hidden = !open;
       toggleBtn.setAttribute("aria-expanded", String(open));
-      toggleBtn.textContent = open ? "پنهان" : "نمایش SQL";
+      toggleBtn.textContent = open ? cardWord("hide") : cardWord("showSql");
     });
 
     body.appendChild(tagLate(sqlSection));
@@ -234,7 +294,7 @@ export function createTurnCard(turn, ctx) {
     const rejectedSql = isGuardRejected(turn) ? turn.guard.rejected_sql : null;
     if (rejectedSql) {
       const reveal = el("div", "rejected-sql-reveal");
-      const toggleBtn = el("button", "rejected-sql-toggle", "دیدن SQL");
+      const toggleBtn = el("button", "rejected-sql-toggle", cardWord("viewSql"));
       toggleBtn.type = "button";
       toggleBtn.setAttribute("aria-expanded", "false");
       reveal.appendChild(toggleBtn);
@@ -275,7 +335,7 @@ export function createTurnCard(turn, ctx) {
         const open = revealBody.hidden;
         revealBody.hidden = !open;
         toggleBtn.setAttribute("aria-expanded", String(open));
-        toggleBtn.textContent = open ? "پنهان" : "دیدن SQL";
+        toggleBtn.textContent = open ? cardWord("hide") : cardWord("viewSql");
       });
 
       sqlSection.appendChild(reveal);
@@ -307,7 +367,7 @@ export function createTurnCard(turn, ctx) {
   let flagShortcut = null;
   if (!turn.error && !isGuardRejected(turn)) {
     const resultCard = el("div", "card");
-    resultCard.appendChild(el("div", "card-title", "نتیجه"));
+    resultCard.appendChild(el("div", "card-title", cardWord("result")));
     resultCard.appendChild(renderResult(turn.result, {
       assumptions: turn.ambiguity && turn.ambiguity.assumptions,
       guardRejected: false,
@@ -350,7 +410,7 @@ export function createTurnCard(turn, ctx) {
   if (turn.interpretation) {
     const interpCard = el("div", "card");
     if (answerWasTruncated(turn.llm)) interpCard.appendChild(renderTruncationQualifier());
-    interpCard.appendChild(el("div", "card-title", "تفسیر"));
+    interpCard.appendChild(el("div", "card-title", cardWord("interpretation")));
     interpCard.appendChild(el("p", "interpretation-text", turn.interpretation));
     body.appendChild(tagLate(interpCard));
   }
@@ -359,12 +419,12 @@ export function createTurnCard(turn, ctx) {
   // LLM status strip are shown BY THE PRODUCT, never asked for, which is
   // what makes collapsing them fine — unlike the interpretation above.
   const drawer = el("details", "turn-details");
-  const drawerSummary = el("summary", "turn-details-summary", "جزئیات — pipeline، مدل، بازخورد");
+  const drawerSummary = el("summary", "turn-details-summary", cardWord("details"));
   drawer.appendChild(drawerSummary);
   const drawerBody = el("div", "turn-details-body");
 
   const pipeWrap = el("div", "card pipeline-card");
-  pipeWrap.appendChild(el("div", "card-title", "مراحل پردازش"));
+  pipeWrap.appendChild(el("div", "card-title", cardWord("pipeline")));
   pipeWrap.appendChild(pipelineList.el);
   drawerBody.appendChild(pipeWrap);
 
@@ -455,9 +515,15 @@ function isGuardRejected(turn) {
 function renderFlagShortcut(onOpen) {
   const button = el("button", "flag-shortcut");
   button.type = "button";
+  // Same icon-button treatment as the «پاسخ درست است» toggle: a thumb icon
+  // (CSS ::before) plus a corner badge when flagged. The label is an sr-only
+  // span; it is blank while flagged so the button's textContent reads exactly
+  // "✓ گزارش شد" in that state and the full «پاسخ نادرست است» otherwise.
+  const labelSpan = el("span", "sr-only", "پاسخ نادرست است");
+  button.appendChild(labelSpan);
   function setFlagged(flagged) {
     button.className = flagged ? "flag-shortcut is-flagged" : "flag-shortcut";
-    button.textContent = flagged ? "✓ گزارش شد" : "پاسخ نادرست است";
+    labelSpan.textContent = flagged ? "✓ گزارش شد" : "پاسخ نادرست است";
   }
   button.addEventListener("click", () => onOpen());
   setFlagged(false);
@@ -1007,8 +1073,7 @@ function buildOutcomeLine(turn) {
   const row = el("div", "turn-outcome");
   if (turn.guard) {
     const ok = turn.guard.verdict === "allowed";
-    row.appendChild(el("span", ok ? "outcome-ok" : "outcome-bad",
-      ok ? "✓ گارد مجاز" : "✕ گارد رد شد"));
+    row.appendChild(guardBadge(ok ? "outcome-ok" : "outcome-bad", ok));
   }
   if (turn.result && turn.result.row_count !== undefined && turn.result.row_count !== null) {
     row.appendChild(el("span", "outcome-sep", "·"));
@@ -1057,6 +1122,6 @@ async function copyToClipboard(text, btn) {
       ta.remove();
     } catch { /* clipboard unavailable — button label stays "کپی" */ }
   }
-  btn.textContent = "کپی شد ✓";
+  btn.textContent = cardWord("copied");
   setTimeout(() => { btn.textContent = originalLabel; }, 1600);
 }

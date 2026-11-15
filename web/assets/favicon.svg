@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="SQL Agent">
+  <rect width="32" height="32" rx="8" fill="#1d4ed8"/>
+  <g fill="#ffffff">
+    <rect x="9" y="13" width="4" height="10" rx="2"/>
+    <rect x="14" y="8" width="4" height="15" rx="2"/>
+    <rect x="19" y="16" width="4" height="7" rx="2" opacity=".7"/>
+  </g>
+</svg>

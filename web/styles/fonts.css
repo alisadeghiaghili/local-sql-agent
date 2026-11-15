@@ -1,13 +1,30 @@
-/* Vazirmatn — bundled locally, no CDN dependency (offline-venue requirement,
- * see web/README.md "Font"). Two static weights are vendored as woff2:
- * Regular (400) and Bold (700). Vazirmatn's own font-weight axis covers the
- * full 100-900 range in its variable build; we only ship the two weights the
- * UI actually uses, and let the browser synthesize italics (none used here).
+/* Bundled locally, no CDN dependency (offline-venue requirement, see
+ * web/README.md "Font").
+ *
+ * Inter — the Latin display/UI face. Variable build, latin subset only:
+ * Persian glyphs are not in this subset, so `--font-sans` lists Vazirmatn
+ * right after it and the browser falls through per glyph. Latin labels get
+ * Inter's geometric rhythm; Persian text keeps Vazirmatn's metrics.
+ *
+ * Vazirmatn — the Persian face. Two static weights are vendored as woff2:
+ * Regular (400) and Bold (700). Vazirmatn's own font-weight axis covers
+ * the full 100-900 range in its variable build; we only ship the two
+ * weights the UI actually uses, and let the browser synthesize italics
+ * (none used here).
  *
  * Fallback chain: if the woff2 files are ever missing (e.g. this directory
  * was copied without web/assets/fonts/), the browser silently falls through
  * to "Segoe UI" / Tahoma, which render Persian adequately on Windows but
  * without Vazirmatn's Persian-specific metrics and glyph shaping. */
+
+@font-face {
+  font-family: "Inter";
+  src: url("../assets/fonts/inter-var.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+2000-206F, U+20A0-20BF, U+2122, U+2212, U+2215;
+}
 
 @font-face {
   font-family: "Vazirmatn";

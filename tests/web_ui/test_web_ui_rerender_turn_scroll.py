@@ -75,6 +75,11 @@ function clearTranscriptEmptyState() {{ calls.cleared += 1; }}
 
 function scrollSettledResultAboveComposer(el) {{ calls.scrolled.push(el); }}
 
+// No-op: rerenderTurn also scrolls the viewport to the bottom of the
+// transcript, above the now-sticky assistant panel. The stub-DOM harness has
+// no real scroller, so it is stubbed out here like the other main.js helpers.
+function scrollLatestTurnIntoView() {{ /* no-op in the stub-DOM harness */ }}
+
 // ---- extracted verbatim from web/js/main.js ----------------------------
 {rerender_turn_src}
 // ---- end extracted source -----------------------------------------------
