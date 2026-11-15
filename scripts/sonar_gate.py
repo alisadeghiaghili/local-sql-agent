@@ -1044,6 +1044,26 @@ def _remove(*commands: Sequence[str]) -> None:
             continue
 
 
+def _announce(line: str) -> None:
+    """Print one progress line and flush it.
+
+    A step takes a minute or more, and a piped stream such as a CI log is
+    block-buffered: without the flush, every line would appear when the run
+    ends, and a run that hangs would show nothing at all.
+
+    Parameters
+    ----------
+    line : str
+        The line to print.
+
+    Examples
+    --------
+    >>> _announce("Analysing base (v1)")
+    Analysing base (v1)
+    """
+    print(line, flush=True)
+
+
 def check_gate(
     repo: Path,
     *,
@@ -1051,7 +1071,7 @@ def check_gate(
     head: str,
     coverage: Path | None,
     profile: str,
-    progress: Callable[[str], None] = print,
+    progress: Callable[[str], None] = _announce,
 ) -> GateReport:
     """Analyse *base*, then *head*, and return the gate's verdict on *head*.
 
@@ -1069,7 +1089,8 @@ def check_gate(
     profile : str
         The quality profile to analyse with (see :func:`use_profile`).
     progress : callable, optional
-        Receives one line for each step.
+        Receives one line for each step, when the step starts. The default
+        prints it and flushes (:func:`_announce`).
 
     Returns
     -------

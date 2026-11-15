@@ -17,6 +17,7 @@ there is what ``git archive`` and ``urllib`` actually do.
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import subprocess
 import sys
@@ -556,6 +557,29 @@ class TestAnalyse:
         self._scanner_that_reports(monkeypatch, tmp_path, text)
         with pytest.raises(GateError, match="the scanner left no usable"):
             analyse(_FakeApi({}), tmp_path, "head", token="t", server="gate", network="net")  # type: ignore[arg-type]
+
+
+class TestAnnounce:
+    def test_a_progress_line_is_flushed_as_soon_as_it_is_printed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[str] = []
+
+        class _Stream:
+            def write(self, text: str) -> int:
+                events.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                events.append("<flush>")
+
+        monkeypatch.setattr(sys, "stdout", _Stream())
+        sonar_gate._announce("Analysing base (v1)")
+        assert "".join(events) == "Analysing base (v1)\n<flush>"
+
+    def test_the_gate_announces_its_steps_with_it_by_default(self) -> None:
+        default = inspect.signature(check_gate).parameters["progress"].default
+        assert default is sonar_gate._announce
 
 
 class TestCheckGate:

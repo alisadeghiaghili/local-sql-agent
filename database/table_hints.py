@@ -94,6 +94,7 @@ from dataclasses import dataclass
 import sqlglot
 from sqlglot import exp
 
+from security.cte_scope import is_cte_reference
 from security.dialects import get_dialect_profile
 
 logger = logging.getLogger(__name__)
@@ -149,18 +150,6 @@ def _system_schemas() -> frozenset[str]:
     return frozenset(s.lower() for s in get_dialect_profile(_DIALECT).system_schemas)
 
 
-def _visible_cte_names(table: exp.Table) -> frozenset[str]:
-    """Lower-cased names of the CTEs whose scope *table* sits in."""
-    names: set[str] = set()
-    node: exp.Expression | None = table.parent
-    while node is not None:
-        with_ = node.args.get("with_") or node.args.get("with")
-        if with_ is not None:
-            names.update(cte.alias.lower() for cte in with_.expressions if cte.alias)
-        node = node.parent
-    return frozenset(names)
-
-
 def _is_physical_table(table: exp.Table, system_schemas: frozenset[str]) -> bool:
     """Whether *table* names a stored table or view that takes a hint."""
     name = table.this
@@ -173,10 +162,10 @@ def _is_physical_table(table: exp.Table, system_schemas: frozenset[str]) -> bool
     if isinstance(table.parent, exp.Into):
         return False  # SELECT ... INTO <target> writes
     # `db1..T` (default schema) leaves the schema part as an empty string.
-    db, catalog = table.args.get("db"), table.args.get("catalog")
+    db = table.args.get("db")
     if isinstance(db, exp.Identifier) and db.name.lower() in system_schemas:
         return False
-    if not db and not catalog and name.name.lower() in _visible_cte_names(table):
+    if is_cte_reference(table, _DIALECT):
         return False
     return True
 

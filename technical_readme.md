@@ -530,7 +530,7 @@ A hit returns the stored result immediately: no model call, no database statemen
 
 **Module:** `retrieval/context_retriever.py` + 6 sub-retrievers
 
-This is the **most critical step**. The retrievers pick the **relevant subset** of the knowledge base for each question. Whether the prompt then shows that subset or, while the whole knowledge base fits `PROMPT_RETRIEVAL_TOKEN_BUDGET`, everything (Step 5), is decided when the prompt is built; the retrieval output also feeds the filters, the value resolution and, with several data sources, the choice of source.
+This is the **most critical step**. The retrievers pick the **relevant subset** of the knowledge base for each question. Whether the prompt then shows that subset of tables, relationships, rules and examples or, while the whole knowledge base fits `PROMPT_RETRIEVAL_TOKEN_BUDGET`, everything (Step 5), is decided when the prompt is built (metrics, the session context and the rules without trigger keywords are never subsetted); the retrieval output also feeds the filters, the value resolution and, with several data sources, the choice of source.
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐
@@ -710,9 +710,24 @@ Each sub-retriever uses a **two-tier matching strategy**:
   └─────────────────────────────────────────────────────────────┘
 
   RETRIEVAL PATH (the prefix is over the budget)
-  The same sections, built per question from only the tables, relationships,
-  rules and examples the six retrievers selected (Step 4).
+  The same sections and headings, built per question as one text. What is
+  not scoped to a table is the same as on the static path:
+    METRICS            every metric (one line each)
+    BUSINESS RULES     every rule without trigger keywords, plus each rule
+                       whose keyword is in the question (file order)
+    SESSION CONTEXT, RESOLVED WAREHOUSE VALUES, DETECTED FILTERS, column
+    access notes       as in the suffix above
+  What the six retrievers select (Step 4) narrows the rest:
+    DATABASE SCHEMA    the retrieved tables, plus the tables a mentioned
+                       metric's expression uses
+    RELATIONSHIPS      those between the tables shown
+    EXAMPLES           the retrieved ones
+  When no table is retrieved, every table and the relationships between
+  them are shown and a warning is logged. A prompt whose estimate is over
+  the budget is logged as a warning too; nothing is trimmed.
 ```
+
+`tests/test_prompt_path_parity.py` pins which knowledge must match on the two paths and which may only narrow.
 
 **With several data sources** (`project_config/datasources.yaml`) one source is chosen for the question first, with no model call (`retrieval/source_selector.py`: `keywords:`, then the conversation, then retrieval evidence, then the default), and the prompt describes that source only: its tables (those shared with other sources included), the relationships between them, and the examples whose SQL reads only those tables, under one `Data source: <name> — <description>` line. The gate runs per source, so each source has its own cached prefix and its own budget decision; a source over the budget uses the retrieval path restricted to its tables. If the model answers `OUT_OF_SCOPE`, the request is retried once with the next candidate source (`llm/source_routing.py`). With one source none of this runs and the prompt is exactly what it was. See `docs/design/DATASOURCES.md`.
 

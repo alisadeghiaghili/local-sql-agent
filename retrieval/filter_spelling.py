@@ -327,7 +327,7 @@ def _fix(sql: str, denied_columns: Iterable[str] | None, dialect: str) -> Spelli
     hidden = hidden_value_columns(policy)
 
     def pool_of(column: exp.Column) -> tuple[list[str], list[str]] | None:
-        origins = column_origins(column, tree)
+        origins = column_origins(column, tree, dialect=dialect)
         if not origins:
             return None
         vocabularies = usable_vocabularies(origins, policy.denied, hidden, refresh=False)

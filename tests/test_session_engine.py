@@ -216,6 +216,30 @@ class TestScanCapWarning:
         assert turn2.error is None
         assert any("refinement_scan_cap" in w for w in turn2.warnings)
 
+    def test_failed_truncation_check_warns_and_still_answers(self, sqlite_conn, caplog):
+        real_execute = _execute_fn(sqlite_conn)
+
+        def execute_fn(sql: str) -> pd.DataFrame:
+            if "_check" in sql:
+                raise RuntimeError("probe failed")
+            return real_execute(sql)
+
+        store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=50)
+        record = store.create()
+
+        with override_settings(refinement_scan_cap=10_000, default_top_n=1000):
+            _engine(Q1_SQL, real_execute).ask(record, Q1_QUESTION, SYSTEM_PROMPT)
+            with caplog.at_level("WARNING"):
+                turn2 = _engine(Q2_OUTER_SQL, execute_fn).ask(record, Q2_QUESTION, SYSTEM_PROMPT)
+
+        assert turn2.error is None
+        assert turn2.result.row_count > 0
+        assert any(
+            "refinement_scan_cap" in w and w.startswith("بررسی کامل‌بودن اسکن پایهٔ این بازپالایش انجام نشد")
+            for w in turn2.warnings
+        )
+        assert "refinement truncation check failed" in caplog.text
+
     def test_no_warning_when_cap_not_hit(self, sqlite_conn):
         execute_fn = _execute_fn(sqlite_conn)
         store = SessionStore(ttl_seconds=1800, max_size=10, max_turns=50)
