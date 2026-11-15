@@ -18,6 +18,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Step 3b of the setup wizard drafts `aliases.yaml` `synonyms` again, for every data source (`setup_project.py`, `core/synonym_drafts.py`).** Since 6.14.2 the wizard wrote `synonyms: {}` unless `--value-synonyms` was given, and since 6.16.3 `ring_aliases: {}` too, so its `aliases.yaml` was empty. The earlier content is not brought back: the synonyms of 6.9 to 6.14.1 were values read from rows (dates, phone numbers, addresses, error text, each mapped to a table name), and the `ring_aliases` of 6.13 to 6.16.2 were table keys that filtered the ring by a table's name (#206, #207). Step 3b writes the vocabulary the retriever can use instead, from names only:
+  - each one-word alias step 3 found for a table becomes a key mapped to the words of the table's name (no model call);
+  - one model call per data source (per 25 tables of it) is sent the table and column names of that source and answers with the words analysts type for them. No sample value is in that prompt.
+  - An entry is kept only when `schema_data.retriever._expand` can use it: the key is one word (a phrase is never looked up), has a run of two letters, is not shaped like a date, number or address and is not already a word of a table or non-key column name (it would match by itself); each value is such a word, spelled as the name spells it (`trades` becomes `trade`), at most 4 per key and 80 keys per answer. The summary gives the count per data source and the entries left out, by reason; `.setup_log.json` holds `step3_synonyms` (counts and the result, which `--resume` reuses).
+  - A failed or unusable answer gives no entries for its group and does not stop the run; three groups in a row with the identical answer stop it, as in steps 3 and 4.
+  - The result is merged into the earlier `aliases.yaml` as before: curated entries stay, new words are added, a word in both keeps both lists. `aliases.yaml` is now written one line per entry (`word: [term, term]`) under a comment that says what each section holds.
+  - `--no-schema-synonyms` skips the step.
 - **Two warnings in the log for the retrieval path (`prompt_engine/builder.py`, `prompt_engine/prompt_size.py`, `llm/router.py`).** `retrieval selected no table for the question; showing the whole schema` is logged each time retrieval finds nothing. `Retrieval prompt over budget: estimated N tokens > PROMPT_RETRIEVAL_TOKEN_BUDGET B (over by M), data source 'S'` is logged when a retrieval prompt is larger than the budget. Both are observability only: no prompt is trimmed or refused, and the estimate is `len(text) // 4`, which undercounts Persian by about 15%.
 
 ### Documentation
@@ -26,6 +33,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Upgrading
 
+- **The wizard makes one more model call per data source (step 3b).** A script that runs it with a mock or a fixed number of model answers sees one more request per 25 tables of each source; `--no-schema-synonyms` restores the earlier run. Read the drafted `synonyms` before you copy `aliases.yaml` to `project_config/`: the model may map a word to the wrong column, and only a word that is wrong for your domain needs deleting. `ring_aliases` is still not drafted by the wizard: it needs the stored ring names, which `python scripts/draft_policies.py --ring-aliases` reads.
 - **Nothing to configure; the retrieval prompt is longer.** A deployment on the static path sees no change. On the retrieval path, expect the metrics, every always-on rule and the session context to add to the prompt, so a prompt near `PROMPT_RETRIEVAL_TOKEN_BUDGET` may now cross it and log the over-budget warning. `python scripts/prompt_budget.py` measures only the static prefix, so the warning in the log is the signal for a retrieval prompt.
 
 ## [6.17.1] — 2026-11-08
