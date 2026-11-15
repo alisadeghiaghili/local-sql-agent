@@ -73,6 +73,25 @@ Flags
                     personal or contact data are never taken; at most 20 keys
                     per table.
 
+--ring-dimension TABLE.COLUMN
+                    Draft ``aliases.yaml`` ``ring_aliases`` from the stored
+                    names of the ring (hall) dimension: the text column that
+                    holds a ring's name (``Hall.Name``, ``ref.Hall.Name``).
+                    One bounded read of that column (more than 200 distinct
+                    values is refused); each usable name that has no entry
+                    gets one, keyed by the exact stored value, longest name
+                    first. An existing entry is never changed. A name that is
+                    also the name of a table is left out (the application
+                    ignores such a key). Off by default: the wizard does not
+                    guess which table holds the rings. The same values are
+                    what ``scripts/draft_policies.py --ring-aliases`` reads.
+
+--ring-generic-word WORD
+                    With ``--ring-dimension``: a word that begins many ring
+                    names and that analysts leave out (repeatable). A name
+                    that starts with it also gets the rest as a form, unless
+                    two names would share that form.
+
 --no-schema-synonyms
                     Skip step 3b, which drafts ``aliases.yaml`` ``synonyms``
                     from the table and column names of each data source (the
@@ -631,6 +650,7 @@ def _aliases_yaml(ring_aliases: dict, synonyms: dict, generated_at: str = "") ->
 _ALIASES_GUIDE = (
     "# ring_aliases: exact stored value of the ring dimension's name column -> the forms analysts type.\n"
     "#   Not table names (those are entities.yaml aliases). Draft them with\n"
+    "#   python setup_project.py --ring-dimension TABLE.COLUMN, or\n"
     "#   python scripts/draft_policies.py --ring-aliases\n"
     "# synonyms: one word an analyst types -> words of the table and column names.\n"
     "#   Drafted by step 3b from the names only; delete what is wrong for your domain.\n\n"
@@ -1886,7 +1906,7 @@ class _ValueReader:
             self._engines[name] = engine
         return self._engines[name]
 
-    def __call__(self, table, column) -> list[str]:
+    def __call__(self, table, column, limit: int | None = None) -> list[str]:
         from core.value_shapes import MAX_DISTINCT_VALUES
         from database.schema_inspector import _fetch_samples
 
@@ -1894,7 +1914,7 @@ class _ValueReader:
         engine = self._engine(name)
         if engine is None:
             return []
-        return _fetch_samples(engine, table.schema, table.name, column.name, MAX_DISTINCT_VALUES + 1)
+        return _fetch_samples(engine, table.schema, table.name, column.name, limit or MAX_DISTINCT_VALUES + 1)
 
     def close(self) -> None:
         """Dispose the engines this reader opened itself."""
@@ -1931,6 +1951,143 @@ def _collect_value_synonyms(snapshot, read_from, log: dict) -> dict[str, list[st
     )
     log["value_synonyms"] = {"enabled": True, "synonyms": len(synonyms), "tables": tables}
     return synonyms
+
+
+#: A ring dimension with more distinct names than this is refused: a scope is a small dimension.
+_RING_MAX_VALUES = 200
+
+
+class RingDimensionError(ValueError):
+    """``--ring-dimension`` names no single readable column, or the column is not a small dimension."""
+
+
+def _ring_dimension(reference: str, snapshot, namer):
+    """The table and column ``--ring-dimension TABLE.COLUMN`` names.
+
+    The table is written as its key, its bare name or ``Schema.Table`` (letter
+    case ignored); the column is the part after the last dot.
+
+    Args:
+        reference: The option's value.
+        snapshot: The schema snapshot (skipped tables already removed).
+        namer: The key rule.
+
+    Returns:
+        ``(table, column)`` of the snapshot.
+
+    Raises:
+        RingDimensionError: When the value has no dot, the table is not among
+            the tables read or fits several, the column is not a text column
+            of it, or the column is named like personal or contact data.
+
+    Examples:
+        >>> from types import SimpleNamespace as NS
+        >>> hall = NS(name="Hall", schema="ref", full_name="ref.Hall", columns=[NS(name="Name", type="varchar")])
+        >>> table, column = _ring_dimension("ref.hall.name", NS(tables=[hall]), NS(key=lambda t: t.name))
+        >>> table.full_name, column.name
+        ('ref.Hall', 'Name')
+        >>> _ring_dimension("Hall", NS(tables=[hall]), NS(key=lambda t: t.name))
+        Traceback (most recent call last):
+            ...
+        setup_project.RingDimensionError: --ring-dimension must be TABLE.COLUMN (for example Hall.Name); got 'Hall'
+    """
+    from core.value_shapes import is_personal_column
+    from database.schema_inspector import _is_string_type
+
+    table_ref, dot, column_ref = reference.strip().rpartition(".")
+    if not dot or not table_ref.strip() or not column_ref.strip():
+        raise RingDimensionError(f"--ring-dimension must be TABLE.COLUMN (for example Hall.Name); got {reference!r}")
+    wanted = table_ref.strip().casefold()
+    found = [
+        t for t in snapshot.tables
+        if wanted in {t.name.casefold(), t.full_name.casefold(), str(namer.key(t)).casefold()}
+    ]
+    if not found:
+        raise RingDimensionError(
+            f"--ring-dimension: {table_ref!r} is not among the {len(snapshot.tables)} table(s) this run reads"
+        )
+    if len(found) > 1:
+        raise RingDimensionError(
+            f"--ring-dimension: {table_ref!r} fits {len(found)} tables ({', '.join(t.full_name for t in found)}); "
+            "write it as Schema.Table.Column"
+        )
+    table = found[0]
+    column = next((c for c in table.columns if c.name.casefold() == column_ref.strip().casefold()), None)
+    if column is None:
+        raise RingDimensionError(
+            f"--ring-dimension: {column_ref!r} is not a column of {table.full_name} "
+            f"(columns: {', '.join(c.name for c in table.columns)})"
+        )
+    if not _is_string_type(column.type):
+        raise RingDimensionError(
+            f"--ring-dimension: {table.full_name}.{column.name} is a {column.type} column; "
+            "name the text column that stores the ring's name"
+        )
+    if is_personal_column(table.name, column.name):
+        raise RingDimensionError(
+            f"--ring-dimension: {table.full_name}.{column.name} is named like personal or contact data and is not read"
+        )
+    return table, column
+
+
+def _collect_ring_values(args, snapshot, namer, read_from, log: dict) -> tuple[str, ...]:
+    """The ``--ring-dimension`` step: the stored ring names that may become ``ring_aliases`` keys.
+
+    One bounded read of the column (``_RING_MAX_VALUES + 1`` distinct values)
+    through the data source the table was found in. The values are cut down by
+    :func:`core.policy_drafts.usable_values` (no date, number, code, phone
+    number, address, masked value or error text, nothing over 40 characters,
+    one spelling of each value). The log records the table, the column and
+    counts, never a value.
+
+    Args:
+        args: Parsed command line (``ring_dimension``).
+        snapshot: The schema snapshot.
+        namer: The key rule.
+        read_from: The sources (:class:`_Sources`) or the connection string.
+        log: The setup log, updated in place.
+
+    Returns:
+        The usable values, sorted.
+
+    Raises:
+        RingDimensionError: See :func:`_ring_dimension`; also when the column
+            has more than ``_RING_MAX_VALUES`` distinct values or gave none.
+    """
+    from core.policy_drafts import usable_values
+    from core.value_shapes import MAX_VALUE_LENGTH
+
+    table, column = _ring_dimension(args.ring_dimension, snapshot, namer)
+    sources = read_from if isinstance(read_from, _Sources) else _url_sources(read_from)
+    reader = _ValueReader(sources)
+    try:
+        raw = reader(table, column, _RING_MAX_VALUES + 1)
+    finally:
+        reader.close()
+    where = f"{table.full_name}.{column.name}"
+    if len(raw) > _RING_MAX_VALUES:
+        raise RingDimensionError(
+            f"--ring-dimension: {where} has more than {_RING_MAX_VALUES} distinct values; "
+            "a ring dimension is a small table of names, so nothing was taken"
+        )
+    found = usable_values(raw, "", MAX_VALUE_LENGTH)
+    if not found.values:
+        raise RingDimensionError(
+            f"--ring-dimension: {where} gave no usable name ({found.read} value(s) read"
+            + (f"; left out: {', '.join(f'{k} {v}' for k, v in sorted(found.dropped.items()))}" if found.dropped else "")
+            + "); check the column, or that the login can read the table"
+        )
+    left_out = ", ".join(f"{k} {v}" for k, v in sorted(found.dropped.items()))
+    console.print(
+        f"  --ring-dimension: {len(found.values)} ring name(s) from {where} ({found.read} read"
+        + (f"; left out: {left_out}" if left_out else "") + ").",
+        markup=False,
+    )
+    log["ring_dimension"] = {
+        "table": str(namer.key(table)), "column": column.name,
+        "read": found.read, "usable": len(found.values), "dropped": dict(found.dropped),
+    }
+    return found.values
 
 
 def _data_shaped_count(synonyms: Mapping[str, Any]) -> dict[str, int]:
@@ -4113,6 +4270,7 @@ def step6_review_and_write(
     source_order: Iterable[str] = (),
     synonyms: Mapping[str, list[str]] | None = None,
     collapsed: Mapping[str, Iterable[tuple[str, str]]] | None = None,
+    ring_values: Iterable[str] = (),
 ) -> None:
     """Review generated files and write to disk.
 
@@ -4186,10 +4344,22 @@ def step6_review_and_write(
         kept_synonyms, dropped_values = _without_value_synonyms(existing.synonyms)
         existing = replace(existing, synonyms=kept_synonyms)
     # An earlier run wrote one `ring_aliases` entry per table; a key there is the value of a ring.
-    cleanup = drop_table_rings(
-        existing.ring_aliases, existing.entities, _known_tables(snapshot, namer, existing, output_dir),
-    )
+    known_tables = _known_tables(snapshot, namer, existing, output_dir)
+    cleanup = drop_table_rings(existing.ring_aliases, existing.entities, known_tables)
     existing = replace(existing, ring_aliases=cleanup.ring_aliases, entities=cleanup.entities)
+    # The stored ring names of --ring-dimension: an entry for each that has none. A name that
+    # is also the name of a table is left out: the application ignores such a key when it
+    # loads the file, and the cleanup above would drop it on the next run.
+    from core.policy_drafts import ring_entries
+    from core.ring_names import ring_keys_naming_tables
+
+    ring_values = tuple(ring_values)
+    table_named = ring_keys_naming_tables(known_tables, ring_values) if ring_values else []
+    drafted_rings = ring_entries(
+        [v for v in ring_values if v not in table_named], existing.ring_aliases,
+        getattr(args, "ring_generic_word", None) or (),
+    )
+    ring_aliases = {**ring_aliases, **drafted_rings}
     stats: dict[str, MergeStats] = {}
     made: list[Path] = backups if backups is not None else []
 
@@ -4261,7 +4431,8 @@ def step6_review_and_write(
         quiet = _quiet(args)
         if filename in ("entities.yaml", "aliases.yaml"):
             result = step3_aliases(quiet, snapshot, llm, log, language, namer)
-            state["entities_data"], state["ring_aliases"] = result["entities"], result["ring_aliases"]
+            # The ring names of --ring-dimension are not the model's: they stay.
+            state["entities_data"] = result["entities"]
             other = "aliases.yaml" if filename == "entities.yaml" else "entities.yaml"
             if other in written:
                 console.print(
@@ -4328,6 +4499,11 @@ def step6_review_and_write(
             "unplaced": list(cleanup.unplaced),
         },
         "earlier_value_synonyms": _data_shaped_count(existing.synonyms),
+        "drafted_rings": {
+            "added": len(drafted_rings),
+            "already_there": len(ring_values) - len(drafted_rings) - len(table_named),
+            "named_like_a_table": len(table_named),
+        } if ring_values else {},
         "backups": [str(b) for b in made],
         "inferred_relationships": sum(1 for link in links if link.inferred),
     })
@@ -4583,6 +4759,18 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
             f"from rows ({kinds}) and were dropped; --keep-existing-synonyms keeps them.",
             markup=False,
         )
+    rings = done.get("drafted_rings") or {}
+    if rings:
+        console.print(
+            f"  aliases.yaml: {rings.get('added', 0)} ring_aliases entr{'y' if rings.get('added') == 1 else 'ies'} added "
+            f"from the stored ring names (--ring-dimension); {rings.get('already_there', 0)} already had an entry and "
+            "were left as they are"
+            + (f"; {rings['named_like_a_table']} name(s) are also the name of a table and were left out "
+               "(the application ignores such a key)" if rings.get("named_like_a_table") else "")
+            + ". Each new entry has the stored name as its only form unless --ring-generic-word was given: "
+            "add the forms analysts type.",
+            markup=False,
+        )
     table_rings = done.get("dropped_table_rings") or {}
     if table_rings.get("count"):
         keys = table_rings.get("keys") or []
@@ -4724,6 +4912,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         "masked values, error text, values over 40 characters and any column named "
                         "like personal or contact data are never taken; at most 20 per table. Reads "
                         "up to 51 distinct values of each such column from the database.")
+    p.add_argument("--ring-dimension", metavar="TABLE.COLUMN", default=None,
+                   help="Draft aliases.yaml ring_aliases from the stored names of the ring dimension: the text "
+                        "column that holds a ring's (hall's) name, e.g. Hall.Name or ref.Hall.Name. One bounded "
+                        "read of that column; each name that has no entry gets one, keyed by the exact stored "
+                        "value. Off by default: the wizard does not guess which table holds the rings.")
+    p.add_argument("--ring-generic-word", action="append", default=[], metavar="WORD",
+                   help="With --ring-dimension: a word that begins many ring names and that analysts leave out "
+                        "(repeatable). A name that starts with it also gets the rest as a form.")
     p.add_argument("--no-schema-synonyms", action="store_true", default=False,
                    help="Do not draft aliases.yaml synonyms from the table and column names (step 3b). "
                         "By default each data source's names are turned into the words analysts type for them.")
@@ -5050,6 +5246,19 @@ def main(argv: list[str] | None = None) -> int:
     log.setdefault("step2_schema", {})["schema_fingerprint"] = fingerprint
     save()
 
+    # ---- Ring names: only when asked for; refused before any model call ----
+    ring_values: tuple[str, ...] = ()
+    if args.ring_dimension:
+        try:
+            ring_values = _collect_ring_values(args, snapshot, namer, read_from, log)
+        except RingDimensionError as exc:
+            console.print(f"ERROR: {exc}", markup=False)
+            return 2
+        save()
+    elif args.ring_generic_word:
+        console.print("ERROR: --ring-generic-word needs --ring-dimension", markup=False)
+        return 2
+
     reuse = args.resume and stored_fingerprint == fingerprint
     if args.resume and not reuse and any(x is not None for x in (stored_aliases, stored_rules, stored_examples)):
         console.print(
@@ -5144,6 +5353,7 @@ def main(argv: list[str] | None = None) -> int:
         source_order=source_order,
         synonyms=run_synonyms,
         collapsed=collapsed,
+        ring_values=ring_values,
     )
     save()
 
