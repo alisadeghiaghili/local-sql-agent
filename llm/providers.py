@@ -375,6 +375,16 @@ class StreamError(requests.RequestException):
     """
 
 
+def _raise_for_stream_error(chunk: object) -> None:
+    """Raise :class:`StreamError` for a chunk that is not an object or is a server-sent error."""
+    if not isinstance(chunk, dict):
+        raise StreamError("malformed stream chunk (not an object)")
+    error = chunk.get("error")
+    if error:
+        detail = error.get("type") or error.get("code") if isinstance(error, dict) else None
+        raise StreamError(f"endpoint reported an error mid-stream ({detail or 'unspecified'})")
+
+
 class _StreamAssembler:
     """Reassemble ``stream=true`` chunks into the body a non-streaming call returns.
 
@@ -445,14 +455,22 @@ class _StreamAssembler:
         StreamError
             If the chunk is a server-sent error object.
         """
-        if not isinstance(chunk, dict):
-            raise StreamError("malformed stream chunk (not an object)")
-        error = chunk.get("error")
-        if error:
-            detail = error.get("type") or error.get("code") if isinstance(error, dict) else None
-            raise StreamError(f"endpoint reported an error mid-stream ({detail or 'unspecified'})")
+        _raise_for_stream_error(chunk)
         if self.first_chunk_at is None:
             self.first_chunk_at = t
+        self._take_envelope(chunk)
+        choices = chunk.get("choices") or []
+        choice = next((c for c in choices if isinstance(c, dict) and c.get("index", 0) == 0), None)
+        if choice is None:
+            return
+        if self._take_delta(choice.get("delta") or {}) and self.first_token_at is None:
+            self.first_token_at = t
+        if choice.get("finish_reason") is not None:
+            self._finish_reason = choice["finish_reason"]
+            self._finished = True
+
+    def _take_envelope(self, chunk: dict[str, Any]) -> None:
+        """Keep the response-level fields: the first value of each identifier, the latest usage."""
         for key, attr in (
             ("id", "_id"), ("model", "_model"), ("created", "_created"),
             ("system_fingerprint", "_fingerprint"),
@@ -462,11 +480,9 @@ class _StreamAssembler:
         usage = chunk.get("usage")
         if isinstance(usage, dict) and usage:
             self._usage = usage
-        choices = chunk.get("choices") or []
-        choice = next((c for c in choices if isinstance(c, dict) and c.get("index", 0) == 0), None)
-        if choice is None:
-            return
-        delta = choice.get("delta") or {}
+
+    def _take_delta(self, delta: dict[str, Any]) -> bool:
+        """Append one choice delta's role, content and reasoning; whether it carried any text."""
         if isinstance(delta.get("role"), str):
             self._role = delta["role"]
         produced = False
@@ -481,11 +497,7 @@ class _StreamAssembler:
             if isinstance(piece, str):
                 self._reasoning.setdefault(key, []).append(piece)
                 produced = produced or bool(piece)
-        if produced and self.first_token_at is None:
-            self.first_token_at = t
-        if choice.get("finish_reason") is not None:
-            self._finish_reason = choice["finish_reason"]
-            self._finished = True
+        return produced
 
     def body(self) -> dict[str, Any]:
         """The reassembled ``chat.completion`` body.
@@ -702,6 +714,11 @@ def salvage_string_list(text: str, key: str | None = None) -> list[str]:
     if body[0] == "[":
         return _complete_strings(body, 1, decoder)
 
+    return _string_list_in_object(body, key, decoder)
+
+
+def _string_list_in_object(body: str, key: str | None, decoder: json.JSONDecoder) -> list[str]:
+    """:func:`salvage_string_list` for an object: the complete strings of its member *key* (or first list)."""
     pos = 1  # inside the object, after "{"
     while True:
         pos = _after_space(body, pos)
@@ -1108,17 +1125,7 @@ class OpenAIBackend(LLMBackend):
             When the endpoint is unreachable, or every retry's response
             body was unparsable, after all retries.
         """
-        payload = self._build_payload(prompt)
-        if max_tokens is not None:
-            if max_tokens < 1:
-                raise ValueError(f"max_tokens must be a positive integer, got {max_tokens!r}")
-            # This request only: the next call is built from LLM_NUM_PREDICT again.
-            payload["max_tokens"] = max_tokens
-        streaming = bool(cfg.settings.llm_stream_timings)
-        if streaming:
-            payload["stream"] = True
-            payload["stream_options"] = {"include_usage": True}
-
+        payload, streaming = self._payload_for(prompt, max_tokens)
         last_exc: Exception | None = None
 
         for attempt in range(1, self._retries + 1):
@@ -1127,65 +1134,8 @@ class OpenAIBackend(LLMBackend):
             # quantise -- or zero out -- total_ms for any fast response.
             start = time.perf_counter()
             try:
-                ttft_ms: int | None = None
-                if streaming:
-                    body, status_code, ttft_ms = self._post_streaming(payload, start)
-                else:
-                    resp = requests.post(
-                        f"{self._base_url}/chat/completions",
-                        headers=self._headers,
-                        json=payload,
-                        timeout=self._timeout,
-                    )
-                    resp.raise_for_status()
-                    body = resp.json()
-                    status_code = resp.status_code
-                choice: dict[str, Any] = (body.get("choices") or [{}])[0]
-                message: dict[str, Any] = choice.get("message") or {}
-                raw: str = _answer_text(message).strip()
-                logger.debug("OpenAI raw (attempt %d): %.300s", attempt, raw)
-
-                # Reasoning-channel detection (see module docstring's note
-                # on the gpt-oss deployment target and the helpers above):
-                # never substituted for `raw` -- only ever used to flag the
-                # response as suspect, in `meta`, so a downstream "No
-                # SELECT / CTE found" rejection reads as a protocol
-                # mismatch instead of the model looking incompetent at SQL.
-                reasoning_text = _extract_reasoning_text(message)
-                reasoning_detected = bool(reasoning_text) or _content_carries_reasoning_markers(raw)
-                if reasoning_detected:
-                    logger.warning(
-                        "OpenAI response (attempt %d) appears to carry reasoning-channel "
-                        "text rather than a final answer; excerpt: %.200s",
-                        attempt, reasoning_text or raw,
-                    )
-                reasoning_tokens, reasoning_estimated = _reasoning_token_stats(
-                    body, reasoning_text, raw,
-                )
-
-                total_ms = round((time.perf_counter() - start) * 1000)
-                meta: dict[str, Any] = {
-                    "raw": body,
-                    "endpoint_status": status_code,
-                    "attempts": attempt,
-                    "total_ms": total_ms,
-                    "finish_reason": _normalize_finish_reason(choice.get("finish_reason")),
-                    "reasoning_detected": reasoning_detected,
-                    "reasoning_tokens": reasoning_tokens,
-                    "reasoning_tokens_estimated": reasoning_estimated,
-                    "ttft_ms": ttft_ms,
-                    "generation_ms": (
-                        max(total_ms - ttft_ms, 0) if ttft_ms is not None else None
-                    ),
-                }
-
-                if raw.strip().upper() == _OUT_OF_SCOPE_SENTINEL:
-                    exc = ValueError(_OUT_OF_SCOPE_SENTINEL)
-                    exc.llm_meta = meta  # type: ignore[attr-defined]
-                    raise exc
-
-                return raw, meta
-
+                body, status_code, ttft_ms = self._post_once(payload, streaming, start)
+                return self._answer_and_meta(body, status_code, attempt, start, ttft_ms)
             except requests.Timeout:
                 # Timeout is a hard failure -- propagate immediately, do not retry.
                 raise
@@ -1196,7 +1146,7 @@ class OpenAIBackend(LLMBackend):
                 # body from a flaky endpoint is caught here, not by a
                 # `except ValueError` clause (there is none) that would
                 # otherwise also catch -- and mask -- the OUT_OF_SCOPE
-                # sentinel raised two lines above (a plain ValueError, not
+                # sentinel raised by _answer_and_meta (a plain ValueError, not
                 # a RequestException, so it never reaches this branch).
                 last_exc = exc
                 wait = _BACKOFF_BASE ** (attempt - 1)
@@ -1211,6 +1161,94 @@ class OpenAIBackend(LLMBackend):
             f"OpenAI-compatible endpoint {self._base_url!r} unreachable "
             f"after {self._retries} retries: {last_exc}"
         )
+
+    def _payload_for(self, prompt: str, max_tokens: int | None) -> tuple[dict[str, Any], bool]:
+        """The request body for *prompt*, and whether it is sent streaming (``LLM_STREAM_TIMINGS``)."""
+        payload = self._build_payload(prompt)
+        if max_tokens is not None:
+            if max_tokens < 1:
+                raise ValueError(f"max_tokens must be a positive integer, got {max_tokens!r}")
+            # This request only: the next call is built from LLM_NUM_PREDICT again.
+            payload["max_tokens"] = max_tokens
+        streaming = bool(cfg.settings.llm_stream_timings)
+        if streaming:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
+        return payload, streaming
+
+    def _post_once(
+        self, payload: dict[str, Any], streaming: bool, start: float,
+    ) -> tuple[dict[str, Any], int, int | None]:
+        """One transport attempt: ``(body, status_code, ttft_ms)``; ``ttft_ms`` only when streaming."""
+        if streaming:
+            return self._post_streaming(payload, start)
+        resp = requests.post(
+            f"{self._base_url}/chat/completions",
+            headers=self._headers,
+            json=payload,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        return resp.json(), resp.status_code, None
+
+    def _answer_and_meta(
+        self,
+        body: dict[str, Any],
+        status_code: int,
+        attempt: int,
+        start: float,
+        ttft_ms: int | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """The answer text of *body* and its ``meta`` (see :meth:`generate_with_meta`).
+
+        Raises
+        ------
+        ValueError("OUT_OF_SCOPE")
+            When the answer is the decline sentinel; carries ``.llm_meta``.
+        """
+        choice: dict[str, Any] = (body.get("choices") or [{}])[0]
+        message: dict[str, Any] = choice.get("message") or {}
+        raw: str = _answer_text(message).strip()
+        logger.debug("OpenAI raw (attempt %d): %.300s", attempt, raw)
+
+        # Reasoning-channel detection (see module docstring's note on the
+        # gpt-oss deployment target and the helpers above): never substituted
+        # for `raw` -- only ever used to flag the response as suspect, in
+        # `meta`, so a downstream "No SELECT / CTE found" rejection reads as a
+        # protocol mismatch instead of the model looking incompetent at SQL.
+        reasoning_text = _extract_reasoning_text(message)
+        reasoning_detected = bool(reasoning_text) or _content_carries_reasoning_markers(raw)
+        if reasoning_detected:
+            logger.warning(
+                "OpenAI response (attempt %d) appears to carry reasoning-channel "
+                "text rather than a final answer; excerpt: %.200s",
+                attempt, reasoning_text or raw,
+            )
+        reasoning_tokens, reasoning_estimated = _reasoning_token_stats(
+            body, reasoning_text, raw,
+        )
+
+        total_ms = round((time.perf_counter() - start) * 1000)
+        meta: dict[str, Any] = {
+            "raw": body,
+            "endpoint_status": status_code,
+            "attempts": attempt,
+            "total_ms": total_ms,
+            "finish_reason": _normalize_finish_reason(choice.get("finish_reason")),
+            "reasoning_detected": reasoning_detected,
+            "reasoning_tokens": reasoning_tokens,
+            "reasoning_tokens_estimated": reasoning_estimated,
+            "ttft_ms": ttft_ms,
+            "generation_ms": (
+                max(total_ms - ttft_ms, 0) if ttft_ms is not None else None
+            ),
+        }
+
+        if raw.strip().upper() == _OUT_OF_SCOPE_SENTINEL:
+            exc = ValueError(_OUT_OF_SCOPE_SENTINEL)
+            exc.llm_meta = meta  # type: ignore[attr-defined]
+            raise exc
+        return raw, meta
 
     def generate_structured(self, segments: "PromptSegments", schema: dict) -> tuple[dict, dict[str, Any]]:
         """Constrained decoding via ``response_format: json_schema`` (strict mode)."""

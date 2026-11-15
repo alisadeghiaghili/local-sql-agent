@@ -77,6 +77,7 @@ import functools
 import logging
 import threading
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -229,6 +230,10 @@ _LLM_COMPLETED_ERRORS: frozenset[type[NLQError]] = frozenset({
 })
 
 
+#: What the client is told when the model does not answer in time (any of the timeout kinds).
+_LLM_TIMEOUT_MESSAGE = "The LLM took too long to respond. Please try again."
+
+
 def run_query(
     question: str,
     system_prompt: str,
@@ -283,179 +288,191 @@ def run_query(
     # Read the public ``agent`` name — if a test has patched it via
     # patch('api.runner.agent', mock), _get_agent() is bypassed entirely
     # because the mock is already non-None.
-    _agent = _get_agent()
-    timer = StageTimer()
+    ctx = _QueryContext.build(
+        _get_agent(), question, system_prompt, mode, interpret, principal,
+    )
     req_id = request_id or uuid.uuid4().hex[:12]
-    # Measured once per call (cheap: build_static_prefix/estimate_tokens are
-    # lru_cache-backed on system_prompt, which is loaded once at startup) so
-    # the audit ``llm`` block's prefix_cache_hit ratio is meaningful instead
-    # of comparing against a hardcoded 0 (see docs/api-contract-v2.md §6).
-    static_prefix_tokens = static_prefix_token_estimate(system_prompt)
-    # Embedded in every query_cache key (question- and SQL-keyed alike) so a
-    # knowledge-base change invalidates stale entries by construction -- see
-    # api/query_cache.py's module docstring and Phase 2 task 6.
-    cache_prefix_version = cache_prefix_version_for(system_prompt)
-    # Cache-partition key (Phase 8): "" (the cache's own unscoped default)
-    # when no principal is known at all, so every pre-Phase-8 caller keeps
-    # sharing the single partition it always has. A real principal always
-    # gets a real scope key -- including an all-access one, which still
-    # partitions away from the unscoped "" default used by non-HTTP callers.
-    # memory_used=None named explicitly (Finding 8, 2026 audit): this is
-    # the /query path, which has no session and therefore no memory
-    # entries to fold in -- "no memory was used" is this call's actual
-    # answer, stated rather than defaulted to.
-    cache_scope = _scope_key_of(principal, memory_used=None) if principal is not None else ""
-    # Column-level ACL (Phase 8): the seam security.sql_guard.validate_sql
-    # has always accepted but that, before this phase, nothing populated.
-    # None (no principal) applies no restriction -- pre-Phase-8 behaviour.
-    denied_columns = principal.denied_columns if principal is not None else None
-
-    # Mutable state accumulated for the audit record regardless of which
-    # path this request takes (success, cache hit, or any error below).
-    audit_sql: str = ""
-    audit_guard: dict[str, Any] = {
-        "verdict": "allowed", "rule": None, "injected_top": None, "tables_touched": None,
-    }
-    audit_row_count: int = 0
-    audit_columns: list[str] | None = None
-    audit_llm: dict[str, Any] | None = None
-    audit_error_code: str | None = None
-    audit_error_message: str | None = None
-    # How the data source was chosen (several sources only); set from the
-    # result, or from the exception that ended the request.
-    audit_selection: dict[str, Any] | None = None
-    # What the filter value check found (FILTER_VALUE_CHECK, off by default);
-    # stays None (and the record then has no such key) unless it ran.
-    audit_value_check: dict[str, Any] | None = None
-    # What the filter value spelling fix did (FILTER_VALUE_SPELLING); stays None
-    # (and the record then has no such key) unless it rewrote a literal.
-    audit_value_spelling: dict[str, Any] | None = None
+    audit = _AuditState()
     # Where mode="sql" reports its selection (see _safe_generate_sql_only),
     # including when it raises.
     selection_sink: dict[str, Any] = {}
-    # T0 only when this exact call was served from cache; every other
-    # path today is the single-shot LLM pipeline, T2. T1 (template) and
-    # T3 (agent) are not reachable yet -- they land in a later phase, per
-    # docs/api-contract-v2.md.
-    audit_tier: str = "T2"
 
     try:
         # ── cache lookup (result / full, no interpret) ─────────────────────
-        use_cache = (mode in ("result", "full")) and not interpret
-        if use_cache:
+        if ctx.use_cache:
             cached = query_cache.get(
-                question, mode, prefix_version=cache_prefix_version, scope_key=cache_scope,
+                question, mode, prefix_version=ctx.cache_prefix_version, scope_key=ctx.cache_scope,
             )
             if cached is not None:
                 logger.debug("Cache HIT  question=%.60s mode=%s", question, mode)
-                audit_tier = "T0"
-                audit_sql = cached.sql or ""
-                audit_row_count = cached.row_count or 0
-                audit_columns = _columns_from_rows(cached.result)
-                if audit_sql:
-                    audit_guard["tables_touched"] = _touched_or_none(audit_sql)
-                # injected_top is not recoverable from a cached QueryResponse
-                # (it isn't part of that model) -- left None, a known gap.
+                audit.record_cache_hit(cached)
                 return cached
             logger.debug("Cache MISS question=%.60s mode=%s", question, mode)
 
         # ── sql-only mode: generate without executing ──────────────────────
         if mode == "sql":
-            sql, llm_meta = _safe_generate_sql_only(
-                _agent, question, system_prompt, timer, denied_columns=denied_columns,
-                selection_sink=selection_sink,
-            )
-            audit_selection = _selection_or_none(selection_sink.get("selection"))
-            audit_sql = sql
-            audit_guard["tables_touched"] = _touched_or_none(sql)
-            # ensure_top is never applied in this mode (no execution, no
-            # row cap to enforce) -- injected_top correctly stays None.
-            audit_llm = _llm_status_block(
-                llm_meta, _agent._backend,
-                finish_reason=finish_reason_from_meta(llm_meta),
-                static_prefix_tokens=_prefix_tokens_for(
-                    system_prompt, audit_selection, static_prefix_tokens,
-                ),
-            )
-            mark_suspected(
-                audit_llm, source=_chosen_source(audit_selection), question=question, sql=sql,
-            )
-            return QueryResponse(
-                question=question,
-                sql=sql,
-                model=_agent._backend.name,
-                llm=audit_llm,
-            )
+            return _answer_sql_only(ctx, audit, selection_sink)
 
         # ── result / full mode ─────────────────────────────────────────────
-        sql_cache_lookup = None
-        if use_cache:
-            sql_cache_lookup = functools.partial(
-                _rows_from_sql_cache,
-                mode=mode, prefix_version=cache_prefix_version, scope_key=cache_scope,
-            )
-
-        df, result = _safe_run(
-            _agent, question, system_prompt, timer,
-            sql_cache_lookup=sql_cache_lookup, denied_columns=denied_columns,
-        )
-        rows: list[dict] = df.to_dict(orient="records")
-
-        audit_selection = _selection_or_none(getattr(result, "datasource_selection", None))
-        audit_value_check = _selection_or_none(getattr(result, "value_check", None))
-        audit_value_spelling = _selection_or_none(getattr(result, "value_spelling", None))
-        audit_sql = result.sql
-        audit_row_count = len(rows)
-        audit_columns = [str(c) for c in df.columns]
-        audit_guard["tables_touched"] = _touched_or_none(result.sql)
-        audit_guard["injected_top"] = result.injected_top
-        audit_llm = _llm_status_block(
-            result.llm_meta, _agent._backend,
-            finish_reason=finish_reason_from_meta(result.llm_meta),
-            corrections=max(result.attempt - 1, 0),
-            static_prefix_tokens=_prefix_tokens_for(
-                system_prompt, audit_selection, static_prefix_tokens,
-            ),
-        )
-        mark_suspected(
-            audit_llm, source=_chosen_source(audit_selection), question=question, sql=result.sql,
-        )
-
-        interpretation: str | None = None
-        if interpret and mode in ("result", "full"):
-            with timer.stage("interpret"):
-                interpretation = _interpret(_agent, question, rows)
-
-        response = QueryResponse(
-            question=question,
-            sql=result.sql if mode == "full" else None,
-            result=rows,
-            interpretation=interpretation,
-            row_count=len(rows),
-            correction_attempts=result.attempt,
-            model=_agent._backend.name,
-            llm=audit_llm,
-        )
-
-        # ── cache store ────────────────────────────────────────────────────
-        if use_cache:
-            query_cache.set(
-                question, mode, response,
-                prefix_version=cache_prefix_version, sql=result.sql, scope_key=cache_scope,
-            )
-            logger.debug("Cache SET  question=%.60s mode=%s", question, mode)
-
-        return response
+        return _answer_with_result(ctx, audit)
 
     except NLQError as exc:
-        audit_error_code = exc.error_code
-        audit_error_message = exc.message
+        audit.record_nlq_error(exc, ctx, selection_sink)
+        raise
+
+    except Exception as exc:  # noqa: BLE001  # still write exactly one record
+        audit.error_code = "INTERNAL_ERROR"
+        audit.error_message = str(exc)
+        raise
+
+    finally:
+        _write_audit(
+            request_id=req_id,
+            question=question,
+            sql=audit.sql,
+            guard=audit.guard,
+            row_count=audit.row_count,
+            tier=audit.tier,
+            error_code=audit.error_code,
+            error_message=audit.error_message,
+            timings=ctx.timer.snapshot(),
+            llm=audit.llm,
+            columns=audit.columns,
+            principal_id=principal.id if principal is not None else None,
+            datasource=target_datasource_or_none(audit.sql, cfg.settings.sql_dialect),
+            datasource_selection=audit.selection,
+            value_check=audit.value_check,
+            value_spelling=audit.value_spelling,
+        )
+
+
+@dataclass(frozen=True)
+class _QueryContext:
+    """What one :func:`run_query` call works with, fixed before the pipeline starts."""
+
+    agent: SQLAgent
+    question: str
+    system_prompt: str
+    mode: str
+    interpret: bool
+    timer: StageTimer
+    static_prefix_tokens: int
+    """Measured once per call (cheap: build_static_prefix/estimate_tokens are
+    lru_cache-backed on system_prompt, which is loaded once at startup) so the
+    audit ``llm`` block's prefix_cache_hit ratio is meaningful instead of
+    comparing against a hardcoded 0 (see docs/api-contract-v2.md §6)."""
+    cache_prefix_version: str
+    """Embedded in every query_cache key (question- and SQL-keyed alike) so a
+    knowledge-base change invalidates stale entries by construction -- see
+    api/query_cache.py's module docstring and Phase 2 task 6."""
+    cache_scope: str
+    """Cache-partition key (Phase 8): "" (the cache's own unscoped default)
+    when no principal is known at all, so every pre-Phase-8 caller keeps
+    sharing the single partition it always has. A real principal always gets
+    a real scope key -- including an all-access one, which still partitions
+    away from the unscoped "" default used by non-HTTP callers."""
+    denied_columns: tuple[str, ...] | None
+    """Column-level ACL (Phase 8): the seam security.sql_guard.validate_sql has
+    always accepted. None (no principal) applies no restriction -- pre-Phase-8
+    behaviour."""
+
+    @property
+    def use_cache(self) -> bool:
+        """Cache is consulted/populated only for result/full mode without interpretation."""
+        return self.mode in ("result", "full") and not self.interpret
+
+    @classmethod
+    def build(
+        cls,
+        agent: SQLAgent,
+        question: str,
+        system_prompt: str,
+        mode: str,
+        interpret: bool,
+        principal: Principal | None,
+    ) -> _QueryContext:
+        """The context for one call, measuring what is measured once per call."""
+        return cls(
+            agent=agent,
+            question=question,
+            system_prompt=system_prompt,
+            mode=mode,
+            interpret=interpret,
+            timer=StageTimer(),
+            static_prefix_tokens=static_prefix_token_estimate(system_prompt),
+            cache_prefix_version=cache_prefix_version_for(system_prompt),
+            # memory_used=None named explicitly (Finding 8, 2026 audit): this
+            # is the /query path, which has no session and therefore no memory
+            # entries to fold in -- "no memory was used" is this call's actual
+            # answer, stated rather than defaulted to.
+            cache_scope=(
+                _scope_key_of(principal, memory_used=None) if principal is not None else ""
+            ),
+            denied_columns=principal.denied_columns if principal is not None else None,
+        )
+
+    def prefix_tokens(self, selection: dict[str, Any] | None) -> int:
+        """The static-prefix size to report, for the data source *selection* chose."""
+        return _prefix_tokens_for(self.system_prompt, selection, self.static_prefix_tokens)
+
+
+def _new_guard_block() -> dict[str, Any]:
+    return {"verdict": "allowed", "rule": None, "injected_top": None, "tables_touched": None}
+
+
+@dataclass
+class _AuditState:
+    """What the audit record of one :func:`run_query` call says, filled in as the call goes.
+
+    Accumulated regardless of which path the request takes (success, cache
+    hit, or any error) and written once, by ``run_query``'s ``finally``.
+    """
+
+    sql: str = ""
+    guard: dict[str, Any] = field(default_factory=_new_guard_block)
+    row_count: int = 0
+    columns: list[str] | None = None
+    llm: dict[str, Any] | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    selection: dict[str, Any] | None = None
+    """How the data source was chosen (several sources only); set from the
+    result, or from the exception that ended the request."""
+    value_check: dict[str, Any] | None = None
+    """What the filter value check found (FILTER_VALUE_CHECK, off by
+    default); stays None (and the record then has no such key) unless it ran."""
+    value_spelling: dict[str, Any] | None = None
+    """What the filter value spelling fix did (FILTER_VALUE_SPELLING); stays
+    None (and the record then has no such key) unless it rewrote a literal."""
+    tier: str = "T2"
+    """T0 only when this exact call was served from cache; every other path
+    today is the single-shot LLM pipeline, T2. T1 (template) and T3 (agent)
+    are not reachable yet -- they land in a later phase, per
+    docs/api-contract-v2.md."""
+
+    def record_cache_hit(self, cached: QueryResponse) -> None:
+        """A response served from the query cache."""
+        self.tier = "T0"
+        self.sql = cached.sql or ""
+        self.row_count = cached.row_count or 0
+        self.columns = _columns_from_rows(cached.result)
+        if self.sql:
+            self.guard["tables_touched"] = _touched_or_none(self.sql)
+        # injected_top is not recoverable from a cached QueryResponse (it
+        # isn't part of that model) -- left None, a known gap.
+
+    def record_nlq_error(
+        self, exc: NLQError, ctx: _QueryContext, selection_sink: dict[str, Any],
+    ) -> None:
+        """A request that ended in a typed :class:`~api.errors.NLQError`."""
+        self.error_code = exc.error_code
+        self.error_message = exc.message
         error_type = type(exc)
         if error_type in _GUARD_REJECTED_ERRORS:
-            audit_guard["verdict"] = "rejected"
-            audit_guard["rule"] = exc.error_code
+            self.guard["verdict"] = "rejected"
+            self.guard["rule"] = exc.error_code
         elif isinstance(exc, OutOfScopeError):
-            audit_guard["rule"] = "OUT_OF_SCOPE"
+            self.guard["rule"] = "OUT_OF_SCOPE"
         # A genuine model response completed the LLM stage (the model DID
         # answer -- the SQL just turned out to be unusable, guard-rejected,
         # or the downstream execution/out-of-scope path failed afterward),
@@ -472,17 +489,15 @@ def run_query(
             finish_reason = finish_reason_from_meta(getattr(exc, "llm_meta", None))
         else:
             finish_reason = "error"
-        audit_selection = (
+        self.selection = (
             _selection_or_none(getattr(exc, "datasource_selection", None))
             or _selection_or_none(selection_sink.get("selection"))
         )
-        audit_value_check = _selection_or_none(getattr(exc, "value_check", None))
-        audit_value_spelling = _selection_or_none(getattr(exc, "value_spelling", None))
-        audit_llm = _llm_status_block_for_error(
-            exc, _agent._backend, finish_reason,
-            static_prefix_tokens=_prefix_tokens_for(
-                system_prompt, audit_selection, static_prefix_tokens,
-            ),
+        self.value_check = _selection_or_none(getattr(exc, "value_check", None))
+        self.value_spelling = _selection_or_none(getattr(exc, "value_spelling", None))
+        self.llm = _llm_status_block_for_error(
+            exc, ctx.agent._backend, finish_reason,
+            static_prefix_tokens=ctx.prefix_tokens(self.selection),
         )
 
         # The guard (or, for an execution failure, validate_sql earlier in
@@ -493,37 +508,102 @@ def run_query(
         # attempted, not just that it failed.
         candidate_sql = getattr(exc, "candidate_sql", None)
         if candidate_sql:
-            audit_sql = candidate_sql
-            audit_guard["tables_touched"] = _touched_or_none(candidate_sql)
+            self.sql = candidate_sql
+            self.guard["tables_touched"] = _touched_or_none(candidate_sql)
         exc_injected_top = getattr(exc, "injected_top", None)
         if exc_injected_top is not None:
-            audit_guard["injected_top"] = exc_injected_top
-        raise
+            self.guard["injected_top"] = exc_injected_top
 
-    except Exception as exc:  # noqa: BLE001 — still write exactly one record
-        audit_error_code = "INTERNAL_ERROR"
-        audit_error_message = str(exc)
-        raise
 
-    finally:
-        _write_audit(
-            request_id=req_id,
-            question=question,
-            sql=audit_sql,
-            guard=audit_guard,
-            row_count=audit_row_count,
-            tier=audit_tier,
-            error_code=audit_error_code,
-            error_message=audit_error_message,
-            timings=timer.snapshot(),
-            llm=audit_llm,
-            columns=audit_columns,
-            principal_id=principal.id if principal is not None else None,
-            datasource=target_datasource_or_none(audit_sql, cfg.settings.sql_dialect),
-            datasource_selection=audit_selection,
-            value_check=audit_value_check,
-            value_spelling=audit_value_spelling,
+def _answer_sql_only(
+    ctx: _QueryContext, audit: _AuditState, selection_sink: dict[str, Any],
+) -> QueryResponse:
+    """``mode="sql"``: generate the SQL without executing it."""
+    agent = ctx.agent
+    sql, llm_meta = _safe_generate_sql_only(
+        agent, ctx.question, ctx.system_prompt, ctx.timer, denied_columns=ctx.denied_columns,
+        selection_sink=selection_sink,
+    )
+    audit.selection = _selection_or_none(selection_sink.get("selection"))
+    audit.sql = sql
+    audit.guard["tables_touched"] = _touched_or_none(sql)
+    # ensure_top is never applied in this mode (no execution, no row cap to
+    # enforce) -- injected_top correctly stays None.
+    audit.llm = _llm_status_block(
+        llm_meta, agent._backend,
+        finish_reason=finish_reason_from_meta(llm_meta),
+        static_prefix_tokens=ctx.prefix_tokens(audit.selection),
+    )
+    mark_suspected(
+        audit.llm, source=_chosen_source(audit.selection), question=ctx.question, sql=sql,
+    )
+    return QueryResponse(
+        question=ctx.question,
+        sql=sql,
+        model=agent._backend.name,
+        llm=audit.llm,
+    )
+
+
+def _answer_with_result(ctx: _QueryContext, audit: _AuditState) -> QueryResponse:
+    """``mode="result"`` / ``"full"``: generate, guard, execute, optionally interpret, cache."""
+    agent, question, mode = ctx.agent, ctx.question, ctx.mode
+    sql_cache_lookup = None
+    if ctx.use_cache:
+        sql_cache_lookup = functools.partial(
+            _rows_from_sql_cache,
+            mode=mode, prefix_version=ctx.cache_prefix_version, scope_key=ctx.cache_scope,
         )
+
+    df, result = _safe_run(
+        agent, question, ctx.system_prompt, ctx.timer,
+        sql_cache_lookup=sql_cache_lookup, denied_columns=ctx.denied_columns,
+    )
+    rows: list[dict] = df.to_dict(orient="records")
+
+    audit.selection = _selection_or_none(getattr(result, "datasource_selection", None))
+    audit.value_check = _selection_or_none(getattr(result, "value_check", None))
+    audit.value_spelling = _selection_or_none(getattr(result, "value_spelling", None))
+    audit.sql = result.sql
+    audit.row_count = len(rows)
+    audit.columns = [str(c) for c in df.columns]
+    audit.guard["tables_touched"] = _touched_or_none(result.sql)
+    audit.guard["injected_top"] = result.injected_top
+    audit.llm = _llm_status_block(
+        result.llm_meta, agent._backend,
+        finish_reason=finish_reason_from_meta(result.llm_meta),
+        corrections=max(result.attempt - 1, 0),
+        static_prefix_tokens=ctx.prefix_tokens(audit.selection),
+    )
+    mark_suspected(
+        audit.llm, source=_chosen_source(audit.selection), question=question, sql=result.sql,
+    )
+
+    interpretation: str | None = None
+    if ctx.interpret and mode in ("result", "full"):
+        with ctx.timer.stage("interpret"):
+            interpretation = _interpret(agent, question, rows)
+
+    response = QueryResponse(
+        question=question,
+        sql=result.sql if mode == "full" else None,
+        result=rows,
+        interpretation=interpretation,
+        row_count=len(rows),
+        correction_attempts=result.attempt,
+        model=agent._backend.name,
+        llm=audit.llm,
+    )
+
+    # ── cache store ────────────────────────────────────────────────────────
+    if ctx.use_cache:
+        query_cache.set(
+            question, mode, response,
+            prefix_version=ctx.cache_prefix_version, sql=result.sql, scope_key=ctx.cache_scope,
+        )
+        logger.debug("Cache SET  question=%.60s mode=%s", question, mode)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -905,11 +985,8 @@ def _safe_generate_sql_only(
     ``__cause__`` untouched — it resolves through the unwrap above to
     itself. The transport types are what exercise the wrapper now.
     """
-    from retrieval.context_retriever import ContextRetriever
-    from security.sql_guard import clean_sql, validate_sql
-
     with timer.stage("plan"):
-        context = ContextRetriever.retrieve(question)
+        context = _retrieve_context(question)
     with timer.stage("prompt"):
         routing = SourceRouting.plan(
             question, context,
@@ -926,40 +1003,12 @@ def _safe_generate_sql_only(
         )
 
     try:
-        # The "llm" stage still records its elapsed time when the call
-        # raises (StageTimer.stage times the block either way -- see its
-        # docstring), and any ``llm_meta`` a backend attached to the
-        # exception survives the unwrap below, since that is the very same
-        # exception object the backend raised.
-        try:
-            with timer.stage("llm"):
-                try:
-                    route_result, _replaced = generate_with_source_fallback(
-                        lambda s: agent._router.generate_for_task(TaskType.SQL_GENERATION, s),
-                        routing, segments,
-                    )
-                except Exception as exc:  # noqa: BLE001  # unwrapped, then translated below
-                    raise exc.__cause__ or exc
-        finally:
-            # Reported whether the call answered or raised, so the audit
-            # record of a failed request still says which source was tried.
-            if selection_sink is not None and routing is not None:
-                selection_sink["selection"] = routing.audit()
-        raw, llm_meta = route_result.text or "", route_result.meta
+        raw, llm_meta = _generate_sql_text(agent, routing, segments, timer, selection_sink)
     except ValueError as exc:
-        if str(exc) == "OUT_OF_SCOPE":
-            err: NLQError = OutOfScopeError(
-                "This question is outside the scope of the data this system covers."
-            )
-        else:
-            err = InvalidSQLResponseError(
-                f"LLM response could not be parsed into valid SQL: {exc}"
-            )
-        _carry_exception_meta(exc, err)
-        raise err
+        raise _sql_only_value_error(exc)
     except _requests.Timeout as exc:
         raise ModelTimeoutError(
-            "The LLM took too long to respond. Please try again.",
+            _LLM_TIMEOUT_MESSAGE,
             detail=str(exc),
         )
     except TimeoutError as exc:
@@ -972,7 +1021,7 @@ def _safe_generate_sql_only(
         # _safe_run's identical clause (see this module's "Private helpers"
         # section and llm/sql_agent.py's module docstring).
         raise ModelTimeoutError(
-            "The LLM took too long to respond. Please try again.",
+            _LLM_TIMEOUT_MESSAGE,
             detail=str(exc),
         )
     except _requests.ConnectionError as exc:
@@ -998,18 +1047,87 @@ def _safe_generate_sql_only(
         )
 
     if not raw or not raw.strip():
-        # Same distinction the v2 engine draws (session/engine.py): a
-        # completion cut off at the token cap before it emitted anything
-        # is a configuration ceiling, not an empty answer, and only one of
-        # those two has a fix the operator can act on.
-        if is_truncated_empty_completion(raw or "", finish_reason_from_meta(llm_meta)):
-            err = TruncatedSQLResponseError(
-                truncated_output_message(cfg.settings.llm_num_predict)
-            )
-        else:
-            err = EmptySQLResponseError("LLM returned an empty response.")
-        err.llm_meta = llm_meta  # type: ignore[attr-defined]
-        raise err
+        raise _empty_completion_error(raw, llm_meta)
+    return _guarded_sql(raw, llm_meta, timer, denied_columns), llm_meta
+
+
+def _retrieve_context(question: str):
+    """The retrieval context for *question* (imported late, as the module always has)."""
+    from retrieval.context_retriever import ContextRetriever
+
+    return ContextRetriever.retrieve(question)
+
+
+def _generate_sql_text(
+    agent: SQLAgent,
+    routing: SourceRouting | None,
+    segments,
+    timer: StageTimer,
+    selection_sink: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    """Ask the SQL-generation task for the model's raw reply: ``(text, llm_meta)``.
+
+    A chain-exhausted failure is unwrapped (``exc.__cause__ or exc``) so the
+    caller's ``except`` clauses see the original exception type. The "llm"
+    stage still records its elapsed time when the call raises (StageTimer.stage
+    times the block either way -- see its docstring), and any ``llm_meta`` a
+    backend attached to the exception survives the unwrap, since that is the
+    very same exception object the backend raised.
+    """
+    try:
+        with timer.stage("llm"):
+            try:
+                route_result, _replaced = generate_with_source_fallback(
+                    lambda s: agent._router.generate_for_task(TaskType.SQL_GENERATION, s),
+                    routing, segments,
+                )
+            except Exception as exc:  # noqa: BLE001  # unwrapped, then translated by the caller
+                raise exc.__cause__ or exc
+    finally:
+        # Reported whether the call answered or raised, so the audit
+        # record of a failed request still says which source was tried.
+        if selection_sink is not None and routing is not None:
+            selection_sink["selection"] = routing.audit()
+    return route_result.text or "", route_result.meta
+
+
+def _sql_only_value_error(exc: ValueError) -> NLQError:
+    """The typed error for a ``ValueError`` from SQL-only generation (the decline sentinel or a parse failure)."""
+    if str(exc) == "OUT_OF_SCOPE":
+        err: NLQError = OutOfScopeError(
+            "This question is outside the scope of the data this system covers."
+        )
+    else:
+        err = InvalidSQLResponseError(
+            f"LLM response could not be parsed into valid SQL: {exc}"
+        )
+    _carry_exception_meta(exc, err)
+    return err
+
+
+def _empty_completion_error(raw: str | None, llm_meta: dict[str, Any]) -> NLQError:
+    """The typed error for a reply with no text.
+
+    Same distinction the v2 engine draws (session/engine.py): a completion cut
+    off at the token cap before it emitted anything is a configuration
+    ceiling, not an empty answer, and only one of those two has a fix the
+    operator can act on.
+    """
+    if is_truncated_empty_completion(raw or "", finish_reason_from_meta(llm_meta)):
+        err: NLQError = TruncatedSQLResponseError(
+            truncated_output_message(cfg.settings.llm_num_predict)
+        )
+    else:
+        err = EmptySQLResponseError("LLM returned an empty response.")
+    err.llm_meta = llm_meta  # type: ignore[attr-defined]
+    return err
+
+
+def _guarded_sql(
+    raw: str, llm_meta: dict[str, Any], timer: StageTimer, denied_columns: tuple[str, ...] | None,
+) -> str:
+    """*raw* cleaned and passed through the SQL guard, or the typed error for its rejection."""
+    from security.sql_guard import clean_sql, validate_sql
 
     # Pre-declared (rather than only assigned inside the try) so that if
     # clean_sql itself raises, `sql` stays a well-defined None -- there
@@ -1031,7 +1149,7 @@ def _safe_generate_sql_only(
         # most, but not all, refusal messages -- e.g. "System catalogue
         # forbidden: ...") is the right thing to switch on.
         if getattr(exc, "is_refusal", False):
-            err = ForbiddenSQLError(msg)
+            err: NLQError = ForbiddenSQLError(msg)
         else:
             err = InvalidSQLResponseError(
                 f"{_reasoning_pollution_note(llm_meta)}"
@@ -1043,8 +1161,7 @@ def _safe_generate_sql_only(
         # what failed, or still None if clean_sql itself failed first.
         err.candidate_sql = sql  # type: ignore[attr-defined]
         raise err
-
-    return sql, llm_meta
+    return sql
 
 
 def cache_prefix_version_for(system_prompt: str) -> str:
@@ -1128,27 +1245,11 @@ def _safe_run(
         )
 
     except ValueError as exc:
-        msg = str(exc)
-        if msg == "OUT_OF_SCOPE":
-            err: NLQError = OutOfScopeError(
-                "This question is outside the scope of the data this system covers."
-            )
-        elif getattr(exc, "is_refusal", False):
-            # See the identical branch in _safe_generate_sql_only for why
-            # this switches on SqlGuardRejection.is_refusal and not a
-            # "Forbidden keyword" substring test.
-            err = ForbiddenSQLError(msg)
-        else:
-            err = InvalidSQLResponseError(
-                f"{_reasoning_pollution_note(getattr(exc, 'llm_meta', None))}"
-                f"LLM response could not be parsed into valid SQL: {msg}"
-            )
-        _carry_exception_meta(exc, err)
-        raise err
+        raise _run_value_error(exc)
 
     except _requests.Timeout as exc:
         raise ModelTimeoutError(
-            "The LLM took too long to respond. Please try again.",
+            _LLM_TIMEOUT_MESSAGE,
             detail=str(exc),
         )
 
@@ -1165,7 +1266,7 @@ def _safe_run(
         # requests.Timeout does. Kept in lockstep with
         # _safe_generate_sql_only's identical clause.
         raise ModelTimeoutError(
-            "The LLM took too long to respond. Please try again.",
+            _LLM_TIMEOUT_MESSAGE,
             detail=str(exc),
         )
 
@@ -1176,38 +1277,68 @@ def _safe_run(
         )
 
     except RuntimeError as exc:
-        msg = str(exc)
-        if "unreachable" in msg.lower():
-            # Finding 11 (2026 audit): msg here is a raw RuntimeError
-            # string that can carry the LLM endpoint's host and port (see
-            # the identical fix a few clauses up in
-            # _safe_generate_sql_only). A generic summary goes in
-            # `message` (client-facing); the raw text goes in `detail`
-            # (operator-facing, logs only).
-            err = ModelUnavailableError(
-                "The language model is currently unreachable. Please try again.",
-                detail=msg,
-            )
-        else:
-            # Follow-up to finding 11: the same leak, one layer down, for
-            # a database failure instead of an LLM one -- see
-            # database.errors.classify_database_error's docstring. `detail`
-            # gets the *original* SQLAlchemy error (via `exc.__cause__`,
-            # which database.executor._execute attaches with `raise ...
-            # from exc`) when available, not this RuntimeError's own
-            # already-sanitised text, so an operator reading the log still
-            # gets the full picture -- host, SQL, bound parameters and all.
-            classification = classify_database_error(exc)
-            cause = exc.__cause__
-            detail = str(cause) if cause is not None else msg
-            if classification.code == "QUERY_TIMEOUT":
-                err = QueryTimeoutError(classification.client_message, detail=detail)
-            elif classification.code == "DATABASE_UNAVAILABLE":
-                err = DatabaseConnectionError(classification.client_message, detail=detail)
-            else:
-                err = QueryExecutionError(classification.client_message, detail=detail)
-        _carry_exception_meta(exc, err)
-        raise err
+        raise _run_runtime_error(exc)
+
+
+def _run_value_error(exc: ValueError) -> NLQError:
+    """The typed error for a ``ValueError`` from :meth:`SQLAgent.run`: decline, refusal, or unusable SQL."""
+    msg = str(exc)
+    if msg == "OUT_OF_SCOPE":
+        err: NLQError = OutOfScopeError(
+            "This question is outside the scope of the data this system covers."
+        )
+    elif getattr(exc, "is_refusal", False):
+        # See the identical branch in _guarded_sql for why this switches on
+        # SqlGuardRejection.is_refusal and not a "Forbidden keyword"
+        # substring test.
+        err = ForbiddenSQLError(msg)
+    else:
+        err = InvalidSQLResponseError(
+            f"{_reasoning_pollution_note(getattr(exc, 'llm_meta', None))}"
+            f"LLM response could not be parsed into valid SQL: {msg}"
+        )
+    _carry_exception_meta(exc, err)
+    return err
+
+
+def _run_runtime_error(exc: RuntimeError) -> NLQError:
+    """The typed error for a ``RuntimeError`` from :meth:`SQLAgent.run`: the model or the database."""
+    msg = str(exc)
+    if "unreachable" in msg.lower():
+        # Finding 11 (2026 audit): msg here is a raw RuntimeError string that
+        # can carry the LLM endpoint's host and port (see the identical fix in
+        # _safe_generate_sql_only). A generic summary goes in `message`
+        # (client-facing); the raw text goes in `detail` (operator-facing,
+        # logs only).
+        err: NLQError = ModelUnavailableError(
+            "The language model is currently unreachable. Please try again.",
+            detail=msg,
+        )
+    else:
+        err = _database_error(exc, msg)
+    _carry_exception_meta(exc, err)
+    return err
+
+
+def _database_error(exc: RuntimeError, msg: str) -> NLQError:
+    """The typed error for a database failure, by :func:`classify_database_error`.
+
+    Follow-up to finding 11: the same leak as the LLM case, one layer down --
+    see database.errors.classify_database_error's docstring. `detail` gets the
+    *original* SQLAlchemy error (via `exc.__cause__`, which
+    database.executor._execute attaches with `raise ... from exc`) when
+    available, not this RuntimeError's own already-sanitised text, so an
+    operator reading the log still gets the full picture -- host, SQL, bound
+    parameters and all.
+    """
+    classification = classify_database_error(exc)
+    cause = exc.__cause__
+    detail = str(cause) if cause is not None else msg
+    if classification.code == "QUERY_TIMEOUT":
+        return QueryTimeoutError(classification.client_message, detail=detail)
+    if classification.code == "DATABASE_UNAVAILABLE":
+        return DatabaseConnectionError(classification.client_message, detail=detail)
+    return QueryExecutionError(classification.client_message, detail=detail)
 
 
 # The number formatting and the interpretation itself moved to
