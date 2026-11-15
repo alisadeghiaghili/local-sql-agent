@@ -233,6 +233,19 @@ def build_prompt_segments(
         whole built prompt goes into ``question`` and ``static_prefix`` is
         empty.
 
+    Notes
+    -----
+    On the retrieval path the assembled prompt is measured against
+    ``PROMPT_RETRIEVAL_TOKEN_BUDGET`` and one WARNING is logged if it is over
+    (estimated tokens, budget, overshoot, data source). This is observability
+    only: the prompt is never truncated or altered and nothing is raised, so
+    the returned segments are the same with or without the check. The estimate
+    is the ``len(text) // 4`` heuristic of
+    :func:`~prompt_engine.static_prefix.estimate_tokens`, which undercounts
+    Persian text (the README gives about 15%), so a prompt that passes may still
+    be over budget in real tokens. A budget ``<= 0`` forces retrieval and is
+    never reported. The static path is not measured.
+
     Examples
     --------
     >>> from core.models import RetrievalContext
@@ -244,6 +257,7 @@ def build_prompt_segments(
     True
     """
     from prompt_engine.builder import PromptBuilder
+    from prompt_engine.prompt_size import classify_prompt_size
     from prompt_engine.source_scope import scoped_source
     from prompt_engine.static_prefix import (
         build_static_prefix,
@@ -271,6 +285,13 @@ def build_prompt_segments(
             session_context=session_context, resolved_values=resolved_values,
             source=source, access_notes=access_notes,
         )
+        size = classify_prompt_size(full, cfg.settings.prompt_retrieval_token_budget)
+        if size.over_budget:
+            logger.warning(
+                "Retrieval prompt over budget: estimated %d tokens > "
+                "PROMPT_RETRIEVAL_TOKEN_BUDGET %d (over by %d), data source %r",
+                size.estimated_tokens, size.budget, size.overshoot, source,
+            )
         return PromptSegments(question=full)
 
     # The prefix and the per-request tail are built separately and kept

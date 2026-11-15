@@ -254,3 +254,17 @@ class TestContextWiring:
         context = RetrievalContext(entities=["A"], facts=["B"], join_tables=["B", "C"])
         assert context.selected_tables == ["A", "B", "C"]
         assert RetrievalContext().join_tables == []
+
+    def test_metric_tables_come_between_the_named_and_the_join_tables(self):
+        from core.models import RetrievalContext
+
+        context = RetrievalContext(entities=["A"], facts=["B"], metric_tables=["M", "A"], join_tables=["C", "M"])
+        assert context.selected_tables == ["A", "B", "M", "C"]
+        assert RetrievalContext().metric_tables == []
+
+    def test_a_context_holding_only_metric_tables_is_not_empty(self):
+        from core.models import RetrievalContext
+
+        assert RetrievalContext().is_empty()
+        assert not RetrievalContext(metric_tables=["M"]).is_empty()
+        assert not RetrievalContext(entities=["A"]).is_empty()

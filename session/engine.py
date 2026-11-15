@@ -690,7 +690,7 @@ class TurnEngine:
 
         cap = cfg.settings.refinement_scan_cap
         try:
-            available_columns = predicate_columns(previous_turn.sql)
+            available_columns = predicate_columns(previous_turn.sql, dialect=cfg.settings.sql_dialect)
         except Exception:  # noqa: BLE001 - best-effort prompt hint only
             available_columns = []
         columns_hint = ", ".join(available_columns) if available_columns else "(unknown)"
@@ -743,7 +743,9 @@ class TurnEngine:
         composed: str | None = None
         try:
             with timer.stage("guard"):
-                composed = compose_refinement_sql(previous_turn.sql, raw_outer, cap)
+                composed = compose_refinement_sql(
+                    previous_turn.sql, raw_outer, cap, dialect=cfg.settings.sql_dialect,
+                )
                 validate_sql(composed, denied_columns=denied_columns)
                 capped = ensure_top(composed, cfg.settings.default_top_n)
                 injected_top = cfg.settings.default_top_n if capped != composed else None
@@ -782,9 +784,18 @@ class TurnEngine:
 
         warnings: list[str] = []
         try:
-            truncated_scan = check_scan_truncated(self._execute, previous_turn.sql, cap)
-        except Exception:  # noqa: BLE001 - the check itself must never break the turn
+            truncated_scan = check_scan_truncated(
+                self._execute, previous_turn.sql, cap, dialect=cfg.settings.sql_dialect,
+            )
+        except Exception as exc:  # noqa: BLE001 - the check itself must never break the turn
+            # The turn goes on, but not as if the check had passed: the
+            # answer may be computed over a cut base and nobody would know.
+            logger.warning("refinement truncation check failed (%s)", type(exc).__name__)
             truncated_scan = False
+            warnings.append(
+                "بررسی کامل‌بودن اسکن پایهٔ این بازپالایش انجام نشد؛ اگر تعداد سطرهای منطبق از "
+                f"refinement_scan_cap = {cap:,} بیشتر باشد، نتیجهٔ زیر روی بخشی از آن‌ها محاسبه شده است."
+            )
         if truncated_scan:
             warnings.append(
                 f"اسکن پایهٔ این بازپالایش به دلیل محدودیت ایمنی (refinement_scan_cap = {cap:,} ردیف) "
@@ -950,7 +961,7 @@ class TurnEngine:
 
         ctx = RetrievalContext(
             entities=context.entities, facts=context.facts, dimensions=context.dimensions,
-            join_tables=context.join_tables,
+            join_tables=context.join_tables, metric_tables=context.metric_tables,
             relationships=context.relationships, business_rules=context.business_rules,
             examples=context.examples, filters=merged_filters,
             # Without this, `resolved_values`

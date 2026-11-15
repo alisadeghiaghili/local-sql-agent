@@ -12,9 +12,11 @@ input, which went from seconds to well under a millisecond:
   model's reply. ``"```" + 3,000 spaces`` with no closing fence took about
   ten seconds; the body is now stripped by the caller instead of by ``\\s*``
   on both sides of a lazy ``.*?``.
-* ``security.sql_guard._LIMIT_STRIP_RE`` and
-  ``database.errors._TRAILING_ODBC_API_RE`` start a match only where a
+* ``database.errors._TRAILING_ODBC_API_RE`` starts a match only where a
   whitespace run starts (``(?<!\\s)``).
+* ``security.sql_guard.clean_sql`` no longer strips ``LIMIT n`` with a
+  regular expression at all: it reads the statement's tokens, so a long
+  whitespace run before the clause is one token gap, not a rescan.
 * ``database.errors._PORT_RE`` no longer has two adjacent optional ``\\s*``.
 * ``core.value_shapes._EMAIL`` settles "the rest is allowed characters" with
   a lookahead before the domain backtracks to its last dot.
@@ -50,7 +52,7 @@ def _elapsed(fn, *args) -> float:
     [
         ("sql fence", sql_guard._FENCE_RE.search, "```sql" + " " * _LONG + "x"),
         ("json fence", providers._FENCE_RE.search, "```json" + " " * _LONG + "x"),
-        ("LIMIT strip", lambda s: sql_guard._LIMIT_STRIP_RE.sub("", s), " " * _LONG + "x"),
+        ("LIMIT to TOP", sql_guard.clean_sql, "SELECT a FROM t" + " " * _LONG + "LIMIT 5"),
         ("ODBC tail", lambda s: errors._TRAILING_ODBC_API_RE.sub("", s), " " * _LONG + "x"),
         ("port", errors._PORT_RE.search, "port" + " " * _LONG + "x"),
         ("email", value_shapes._EMAIL.match, "a@" + "a." * _LONG + " "),
@@ -81,13 +83,13 @@ def test_json_fence_body_is_what_it_was():
 @pytest.mark.parametrize(
     ("sql", "expected"),
     [
-        ("SELECT a FROM t LIMIT 5", "SELECT a FROM t"),
-        ("SELECT a FROM t\n  limit 10;", "SELECT a FROM t;"),
+        ("SELECT a FROM t LIMIT 5", "SELECT TOP 5 a FROM t"),
+        ("SELECT a FROM t\n  limit 10;", "SELECT TOP 10 a FROM t;"),
         ("SELECT a FROM t", "SELECT a FROM t"),
     ],
 )
-def test_limit_strip_removes_the_clause_and_the_space_before_it(sql, expected):
-    assert sql_guard._LIMIT_STRIP_RE.sub("", sql) == expected
+def test_trailing_limit_becomes_top_and_the_space_before_it_goes(sql, expected):
+    assert sql_guard.clean_sql(sql) == expected
 
 
 def test_odbc_tail_is_removed_with_the_space_before_it():
