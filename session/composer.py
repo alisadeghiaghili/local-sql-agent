@@ -41,12 +41,34 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from schema_data.columns import TABLE_COLUMNS
-from security.sql_guard import clean_sql, ensure_top, resolve_table_key
+from security.sql_guard import clean_sql, ensure_top, resolve_table_key, transpile_sql
 
+#: The dialect the model writes in and the guard validates first. Everything
+#: this module returns for the guard is T-SQL; a ``dialect`` argument names
+#: the dialect the *previous turn's stored SQL* is written in, which is the
+#: deployment's target dialect (the turn stores the statement that ran).
 _DIALECT = "tsql"
 
+#: The name the previous turn's rows are offered to the model under.
+_PREV = "_prev"
 
-def _qualified_projection(tree: exp.Select) -> list[exp.Expression]:
+
+def _with_clause(node: exp.Expression) -> exp.With | None:
+    """The ``WITH`` clause attached to *node* (the arg key differs by sqlglot release)."""
+    clause = node.args.get("with_") or node.args.get("with")
+    return clause if isinstance(clause, exp.With) else None
+
+
+def _single_query(sql: str, dialect: str) -> exp.Expression | None:
+    """*sql* parsed as exactly one statement in *dialect*, or ``None``."""
+    try:
+        statements = [s for s in sqlglot.parse(sql, read=dialect) if s is not None]
+    except SqlglotError:
+        return None
+    return statements[0] if len(statements) == 1 else None
+
+
+def _qualified_projection(tree: exp.Select, dialect: str = _DIALECT) -> list[exp.Expression]:
     """Explicit ``alias_column`` projections for every FROM/JOIN source.
 
     A bare ``SELECT *`` over a multi-table join is exactly the kind of
@@ -89,7 +111,7 @@ def _qualified_projection(tree: exp.Select) -> list[exp.Expression]:
             projections.append(exp.Star())
             continue
         alias = source.alias_or_name
-        canonical = resolve_table_key(source, tree)
+        canonical = resolve_table_key(source, tree, dialect=dialect)
         if canonical is None:
             projections.append(exp.Column(this=exp.Star(), table=exp.to_identifier(alias)))
             continue
@@ -111,10 +133,10 @@ class CompositionError(ValueError):
     """
 
 
-def strip_display_cap(sql: str) -> str:
+def strip_display_cap(sql: str, *, dialect: str = _DIALECT) -> str:
     """Reduce *sql* to its raw, unaggregated predicate (§2 Reading B).
 
-    Parses *sql* (T-SQL dialect) and, on its outermost ``Select`` node:
+    Parses *sql* in *dialect* and, on its outermost ``Select`` node:
 
     * clears ``limit`` (sqlglot parses T-SQL's ``TOP n`` into this same
       slot — see ``security.sql_guard``'s module docstring) and ``order``
@@ -144,12 +166,17 @@ def strip_display_cap(sql: str) -> str:
         A previous turn's executed SQL — expected to already have passed
         :func:`~security.sql_guard.validate_sql` when that turn was
         created.
+    dialect:
+        The dialect *sql* is written in: the deployment's target dialect,
+        since a turn stores the statement that ran.
 
     Returns
     -------
     str
-        The filtered, ungrouped, uncapped predicate — every joined
-        table's columns, each under a unique ``{alias}_{column}`` name.
+        The filtered, ungrouped, uncapped predicate, **as T-SQL** whatever
+        *dialect* is (the composed statement is validated as T-SQL and
+        transpiled afterwards) — every joined table's columns, each under
+        a unique ``{alias}_{column}`` name.
 
     Raises
     ------
@@ -172,11 +199,16 @@ def strip_display_cap(sql: str) -> str:
     ...     "SELECT TOP 5 c.Name, COUNT(*) AS N FROM Customer c GROUP BY c.Name ORDER BY N DESC"
     ... )
     False
+
+    A statement stored in another dialect comes back as T-SQL:
+
+    >>> strip_display_cap('SELECT c."Name" FROM "Customer" AS c LIMIT 5', dialect="postgres")
+    'SELECT c.ID AS c_ID, c.Name AS c_Name, c.NationalID AS c_NationalID, c.IsActive AS c_IsActive FROM [Customer] AS c'
     """
     if not sql or not sql.strip():
         raise CompositionError("Cannot compose a refinement: previous turn has no SQL")
     try:
-        statements = [s for s in sqlglot.parse(sql, read=_DIALECT) if s is not None]
+        statements = [s for s in sqlglot.parse(sql, read=dialect) if s is not None]
     except SqlglotError as exc:
         raise CompositionError(f"Previous turn's SQL does not parse: {exc}") from exc
     if len(statements) != 1:
@@ -195,11 +227,11 @@ def strip_display_cap(sql: str) -> str:
     tree.set("order", None)
     tree.set("group", None)
     tree.set("distinct", None)
-    tree.set("expressions", _qualified_projection(tree))
+    tree.set("expressions", _qualified_projection(tree, dialect))
     return tree.sql(dialect=_DIALECT)
 
 
-def predicate_columns(previous_sql: str) -> list[str]:
+def predicate_columns(previous_sql: str, *, dialect: str = _DIALECT) -> list[str]:
     """The output column names :func:`strip_display_cap` will project.
 
     Lets a caller (``session.engine``) tell the model what ``_prev``
@@ -211,13 +243,10 @@ def predicate_columns(previous_sql: str) -> list[str]:
     >>> predicate_columns("SELECT TOP 5 Name FROM Customer c")
     ['c_ID', 'c_Name', 'c_NationalID', 'c_IsActive']
     """
-    try:
-        statements = [s for s in sqlglot.parse(previous_sql, read=_DIALECT) if s is not None]
-    except SqlglotError:
+    tree = _single_query(previous_sql, dialect)
+    if not isinstance(tree, exp.Select):
         return []
-    if len(statements) != 1 or not isinstance(statements[0], exp.Select):
-        return []
-    projection = _qualified_projection(statements[0].copy())
+    projection = _qualified_projection(tree.copy(), dialect)
     names: list[str] = []
     for expr in projection:
         if isinstance(expr, exp.Alias):
@@ -229,7 +258,7 @@ def predicate_columns(previous_sql: str) -> list[str]:
     return names
 
 
-def build_capped_predicate(previous_sql: str, cap: int) -> str:
+def build_capped_predicate(previous_sql: str, cap: int, *, dialect: str = _DIALECT) -> str:
     """:func:`strip_display_cap` then re-cap at *cap* rows (§2 requirement 2).
 
     Parameters
@@ -239,6 +268,8 @@ def build_capped_predicate(previous_sql: str, cap: int) -> str:
     cap:
         ``cfg.settings.refinement_scan_cap`` (or an explicit override in
         tests).
+    dialect:
+        The dialect *previous_sql* is written in.
 
     Returns
     -------
@@ -251,11 +282,43 @@ def build_capped_predicate(previous_sql: str, cap: int) -> str:
     >>> build_capped_predicate("SELECT TOP 100 Name FROM Customer", cap=10000)
     'SELECT TOP 10000 Customer.ID AS Customer_ID, Customer.Name AS Customer_Name, Customer.NationalID AS Customer_NationalID, Customer.IsActive AS Customer_IsActive FROM Customer'
     """
-    uncapped = strip_display_cap(previous_sql)
+    uncapped = strip_display_cap(previous_sql, dialect=dialect)
     return ensure_top(uncapped, cap)
 
 
-def compose_refinement_sql(previous_sql: str, outer_sql: str, cap: int) -> str:
+def _verify_composition(composed: str, predicate: str, outer: exp.Expression) -> None:
+    """Check that *composed* is ``WITH _prev AS (<predicate>) <outer>`` and nothing else.
+
+    The composed text is assembled from two strings; this reads it back as
+    one statement and compares its parts with what went in.
+
+    Raises
+    ------
+    CompositionError
+        If *composed* does not parse back to one query whose only CTE is
+        ``_prev`` with *predicate* as its body and *outer* as its main query.
+    """
+    tree = _single_query(composed, _DIALECT)
+    clause = _with_clause(tree) if tree is not None else None
+    ok = clause is not None and len(clause.expressions) == 1
+    if ok:
+        cte = clause.expressions[0]
+        body = _single_query(predicate, _DIALECT)
+        ok = cte.alias == _PREV and body is not None and cte.this == body
+    if ok:
+        tree.set("with_", None)
+        tree.set("with", None)
+        ok = tree == outer
+    if not ok:
+        raise CompositionError(
+            "Composed refinement does not read back as 'WITH _prev AS (<previous filter>) "
+            "<outer query>' -- refusing to hand it on"
+        )
+
+
+def compose_refinement_sql(
+    previous_sql: str, outer_sql: str, cap: int, *, dialect: str = _DIALECT,
+) -> str:
     """Build the full ``WITH _prev AS (...) <outer>`` statement (§2).
 
     ``outer_sql`` is passed through :func:`~security.sql_guard.clean_sql`
@@ -264,6 +327,18 @@ def compose_refinement_sql(previous_sql: str, outer_sql: str, cap: int) -> str:
     MUST run :func:`~security.sql_guard.validate_sql` on this function's
     *return value*, never on ``outer_sql`` alone and never on
     ``previous_sql`` alone.
+
+    The outer query's text is kept as the model wrote it, so the statement
+    that is validated, executed and shown is the model's own. What is
+    decided about it is decided on its parsed tree: whether it defines a
+    ``WITH`` of its own, and whether the composed text reads back as
+    exactly the previous filter under ``_prev`` followed by that query
+    (:func:`_verify_composition`).
+
+    An outer query that does not parse as one statement is composed
+    unchecked: :func:`~security.sql_guard.validate_sql` then refuses the
+    result with its own reason (a syntax error, stacked statements), which
+    is the verdict the audit log should carry.
 
     Parameters
     ----------
@@ -278,19 +353,23 @@ def compose_refinement_sql(previous_sql: str, outer_sql: str, cap: int) -> str:
         BY c_Name ORDER BY TotalVolume DESC``).
     cap:
         ``cfg.settings.refinement_scan_cap``.
+    dialect:
+        The dialect *previous_sql* is written in. *outer_sql* and the
+        returned statement are always T-SQL.
 
     Returns
     -------
     str
-        The composed, not-yet-validated SQL text.
+        The composed, not-yet-validated T-SQL text.
 
     Raises
     ------
     CompositionError
         If *outer_sql* itself defines a ``WITH`` clause (it must not --
-        ``_prev`` is defined exactly once, by this function), or if
+        ``_prev`` is defined exactly once, by this function), if
         *previous_sql* cannot be reduced to a predicate (see
-        :func:`strip_display_cap`).
+        :func:`strip_display_cap`), or if the composed text does not read
+        back as the two parts it was built from.
 
     Examples
     --------
@@ -303,24 +382,79 @@ def compose_refinement_sql(previous_sql: str, outer_sql: str, cap: int) -> str:
     True
     >>> composed.endswith("SELECT TOP 10 c_Name FROM _prev ORDER BY c_Name")
     True
+    >>> compose_refinement_sql(prev, "WITH x AS (SELECT 1 AS a) SELECT a FROM x", cap=10)
+    Traceback (most recent call last):
+        ...
+    session.composer.CompositionError: Model-generated outer query must not define its own WITH clause -- '_prev' is defined exactly once by the composer
     """
     cleaned_outer = clean_sql(outer_sql)
-    if cleaned_outer.strip().upper().startswith("WITH"):
+    outer = _single_query(cleaned_outer, _DIALECT)
+    if outer is not None and _with_clause(outer) is not None:
         raise CompositionError(
             "Model-generated outer query must not define its own WITH clause "
             "-- '_prev' is defined exactly once by the composer"
         )
-    capped_predicate = build_capped_predicate(previous_sql, cap)
-    return f"WITH _prev AS (\n    {capped_predicate}\n)\n{cleaned_outer}"
+    capped_predicate = build_capped_predicate(previous_sql, cap, dialect=dialect)
+    composed = f"WITH {_PREV} AS (\n    {capped_predicate}\n)\n{cleaned_outer}"
+    if outer is not None:
+        _verify_composition(composed, capped_predicate, outer)
+    return composed
+
+
+def truncation_probe_sql(previous_sql: str, cap: int, *, dialect: str = _DIALECT) -> str:
+    """The bounded count query :func:`check_scan_truncated` runs, in *dialect*.
+
+    ``SELECT COUNT(*) FROM (SELECT <first cap+1 rows> 1 FROM (<uncapped
+    predicate>))``, built as a tree and rendered for the database it will
+    run on, so the row limit is ``TOP`` on SQL Server and ``LIMIT`` elsewhere.
+
+    Parameters
+    ----------
+    previous_sql:
+        The previous turn's executed SQL, written in *dialect*.
+    cap:
+        The cap that was applied to the ``_prev`` CTE.
+    dialect:
+        The deployment's target dialect: what *previous_sql* is written in
+        and what the probe is rendered in.
+
+    Returns
+    -------
+    str
+        The probe statement.
+
+    Raises
+    ------
+    CompositionError
+        If *previous_sql* cannot be reduced to a predicate.
+
+    Examples
+    --------
+    >>> truncation_probe_sql("SELECT TOP 5 c.Name FROM Customer c", 2)
+    'SELECT COUNT(*) AS Cnt FROM (SELECT TOP 3 1 AS _x FROM (SELECT c.ID AS c_ID, c.Name AS c_Name, c.NationalID AS c_NationalID, c.IsActive AS c_IsActive FROM Customer AS c) AS _base) AS _check'
+    >>> "LIMIT 3" in truncation_probe_sql('SELECT c."Name" FROM "Customer" AS c LIMIT 5', 2, dialect="postgres")
+    True
+    """
+    uncapped = _single_query(strip_display_cap(previous_sql, dialect=dialect), _DIALECT)
+    if uncapped is None:
+        raise CompositionError("Previous turn's filter does not read back as one query")
+    rows = (
+        exp.select(exp.alias_(exp.Literal.number(1), "_x"))
+        .from_(uncapped.subquery("_base"))
+        .limit(cap + 1)
+    )
+    probe = exp.select(exp.alias_(exp.Count(this=exp.Star()), "Cnt")).from_(rows.subquery("_check"))
+    text = probe.sql(dialect=_DIALECT)
+    return text if dialect == _DIALECT else transpile_sql(text, target_dialect=dialect)
 
 
 def check_scan_truncated(
     execute_fn: Callable[[str], pd.DataFrame], previous_sql: str, cap: int,
+    *, dialect: str = _DIALECT,
 ) -> bool:
     """Cheaply detect whether the capped inner scan actually hit *cap*.
 
-    Runs one bounded query -- ``SELECT COUNT(*) FROM (SELECT TOP cap+1 1
-    AS _x FROM (<uncapped predicate>) AS _base) AS _check`` -- so the cost
+    Runs one bounded query (:func:`truncation_probe_sql`), so the cost
     of *checking* for truncation is itself capped at ``cap + 1`` rows,
     never a full unbounded scan of the predicate. If the count comes back
     as ``cap + 1`` (the query could not even fill that one extra probe
@@ -338,16 +472,24 @@ def check_scan_truncated(
         The previous turn's executed SQL.
     cap:
         The cap that was applied to the ``_prev`` CTE.
+    dialect:
+        The deployment's target dialect: what *previous_sql* is written in
+        and what the probe must run as.
 
     Returns
     -------
     bool
         ``True`` if the predicate matches more than *cap* rows (the
         refinement was computed over a truncated base).
+
+    Raises
+    ------
+    CompositionError
+        If *previous_sql* cannot be reduced to a predicate. Whatever
+        *execute_fn* raises propagates; the caller decides what a failed
+        check means for the turn.
     """
-    uncapped = strip_display_cap(previous_sql)
-    probe = f"SELECT COUNT(*) AS Cnt FROM (SELECT TOP {cap + 1} 1 AS _x FROM ({uncapped}) AS _base) AS _check"
-    df = execute_fn(probe)
+    df = execute_fn(truncation_probe_sql(previous_sql, cap, dialect=dialect))
     if df is None or df.empty:
         return False
     count = int(df.iloc[0, 0])

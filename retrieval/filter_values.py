@@ -215,7 +215,13 @@ def string_comparisons(sql: str, dialect: str = "tsql") -> list[StringComparison
     """
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
-    except Exception:  # noqa: BLE001 - a statement that cannot be read is not checked
+    except Exception as exc:  # noqa: BLE001 - a statement that cannot be read is not checked
+        # Said out loud: an empty list otherwise reads as "no literals to
+        # check", and the value check would be skipped with no trace.
+        logger.warning(
+            "filter value check skipped: the statement does not parse as %s (%s)",
+            dialect, type(exc).__name__,
+        )
         return []
     if tree is None:
         return []
