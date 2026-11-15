@@ -256,4 +256,4 @@ def save_log(log: QueryLog) -> None:
     try:
         append_jsonl(log_path, log.as_dict())
     except OSError as exc:
-        logger.error("Failed to write query log: %s", exc)
+        logger.exception("Failed to write query log: %s", exc)

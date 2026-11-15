@@ -785,7 +785,7 @@ def _cell_bytes(kind: ColumnKind, value: Any) -> bytes:
         return b"i" + str(int(value)).encode("ascii")
     if kind == "float":
         number = float(value)
-        return b"f" + (b"0" if number == 0.0 else format(number, f".{FLOAT_SIGNIFICANT_DIGITS}g").encode("ascii"))
+        return b"f" + (b"0" if number == 0.0 else format(number, f".{FLOAT_SIGNIFICANT_DIGITS}g").encode("ascii"))  # NOSONAR(S1244) exact zero, so -0.0 and 0.0 fingerprint alike
     if kind == "blob":
         return b"b" + hashlib.sha256(bytes(value)).digest()
     return b"s" + str(value).encode("utf-8", "surrogatepass")

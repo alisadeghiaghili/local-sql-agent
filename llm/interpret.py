@@ -138,7 +138,7 @@ def interpret_rows(router: LLMRouter, question: str, rows: list[dict]) -> str:
     try:
         route_result = router.generate_text_for_task(TaskType.INTERPRETATION, prompt)
     except RemoteProviderNotAllowedError as exc:
-        logger.error(
+        logger.error(  # NOSONAR(S8572) an expected error: its message is the report
             "REFUSED interpretation: %d result row(s) would be sent to a remote LLM "
             "provider without LLM_ALLOW_REMOTE=true (%s). Set LLM_ALLOW_REMOTE=true to "
             "explicitly opt this deployment into sending query-result data to a hosted "

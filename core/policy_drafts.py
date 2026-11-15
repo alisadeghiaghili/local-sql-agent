@@ -223,7 +223,7 @@ def choose_memory_keys(policies: Policies, requested: str | None = None) -> list
 # Line-level editing of the two files
 # ---------------------------------------------------------------------------
 
-_KEY_LINE = re.compile(r"""^(?P<indent> *)(?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-][^#:]*?)[ \t]*:[ \t]*(?:\#.*)?$""")
+_KEY_LINE = re.compile(r"""^(?P<indent> *)(?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`-][^#:]*?)[ \t]*:[ \t]*(?:\#.*)?$""")  # NOSONAR(S8786,S5843) one line of an operator-written YAML file
 _QUOTED = re.compile(r"""^(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')""")
 
 
@@ -326,7 +326,7 @@ def _set_scalar(lines: Sequence[str], where: tuple[int, int, int], name: str, va
 
 def _set_options(lines: Sequence[str], where: tuple[int, int, int] | None, entry: tuple[int, int, int], values: Sequence[str]) -> list[Edit]:
     """The edit that makes ``options`` the block list of *values*, in place or after the entry's last field."""
-    first, last, indent = entry
+    _, last, indent = entry
     if where is None:
         return [(last, last, [f"{' ' * indent}options:", *(f"{' ' * (indent + 2)}- {quote(v)}" for v in values)])]
     line, stop, indent = where

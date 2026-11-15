@@ -243,7 +243,8 @@ class TestRealDifferencesDetected:
 class TestDeterminismAndErrors:
     def test_repeated_calls_are_deterministic(self):
         df = pd.DataFrame({"b": [2, 1], "a": ["y", "x"]})
-        assert fingerprint_dataframe(df) == fingerprint_dataframe(df)
+        first_run = fingerprint_dataframe(df)
+        assert fingerprint_dataframe(df) == first_run
 
     def test_rejects_non_dataframe(self):
         with pytest.raises(TypeError):

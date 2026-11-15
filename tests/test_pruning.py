@@ -206,7 +206,8 @@ class TestGuards:
 
     def test_pruning_is_deterministic(self):
         with _world(ranked={"A": 1.0, "B": 1.0, "C": 1.0}):
-            assert _prune(entities=["C", "B", "A"]) == _prune(entities=["C", "B", "A"])
+            first_run = _prune(entities=["C", "B", "A"])
+            assert _prune(entities=["C", "B", "A"]) == first_run
 
 
 class TestShippedDefaults:

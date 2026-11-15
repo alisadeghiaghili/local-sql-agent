@@ -476,7 +476,10 @@ class PolicyRejection(SqlGuardRejection):
 #: exactly as it did before this module supported any other target.
 _DIALECT = "tsql"
 
-_FENCE_RE        = re.compile(r"```(?:sql)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+# The fence body is stripped by the caller rather than by "\s*" on both
+# sides of a lazy ".*?": three adjacent whitespace-matching parts backtrack
+# quadratically on a long whitespace run inside an unclosed fence.
+_FENCE_RE        = re.compile(r"```(?:sql)?(.*?)```", re.DOTALL | re.IGNORECASE)
 _SELECT_START_RE = re.compile(r"(SELECT|WITH)\b", re.IGNORECASE)
 
 
@@ -1740,7 +1743,7 @@ def clean_sql(raw: str) -> str:
         raise CorrectableRejection("Received empty SQL from model", reason="other")
 
     fence_match = _FENCE_RE.search(raw)
-    sql = fence_match.group(1) if fence_match else raw
+    sql = fence_match.group(1).strip() if fence_match else raw
 
     start = _SELECT_START_RE.search(sql)
     if not start:
@@ -2246,7 +2249,7 @@ def validate_sql(
                 _, sql_qualifier = _table_ref_name_and_qualifier(node)
                 match = _match_table_ref(raw_name, sql_qualifier)
                 if match.status == "resolved":
-                    pass
+                    pass  # a known table: nothing to reject
                 elif match.status == "unknown":
                     # CorrectableRejection: a hallucinated or misspelled
                     # table name is exactly the kind of small-model mistake
@@ -2320,7 +2323,7 @@ def validate_sql(
         # malformed entry that got into storage some other way. Refuse rather
         # than ignore it: an entry that cannot be read is an entry that
         # restricts nothing, and nothing is the wrong default for an ACL.
-        logger.error("column policy unreadable: %s", exc)
+        logger.error("column policy unreadable: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
         raise PolicyRejection(
             f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
             reason="other",
@@ -2436,7 +2439,7 @@ def validate_sql(
                 _executing_source(tree, dialect),
             )
         except ColumnPolicyError as exc:
-            logger.error("column policy invalid: %s", exc)
+            logger.error("column policy invalid: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
             raise PolicyRejection(
                 f"Forbidden keyword detected: the column policy for this key is invalid ({exc})",
                 reason="other",

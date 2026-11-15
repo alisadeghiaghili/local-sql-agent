@@ -52,11 +52,11 @@ from dotenv.parser import Binding, parse_stream
 __all__ = ["DotenvProblem", "explain_unset", "format_problems", "scan_dotenv"]
 
 #: What a shell, a container runtime and ``os.environ`` agree is a variable name.
-_VALID_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_VALID_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # NOSONAR(S6353) ASCII only: \w would admit non-ASCII letters
 
 #: ``NAME=`` (optionally ``export NAME=``) at the start of a line python-dotenv
 #: rejected. Only the leading identifier is captured, never the value.
-_ASSIGNED_NAME_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+_ASSIGNED_NAME_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")  # NOSONAR(S6353) ASCII only: \w would admit non-ASCII letters
 
 _NEWLINE_RE = re.compile(r"\r\n|\n|\r")
 

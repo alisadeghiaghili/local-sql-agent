@@ -409,7 +409,7 @@ def warm_prefix_cache(
         try:
             router = router_factory()
             sources = warm_sources()
-        except Exception as exc:  # noqa: BLE001 - nothing to warm, nothing to break
+        except Exception as exc:  # noqa: BLE001  # nothing to warm, nothing to break
             message = "LLM prefix warm-up: not started, could not set up (%s)"
             if outcomes is not None:
                 outcomes.emit(None, "setup", logging.WARNING, message, _describe_failure(exc))
@@ -721,7 +721,7 @@ def start_keepwarm(
             keepwarm.start()
             _keepwarm = keepwarm
             return keepwarm
-    except Exception as exc:  # noqa: BLE001 - an optimisation, startup must not fail on it
+    except Exception as exc:  # noqa: BLE001  # an optimisation, startup must not fail on it
         logger.warning("LLM prefix keep-warm could not be started: %s", _describe_failure(exc))
         return None
 

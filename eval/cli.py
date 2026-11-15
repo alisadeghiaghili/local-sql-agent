@@ -256,7 +256,7 @@ def _print_prefix_cache_probe(question: str) -> None:
     print("\nPrefix-cache probe (Phase 2 latency baseline):")
     try:
         report = measure_prefix_cache(backend, system_prompt, question)
-    except Exception as exc:  # noqa: BLE001 - report, never crash the whole run
+    except Exception as exc:  # noqa: BLE001  # report, never crash the whole run
         print(f"  UNMEASURED -- could not reach {backend.name!r}: {type(exc).__name__}: {exc}")
         return
     first, second = report["first"], report["second"]
@@ -738,7 +738,7 @@ def _verify(
     if result.changed and not args.dry_run:
         write_golden_cases(args.golden, result.cases, backup=True)
         written = True
-    print(render_verify_text(result, accept=args.accept, written=written))
+    print(render_verify_text(result, written=written))
     return 1 if result.problems else 0
 
 
@@ -757,7 +757,7 @@ def _bench_import(args: argparse.Namespace) -> int:
         render_import_report,
         run_import,
     )
-    from eval.benchmarks.sqlite_load import SchemaNotEmpty, create_target_engine
+    from eval.benchmarks.sqlite_load import create_target_engine
 
     if not args.target_url and not args.datasource:
         print("error: give --target-url (an administrator login) or --datasource", file=sys.stderr)
@@ -807,7 +807,7 @@ def _bench_import(args: argparse.Namespace) -> int:
     except LoadMismatch as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    except (SchemaNotEmpty, FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:  # ValueError includes SchemaNotEmpty
         print(f"error: {exc}", file=sys.stderr)
         return 2
     finally:

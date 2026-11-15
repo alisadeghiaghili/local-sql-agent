@@ -41,7 +41,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from typing import Any
 
@@ -137,7 +137,7 @@ class SchemaSnapshot:
     tables: list[TableInfo] = field(default_factory=list)
     relationships: list[RelationshipInfo] = field(default_factory=list)
     source_url: str = ""
-    generated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat(timespec="seconds"))
+    generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds"))
 
     @property
     def fact_tables(self) -> list[TableInfo]:
@@ -475,7 +475,7 @@ def connect_url(db_url: str) -> Engine:
     try:
         # Verify connectivity
         with engine.connect():
-            pass
+            pass  # opening the connection is the whole check
     except OperationalError as exc:
         engine.dispose()
         raise ConnectionError(f"Cannot connect to database: {exc.orig or exc}") from exc
@@ -810,10 +810,11 @@ class SchemaInspector:
                         continue
                     seen.add(key)
                     # Suggest the table name and column name as canonical tokens
-                    tokens = list({
+                    # dict.fromkeys, not a set: de-duplicated, but in a stable order
+                    tokens = list(dict.fromkeys((
                         table.name.lower(),
                         col.name.lower().replace("_", " "),
-                    })
+                    )))
                     tokens_yaml = ", ".join(_yaml_str(t) for t in tokens)
                     seeds.append(f"  # from {table.full_name}.{col.name}")
                     seeds.append(f"  {_yaml_str(key)}: [{tokens_yaml}]  # REVIEW")

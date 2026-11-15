@@ -452,7 +452,7 @@ def respell_filters(
         return sql, None
     try:
         validate_sql(fix.sql, denied_columns=denied_columns, dialect=dialect)
-    except Exception as exc:  # noqa: BLE001 - whatever the guard says, the original statement runs
+    except Exception as exc:  # noqa: BLE001  # whatever the guard says, the original statement runs
         logger.warning("filter value spelling not used: the guard refused the rewritten statement (%s)", type(exc).__name__)
         return sql, None
     logger.info("filter value spelling: %d literal(s) rewritten", fix.fixed)

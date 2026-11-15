@@ -355,7 +355,7 @@ def allocate(sizes: dict[Any, int], n: int) -> dict[Any, int]:
     {'a': 2}
     """
     strata = sorted(sizes, key=lambda s: (-sizes[s], str(s)))
-    slots = {s: 0 for s in sorted(sizes, key=str)}
+    slots = dict.fromkeys(sorted(sizes, key=str), 0)
     if n <= 0 or not strata:
         return slots
     if n < len(strata):
@@ -376,7 +376,8 @@ def allocate(sizes: dict[Any, int], n: int) -> dict[Any, int]:
         for s, add in floors.items():
             slots[s] += add
         left = remaining - sum(floors.values())
-        order = sorted(room, key=lambda s: (-(quotas[s] - int(quotas[s])), -room[s], str(s)))
+        # sorted() consumes the key at once, so the loop variables it reads cannot change under it.
+        order = sorted(room, key=lambda s: (-(quotas[s] - int(quotas[s])), -room[s], str(s)))  # NOSONAR(S1515)
         for s in order:
             if left <= 0:
                 break
@@ -424,7 +425,7 @@ def stratified_sample(
     chosen: list[Candidate] = []
     for stratum in sorted(by_stratum):
         pool = sorted(by_stratum[stratum], key=lambda c: (c.timestamp, c.request_id, c.key))
-        picked = rng.sample(pool, slots.get(stratum, 0))
+        picked = rng.sample(pool, slots.get(stratum, 0))  # NOSONAR(S2245) seeded sampling, not security
         chosen.extend(sorted(picked, key=lambda c: (c.timestamp, c.request_id, c.key)))
     return chosen
 
