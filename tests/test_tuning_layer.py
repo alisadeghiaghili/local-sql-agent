@@ -435,6 +435,14 @@ _ALLOWED_MODULE_CONSTANTS = {
         "looks like an address to the value-shape test; a heuristic, not a "
         "deployment tuning knob"
     ),
+    "core/synonym_drafts.py::MAX_VALUES_PER_KEY": (
+        "implementation detail: the most terms one drafted synonym maps to in the "
+        "setup wizard's step 3b; bounds what a draft file holds, not a runtime behaviour"
+    ),
+    "core/synonym_drafts.py::MAX_ENTRIES_PER_ANSWER": (
+        "implementation detail: the most synonym keys the wizard keeps from one "
+        "model answer, and the cap its prompt states; bounds a draft, not a runtime behaviour"
+    ),
     "core/wizard_drafts.py::ALIAS_LIMIT": (
         "implementation detail: aliases kept per table by the setup wizard, whose "
         "model sometimes answers with every concatenation of the same few words; "

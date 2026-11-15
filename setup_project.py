@@ -73,6 +73,15 @@ Flags
                     personal or contact data are never taken; at most 20 keys
                     per table.
 
+--no-schema-synonyms
+                    Skip step 3b, which drafts ``aliases.yaml`` ``synonyms``
+                    from the table and column names of each data source (the
+                    one-word aliases of step 3, and one model call per data
+                    source that is sent names only, never a row value). A key
+                    is kept only when it is one word that is not already a
+                    name word, and a value only when it is a word of a table
+                    or non-key column name (``core/synonym_drafts.py``).
+
 --keep-existing-synonyms
                     Keep, when merging, the synonym keys of an earlier
                     ``aliases.yaml`` that are values read from rows. By
@@ -215,6 +224,12 @@ except ImportError:
 
 from core.config_doctor import WIZARD_DRAFT_HEADER
 from core.console import use_utf8_console
+from core.synonym_drafts import (
+    MAX_ENTRIES_PER_ANSWER,
+    clean_synonyms,
+    schema_vocabulary,
+    synonyms_from_entities,
+)
 from core.value_shapes import data_shape, prompt_samples
 from core.wizard_drafts import (
     ALIAS_LIMIT,
@@ -604,8 +619,22 @@ def _aliases_yaml(ring_aliases: dict, synonyms: dict, generated_at: str = "") ->
         _FILE_HEADER
         + f"# Generated: {generated_at or datetime.utcnow().isoformat(timespec='seconds')}\n\n"
     )
-    data = {"ring_aliases": ring_aliases, "synonyms": synonyms}
-    return header + yaml.dump(data, allow_unicode=True, sort_keys=False)
+    # One line per entry (`word: [term, term]`), as the template writes them.
+    data = {
+        "ring_aliases": {k: _FlowList(v) for k, v in ring_aliases.items()},
+        "synonyms": {k: _FlowList(v) for k, v in synonyms.items()},
+    }
+    return header + _ALIASES_GUIDE + yaml.dump(data, allow_unicode=True, sort_keys=False, width=1000)
+
+
+#: What the two sections of ``aliases.yaml`` are, written above them.
+_ALIASES_GUIDE = (
+    "# ring_aliases: exact stored value of the ring dimension's name column -> the forms analysts type.\n"
+    "#   Not table names (those are entities.yaml aliases). Draft them with\n"
+    "#   python scripts/draft_policies.py --ring-aliases\n"
+    "# synonyms: one word an analyst types -> words of the table and column names.\n"
+    "#   Drafted by step 3b from the names only; delete what is wrong for your domain.\n\n"
+)
 
 
 def _business_rules_yaml(rules: dict[str, str], generated_at: str = "") -> str:
@@ -858,6 +887,47 @@ def _prompt_aliases(table_name: str, columns: list[str], samples: list[str], lan
         Return ONLY this JSON (no markdown):
         {{"aliases": ["alias1", "alias2"], "description": "one-sentence description"}}
     """)
+
+
+def _prompt_synonyms(source: str, tables: list[tuple[str, list[str]]], terms: list[str], language: str) -> str:
+    """The step 3b prompt: question words for the terms of a group of tables.
+
+    Only table and column names are sent, never a value read from a row.
+
+    Args:
+        source: The data source the tables are in (a label for the model).
+        tables: ``(schema-qualified table name, column names)`` per table.
+        terms: The words the answer's values must come from.
+        language: ``en``, ``fa`` or ``both``.
+
+    Returns:
+        The prompt text.
+    """
+    listing = "\n".join(f"  {name}: {', '.join(columns)}" for name, columns in tables)
+    wanted = {
+        "fa": "Persian words (also the colloquial and the formal spelling of a word)",
+        "en": "English words (also abbreviations and domain jargon)",
+    }.get(language, "Persian and English words (also abbreviations and colloquial spellings)")
+    return textwrap.dedent(f"""\
+        You are building a search vocabulary for a database.
+        Data source: {source}
+        Tables and their columns:
+        {{listing}}
+
+        Terms (words of the table and column names):
+        {{terms}}
+
+        For each term, give the {wanted} a business analyst would type in a question
+        when they mean that term (for example a word for "volume", "price", "contract", "settlement").
+        Rules:
+        - Each key is ONE word, never a phrase, and never one of the terms itself.
+        - Each value is a list of terms copied exactly from the list above.
+        - No table names, codes, dates, numbers or example data values as keys.
+        - At most {MAX_ENTRIES_PER_ANSWER} keys; stop after the JSON.
+
+        Return ONLY this JSON (no markdown):
+        {{{{"synonyms": {{{{"word": ["term"], "another_word": ["term", "term"]}}}}}}}}
+    """).format(listing=listing, terms=", ".join(terms))
 
 
 def _prompt_business_rules(
@@ -3440,6 +3510,129 @@ def step3_aliases(args, snapshot, llm, log: dict, language: str, namer=None) -> 
     return {"entities": entities, "ring_aliases": {}}
 
 
+#: Tables per synonyms prompt: a local model must still answer in full.
+_SYNONYM_TABLES_PER_PROMPT = 25
+
+
+def _synonym_groups(snapshot, namer) -> list[tuple[str, list]]:
+    """``[(label, tables)]`` for step 3b: per data source, in chunks a local model can answer.
+
+    A table found in several sources is asked about in the first. With one
+    source (or a bare URL) there is one group, ``all tables``.
+
+    Examples:
+        >>> from types import SimpleNamespace as NS
+        >>> groups = _synonym_groups(NS(tables=[NS(datasources=("a",)), NS(datasources=("a", "b")), NS(datasources=("b",))]), None)
+        >>> [(label, len(tables)) for label, tables in groups]
+        [('a', 2), ('b', 1)]
+    """
+    by_source: dict[str, list] = {}
+    for table in snapshot.tables:
+        sources = tuple(getattr(table, "datasources", ()) or ())
+        by_source.setdefault(sources[0] if sources else "all tables", []).append(table)
+    groups: list[tuple[str, list]] = []
+    for label, tables in by_source.items():
+        for start in range(0, len(tables), _SYNONYM_TABLES_PER_PROMPT):
+            groups.append((label, tables[start:start + _SYNONYM_TABLES_PER_PROMPT]))
+    return groups
+
+
+def step3_synonyms(args, snapshot, llm, log: dict, language: str, entities: Mapping[str, Any], namer=None) -> dict:
+    """Step 3b: draft ``aliases.yaml`` ``synonyms`` from the schema's own words, per data source.
+
+    Two sources of entries, both held to the rules of
+    :func:`core.synonym_drafts.clean_synonyms` (a key is one word that is not
+    already a term; every value is a word of a table or non-key column name):
+
+    * the single-word aliases step 3 found for each table, mapped to the words
+      of the table's name (no model call);
+    * one question per group of at most ``_SYNONYM_TABLES_PER_PROMPT`` tables
+      of a data source: the model is given the table and column names of the
+      group (never a row value) and answers with the words an analyst types for
+      them.
+
+    A failed or unusable answer gives no entries for its group; the step never
+    stops the wizard for it. The repeated-answer guard of steps 3 and 4 applies
+    to the groups.
+
+    Args:
+        args: Parsed command line.
+        snapshot: The schema snapshot.
+        llm: The wizard LLM.
+        log: The setup log, updated in place (counts only, and the result).
+        language: Language of the questions.
+        entities: The entities of step 3 (``{key: {"table": ..., "aliases": [...]}}``).
+        namer: The key rule; built from *snapshot* when ``None``.
+
+    Returns:
+        ``{word: [terms]}``.
+
+    Raises:
+        CachedAnswersError: When 3 groups in a row get the identical answer.
+    """
+    namer = namer or _table_namer(snapshot)
+    console.rule("[bold blue]Step 3b: Synonyms[/bold blue]" if _RICH else "Step 3b: Synonyms")
+    vocabulary = schema_vocabulary(
+        (namer.key(t), t.name, [c.name for c in t.columns]) for t in snapshot.tables
+    )
+    synonyms, _ = merge_synonyms({}, synonyms_from_entities(entities, vocabulary))
+    from_aliases = len(synonyms)
+    console.print(f"  {from_aliases} synonym(s) from the one-word aliases of step 3.", markup=False)
+
+    guard = _AnswerGuard("Step 3b", "synonym list", allow=getattr(args, "allow_repeated_answers", False))
+    groups = _synonym_groups(snapshot, namer)
+    per_source: dict[str, int] = {}
+    dropped: dict[str, int] = {}
+    failed: list[str] = []
+    for idx, (label, tables) in enumerate(groups, 1):
+        own = schema_vocabulary((namer.key(t), t.name, [c.name for c in t.columns]) for t in tables)
+        console.print(f"  [{idx}/{len(groups)}] {label}: {len(tables)} table(s), {len(own.terms)} term(s) ...", end=" ")
+        if not own.terms:
+            console.print("no terms", markup=False)
+            guard.observe(f"{label} #{idx}", None)
+            continue
+        prompt = _prompt_synonyms(
+            label, [(t.full_name, [c.name for c in t.columns]) for t in tables], list(own.terms), language,
+        )
+        try:
+            answer = llm.generate(prompt, expect_json=True)
+        except Exception as exc:  # noqa: BLE001 - one group's failure must not stop the wizard
+            logger.warning("Synonym generation failed for %s: %s", label, exc)
+            failed.append(f"{label} #{idx}")
+            console.print(f"the model call failed: {type(exc).__name__}", markup=False)
+            guard.observe(f"{label} #{idx}", None)
+            continue
+        cleaned = clean_synonyms(answer, vocabulary)
+        for reason, count in cleaned.dropped.items():
+            dropped[reason] = dropped.get(reason, 0) + count
+        guard.observe(
+            f"{label} #{idx}",
+            "\n".join(f"{k}={','.join(v)}" for k, v in sorted(cleaned.synonyms.items())) or None,
+        )
+        synonyms, _ = merge_synonyms(synonyms, cleaned.synonyms)
+        per_source[label] = per_source.get(label, 0) + len(cleaned.synonyms)
+        console.print(f"{len(cleaned.synonyms)} synonym(s)", markup=False)
+
+    console.print(f"  {guard.summary()}.", markup=False)
+    if dropped:
+        reasons = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(dropped.items()))
+        console.print(f"  Left out of the model's answers: {reasons}.", markup=False)
+    if failed:
+        console.print(f"  {len(failed)} group(s) got no synonyms because the model call failed.", markup=False)
+    console.print(f"  {len(synonyms)} synonym(s) in all.", markup=False)
+    _mark_done(log, "step3_synonyms", {
+        "synonym_count": len(synonyms),
+        "from_aliases": from_aliases,
+        "per_source": per_source,
+        "dropped": dropped,
+        "failed": failed,
+        "language": language,
+        "provider": llm.provider,
+        "result": synonyms,
+    })
+    return synonyms
+
+
 #: Start of the placeholder rule written for a fact table the model gave no
 #: rule for. A merge treats it as "no answer" and never lets it replace an
 #: earlier rule.
@@ -4355,6 +4548,16 @@ def _print_summary(log: dict, output_dir: Path, protected: str | None, args) -> 
                + ". Run the wizard again (--resume repeats only this step) or write a few pairs by hand."),
             markup=False,
         )
+    drafted = log.get("step3_synonyms")
+    if isinstance(drafted, dict) and drafted.get("completed_at"):
+        per_source = ", ".join(f"{k} {v}" for k, v in (drafted.get("per_source") or {}).items())
+        console.print(
+            f"  Synonyms: {drafted.get('synonym_count', 0)} drafted from table and column names "
+            f"({drafted.get('from_aliases', 0)} from one-word aliases"
+            + (f"; from the model: {per_source}" if per_source else "")
+            + "); review them before use.",
+            markup=False,
+        )
     values = log.get("value_synonyms")
     if isinstance(values, dict) and values.get("enabled"):
         console.print(
@@ -4521,6 +4724,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         "masked values, error text, values over 40 characters and any column named "
                         "like personal or contact data are never taken; at most 20 per table. Reads "
                         "up to 51 distinct values of each such column from the database.")
+    p.add_argument("--no-schema-synonyms", action="store_true", default=False,
+                   help="Do not draft aliases.yaml synonyms from the table and column names (step 3b). "
+                        "By default each data source's names are turned into the words analysts type for them.")
     p.add_argument("--keep-existing-synonyms", action="store_true", default=False,
                    help="When merging into an aliases.yaml that already holds synonyms, keep the keys "
                         "that are values read from rows (dates, phone numbers, IP addresses, masked "
@@ -4623,6 +4829,24 @@ def _restorable_results(
         # An empty result is a model that gave nothing, not an answer to reuse.
         examples = None
     return aliases, rules, examples
+
+
+def _restorable_synonyms(log: dict, language: str) -> dict[str, list[str]] | None:
+    """The step 3b synonyms a previous run stored, or ``None`` when there is nothing to reuse.
+
+    Examples:
+        >>> _restorable_synonyms({}, "en") is None
+        True
+        >>> done = {"step3_synonyms": {"completed_at": "t", "language": "en", "provider": "x", "result": {"a": ["b"]}}}
+        >>> _restorable_synonyms(done, "en"), _restorable_synonyms(done, "fa")
+        ({'a': ['b']}, None)
+    """
+    stored = _stored_result(log, "step3_synonyms", language=language)
+    if not isinstance(stored, dict) or not all(
+        isinstance(k, str) and isinstance(v, list) and all(isinstance(t, str) for t in v) for k, v in stored.items()
+    ):
+        return None
+    return {k: list(v) for k, v in stored.items()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -4760,8 +4984,11 @@ def main(argv: list[str] | None = None) -> int:
     stored_aliases, stored_rules, stored_examples = (
         _restorable_results(log, language) if args.resume else (None, None, None)
     )
+    stored_synonyms = _restorable_synonyms(log, language) if args.resume else None
     stored_fingerprint = log.get("step2_schema", {}).get("schema_fingerprint") if args.resume else None
-    everything_stored = None not in (stored_aliases, stored_rules, stored_examples)
+    everything_stored = None not in (stored_aliases, stored_rules, stored_examples) and (
+        args.no_schema_synonyms or stored_synonyms is not None
+    )
 
     # ---- Which databases: the data sources of datasources.yaml, or one URL ----
     configured = None
@@ -4831,7 +5058,7 @@ def main(argv: list[str] | None = None) -> int:
             markup=False,
         )
     if not reuse:
-        stored_aliases = stored_rules = stored_examples = None
+        stored_aliases = stored_rules = stored_examples = stored_synonyms = None
 
     def need_llm():
         """The LLM, set up on first use when the early check was skipped."""
@@ -4849,6 +5076,17 @@ def main(argv: list[str] | None = None) -> int:
             alias_result = step3_aliases(args, snapshot, need_llm(), log, language, namer)
         entities_data = alias_result["entities"]
         ring_aliases  = alias_result["ring_aliases"]
+        save()
+
+        # ---- Step 3b: Synonyms ----
+        schema_synonyms: dict[str, list[str]] = {}
+        if args.no_schema_synonyms:
+            console.print("  Step 3b: skipped (--no-schema-synonyms).", markup=False)
+        elif stored_synonyms is not None:
+            console.print("  Step 3b: reusing the synonyms generated by the earlier run.", markup=False)
+            schema_synonyms = stored_synonyms
+        else:
+            schema_synonyms = step3_synonyms(args, snapshot, need_llm(), log, language, entities_data, namer)
         save()
 
         # ---- Step 4: Business rules ----
@@ -4881,6 +5119,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.value_synonyms:
         value_synonyms = _collect_value_synonyms(snapshot, read_from, log)
         save()
+    run_synonyms, _ = merge_synonyms(schema_synonyms, value_synonyms)
 
     # ---- Step 6: Review & write ----
     step6_review_and_write(
@@ -4903,7 +5142,7 @@ def main(argv: list[str] | None = None) -> int:
         backup_stamp=backup_stamp,
         backups=backups,
         source_order=source_order,
-        synonyms=value_synonyms,
+        synonyms=run_synonyms,
         collapsed=collapsed,
     )
     save()

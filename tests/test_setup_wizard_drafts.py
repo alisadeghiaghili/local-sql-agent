@@ -94,6 +94,8 @@ class RecordingLLM(AliasesViaGenerate):
             return {"rules": {"value_col": "Amount", "volume_col": "Qty", "rule_text": f"RULE {self._rules}"}}
         if "NLQ-to-SQL example pairs" in prompt:
             return [{"tags": ["count"], "question": self.example_question, "sql": "SELECT 1"}]
+        if "search vocabulary" in prompt:
+            return {"synonyms": {}}
         name = re.search(r"Table name: (\S+)", prompt).group(1)
         return {"aliases": [f"alias of {name}"], "description": "d"}
 
@@ -476,8 +478,8 @@ class TestSkippedTables:
         run_wizard(out, _staged(), llm, "--exclude-schemas", "replay, REF")
         assert sorted(entity_keys(out)) == ["Customer", "Orders"]
         assert not llm.asked_about("ReplayedEvents") and not llm.asked_about("Region")
-        # 3 aliases + 1 rule + 1 examples request: nothing for the 4 skipped tables.
-        assert llm.calls == 2 + 1 + 1
+        # 2 aliases + 1 synonyms + 1 rule + 1 examples request: nothing for the 4 skipped tables.
+        assert llm.calls == 2 + 1 + 1 + 1
         assert "Skipped 4 of 6 tables: 2 in excluded schemas, 2 staging" in capsys.readouterr().out
 
     def test_exclusion_is_an_fnmatch_pattern_and_case_insensitive(self, tmp_path):
