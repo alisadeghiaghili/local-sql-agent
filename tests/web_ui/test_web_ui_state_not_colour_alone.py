@@ -312,6 +312,25 @@ class TestTheHealthStateSurvivesWithoutColour:
             "a tooltip"
         )
 
+    def test_the_live_region_is_not_hidden(self):
+        """The two checks above read what ``setHealth`` writes into ``#health``.
+        Neither holds for anyone if the element is hidden: ``hidden`` removes
+        it from the accessibility tree, so its changes are not announced, and
+        from the screen, so the state words are not read either. Whatever
+        replaces the rail visually (an icon, a panel behind a button) has to
+        be this region, or the region has to stay perceivable beside it.
+        """
+        index = (_MAIN_JS.parent.parent / "index.html").read_text(encoding="utf-8")
+        tag = re.search(r'<[a-z]+\b[^>]*\bid="health"[^>]*>', index)
+        assert tag, 'no element with id="health" in web/index.html'
+        assert 'role="status"' in tag.group(0), "#health is no longer a status region"
+        assert not re.search(r"\shidden(\s|=|>)", tag.group(0)), (
+            "#health carries `hidden`. The status region is where the state of the "
+            "API, the model and the database is announced; hidden, a change from up "
+            "to down reaches no screen reader. Keep it perceivable (visually hidden "
+            "is fine, `hidden` is not), or move role=\"status\" to what replaced it"
+        )
+
     def test_the_health_rail_is_built_as_dom_not_an_interpolated_string(self):
         """``DESIGN-INVARIANTS.md`` §1.3: build DOM, not HTML strings, for
         anything carrying a value this process did not author.

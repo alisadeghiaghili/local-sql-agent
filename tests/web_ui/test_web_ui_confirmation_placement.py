@@ -18,9 +18,10 @@ drawer:
 * flagging and confirming still reset each other.
 
 The stylesheet checks pin what a stub DOM cannot observe: the toggle keeps
-the same box while it toggles (fixed minimum width, a status slot that is
-always one line tall), and the state colours come from tokens that
-``tokens.css`` redefines for dark mode.
+the same box while it toggles (a fixed minimum size, a pressed state that
+sets nothing that changes the box, a status slot that is always one line
+tall), the pressed thumb has 3:1 against the button in both themes, and a
+check badge, not only the colour, marks the pressed state.
 
 Requires ``node`` on PATH for the behavioural test. Skipped (not failed)
 when unavailable.
@@ -36,13 +37,14 @@ from pathlib import Path
 
 import pytest
 
+from tests.web_ui.css_rules import base_layer, box_properties, declarations, resolve_colour
+from tests.web_ui.test_web_ui_contrast_and_failure import _palette, contrast
 from tests.web_ui.test_web_ui_request_access import _NODE, _prepare_copies
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _HARNESS = Path(__file__).resolve().parent / "run_confirmation_placement.mjs"
 _CONFIRMATION_JS = _REPO_ROOT / "web" / "js" / "render" / "confirmation.js"
 _STYLE = _REPO_ROOT / "web" / "styles" / "style.css"
-_TOKENS = _REPO_ROOT / "web" / "styles" / "tokens.css"
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not on PATH -- cannot execute web/js/*.js under test")
@@ -93,42 +95,56 @@ def test_main_js_builds_the_control_only_for_a_successful_answer() -> None:
     assert "api.confirmAnswer(" in block and "api.withdrawConfirmation(" in block
 
 
-def _rule(css: str, selector: str) -> str:
-    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css, re.S)
-    assert match, f"no rule for {selector}"
-    return match.group(1)
+_PRESSED = '.confirm-toggle[aria-pressed="true"]'
 
 
 def test_the_toggle_does_not_shift_the_answer_when_it_changes_state() -> None:
     css = _STYLE.read_text(encoding="utf-8")
-    button = _rule(css, ".confirm-toggle")
+    button = declarations(css, ".confirm-toggle")
     assert "min-inline-size" in button, "the check mark must not change the button's width"
-    assert "box-sizing: border-box" in button
+    assert button.get("box-sizing") == "border-box"
     assert "min-block-size" in button
-    pressed = _rule(css, '.confirm-toggle[aria-pressed="true"]')
-    assert "border-width: 2px" in pressed and "padding-block" in pressed and "padding-inline" in pressed, (
-        "the thicker pressed border is paid for out of the padding"
+    changed = box_properties(css, _PRESSED)
+    assert not changed, (
+        f"the pressed state sets {changed}. A state may change colour, shadow and the "
+        "badge; anything that changes the box moves the answer beside it"
     )
-    status = _rule(css, ".confirmation-status")
+    status = declarations(css, ".confirmation-status")
     assert "min-block-size" in status, "the message slot is always reserved"
-    assert "white-space: nowrap" in status and "text-overflow: ellipsis" in status, (
+    assert status.get("white-space") == "nowrap" and status.get("text-overflow") == "ellipsis", (
         "a long message cannot make the row taller"
     )
-    assert "min-block-size" in _rule(css, ".confirmation-control")
+    assert "min-block-size" in declarations(css, ".confirmation-control")
 
 
-def test_the_pressed_state_is_visible_in_both_themes_and_not_by_colour_alone() -> None:
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_the_pressed_state_is_visible_in_both_themes(theme: str) -> None:
+    """WCAG 1.4.11: the thumb and its badge are the only visible sign that an
+    answer is confirmed, so they need 3:1 against the button they sit on.
+    Measured against the flat layer of the pressed background; the gradient
+    over it is tinted with the same colour and can only lower the ratio."""
     css = _STYLE.read_text(encoding="utf-8")
-    tokens = _TOKENS.read_text(encoding="utf-8")
-    pressed = _rule(css, '.confirm-toggle[aria-pressed="true"]')
-    for token in ("--status-good", "--status-good-bg", "--ink"):
-        assert f"var({token})" in pressed
-    # Each token is defined for the light theme and redefined for dark mode.
-    for token in ("--status-good", "--status-good-bg", "--ink"):
-        assert len(re.findall(re.escape(token) + r"\s*:", tokens)) >= 2, f"{token} has no dark value"
-    assert "border-width: 2px" in pressed, "a thicker border, not just a tint"
+    palette = _palette(theme)
+    pressed = declarations(css, _PRESSED)
+    glyph = resolve_colour(pressed["color"], palette)
+    ground = resolve_colour(base_layer(pressed["background"]), palette)
+    ratio = contrast(glyph, ground)
+    assert ratio >= 3.0, (
+        f"{theme}: the pressed thumb is {glyph} on {ground}, {ratio:.2f}:1. "
+        "Non-text contrast needs 3:1 (WCAG 1.4.11); draw it with a darker token, "
+        "as the status line does with --status-good-ink"
+    )
+
+
+def test_the_pressed_state_is_not_shown_by_colour_alone() -> None:
+    css = _STYLE.read_text(encoding="utf-8")
+    idle = declarations(css, ".confirm-toggle::after")
+    pressed = declarations(css, f"{_PRESSED}::after")
+    assert idle.get("opacity") == "0" and pressed.get("opacity") == "1", (
+        "the check badge is the shape that says 'confirmed': hidden until pressed, shown after"
+    )
     # ...and the check mark is in the text (see test_web_ui_confirmation_control.py).
-    assert "✓" in _CONFIRMATION_JS.read_text(encoding="utf-8")
+    assert "\u2713" in _CONFIRMATION_JS.read_text(encoding="utf-8")
 
 
 def test_no_physical_left_or_right_in_the_new_rules() -> None:
