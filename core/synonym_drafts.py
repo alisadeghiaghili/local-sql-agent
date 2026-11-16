@@ -60,7 +60,6 @@ MAX_ENTRIES_PER_ANSWER = 80
 _KEY_WORDS = frozenset({"id", "key"})
 
 _WORD_RE = re.compile(r"\w+")
-_LETTERS = re.compile(r"[^\W\d_]{2,}")
 
 
 def synonym_key(word: str) -> str:
@@ -93,9 +92,19 @@ def _stem(word: str) -> str:
     return word
 
 
+def _is_letter(char: str) -> bool:
+    """Whether *char* is a letter of any script: a word character that is no digit and no underscore."""
+    return char.isalnum() and not char.isdecimal()
+
+
 def _is_word(text: str) -> bool:
-    """Whether *text* has a run of two letters (in any script)."""
-    return bool(_LETTERS.search(text))
+    """Whether *text* has a run of two letters (in any script).
+
+    Examples:
+        >>> [_is_word(t) for t in ("id", "حجم", "a1", "12345", "q_1", "")]
+        [True, True, False, False, False, False]
+    """
+    return any(_is_letter(a) and _is_letter(b) for a, b in zip(text, text[1:]))
 
 
 @dataclass(frozen=True)
@@ -218,6 +227,34 @@ def _value_words(value: Any, vocabulary: Vocabulary) -> str | None:
     return " ".join(spelled)  # type: ignore[arg-type]
 
 
+def _key_of(word: Any, vocabulary: Vocabulary) -> tuple[str, str | None]:
+    """*word* as a synonym key, and why it cannot be one (``None`` when it can).
+
+    Examples:
+        >>> v = Vocabulary(terms=("price",))
+        >>> _key_of(" Rate ", v), _key_of("unit rate", v), _key_of("price", v), _key_of(7, v)
+        (('rate', None), ('unit rate', 'not_one_word'), ('price', 'already_a_term'), ('', 'not_a_word'))
+    """
+    if not isinstance(word, str):
+        return "", "not_a_word"
+    key = synonym_key(word)
+    if _WORD_RE.findall(key) != [key]:
+        return key, "not_one_word"
+    if not _is_word(key):
+        return key, "not_a_word"
+    if data_shape(key):
+        return key, "value_shaped"
+    if key in vocabulary:
+        return key, "already_a_term"
+    return key, None
+
+
+def _spelled_terms(terms: Any, vocabulary: Vocabulary) -> list[str]:
+    """The values of one answer entry that are terms, as the vocabulary spells them, without repeats."""
+    values = [terms] if isinstance(terms, str) else terms if isinstance(terms, list) else []
+    return list(dict.fromkeys(v for v in (_value_words(t, vocabulary) for t in values) if v))
+
+
 def clean_synonyms(
     answer: Any,
     vocabulary: Vocabulary,
@@ -253,29 +290,14 @@ def clean_synonyms(
     """
     result = CleanedSynonyms()
     for word, terms in _pairs(answer):
-        if not isinstance(word, str):
-            result.dropped["not_a_word"] += 1
-            continue
-        key = synonym_key(word)
-        if len(_WORD_RE.findall(key)) != 1 or _WORD_RE.fullmatch(key) is None:
-            result.dropped["not_one_word"] += 1
-            continue
-        if not _is_word(key):
-            result.dropped["not_a_word"] += 1
-            continue
-        if data_shape(key):
-            result.dropped["value_shaped"] += 1
-            continue
-        if key in vocabulary:
-            result.dropped["already_a_term"] += 1
-            continue
-        values = [terms] if isinstance(terms, str) else terms if isinstance(terms, list) else []
-        spelled = list(dict.fromkeys(v for v in (_value_words(t, vocabulary) for t in values) if v))
-        if not spelled:
-            result.dropped["no_known_term"] += 1
-            continue
-        if key not in result.synonyms and len(result.synonyms) >= max_entries:
-            result.dropped["over_limit"] += 1
+        key, problem = _key_of(word, vocabulary)
+        spelled = [] if problem else _spelled_terms(terms, vocabulary)
+        if problem is None and not spelled:
+            problem = "no_known_term"
+        if problem is None and key not in result.synonyms and len(result.synonyms) >= max_entries:
+            problem = "over_limit"
+        if problem:
+            result.dropped[problem] += 1
             continue
         current = result.synonyms.setdefault(key, [])
         current.extend(s for s in spelled if s not in current)
