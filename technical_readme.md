@@ -283,7 +283,7 @@ The system is built as a **modular pipeline**. Each step is a separate module th
 ║  │                                                                │   ║
 ║  │   ┌──────────────────────────────────────────────────────┐    │   ║
 ║  │   │  SQLAlchemy Engine (one per data source)              │    │   ║
-║  │   │  pool_size=10 | max_overflow=20 | idle ping         │     │   ║
+║  │   │  NullPool: one connection per query, closed after   │     │   ║
 ║  │   └──────────────────────┬───────────────────────────────┘    │   ║
 ║  │                          │                                     │   ║
 ║  │                          ▼                                     │   ║
@@ -1010,10 +1010,9 @@ A rejection that no rewrite could satisfy (a policy refusal such as a denied col
   │   │  ┌─────────────────────────────────────────────────┐   │  │
   │   │  │  Configuration:                                  │   │  │
   │   │  │                                                   │   │  │
-  │   │  │  pool_size      = 10    (persistent connections)  │   │  │
-  │   │  │  max_overflow   = 20    (burst connections)       │   │  │
-  │   │  │  pool_recycle   = 3600s (recycle every hour)      │   │  │
-  │   │  │  idle-aware ping (DB_POOL_PING_IDLE_SECONDS)     │   │  │
+  │   │  │  poolclass      = NullPool (no idle connections)  │   │  │
+  │   │  │  pyodbc.pooling = False (no ODBC driver pooling)  │   │  │
+  │   │  │  one login per query, closed when it finishes     │   │  │
   │   │  │  (SELECT-only: no fast_executemany)               │   │  │
   │   │  │                                                   │   │  │
   │   │  └─────────────────────────────────────────────────┘   │  │

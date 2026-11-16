@@ -280,44 +280,11 @@ def _ping_datasource(datasource: str) -> tuple[bool, str]:
     """Return ``(ok, detail)`` for a liveness check on one data source.
 
     Uses the shared :func:`~database.connection.get_engine` engine for
-    *datasource* so no extra connection pool is created. Always runs its own explicit
-    ``SELECT 1`` on the checked-out connection -- this function no longer
-    trusts checkout alone to prove liveness (see "Why checkout alone is no
-    longer enough" below), so it costs exactly one round trip in the common
-    case, same as before, just an explicit one instead of an implicit one.
-
-    Why checkout alone is no longer enough
-    ---------------------------------------
-    Before the idle-aware-ping change (:mod:`database.pool_ping`), checking
-    a pooled connection out of :func:`~database.connection.get_engine` with
-    :attr:`config.Settings.db_pool_pre_ping` on *always* ran a liveness
-    probe transparently first -- so this function could skip its own probe
-    and treat a successful checkout as proof by itself. That is no longer
-    true: checkout now only probes a connection that has sat idle for at
-    least :attr:`config.Settings.db_pool_ping_idle_seconds`, so a connection
-    reused sooner than that is handed back **unprobed**. A bare checkout
-    would then let ``/health`` report the database healthy on nothing more
-    than "the pool object exists," with no round trip to the database at
-    all -- exactly the false confidence this function exists to prevent.
-    Running an explicit ``SELECT 1`` here, unconditionally, is what keeps
-    every ``/health`` call an actual, real proof of liveness regardless of
-    how recently the connection was last used.
-
-    One round trip in the common case; two in a rare one
-    -------------------------------------------------------
-    * **The checked-out connection was used recently enough that the pool
-      did not re-probe it on checkout (the common case).** This function's
-      own ``SELECT 1`` is the only round trip. Same cost as before.
-    * **The checked-out connection had gone idle long enough that the pool
-      probed it on checkout too (rare -- only when ``/health`` itself is
-      the first caller in a while, since :func:`check_health`'s own TTL
-      cache below bounds how often this runs at all).** That checkout-time
-      probe and this function's own ``SELECT 1`` are two separate round
-      trips. Not engineered around: doing so would mean this module
-      reaching into :mod:`database.pool_ping`'s per-connection bookkeeping
-      to detect "was this connection just pinged a moment ago," for a case
-      that is both rare and already cheap (one extra trivial query, once,
-      only when the pool would have paid for a probe anyway).
+    *datasource*. That engine is built with ``NullPool``: it keeps no
+    connections, so each check opens a fresh connection (a new login),
+    runs one explicit ``SELECT 1`` and closes the connection again. The
+    check costs exactly one query round trip plus the login, and leaves no
+    idle session on the server.
 
     The detail carries the exception *type* and message rather than a bare
     ``False``, for the same reason as :func:`_ping_openai`: "wrong host",

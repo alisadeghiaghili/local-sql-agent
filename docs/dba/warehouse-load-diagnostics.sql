@@ -22,9 +22,9 @@
 -- =============================================================================
 -- AUTO_CLOSE closes the database completely (releasing its resources) once
 -- the last connection to it ends, then pays a cold-start cost to reopen it
--- on the next connection. A connection pool that lets connections idle out
--- and reconnect can turn what looks like a trivial query into a full
--- close/reopen cycle. See docs/dba/README.md §1 for what to do if this is on.
+-- on the next connection. This application opens one connection per query
+-- and closes it afterwards, so when it is the only client each query can
+-- turn into a full close/reopen cycle. See docs/dba/README.md §1 for what to do if this is on.
 
 SELECT
     name                                 AS database_name,
@@ -247,9 +247,8 @@ FROM sys.database_query_store_options;
 -- A SERVER AUDIT or a logon trigger that runs its own logic (a lookup, a
 -- write, a check) on every new login event adds real work per new
 -- connection, independent of what that connection goes on to query. This
--- compounds with a short connection-pool recycle interval or high churn:
--- more new connections means more login events means more trigger
--- executions.
+-- application opens one login per warehouse query, so more queries means
+-- more login events means more trigger executions.
 
 -- 5a. Server-level logon triggers.
 SELECT

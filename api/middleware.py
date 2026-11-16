@@ -145,8 +145,8 @@ _TRUSTED_PROXIES: frozenset[str] = frozenset(
 #
 # /health itself is a known DoS surface (tracked for Phase 8, not fixed
 # here): each call performs two real ~5s network probes (the LLM endpoint +
-# database) against the shared connection pool, so even a rate-limited
-# flood of /health requests can still exhaust pool capacity for real
+# database, which opens a fresh warehouse login), so even a rate-limited
+# flood of /health requests can still crowd out real
 # /query traffic. It stays exempt for now because liveness checks (load
 # balancers, container orchestrators) must never be rate-limited away.
 _EXEMPT_PATHS: frozenset[str] = frozenset({
