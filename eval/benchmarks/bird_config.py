@@ -83,7 +83,7 @@ def inspector_runner(datasource: str | None = None) -> InspectFn:
             argv += ["--datasource", datasource]
         try:
             return int(schema_inspector_cli.main(argv))
-        except SystemExit as exc:
+        except SystemExit as exc:  # NOSONAR(S5754) the wrapped CLI exits; its code is this function's result
             return int(exc.code) if isinstance(exc.code, int) else 1
 
     return run
@@ -137,7 +137,7 @@ def apply_descriptions(
         by_column = descriptions.get(schema, {}).get(table)
         if not by_column:
             continue
-        for column, old in list(entry["columns"].items()):
+        for column, old in entry["columns"].items():
             text = by_column.get(str(column).strip().lower())
             if text:
                 entry["columns"][column] = f"{old} -- {text}"

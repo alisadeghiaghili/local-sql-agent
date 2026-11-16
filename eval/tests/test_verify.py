@@ -177,7 +177,7 @@ class TestRenderVerifyText:
         bad = _case("bad", SQL_B)
         wh = _executor({SQL_A: pd.DataFrame({"n": [424242]}), SQL_B: RuntimeError("Database error: x")})
         result = verify_cases([_case("ok"), bad], wh)
-        text = render_verify_text(result, accept=False, written=True)
+        text = render_verify_text(result, written=True)
         assert "PROBLEM bad: database_error" in text
         assert "re-run with --accept" in text
         assert SECRET_QUESTION not in text and "424242" not in text

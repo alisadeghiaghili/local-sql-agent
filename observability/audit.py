@@ -535,7 +535,7 @@ def save_audit_record(record: AuditRecord) -> None:
     try:
         append_jsonl(log_path, record.as_dict())
     except OSError as exc:
-        logger.error("Failed to write audit record: %s", exc)
+        logger.exception("Failed to write audit record: %s", exc)
         with _failures_lock:
             _write_failures["count"] += 1
 

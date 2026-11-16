@@ -433,7 +433,7 @@ def run_reference(
         cursor = conn.execute(sql)
         names = unique_columns([d[0] for d in cursor.description or ()])
         rows = cursor.fetchmany(max_rows)
-    except Exception as exc:  # noqa: BLE001 - any SQLite failure is an exclusion, not a crash
+    except Exception as exc:  # noqa: BLE001  # any SQLite failure is an exclusion, not a crash
         message = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
         if "interrupted" in message.lower():
             message = f"stopped after {timeout:g} s"

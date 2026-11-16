@@ -171,7 +171,7 @@ def record_admin_action(
         # log_max_bytes/log_backup_count default unchanged.
         append_jsonl(_admin_action_log_file(), record.as_dict(), max_bytes=0)
     except OSError as exc:  # pragma: no cover - defensive, mirrors observability.audit
-        logger.error("Failed to write admin-action audit record: %s", exc)
+        logger.exception("Failed to write admin-action audit record: %s", exc)
 
 
 def purge_expired_admin_actions() -> int:

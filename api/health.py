@@ -266,7 +266,7 @@ def _ping_db() -> tuple[bool, str]:
 
     try:
         names = datasource_names()
-    except Exception as exc:  # noqa: BLE001 - an invalid datasources.yaml is a health failure, not a crash
+    except Exception as exc:  # noqa: BLE001  # an invalid datasources.yaml is a health failure, not a crash
         return False, f"{type(exc).__name__}: {str(exc)[:200]}"
 
     results = [(name, *_ping_datasource(name)) for name in names]

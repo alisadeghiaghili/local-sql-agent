@@ -106,7 +106,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console  # noqa: E402
-import config as cfg  # noqa: E402 - loads .env, like every entry point
+import config as cfg  # noqa: E402  # loads .env, like every entry point
 from core import config_doctor as doctor  # noqa: E402
 from core import ring_names  # noqa: E402
 from core.policy_drafts import choose_memory_keys, draft_policies, draft_ring_aliases, usable_values  # noqa: E402
@@ -444,7 +444,7 @@ def main(argv: Sequence[str] | None = None, *, read_values: ValueReader | None =
     try:
         schema_text = schema_path.read_bytes().decode("utf-8-sig")
         schema = validate_schema_yaml_text(schema_text)
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
         return _error(f"cannot use {schema_path}: {_describe(exc)}")
     view = doctor.read_schema_text(schema_text)
 
@@ -472,7 +472,7 @@ def main(argv: Sequence[str] | None = None, *, read_values: ValueReader | None =
     reader = read_values or default_reader()
     try:
         raw = list(reader(source, qualifier, key, column, limit + 1))
-    except Exception as exc:  # noqa: BLE001 - a warehouse that cannot be read is one error, reported without its text
+    except Exception as exc:  # noqa: BLE001  # a warehouse that cannot be read is one error, reported without its text
         return _error(f"cannot read the values of {key}.{column}: {_describe(exc)}")
     if len(raw) > limit:
         return _error(

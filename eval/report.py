@@ -254,7 +254,7 @@ def build_report(
         tag: (tag_passed.get(tag, 0), tag_totals[tag]) for tag in sorted(tag_totals)
     }
 
-    status_counter: Counter[str] = Counter({status: 0 for status in ALL_STATUSES})
+    status_counter: Counter[str] = Counter(dict.fromkeys(ALL_STATUSES, 0))
     status_counter.update(r.status for r in results)
     status_counts = dict(status_counter)
     guard_rejections = status_counts.get("guard_rejected", 0)

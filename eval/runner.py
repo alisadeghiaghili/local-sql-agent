@@ -382,7 +382,7 @@ def run_case(
                 error="generator raised OUT_OF_SCOPE for a case that expects data",
             )
         return _finish("generation_error", error=str(exc))
-    except Exception as exc:  # noqa: BLE001 - any generator failure is a harness result, not a crash
+    except Exception as exc:  # noqa: BLE001  # any generator failure is a harness result, not a crash
         return _finish("generation_error", error=f"{type(exc).__name__}: {exc}")
 
     if case.is_out_of_scope:
@@ -408,7 +408,7 @@ def run_case(
 
     try:
         df = execute_fn(raw_sql)
-    except Exception as exc:  # noqa: BLE001 - any execution failure is a harness result, not a crash
+    except Exception as exc:  # noqa: BLE001  # any execution failure is a harness result, not a crash
         return _finish("execution_error", generated_sql=raw_sql, error=f"{type(exc).__name__}: {exc}")
 
     try:
@@ -445,7 +445,7 @@ def run_case(
                 )
             try:
                 reference_df = execute_fn(case.expected_sql)
-            except Exception as exc:  # noqa: BLE001 - a broken reference is a harness result, not a crash
+            except Exception as exc:  # noqa: BLE001  # a broken reference is a harness result, not a crash
                 return _finish(
                     "reference_error",
                     generated_sql=raw_sql,

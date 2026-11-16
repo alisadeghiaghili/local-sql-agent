@@ -41,7 +41,7 @@ class EntityRetriever:
         results = named_tables(question, {name: info["aliases"] for name, info in ENTITIES.items()})
 
         if results:
-            return results + [t for t in scored_extras(question, fact=False, exclude=results)]
+            return results + list(scored_extras(question, fact=False, exclude=results))
 
         # TF-IDF fallback — strip fact tables, keep dimensions only
         fact_tables = configured_fact_tables()

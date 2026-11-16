@@ -138,7 +138,7 @@ def main() -> None:
     try:
         cfg.settings.validate()
     except ValueError as exc:
-        logger.error("Invalid configuration: %s", exc)
+        logger.error("Invalid configuration: %s", exc)  # NOSONAR(S8572) an expected error: its message is the report
         print(f"\n❌ Configuration error: {exc}")
         sys.exit(1)
 

@@ -277,7 +277,7 @@ def create_app() -> Flask:
     log_startup_notice()
     db.init_db()
     admin_user = _require_admin_user()
-    app = Flask(__name__)
+    app = Flask(__name__)  # NOSONAR(S4502) CSRF is enforced by _check_csrf() below, on every form POST
     app.secret_key = _secret_key()
     app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 8  # 8h login
 
@@ -326,7 +326,7 @@ def create_app() -> Flask:
             abort(400)
         return None
 
-    @app.route("/lang/<lang>")
+    @app.route("/lang/<lang>", methods=["GET"])
     def set_lang(lang):
         if lang in i18n.LANGS:
             session["lang"] = lang
@@ -384,17 +384,18 @@ def create_app() -> Flask:
                     return redirect(url_for("register"))
         return render_template("register.html", username=username)
 
-    @app.route("/logout")
+    @app.route("/logout", methods=["GET"])
     def logout():
         session.clear()
         return redirect(url_for("login"))
 
-    @app.route("/download/<filename>")
+    @app.route("/download/<filename>", methods=["GET"])
     def download(filename):
         if "username" not in session:
             return redirect(url_for("login"))
         # Only serve files the agent itself generated, never arbitrary paths.
-        if not re.fullmatch(r"output_[0-9]{8}_[0-9]{6}(?:_[0-9]+)?\.csv", filename):
+        # [0-9], not \d: \d also matches non-ASCII digits, and this is an allow-list.
+        if not re.fullmatch(r"output_[0-9]{8}_[0-9]{6}(?:_[0-9]+)?\.csv", filename):  # NOSONAR(S6353)
             abort(404)
         return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
 

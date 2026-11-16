@@ -107,7 +107,8 @@ class TestRowDigest:
 
     def test_blobs_are_compared_by_their_hash(self):
         blobs = (SourceColumn("b", "BLOB", True, "blob", ColumnObservation()),)
-        assert digest_rows([(b"\x00\x01",)], blobs) == digest_rows([(b"\x00\x01",)], blobs)
+        first_run = digest_rows([(b"\x00\x01",)], blobs)
+        assert digest_rows([(b"\x00\x01",)], blobs) == first_run
         assert digest_rows([(b"\x00\x01",)], blobs) != digest_rows([(b"\x00\x02",)], blobs)
 
     def test_per_column_digests_name_the_column(self):

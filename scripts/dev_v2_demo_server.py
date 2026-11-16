@@ -45,7 +45,7 @@ import sqlite3
 os.environ.setdefault("OPENAI_MODEL", "demo-stub")
 os.environ.setdefault(
     "DB_CONNECTION_URL",
-    "mssql+pyodbc://demo@localhost:1433/Demo?driver=ODBC+Driver+17+for+SQL+Server",
+    "mssql+pyodbc://demo@localhost:1433/Demo?driver=ODBC+Driver+17+for+SQL+Server",  # NOSONAR(S2115) never connected: the demo patches in in-memory SQLite
 )
 os.environ.setdefault("CORS_ALLOWED_ORIGINS", "http://localhost:8080,http://localhost:8081")
 os.environ.setdefault("LLM_PROVIDER", "mock")
@@ -173,4 +173,4 @@ if __name__ == "__main__":
     _patch_engine_defaults()
     print("Demo v2 server: http://localhost:8000  (docs: /docs)")
     print("LLM: keyword-dispatching stub. Database: in-memory SQLite. See this file's docstring.")
-    uvicorn.run(server_module.app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(server_module.app, host="127.0.0.1", port=8000, log_level="info")

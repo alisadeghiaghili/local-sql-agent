@@ -150,7 +150,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console
-import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
+import config as cfg  # noqa: F401,E402  # loads .env, like every entry point
 from core.yaml_loading import safe_load_strict  # noqa: E402
 from database.catalogue import read_catalogue  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
@@ -580,7 +580,7 @@ def main(
             exclude_schemas={name: exclusion_patterns(name, extra) for name in sources},
             exclude_tables={name: table_exclusion_patterns(name) for name in sources},
         )
-    except (UnicodeDecodeError, ValueError) as exc:
+    except ValueError as exc:  # UnicodeDecodeError included
         print(f"cannot use {schema_path}: {_describe(exc)}", file=sys.stderr)
         return EXIT_ERROR
 

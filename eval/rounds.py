@@ -428,7 +428,7 @@ def compare_runs(
 
     old_classes = Counter(c.mismatch_class for c in old_cases.values())
     new_classes = Counter(c.mismatch_class for c in new_cases.values())
-    names = [n for n in MISMATCH_CLASSES] + sorted(
+    names = list(MISMATCH_CLASSES) + sorted(
         (set(old_classes) | set(new_classes)) - set(MISMATCH_CLASSES)
     )
     classes = {n: (old_classes.get(n, 0), new_classes.get(n, 0)) for n in names}

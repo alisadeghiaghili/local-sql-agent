@@ -49,21 +49,21 @@ _FA: dict[str, str] = {
         "برای پرسیدن سؤال از پایگاه داده به زبان فارسی یا انگلیسی وارد شوید."
     ),
     "Username": "نام کاربری",
-    "Password": "رمز عبور",
+    "Password": "رمز عبور",  # NOSONAR(S2068) UI text, not a credential
     "Sign in": "ورود",
     "Login · Local SQL Agent": "ورود · Local SQL Agent",
     # register.html
     "Create an account for a new user of the Local SQL Agent.": (
         "برای کاربر جدید Local SQL Agent یک حساب بسازید."
     ),
-    "Confirm password": "تأیید رمز عبور",
+    "Confirm password": "تأیید رمز عبور",  # NOSONAR(S2068) UI text, not a credential
     "Create account": "ایجاد حساب",
     "Register · Local SQL Agent": "ثبت‌نام · Local SQL Agent",
     # flash messages (app.py)
-    "Invalid username or password.": "نام کاربری یا رمز عبور نامعتبر است.",
+    "Invalid username or password.": "نام کاربری یا رمز عبور نامعتبر است.",  # NOSONAR(S2068) UI text, not a credential
     "Only an administrator can create accounts.": "فقط مدیر می‌تواند حساب ایجاد کند.",
-    "Username and password are required.": "نام کاربری و رمز عبور الزامی است.",
-    "Passwords do not match.": "رمزهای عبور یکسان نیستند.",
+    "Username and password are required.": "نام کاربری و رمز عبور الزامی است.",  # NOSONAR(S2068) UI text, not a credential
+    "Passwords do not match.": "رمزهای عبور یکسان نیستند.",  # NOSONAR(S2068) UI text, not a credential
     "Username '%(name)s' is already taken.": "نام کاربری «%(name)s» قبلاً گرفته شده است.",
     "Account '%(name)s' created.": "حساب «%(name)s» ایجاد شد.",
     "Please enter a question.": "لطفاً یک سؤال وارد کنید.",
