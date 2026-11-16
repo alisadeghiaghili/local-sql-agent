@@ -382,8 +382,7 @@ class TestDisposeEngine:
         from database.connection import dispose_engine, get_engine
 
         mock_engine = MagicMock()
-        with patch("database.connection.create_engine", return_value=mock_engine) as create, \
-             patch("database.connection.install_idle_aware_ping"):
+        with patch("database.connection.create_engine", return_value=mock_engine) as create:
             get_engine.cache_clear()
             get_engine()                          # populate cache
             get_engine()                          # served from the cache

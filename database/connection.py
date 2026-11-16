@@ -4,8 +4,10 @@
 
 Provides one cached :class:`~sqlalchemy.engine.Engine` per data source
 (see :mod:`database.datasources`), shared across all database consumers in
-the process. Connection pool settings are tuned for a multi-threaded
-FastAPI server handling up to 20 concurrent queries per source.
+the process. Engines do not pool connections (:class:`~sqlalchemy.pool.NullPool`):
+every ``connect()`` opens a fresh DBAPI connection and closing it closes
+the socket, so no idle session outlives the query that needed it. See
+:func:`_build_engine` for why.
 
 Each engine is created lazily on the **first** :func:`get_engine` call for
 its source and cached (:func:`functools.lru_cache` keyed by source name).
@@ -30,12 +32,11 @@ from __future__ import annotations
 import threading
 
 from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.pool import NullPool
 
-import config as cfg
 from database.connection_identity import with_application_name
 from database.datasources import default_datasource_name, get_datasource
-from database.pool_ping import install_idle_aware_ping
 
 
 def get_engine(datasource: str | None = None) -> Engine:
@@ -82,38 +83,34 @@ def _build_engine(datasource: str) -> Engine:
 
     Pool configuration
     ------------------
-    ``pool_pre_ping`` — idle-aware, via :func:`database.pool_ping.install_idle_aware_ping`
-        When :attr:`config.Settings.db_pool_pre_ping` is ``True`` (the
-        default), the engine is built with SQLAlchemy's own
-        ``pool_pre_ping`` argument left off and
-        :func:`~database.pool_ping.install_idle_aware_ping` is installed
-        instead: a connection is only probed with ``SELECT 1`` on
-        checkout once it has sat idle in the pool for at least
-        :attr:`config.Settings.db_pool_ping_idle_seconds` (default 60;
-        ``0`` pings literally every checkout, matching plain
-        ``pool_pre_ping=True`` except for one narrow case documented on
-        :func:`~database.pool_ping.install_idle_aware_ping`). A failed
-        probe raises ``sqlalchemy.exc.InvalidatePoolError`` -- the same
-        exception plain ``pool_pre_ping=True``'s own dialect-level ping
-        raises on failure -- which makes the pool invalidate and
-        transparently replace every pooled connection, not just the one
-        that was probed, before the caller's own statement runs. When
-        :attr:`~config.Settings.db_pool_pre_ping`
-        is ``False``, ``install_idle_aware_ping`` is never called and no
-        connection is ever probed on checkout. The steady per-checkout
-        probe cost this trades for that safety — and when turning it off
-        is a reasonable choice instead — is documented on
-        :attr:`config.Settings.db_pool_pre_ping` (Finding 1, 2026
-        warehouse-load audit, revised by the idle-aware-ping follow-up).
-    ``pool_recycle=cfg.settings.db_pool_recycle_seconds`` (default 3600)
-        Recycles connections older than 1 hour to prevent stale ODBC
-        handles (common with SQL Server + pyodbc on Linux).
-    ``pool_size=10``
-        Persistent connections kept alive in the pool.  Sized for the
-        expected number of concurrent FastAPI worker threads.
-    ``max_overflow=20``
-        Extra connections allowed under peak load above ``pool_size``.
-        These connections are closed when the burst subsides.
+    ``poolclass=NullPool``
+        No connection is kept between queries. ``engine.connect()`` opens a
+        new DBAPI connection and closing it (the ``with`` block exit in
+        :func:`database.executor.execute_sql`) closes the session on the
+        server. The engine previously used SQLAlchemy's default
+        ``QueuePool`` with ``pool_size=10, max_overflow=20``: up to ten
+        connections per source *per worker process* stayed open and idle
+        indefinitely, because ``QueuePool`` never closes a checked-in
+        connection and ``pool_recycle`` only acts on checkout. DBAs saw
+        those as sleeping sessions that never went away. For this workload
+        (a handful of queries per question, each preceded by seconds of
+        LLM time) the tens of milliseconds a fresh login costs are
+        negligible, so the pool bought nothing worth that footprint.
+
+        Without a pool, ``pool_recycle`` and the idle-aware pre-ping
+        (:mod:`database.pool_ping`) have nothing to act on: a connection is
+        never reused, so it can never be stale. Neither is installed here.
+        :attr:`config.Settings.db_pool_pre_ping` still governs the
+        application-database engine (:func:`appdb.engine.build_engine`).
+        Concurrency against the warehouse is bounded upstream by
+        :mod:`api.concurrency`, not by a pool limit.
+
+    ODBC driver-manager pooling
+        ``pyodbc`` enables ODBC connection pooling by default, which makes
+        the driver manager keep a "closed" connection open for its own
+        reuse (60 s by default on Windows). That would defeat ``NullPool``,
+        so for an ``mssql+pyodbc`` source :func:`_disable_odbc_pooling`
+        turns it off before the first connection is made.
 
     Application identification (Finding 5, 2026 warehouse-load audit)
     -------------------------------------------------------------------
@@ -151,23 +148,47 @@ def _build_engine(datasource: str) -> Engine:
     """
     source = get_datasource(datasource)
     connection_url = with_application_name(source.url, source.application_name)
-    engine = create_engine(
-        connection_url,
-        pool_recycle=cfg.settings.db_pool_recycle_seconds,
-        pool_size=10,
-        max_overflow=20,
-        echo=False,
-    )
-    if cfg.settings.db_pool_pre_ping:
-        install_idle_aware_ping(engine, cfg.settings.db_pool_ping_idle_seconds)
-    return engine
+    if make_url(connection_url).drivername == "mssql+pyodbc":
+        _disable_odbc_pooling()
+    return create_engine(connection_url, poolclass=NullPool, echo=False)
+
+
+def _disable_odbc_pooling() -> None:
+    """Turn off pyodbc's ODBC driver-manager connection pooling.
+
+    ``pyodbc.pooling`` is process-wide and is read when pyodbc allocates
+    its ODBC environment, i.e. on the first connection; setting it after
+    that has no effect. It is therefore set here, while building an
+    ``mssql+pyodbc`` engine and before that engine can connect. Every
+    ``mssql+pyodbc`` engine in this process then gets the same behaviour,
+    which is intended: no layer below SQLAlchemy keeps idle sessions open.
+
+    A missing ``pyodbc`` is not an error here; ``create_engine`` raises the
+    real import error with its own message when the dialect loads.
+
+    Returns
+    -------
+    None
+
+    Examples
+    --------
+    >>> _disable_odbc_pooling()                  # doctest: +SKIP
+    >>> import pyodbc; pyodbc.pooling            # doctest: +SKIP
+    False
+    """
+    try:
+        import pyodbc
+    except ImportError:
+        return
+    pyodbc.pooling = False
 
 
 def dispose_engine() -> None:
     """Dispose every cached engine and clear the cache.
 
-    Closes **all** connections in every source's pool (both idle and checked-out once
-    they are returned) and removes the cached engine object so the next call
+    Engines hold no idle connections (see :func:`_build_engine`), so this
+    mostly releases the engine objects; it still closes anything a dialect
+    keeps per engine. It removes the cached engine object so the next call
     to :func:`get_engine` creates a completely fresh instance.
 
     Common use cases

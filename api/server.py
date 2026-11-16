@@ -391,6 +391,21 @@ async def lifespan(app: FastAPI):
             stop_keepwarm()
         except Exception as exc:  # noqa: BLE001 - shutdown must not fail on it
             logger.warning("LLM prefix keep-warm could not be stopped: %s", type(exc).__name__)
+        # Release database engines so the process leaves no session behind on
+        # the warehouse or the application database. Warehouse engines hold
+        # no idle connections (NullPool); the app DB engine does.
+        try:
+            from database.connection import dispose_engine
+
+            dispose_engine()
+        except Exception as exc:  # noqa: BLE001 - shutdown must not fail on it
+            logger.warning("Warehouse engines could not be disposed: %s", type(exc).__name__)
+        try:
+            from appdb.engine import dispose_app_engine
+
+            dispose_app_engine()
+        except Exception as exc:  # noqa: BLE001 - shutdown must not fail on it
+            logger.warning("Application database engine could not be disposed: %s", type(exc).__name__)
 
 
 # docs_url/redoc_url/openapi_url are disabled here and re-registered by hand
