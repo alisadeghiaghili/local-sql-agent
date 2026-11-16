@@ -39,6 +39,7 @@ draft_policies(policies, values, filter_key, column, memory_keys) -> DraftedPoli
 DraftedRings
     The drafted ``aliases.yaml`` and what was added to it.
 ring_forms(value, generic_words) -> list[str]
+ring_entries(values, existing_keys, generic_words) -> dict[str, list[str]]
 draft_ring_aliases(text, values, generic_words) -> DraftedRings
 """
 
@@ -70,6 +71,7 @@ __all__ = [
     "choose_memory_keys",
     "draft_policies",
     "draft_ring_aliases",
+    "ring_entries",
     "ring_forms",
     "usable_values",
 ]
@@ -550,6 +552,50 @@ def ring_forms(value: str, generic_words: Sequence[str] = ()) -> list[str]:
     return forms
 
 
+def ring_entries(
+    values: Iterable[str],
+    existing_keys: Iterable[str] = (),
+    generic_words: Sequence[str] = (),
+) -> dict[str, list[str]]:
+    """The ``ring_aliases`` entries to add for the stored ring *values* that have none.
+
+    Parameters
+    ----------
+    values:
+        The stored values of the ring's name column (:func:`usable_values`).
+    existing_keys:
+        The keys ``ring_aliases`` already has; a value that is one of them
+        (after the project's folding) gets no entry, so a curated entry is
+        never replaced.
+    generic_words:
+        See :func:`ring_forms`. A shortened form that two values would share
+        is given to neither.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        ``{value: forms}``, longest value first (``extract_ring`` takes the
+        first entry with a form in the question, so ``Zone AB`` must come
+        before ``Zone A``).
+
+    Examples
+    --------
+    >>> ring_entries(["Zone A", "Zone AB", "Hall Spot"], ["zone a"], ["Hall"])
+    {'Hall Spot': ['Hall Spot', 'Spot'], 'Zone AB': ['Zone AB']}
+    >>> ring_entries(["Hall Export", "Ring Export"], (), ["Hall", "Ring"])
+    {'Hall Export': ['Hall Export'], 'Ring Export': ['Ring Export']}
+    """
+    taken = {normalize_for_matching(key) for key in existing_keys}
+    fresh = [value for value in values if normalize_for_matching(value) not in taken]
+    fresh.sort(key=lambda value: (-len(value), normalize_for_matching(value)))
+    forms = {value: ring_forms(value, generic_words) for value in fresh}
+    shared = Counter(normalize_for_matching(form) for found in forms.values() for form in found[1:])
+    return {
+        value: [f for i, f in enumerate(found) if i == 0 or shared[normalize_for_matching(f)] == 1]
+        for value, found in forms.items()
+    }
+
+
 def _ring_entry_lines(value: str, forms: Sequence[str], indent: int) -> list[str]:
     pad = " " * indent
     return [f"{pad}{quote(value)}:", *(f"{pad}  - {quote(form)}" for form in forms)]
@@ -615,16 +661,9 @@ def draft_ring_aliases(text: str, values: Sequence[str], generic_words: Sequence
 
     source = text if text.strip() else _NEW_ALIASES
     before = validate_yaml_text("aliases.yaml", source, AliasesConfig).model_dump()
-    taken = {normalize_for_matching(key) for key in before["ring_aliases"]}
     wanted = {normalize_for_matching(value) for value in values}
-    fresh = [value for value in values if normalize_for_matching(value) not in taken]
-    fresh.sort(key=lambda value: (-len(value), normalize_for_matching(value)))
-    forms = {value: ring_forms(value, generic_words) for value in fresh}
-    shared = Counter(normalize_for_matching(form) for found in forms.values() for form in found[1:])
-    forms = {
-        value: [f for i, f in enumerate(found) if i == 0 or shared[normalize_for_matching(f)] == 1]
-        for value, found in forms.items()
-    }
+    forms = ring_entries(values, before["ring_aliases"], generic_words)
+    fresh = list(forms)
 
     lines, eol, bom = _split(source)
     inline = next((i for i, line in enumerate(lines) if re.match(r"^ring_aliases[ \t]*:[ \t]*\{[ \t]*\}[ \t]*(?:#.*)?$", line)), None)
