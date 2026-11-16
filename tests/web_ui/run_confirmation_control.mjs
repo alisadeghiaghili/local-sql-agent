@@ -6,7 +6,8 @@
 // wins" scenario, the real web/js/render/feedback.js) via caller-supplied
 // byte-identical copies renamed to `.mjs`, under a MINIMAL DOM shim covering
 // only what those modules call: createElement, appendChild, className /
-// dataset / textContent as plain properties, setAttribute / getAttribute,
+// dataset as plain properties, textContent read through child elements,
+// setAttribute / getAttribute,
 // addEventListener and a synchronous click() dispatch that awaits each
 // (async) listener. Same approach as run_feedback_control.mjs.
 //
@@ -33,7 +34,7 @@ class FakeElement {
     this._attrs = new Map();
     this._listeners = {};
     this.dataset = {};
-    this.textContent = "";
+    this._text = "";
     this.value = "";
     this.disabled = false;
     this.hidden = false;
@@ -47,6 +48,17 @@ class FakeElement {
         self.className = [...set].join(" ");
       },
     };
+  }
+
+  // As in a real DOM: an element's text is its own text plus its
+  // descendants', and assigning it replaces the children. The confirmation
+  // button keeps its label in a visually hidden child span.
+  get textContent() {
+    return this.children.length ? this.children.map((c) => c.textContent).join("") : this._text;
+  }
+  set textContent(value) {
+    this.children = [];
+    this._text = String(value);
   }
 
   appendChild(child) {

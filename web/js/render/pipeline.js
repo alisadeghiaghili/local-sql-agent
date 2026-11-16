@@ -4,17 +4,33 @@
 
 "use strict";
 
+/* The interpretation stage is the product's premium step — the one that
+ * costs the analyst rows of their own result — so it gets its own mark
+ * (a brain) and the gold treatment instead of sitting in the same row of
+ * plain stage pills as the mechanics. */
+const BRAIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>';
+
 const STEPS = [
   { key: "understand", label: "درک — تعیین زمینه از روی نشست و پرسش" },
   { key: "generate", label: "تولید — ساخت SQL با مدل زبانی محلی" },
   { key: "validate", label: "اعتبارسنجی — لایهٔ نگهبانی امنیتی و سقف ردیف" },
   { key: "execute", label: "اجرا — روی پایگاه‌داده" },
-  { key: "interpret", label: "تفسیر — خلاصهٔ ساده‌شدهٔ نتیجه" },
+  { key: "interpret", label: "تفسیر — خلاصهٔ ساده‌شدهٔ نتیجه", gold: true, icon: BRAIN_ICON },
 ];
+
+/** The connector between two stages: an arrow, never a number — the
+ * strip reads as a path the question travels, not as a checklist. */
+function stageArrow(className) {
+  const arrow = document.createElement("span");
+  arrow.className = className;
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "→";
+  return arrow;
+}
 
 /** Slim stage strip for the default turn chrome (DESIGN.md §5.2).
  *
- * Five dots/labels, not five cards. `setStage` matches renderPipeline so
+ * Five labels joined by arrows, not five cards. `setStage` matches renderPipeline so
  * SSE `stage` events and simulated timers drive both the strip and the
  * full list in the details drawer.
  *
@@ -28,18 +44,22 @@ export function renderStageStrip() {
 
   const items = {};
   STEPS.forEach((step, i) => {
+    if (i > 0) root.appendChild(stageArrow("stage-strip-arrow"));
     const item = document.createElement("span");
     item.className = "stage-strip-item";
+    if (step.gold) item.classList.add("is-gold");
     item.dataset.step = step.key;
-    const mark = document.createElement("span");
-    mark.className = "stage-strip-mark";
-    mark.setAttribute("aria-hidden", "true");
-    mark.textContent = String(i + 1);
+    if (step.icon) {
+      const mark = document.createElement("span");
+      mark.className = "stage-strip-mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.innerHTML = step.icon;
+      item.appendChild(mark);
+    }
     const short = document.createElement("span");
     short.className = "stage-strip-label";
     // Short labels for the strip; the full sentence lives in the drawer.
     short.textContent = step.label.split("—")[0].trim();
-    item.appendChild(mark);
     item.appendChild(short);
     root.appendChild(item);
     items[step.key] = item;
@@ -65,34 +85,40 @@ export function renderStageStrip() {
   return { el: root, setStage, steps: STEPS.map((s) => s.key) };
 }
 export function renderPipeline() {
-  const ol = document.createElement("ol");
-  ol.className = "steps";
-  for (const step of STEPS) {
-    const li = document.createElement("li");
-    li.className = "step";
+  const list = document.createElement("div");
+  list.className = "steps";
+  list.setAttribute("role", "list");
+  STEPS.forEach((step, i) => {
+    if (i > 0) list.appendChild(stageArrow("step-arrow"));
+    const li = document.createElement("span");
+    li.className = step.gold ? "step is-gold" : "step";
     li.dataset.step = step.key;
-    const icon = document.createElement("span");
-    icon.className = "step-icon";
-    icon.textContent = String(STEPS.indexOf(step) + 1);
+    li.setAttribute("role", "listitem");
+    if (step.icon) {
+      const icon = document.createElement("span");
+      icon.className = "step-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.innerHTML = step.icon;
+      li.appendChild(icon);
+    }
     const label = document.createElement("span");
     label.className = "step-label";
     label.textContent = step.label;
     const status = document.createElement("span");
     status.className = "step-status";
-    li.appendChild(icon);
     li.appendChild(label);
     li.appendChild(status);
-    ol.appendChild(li);
-  }
+    list.appendChild(li);
+  });
 
   function setStage(key, stateName) {
-    const li = ol.querySelector(`.step[data-step="${key}"]`);
+    const li = list.querySelector(`.step[data-step="${key}"]`);
     if (!li) return;
     li.classList.remove("running", "done", "error");
     if (stateName) li.classList.add(stateName);
   }
 
-  return { el: ol, setStage, steps: STEPS.map((s) => s.key) };
+  return { el: list, setStage, steps: STEPS.map((s) => s.key) };
 }
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));

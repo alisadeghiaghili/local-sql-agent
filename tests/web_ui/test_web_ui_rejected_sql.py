@@ -138,6 +138,13 @@ def _prepare_copies(tmp_path: Path) -> Path:
         'import { copySourceOfTruth, displaySqlForTurn, formatSqlForDisplay, highlightSql } from "./sql-display.mjs";',
         turn_src, "turn.js -> sql-display.js",
     )
+    # turn.js draws the guard shield from the shared icon set, like the
+    # renderers below; the import line is the same one assumptions.js has.
+    turn_src = _subn_or_fail(
+        _ICONS_IMPORT_IN_ASSUMPTIONS,
+        'import { icon } from "./icons.mjs";',
+        turn_src, "turn.js -> icons.js",
+    )
     assumptions_src = _subn_or_fail(
         _ICONS_IMPORT_IN_ASSUMPTIONS,
         'import { icon } from "./icons.mjs";',

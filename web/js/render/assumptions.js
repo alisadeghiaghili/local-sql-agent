@@ -74,7 +74,7 @@ export function renderBasis(basis, onJumpToTurn) {
  *   button rendered at all) when the caller passes nothing, so existing
  *   call sites that don't yet support memory keep working unchanged.
  */
-export function renderAssumptions(assumptions, onEditAssumption, onPin) {
+export function renderAssumptions(assumptions, onEditAssumption, onPin, ringOptions) {
   if (!assumptions || assumptions.length === 0) return null;
   const wrap = document.createElement("div");
   wrap.className = "assumptions";
@@ -89,10 +89,36 @@ export function renderAssumptions(assumptions, onEditAssumption, onPin) {
     field.textContent = a.field + ":";
     chip.appendChild(field);
 
-    const value = document.createElement("span");
-    value.className = "chip-value";
-    value.textContent = a.value;
-    chip.appendChild(value);
+    // The `ring` (تالار) field, when its closed option set is known, is a
+    // <select> — the same control as the memory panel's ring field — rather
+    // than a text value + inline editor. Applying is on-change: picking a
+    // ring is the only thing this control does, so there is no separate
+    // apply/cancel step. Other fields (and a ring with no known options)
+    // keep the existing text value + edit button below.
+    const useRingSelect = a.editable && a.field === "ring"
+      && Array.isArray(ringOptions) && ringOptions.length > 0;
+    if (useRingSelect) {
+      const select = document.createElement("select");
+      select.className = "chip-select";
+      select.setAttribute("aria-label", `تغییر «${a.field}»`);
+      const opts = ringOptions.includes(a.value) ? ringOptions : [a.value, ...ringOptions];
+      for (const opt of opts) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        o.selected = opt === a.value;
+        select.appendChild(o);
+      }
+      select.addEventListener("change", () => {
+        if (select.value !== a.value) onEditAssumption(a.field, select.value);
+      });
+      chip.appendChild(select);
+    } else {
+      const value = document.createElement("span");
+      value.className = "chip-value";
+      value.textContent = a.value;
+      chip.appendChild(value);
+    }
 
     const src = document.createElement("span");
     src.className = "chip-source";
@@ -100,13 +126,18 @@ export function renderAssumptions(assumptions, onEditAssumption, onPin) {
     chip.appendChild(src);
 
     if (a.editable) {
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      editBtn.className = "chip-edit-btn";
-      editBtn.setAttribute("aria-label", `ویرایش مفروضهٔ ${a.field}`);
-      editBtn.appendChild(icon("edit", { size: 14 }));
-      editBtn.addEventListener("click", () => openEditor(chip, a, onEditAssumption));
-      chip.appendChild(editBtn);
+      // A ring chip already edits itself through the <select> above; a
+      // separate edit button would be a redundant second path to the same
+      // action. Other editable fields still get the inline text editor.
+      if (!useRingSelect) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "chip-edit-btn";
+        editBtn.setAttribute("aria-label", `ویرایش مفروضهٔ ${a.field}`);
+        editBtn.appendChild(icon("edit", { size: 14 }));
+        editBtn.addEventListener("click", () => openEditor(chip, a, onEditAssumption));
+        chip.appendChild(editBtn);
+      }
 
       // "Pin this" — the ONLY way memory gets created (never inferred).
       // Not offered on a chip that is ALREADY memory-sourced: re-pinning

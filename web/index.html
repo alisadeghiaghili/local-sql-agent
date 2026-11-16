@@ -3,208 +3,326 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- Finding 2's last layer: this page and web/admin/index.html are served
-     by whatever static host sits in front of them (a plain file server,
-     nginx, ...) -- a different origin than the FastAPI app, whose own
-     response headers (api/middleware.py's SecurityHeadersMiddleware)
-     never reach a document fetched from somewhere else. A <meta> policy
-     travels WITH the document, so it applies no matter what serves it.
-     script-src is deliberately 'self' only, with no 'unsafe-inline': every
-     script this page loads is a real file (assets/vendor/prism*.min.js,
-     js/main.js), so an injected inline handler -- the exact shape the
-     audit reproduced through main.js's escapeHtml/data-pid gap -- has
-     nowhere to run even if every other layer fails. connect-src is left
-     open because the backend base URL is deliberately end-user
-     configurable (web/js/config.js's DEFAULT_BASE_URL, the persisted
-     value in web/js/state.js, the admin panel's own "اتصال" control) --
-     narrowing it to one origin would break that by design. -->
+<!-- This page and web/admin/index.html are served by whatever static host
+     sits in front of them — a different origin than the FastAPI app, whose
+     own SecurityHeadersMiddleware never reaches a document fetched from
+     somewhere else. A <meta> policy travels WITH the document.
+     script-src is deliberately 'self' only: every script is a real file.
+     connect-src stays open because the backend base URL is deployment
+     configuration (web/js/config.js). -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src *; base-uri 'none'; form-action 'self'; object-src 'none'">
-<title>عامل هوشمند SQL — گفتگوی تحلیلی</title>
+<title>عامل هوشمند SQL — فضای کاری تحلیلی</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles/tokens.css">
 <link rel="stylesheet" href="styles/fonts.css">
 <link rel="stylesheet" href="styles/style.css">
 <link rel="stylesheet" href="assets/vendor/prism-sql-theme.css">
-<style>
-  /* Icon utility — 16px stroke icons from js/icons.js / inline chrome SVG */
-  .icon { display: inline-block; vertical-align: -0.15em; flex: 0 0 auto; }
-  .topbar .icon, .sidebar-toggle .icon, .memory-panel-close .icon { color: currentColor; }
-</style>
+<link rel="stylesheet" href="styles/template.css">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true">SQL</span>
-    <div class="brand-text">
-      <h1 data-i18n="productTitle">عامل هوشمند SQL</h1>
-      <p data-i18n="productTagline">پرسش به زبان فارسی ← SQL ← پاسخ، روی زیرساخت خودتان</p>
-    </div>
-  </div>
-  <div class="topbar-right">
-    <!-- Backend base URL is deploy config (web/js/config.js), not an
-         analyst control. API key is identity and lives in the user menu. -->
-    <button class="memory-toggle" id="memory-toggle" type="button" aria-haspopup="dialog" aria-controls="memory-panel" aria-expanded="false">
-      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 8a3 3 0 016 0v1h1a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2v-6a2 2 0 012-2h1V8zm3 4v4m-2-2h4"/></svg>
-      <span data-i18n="memory">حافظهٔ تحلیلی</span>
-    </button>
-    <!-- Static pre-JS fallback: mirrors setHealth's own DOM shape (main.js)
-         so the first real render never has to change structure, only
-         state. Starts "unknown", not "ok" -- main.js calls refreshHealth()
-         on boot, but until that resolves, claiming every service is up is
-         the same false-all-clear this rail was rewritten to stop making. -->
-    <div class="health" id="health" role="status" aria-live="polite">
-      <span class="pill" aria-label="API: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">API</span><span class="pill-state">نامشخص</span></span>
-      <span class="pill" aria-label="LLM: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">LLM</span><span class="pill-state">نامشخص</span></span>
-      <span class="pill" aria-label="DB: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">DB</span><span class="pill-state">نامشخص</span></span>
-    </div>
-    <!-- User menu: theme, language, API key. One place for identity and
-         preference chrome so the topbar stays readable on a 13" screen. -->
-    <div class="user-menu" id="user-menu">
-      <button class="user-menu-btn" id="user-menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="user-menu-panel">
-        <span class="user-avatar" aria-hidden="true">A</span>
-        <span data-i18n="userMenu">حساب</span>
+<div class="shell">
+
+  <!-- ── Rail: the product's spine. Icons only, one active state. ──── -->
+  <aside class="rail" aria-label="ناوبری اصلی">
+    <a class="rail-logo" href="#dashboard" aria-label="عامل هوشمند SQL">
+      <span class="rail-logo-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+    </a>
+
+    <nav class="rail-nav" aria-label="بخش‌ها">
+      <!-- Two destinations stay on the spine — a fresh question and the
+           conversation index are pressed all day, so they are not worth a
+           menu open. Everything else is a row in the popover below
+           (#nav-menu), anchored to the settings icon itself. -->
+      <button class="rail-btn" id="rail-new-query" type="button" aria-label="پرسش جدید" title="پرسش جدید" data-i18n-attr="aria-label:navNewQuery,title:navNewQuery">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       </button>
-      <div class="user-menu-panel" id="user-menu-panel" role="dialog" aria-label="حساب" hidden>
-        <div class="um-section">
-          <div class="um-label" data-i18n="theme">پوسته</div>
-          <div class="um-segment" id="theme-segment" role="group" aria-label="پوسته">
-            <button type="button" data-theme-val="system" data-i18n="themeSystem">سیستم</button>
-            <button type="button" data-theme-val="light" data-i18n="themeLight">روشن</button>
-            <button type="button" data-theme-val="dark" data-i18n="themeDark">تیره</button>
-          </div>
-        </div>
-        <div class="um-section">
-          <div class="um-label" data-i18n="language">زبان</div>
-          <div class="um-segment" id="lang-segment" role="group" aria-label="زبان">
-            <button type="button" data-lang="fa" data-i18n="langFa">فارسی</button>
-            <button type="button" data-lang="en" data-i18n="langEn">English</button>
-          </div>
-        </div>
-        <div class="um-section">
-          <div class="um-label" data-i18n="apiKey">کلید API</div>
-          <div class="live-key-row" id="live-key-row">
-            <span class="live-key-status" id="live-key-status"></span>
-            <span class="live-key-entry" id="live-key-entry">
-              <input type="password" id="live-key-input" dir="ltr" class="live-key-input" autocomplete="off" data-i18n-attr="aria-label:apiKey,placeholder:apiKeyPlaceholder" aria-label="کلید API" placeholder="کلید API خود را وارد کنید">
-              <button class="live-key-save" id="live-key-save" type="button" data-i18n="apiKeySave">ذخیره</button>
-            </span>
-            <button class="live-key-change" id="live-key-change" type="button" hidden data-i18n="apiKeyChange">تغییر کلید</button>
-            <button class="live-key-clear" id="live-key-clear" type="button" data-i18n="apiKeyClear">حذف کلید</button>
-          </div>
-          <p class="um-hint" data-i18n="apiKeyHint" hidden></p>
-        </div>
-        <!-- ADR-004 part 1: the minimal analyst-facing status read for
-             "Request access" -- the account/menu area already holds the
-             per-analyst chrome (theme, language, API key), so this reuses
-             that surface instead of adding a new panel. Populated by
-             main.js's refreshAccessRequestsList() when the menu opens
-             (live mode only); every row's column/status/reason is
-             server-supplied and untrusted -- rendered via textContent
-             only, never innerHTML. -->
-        <div class="um-section" id="access-requests-section">
-          <div class="um-label" data-i18n="accessRequests">درخواست‌های دسترسی</div>
-          <div id="access-requests-list" class="access-requests-list" aria-live="polite">
-            <p class="access-requests-empty" data-i18n="accessRequestsEmpty">درخواستی ثبت نشده است.</p>
-          </div>
+
+      <button class="rail-btn" id="sidebar-toggle" type="button" aria-expanded="false" aria-controls="sidebar" aria-label="گفتگوها" title="گفتگوها" data-i18n-attr="aria-label:navConversations,title:navConversations">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.6 9.6 0 0 1-3.6-.7L3 21l1.8-4.6A8.1 8.1 0 0 1 3.6 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8.4 8.4z"/></svg>
+      </button>
+
+      <!-- The anchor is what the popover is positioned against, so it opens
+           level with this icon instead of somewhere near the rail's foot. -->
+      <div class="rail-menu-anchor">
+        <button class="rail-btn" id="rail-settings" type="button" aria-haspopup="menu" aria-controls="nav-menu" aria-expanded="false" aria-label="تنظیمات و بخش‌ها" title="تنظیمات و بخش‌ها" data-i18n-attr="aria-label:railSettings,title:railSettings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        </button>
+
+        <!-- The remaining destinations, behind the settings icon. The buttons
+             keep their original IDs, so every handler in main.js/dashboard.js
+             binds to them exactly as before; main.js only opens and closes the
+             panel. -->
+        <div class="nav-menu" id="nav-menu" role="menu" aria-label="بخش‌ها" hidden>
+          <button class="nav-menu-item is-active" type="button" role="menuitem" data-rail="dashboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>
+            <span data-i18n="navDashboard">داشبورد</span>
+          </button>
+
+          <button class="nav-menu-item" id="rail-analytics" type="button" role="menuitem" data-rail="analytics">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7.5 15.5l3.6-4.4 3 2.6 4.4-6"/></svg>
+            <span data-i18n="navAnalytics">تحلیل و گزارش</span>
+          </button>
+
+          <button class="nav-menu-item" id="memory-toggle" type="button" role="menuitem" aria-haspopup="dialog" aria-controls="memory-panel" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a4 4 0 0 1 4 4h1a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3h1a4 4 0 0 1 4-4z"/><path d="M12 11v6m-3-3h6"/></svg>
+            <span data-i18n="memory">حافظهٔ تحلیلی</span>
+          </button>
         </div>
       </div>
+    </nav>
+
+    <div class="rail-foot">
+      <!-- One-press theme switch; the three-way choice (including
+           "system") stays in the account menu. -->
+      <button class="rail-btn" id="theme-quick-toggle" type="button" aria-label="تغییر پوسته" title="تغییر پوسته" data-i18n-attr="aria-label:themeQuick,title:themeQuick">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
     </div>
-  </div>
-</header>
-
-<!-- Page-level answer to "the status lights are red": filled by main.js's
-     refreshHealth() through diagnosis.js only when the address this page
-     calls is not the API, or the call was refused/unreachable. Text only
-     (textContent); hidden whenever the status check succeeds. -->
-<div id="api-diagnosis" class="notice error api-diagnosis" role="alert" hidden></div>
-
-<div class="app-body">
-
-  <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar">
-    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-    <span data-i18n="sessions">گفتگوها</span>
-  </button>
-
-  <aside class="sidebar" id="sidebar" aria-label="فهرست گفتگوها">
-    <div class="sidebar-head">
-      <h2 data-i18n="sessions">گفتگوها</h2>
-      <button class="btn-new-session" id="btn-new-session" type="button" data-i18n="newSession">+ گفتگوی جدید</button>
-    </div>
-    <div id="session-list-host" aria-live="polite"></div>
   </aside>
 
-  <main class="layout">
+  <div class="workspace">
 
-    <!-- D3 (docs/design/DESIGN.md §5.1): composer lives BELOW the
-         transcript in DOM order, not just visually — a screen-reader user
-         and a sighted one meet the conversation before the input, in the
-         same order. It is pinned to the viewport bottom in style.css
-         (`.composer { position: sticky; bottom }`) so a long transcript
-         never scrolls it out of reach; that pin is exactly why it must be
-         the LAST child of .layout, not the first. -->
-    <section id="transcript" aria-live="polite" aria-relevant="additions" data-i18n-attr="aria-label:transcript" aria-label="گفتگوی تحلیلی">
-      <!-- #transcript-empty (sample-story chips included) is injected by
-           main.js's renderTranscriptEmptyState() only while this session's
-           transcript has zero turns, and only in simulated mode (DESIGN.md
-           decision B5 — samples are demo scaffolding, never a live
-           production session's UI). Keeping it out of the composer card
-           instead of overlapping the textarea's placeholder, which is
-           where it used to live. -->
-    </section>
+    <!-- ── Top bar: find a conversation, read system state, act. ────── -->
+    <header class="topbar">
+      <label class="search" for="session-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/></svg>
+        <input id="session-search" type="search" autocomplete="off" dir="auto" data-i18n-attr="placeholder:searchPlaceholder,aria-label:searchPlaceholder" placeholder="جست‌وجوی گفتگوها…" aria-label="جست‌وجوی گفتگوها…">
+        <kbd aria-hidden="true">/</kbd>
+      </label>
 
-    <div class="card composer">
-      <label class="card-title" for="question" data-i18n="askLabel">پرسش خود را به زبان طبیعی بنویسید</label>
-      <div class="ask-row">
-        <textarea id="question" rows="2" dir="auto" data-i18n-attr="placeholder:askPlaceholder" placeholder="مثلاً «معاملات مشتری‌های تالار سیمان را نشان بده»"></textarea>
-        <button class="btn-ask" id="btn-ask" type="button" data-i18n="ask">پرسش</button>
+      <div class="topbar-right">
+        <!-- Static pre-JS fallback mirroring setHealth's DOM shape: starts
+             "unknown" rather than claiming every service is up. -->
+        <!-- Health is read by the heart (#status-btn) and the status panel;
+             the three pills themselves are hidden — see setHealth(). -->
+        <div class="health" id="health" role="status" aria-live="polite" hidden>
+          <span class="pill" aria-label="API: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">API</span><span class="pill-state">نامشخص</span></span>
+          <span class="pill" aria-label="LLM: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">LLM</span><span class="pill-state">نامشخص</span></span>
+          <span class="pill" aria-label="DB: نامشخص"><span class="dot dot-unknown"></span><span class="pill-name">DB</span><span class="pill-state">نامشخص</span></span>
+        </div>
+
+        <button class="icon-btn" id="status-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="status-panel" aria-label="وضعیت سامانه" title="وضعیت سامانه">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <defs>
+              <linearGradient id="heart-ok-fill" x1="22%" y1="0%" x2="62%" y2="100%">
+                <stop class="heart-hi" offset="0%"/>
+                <stop class="heart-mid" offset="46%"/>
+                <stop class="heart-lo" offset="100%"/>
+              </linearGradient>
+            </defs>
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            <path class="heart-pulse" fill="none" stroke="#fff" stroke-width="1.5" d="M4.8 12.5h3.1l1.5 2.3 1.9-5.3 2.2 6.7 1.3-3.7h5.4"/>
+            <path class="heart-flat" fill="none" stroke-width="1.5" d="M4.8 12.5h15.4"/>
+          </svg>
+        </button>
+
+        <!-- Account menu: theme, language, API key, access requests. -->
+        <div class="user-menu" id="user-menu">
+          <button class="user-menu-btn" id="user-menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="user-menu-panel">
+            <span class="user-avatar" aria-hidden="true">A</span>
+            <span class="user-text">
+              <span class="user-name">Analyst</span>
+              <span class="user-role" data-i18n="userRole">تحلیل‌گر داده</span>
+            </span>
+            <svg class="user-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="user-menu-panel" id="user-menu-panel" role="dialog" aria-label="حساب" hidden>
+            <div class="um-section">
+              <div class="um-label" data-i18n="theme">پوسته</div>
+              <div class="um-segment" id="theme-segment" role="group" aria-label="پوسته">
+                <button type="button" data-theme-val="system" data-i18n="themeSystem">سیستم</button>
+                <button type="button" data-theme-val="light" data-i18n="themeLight">روشن</button>
+                <button type="button" data-theme-val="dark" data-i18n="themeDark">تیره</button>
+              </div>
+            </div>
+            <div class="um-section">
+              <div class="um-label" data-i18n="language">زبان</div>
+              <div class="um-segment" id="lang-segment" role="group" aria-label="زبان">
+                <button type="button" data-lang="fa" data-i18n="langFa">فارسی</button>
+                <button type="button" data-lang="en" data-i18n="langEn">English</button>
+              </div>
+            </div>
+            <div class="um-section">
+              <div class="um-label" data-i18n="apiKey">کلید API</div>
+              <div class="live-key-row" id="live-key-row">
+                <span class="live-key-status" id="live-key-status"></span>
+                <span class="live-key-entry" id="live-key-entry">
+                  <input type="password" id="live-key-input" dir="ltr" class="live-key-input" autocomplete="off" data-i18n-attr="aria-label:apiKey,placeholder:apiKeyPlaceholder" aria-label="کلید API" placeholder="کلید API خود را وارد کنید">
+                  <button class="live-key-save" id="live-key-save" type="button" data-i18n="apiKeySave">ذخیره</button>
+                </span>
+                <button class="live-key-change" id="live-key-change" type="button" hidden data-i18n="apiKeyChange">تغییر کلید</button>
+                <button class="live-key-clear" id="live-key-clear" type="button" data-i18n="apiKeyClear">حذف کلید</button>
+              </div>
+              <p class="um-hint" data-i18n="apiKeyHint" hidden></p>
+            </div>
+            <!-- Analyst-facing status read for "Request access" (ADR-004 part 1).
+                 Every row's column/status/reason is server-supplied and untrusted:
+                 rendered via textContent only. Populated when the menu opens. -->
+            <div class="um-section" id="access-requests-section">
+              <div class="um-label" data-i18n="accessRequests">درخواست‌های دسترسی</div>
+              <div id="access-requests-list" class="access-requests-list" aria-live="polite">
+                <p class="access-requests-empty" data-i18n="accessRequestsEmpty">درخواستی ثبت نشده است.</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <!-- Per-analyst, persisted in this browser (js/state.js), and sent
-           on every turn. It is a choice worth exposing rather than a
-           deployment setting because it decides whether up to twenty rows
-           of the analyst's own result go to the language model: the person
-           who asked the question is the one who knows whether these
-           particular rows should. -->
-      <div class="ask-options">
-        <label class="ask-toggle">
-          <input type="checkbox" id="interpret-toggle">
-          <span data-i18n="interpret">تفسیر نتیجه</span>
-        </label>
-        <span class="ask-toggle-hint" data-i18n="interpretHint">خلاصهٔ ساده‌شده، با فرستادن حداکثر ۲۰ ردیف نتیجه به مدل زبانی</span>
-      </div>
-      <div id="notice-area"></div>
+    </header>
+
+    <div class="app-body">
+
+      <!-- ── Conversation index: a glass drawer, not a fixed column ──── -->
+      <aside class="sidebar" id="sidebar" aria-label="فهرست گفتگوها">
+        <div class="sidebar-head">
+          <h2 data-i18n="sessions">گفتگوها</h2>
+          <button class="btn-new-session" id="btn-new-session" type="button" data-i18n="newSession">+ گفتگوی جدید</button>
+        </div>
+        <div id="session-list-host" aria-live="polite"></div>
+      </aside>
+      <button class="scrim" id="sidebar-scrim" type="button" aria-label="بستن فهرست گفتگوها" hidden></button>
+
+      <!-- Page-level answer to "the status lights are red": filled by
+           refreshHealth() through diagnosis.js, text only, hidden on success. -->
+      <div id="api-diagnosis" class="notice error api-diagnosis" role="alert" hidden></div>
+
+      <main class="layout" id="dashboard">
+
+        <!-- ── Welcome ──────────────────────────────────────────────── -->
+        <section class="welcome">
+          <div class="welcome-main">
+            <h1 class="welcome-eyebrow" data-i18n="welcomeEyebrow">فضای کاری داده</h1>
+          </div>
+        </section>
+
+        <!-- ── Dashboard grid ───────────────────────────────────────── -->
+        <div class="dash-grid">
+
+          <!-- Analytics: collapsed by default so the page opens clean; the
+               header (title + chevron + range tabs) is the disclosure control. -->
+          <details class="panel analytics" id="analytics">
+            <summary class="panel-head-toggle">
+              <h2 id="analytics-title" data-i18n="analyticsTitle">عملکرد پرسش‌ها</h2>
+              <span class="analytics-chevron" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </span>
+            </summary>
+
+            <div class="analytics-body" id="analytics-body">
+            <div class="range-tabs" role="group" id="range-tabs" aria-label="بازهٔ زمانی" data-i18n-attr="aria-label:rangeLabel">
+              <button type="button" data-range="7" class="active" data-i18n="range7">۷ روز</button>
+              <button type="button" data-range="30" data-i18n="range30">۳۰ روز</button>
+              <button type="button" data-range="0" data-i18n="rangeAll">همه</button>
+            </div>
+            <div class="kpi-row" id="kpi-row">
+              <div class="kpi">
+                <span class="kpi-value" id="kpi-queries">—</span>
+                <span class="kpi-label" data-i18n="kpiQueries">کل پرسش‌ها</span>
+              </div>
+              <div class="kpi">
+                <span class="kpi-value" id="kpi-success">—</span>
+                <span class="kpi-label" data-i18n="kpiSuccess">نرخ موفقیت</span>
+              </div>
+              <div class="kpi">
+                <span class="kpi-value" id="kpi-latency">—</span>
+                <span class="kpi-label" data-i18n="kpiLatency">میانگین زمان اجرا</span>
+              </div>
+              <div class="kpi">
+                <span class="kpi-value" id="kpi-rows">—</span>
+                <span class="kpi-label" data-i18n="kpiRows">ردیف‌های بازگشتی</span>
+              </div>
+              <div class="kpi">
+                <span class="kpi-value kpi-value-status" id="kpi-conn"><span class="dot dot-unknown"></span>—</span>
+                <span class="kpi-label" data-i18n="kpiConnections">اتصال فعال</span>
+              </div>
+            </div>
+
+            <div class="chart-wrap">
+              <div class="chart-total">
+                <span class="chart-total-value" id="chart-total">0</span>
+                <span class="chart-total-label" data-i18n="chartTotalLabel">پرسش در بازه</span>
+              </div>
+              <div class="chart-host" id="chart-host" role="img" aria-label="نمودار پرسش‌ها"></div>
+            </div>
+
+            <p class="chart-foot" id="chart-foot" data-i18n="chartFoot">هر نقطه یک گفتگو است؛ بلندی آن شمار پرسش‌های همان گفتگو.</p>
+            </div>
+          </details>
+
+          <!-- Recent queries: the conversation's own turns -->
+          <section class="panel recent" id="recent-queries" aria-labelledby="recent-title">
+            <header class="panel-head">
+              <h2 id="recent-title" data-i18n="recentTitle">پرسش‌های اخیر</h2>
+              <button class="link-btn" id="recent-view-all" type="button" data-i18n="viewAll">همه</button>
+            </header>
+            <ul class="recent-list" id="recent-list"></ul>
+            <p class="empty-line" id="recent-empty" data-i18n="recentEmpty">هنوز پرسشی در این گفتگو ثبت نشده است.</p>
+          </section>
+
+        </div>
+
+        <!-- ── Conversation: this session's turns, rendered by render/*.
+             The turns are the record; they carry their own card chrome, so
+             there is no title box or empty placeholder around them. ───── -->
+        <section id="transcript" aria-live="polite" aria-relevant="additions" data-i18n-attr="aria-label:transcript" aria-label="گفتگوی تحلیلی"></section>
+
+        <!-- AI assistant: the ask tool, pinned to the bottom of the viewport
+             (sticky). It is the page's front door but stays reachable no
+             matter how far up the transcript the analyst has scrolled. -->
+        <section class="panel assistant" id="assistant" aria-labelledby="assistant-title">
+          <div class="assistant-glow" aria-hidden="true"></div>
+          <header class="assistant-head">
+            <h2 id="assistant-title" data-i18n="assistantTitle">از داده‌های خود چه می‌دانید؟</h2>
+          </header>
+
+          <div class="card composer">
+            <label class="card-title" for="question" data-i18n="askLabel">پرسش خود را به زبان طبیعی بنویسید</label>
+            <div class="ask-row">
+              <textarea id="question" rows="2" dir="auto" data-i18n-attr="placeholder:askPlaceholder" placeholder="مثلاً «معاملات مشتری‌های تالار سیمان را نشان بده»"></textarea>
+              <button class="btn-ask" id="btn-ask" type="button" data-i18n="ask">پرسش</button>
+            </div>
+            <!-- Per-analyst and persisted in this browser: it decides whether up to
+                 twenty rows of the analyst's own result go to the language model. -->
+            <div class="ask-options">
+              <label class="ask-toggle">
+                <input type="checkbox" id="interpret-toggle">
+                <span data-i18n="interpret">تفسیر نتیجه</span>
+              </label>
+            </div>
+            <div id="notice-area"></div>
+          </div>
+        </section>
+
+      </main>
     </div>
+  </div>
+</div>
 
-  </main>
-
+<div class="status-panel" id="status-panel" role="dialog" aria-label="وضعیت سامانه" hidden>
+  <div class="status-panel-head">
+    <h2 data-i18n="systemStatus">وضعیت سامانه</h2>
+    <button class="status-panel-close" id="status-panel-close" type="button" aria-label="بستن" data-i18n-attr="aria-label:close">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <ul class="status-list" id="status-list"></ul>
 </div>
 
 <div class="memory-overlay" id="memory-overlay" hidden></div>
-<div class="memory-panel" id="memory-panel" role="dialog" aria-modal="true" aria-label="حافظهٔ تحلیلی — اولویت‌های ثابت" hidden>
+<div class="memory-panel" id="memory-panel" role="dialog" aria-modal="true" aria-label="حافظهٔ تحلیلی" data-i18n-attr="aria-label:memoryPanelTitle" hidden>
   <div class="memory-panel-head">
-    <h2>حافظهٔ تحلیلی</h2>
+    <h2 data-i18n="memoryPanelTitle">حافظهٔ تحلیلی</h2>
     <button class="memory-panel-close" id="memory-panel-close" type="button" aria-label="بستن پنل حافظه">
-      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
-  <p class="memory-panel-intro">
-    مقادیری که اینجا می‌بینید فقط با اقدام صریح شما — دکمهٔ «به‌خاطر بسپار» روی یک مفروضه، یا تنظیم مستقیم زیر — ذخیره می‌شوند؛
-    سامانه هرگز به‌خودی‌خود چیزی را استنباط و ذخیره نمی‌کند.
-  </p>
   <div id="memory-panel-host"></div>
 </div>
 
-<footer class="foot">
-  <!-- Placeholder only -- js/main.js's setMode() overwrites this immediately
-       on load, per the real default in web/js/state.js ("live"). -->
-  <span id="foot-mode" data-i18n="footLiveChecking">حالت زندهٔ API — در حال بررسی اتصال به بک‌اند...</span>
-  <span id="foot-time"></span>
-</footer>
-
-<!-- Vendored locally, no CDN (offline requirement — see web/README.md).
-     Display pipeline lives in web/js/sql-display.js: sql-formatter
-     prettifies one-liners only (multi-line sql_display / scenario SQL is
-     left alone), Prism + a T-SQL patch colour the block. Copy always uses
-     Turn.sql_display || Turn.sql, never this DOM. -->
+<!-- Vendored locally, no CDN (offline requirement). Display pipeline lives
+     in web/js/sql-display.js: sql-formatter prettifies one-liners only, Prism
+     plus a T-SQL patch colour the block. Copy always uses the API's SQL. -->
 <script src="assets/vendor/sql-formatter.min.js" defer></script>
 <script src="assets/vendor/prism.min.js" data-manual defer></script>
 <script src="assets/vendor/prism-sql.min.js" data-manual defer></script>

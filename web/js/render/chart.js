@@ -50,6 +50,13 @@ import { renderTableOnly, renderExportRow, fmtCell } from "./table.js";
 import { fmt as faNum, isIdentifierName } from "../num.js";
 const nf = { format: faNum };
 
+/** The view switch's own two words, in the document language — read off
+ * <html lang> the way the rest of render/* does, so this module keeps its
+ * standalone module graph (no i18n.js import; see turn.js's GUARD_WORD). */
+function viewWord(fa, en) {
+  return document.documentElement && document.documentElement.lang === "en" ? en : fa;
+}
+
 const FOCUS_RULE_LABEL_FA = {
   max: "بیشترین مقدار",
   latest: "آخرین نقطه",
@@ -745,11 +752,11 @@ export function renderChartAndTable(result) {
   const chartBtn = document.createElement("button");
   chartBtn.type = "button";
   chartBtn.className = "view-btn active";
-  chartBtn.textContent = "نمودار";
+  chartBtn.textContent = viewWord("نمودار", "Chart");
   const tableBtn = document.createElement("button");
   tableBtn.type = "button";
   tableBtn.className = "view-btn";
-  tableBtn.textContent = "جدول";
+  tableBtn.textContent = viewWord("جدول", "Table");
   viewSwitch.appendChild(chartBtn);
   viewSwitch.appendChild(tableBtn);
   wrap.appendChild(viewSwitch);

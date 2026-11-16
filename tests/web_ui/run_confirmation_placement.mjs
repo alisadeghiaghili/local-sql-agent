@@ -366,4 +366,20 @@ async function press(el) { for (const h of el._listeners.click || []) await h({ 
   console.log("[ok] flag and confirmation reset each other across the answer and the drawer");
 }
 
+// ---------------------------------------------------------------------
+// Scenario 6: what the analyst asked for is on the answer too.
+// ---------------------------------------------------------------------
+{
+  // The interpretation is opted into («تفسیر نتیجه»), so it is rendered in
+  // the main flow like the toggle above, never behind the drawer's click.
+  const text = "هفت مشتری در این بازه خرید کرده‌اند.";
+  const card = createTurnCard({ ...successTurn("t_interp"), interpretation: text }, makeCtx([]));
+  const shown = all(card.el, ".interpretation-text");
+  assert.equal(shown.length, 1, "the interpretation is rendered once");
+  assert.equal(shown[0].textContent, text);
+  assert.equal(drawerOf(card).querySelector(".interpretation-text"), null, "NOT inside the collapsed drawer");
+  assert.equal(all(createTurnCard(successTurn(), makeCtx([])).el, ".interpretation-text").length, 0, "absent when not asked for");
+  console.log("[ok] the interpretation is on the answer, outside the closed drawer");
+}
+
 console.log("ALL_SCENARIOS_PASSED");
