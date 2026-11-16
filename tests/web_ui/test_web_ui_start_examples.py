@@ -40,6 +40,19 @@ def test_the_empty_state_asks_for_start_questions_only_in_live_mode_with_a_key()
     assert "renderStartExamples(wrap)" in empty
 
 
+def test_the_empty_state_is_rendered() -> None:
+    """The checks in this module read the body of ``renderTranscriptEmptyState``.
+    They say nothing if the page never calls it: the function, the start
+    questions and the demo's story chips can all be intact and unreachable."""
+    src = _MAIN_JS.read_text(encoding="utf-8")
+    calls = src.count("renderTranscriptEmptyState(") - src.count("function renderTranscriptEmptyState(")
+    assert calls >= 1, (
+        "nothing calls renderTranscriptEmptyState(), so an empty conversation offers "
+        "neither the deployment's start questions nor the demo's story chips. Render "
+        "them in the page, or remove the feature together with these tests"
+    )
+
+
 def test_start_questions_are_fetched_once_and_rendered_as_text() -> None:
     src = _MAIN_JS.read_text(encoding="utf-8")
     body = _block(src, "async function renderStartExamples(", "function clearTranscriptEmptyState()")
