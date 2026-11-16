@@ -238,16 +238,31 @@ class TestOptInContentStaysInTheMainFlow:
     """
 
     def test_the_interpretation_is_not_rendered_inside_the_details_drawer(self):
+        """The order of two statements in ``createTurnCard``: the interpretation
+        is appended to the card body before the drawer is created, and nothing
+        puts it in the drawer afterwards. ``run_confirmation_placement.mjs``
+        (scenario 6) checks the same thing on the rendered card.
+
+        This used to search for the word "details" followed within 1200
+        characters by "interpretation", which a label table naming both
+        words satisfies without any change in where things render.
+        """
         turn_js = _REPO_ROOT / "web" / "js" / "render" / "turn.js"
         src = turn_js.read_text(encoding="utf-8")
-        assert "interpretation" in src, "the interpretation is no longer rendered"
+        render = src.find("if (turn.interpretation) {")
+        assert render != -1, "the interpretation is no longer rendered"
+        drawer = src.find('el("details", "turn-details")')
+        assert drawer != -1, "the details drawer is gone from turn.js; update this test"
 
-        drawer = re.search(r"(details|drawer)[\s\S]{0,1200}?interpretation", src, re.I)
-        assert drawer is None, (
-            "the interpretation renders inside the collapsed details drawer. "
+        assert render < drawer and "body.appendChild(" in src[render:drawer], (
+            "the interpretation is not appended to the card body before the drawer. "
             "Progressive disclosure applies to what the product chose to show, "
             "never to what the user explicitly requested"
         )
+        assert not re.search(r"drawer\w*\.appendChild\([^)]*interp", src, re.I), (
+            "the interpretation is appended to the collapsed details drawer"
+        )
+
 
 
 # ---------------------------------------------------------------------------
