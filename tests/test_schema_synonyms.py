@@ -97,6 +97,38 @@ class TestFromEntities:
         }
         assert synonyms_from_entities(entities, vocabulary) == {"سلف": ["forward", "deal"], "تالار": ["hall"]}
 
+    def test_an_entry_that_is_not_an_entity_or_names_no_term_gives_nothing(self):
+        vocabulary = schema_vocabulary([("Hall", "Hall", ["Name"])])
+        entities = {
+            "broken": "not a mapping",
+            "T1": {"table": "T1", "aliases": ["یک"]},               # no word of two letters in the name
+            "Hall": {"table": "Hall", "aliases": [7, None, "تالار"]},
+        }
+        assert synonyms_from_entities(entities, vocabulary) == {"تالار": ["hall"]}
+
+
+class TestEdges:
+    VOCABULARY = schema_vocabulary([("Deal", "Deal", ["Categories", "Boxes", "Price"])])
+
+    def test_the_plural_forms_the_retriever_stems_meet_their_term(self):
+        assert self.VOCABULARY.canonical("category") == "categories"
+        assert self.VOCABULARY.canonical("box") == "boxes"
+        assert "category" in self.VOCABULARY and "box" in self.VOCABULARY
+
+    def test_only_text_is_ever_in_the_vocabulary(self):
+        assert 7 not in self.VOCABULARY and None not in self.VOCABULARY
+
+    def test_keys_and_values_that_are_not_text_are_left_out(self):
+        got = clean_synonyms(
+            [{"word": 7, "terms": ["price"]}, "not an object", {"word": "بها", "terms": [None, "", "price"]}],
+            self.VOCABULARY,
+        )
+        assert got.synonyms == {"بها": ["price"]} and dict(got.dropped) == {"not_a_word": 1}
+
+    def test_a_one_word_key_shaped_like_a_stored_value_is_left_out(self):
+        got = clean_synonyms({"ref123456789": ["price"]}, self.VOCABULARY)
+        assert got.synonyms == {} and dict(got.dropped) == {"value_shaped": 1}
+
 
 # ---------------------------------------------------------------------------
 # 2. In the wizard
