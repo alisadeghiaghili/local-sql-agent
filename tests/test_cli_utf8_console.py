@@ -344,6 +344,15 @@ CASES: tuple[Case, ...] = (
         skip=_release_skip,
     ),
     Case(
+        "scripts/sonar_gate.py",
+        # The report it is told to read is missing, so nothing is started;
+        # the message names the path.
+        lambda c: ["scripts/sonar_gate.py", "--base", "HEAD",
+                   "--coverage", str(c.fa_dir / "coverage.xml")],
+        FA_DIR_NAME,
+        returncodes=(2,),
+    ),
+    Case(
         "scripts/sync_schema.py",
         lambda c: ["scripts/sync_schema.py", "--dry-run"],
         FA_TABLE,

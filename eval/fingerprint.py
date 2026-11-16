@@ -124,7 +124,7 @@ def _normalise_scalar(value: Any, float_precision: int) -> Any:
         if math.isnan(value):
             return None
         rounded = round(value, float_precision)
-        if rounded == 0.0:
+        if rounded == 0.0:  # NOSONAR(S1244) exact zero is the point: -0.0 becomes 0.0
             rounded = 0.0  # normalise -0.0 -> 0.0
         return rounded
 

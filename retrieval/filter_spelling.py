@@ -327,7 +327,7 @@ def _fix(sql: str, denied_columns: Iterable[str] | None, dialect: str) -> Spelli
     hidden = hidden_value_columns(policy)
 
     def pool_of(column: exp.Column) -> tuple[list[str], list[str]] | None:
-        origins = column_origins(column, tree)
+        origins = column_origins(column, tree, dialect=dialect)
         if not origins:
             return None
         vocabularies = usable_vocabularies(origins, policy.denied, hidden, refresh=False)
@@ -452,7 +452,7 @@ def respell_filters(
         return sql, None
     try:
         validate_sql(fix.sql, denied_columns=denied_columns, dialect=dialect)
-    except Exception as exc:  # noqa: BLE001 - whatever the guard says, the original statement runs
+    except Exception as exc:  # noqa: BLE001  # whatever the guard says, the original statement runs
         logger.warning("filter value spelling not used: the guard refused the rewritten statement (%s)", type(exc).__name__)
         return sql, None
     logger.info("filter value spelling: %d literal(s) rewritten", fix.fixed)

@@ -104,11 +104,11 @@ class _IdfDict(dict):
         return super().get(key, self._max_idf)
 
     @classmethod
-    def build(cls, N: int, doc_freq: dict[str, int]) -> "_IdfDict":
+    def build(cls, n_docs: int, doc_freq: dict[str, int]) -> "_IdfDict":
         obj = cls()
-        obj._max_idf = math.log(N + 1) + 1.0
+        obj._max_idf = math.log(n_docs + 1) + 1.0
         for term, df in doc_freq.items():
-            obj[term] = math.log((N + 1) / (df + 1)) + 1.0
+            obj[term] = math.log((n_docs + 1) / (df + 1)) + 1.0
         return obj
 
 
@@ -418,7 +418,7 @@ def rank_tables(question: str) -> list[tuple[str, float]]:
     idf = _build_idf()
     forced = _forced_tables(q_tokens)
 
-    scores: dict[str, float] = {table: _FORCED_SCORE for table in forced}
+    scores: dict[str, float] = dict.fromkeys(forced, _FORCED_SCORE)
 
     score_tokens, score_bigrams = q_tokens, q_bigrams
     if q_stems != q_tokens:

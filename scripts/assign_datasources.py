@@ -83,7 +83,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.console import use_utf8_console
-import config as cfg  # noqa: F401,E402 - loads .env, like every entry point
+import config as cfg  # noqa: F401,E402  # loads .env, like every entry point
 from database.catalogue import list_columns, list_tables  # noqa: E402
 from database.datasources import datasource_names, default_datasource_name  # noqa: E402
 from schema_data.placement import (  # noqa: E402
@@ -391,7 +391,7 @@ def main(
         schema = validate_schema_yaml_text(original)
         sources = datasource_names()
         default = default_datasource_name()
-    except (UnicodeDecodeError, ValueError) as exc:
+    except ValueError as exc:  # UnicodeDecodeError included
         print(f"cannot use {schema_path}: {_describe(exc)}", file=sys.stderr)
         return EXIT_ERROR
 

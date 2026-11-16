@@ -484,7 +484,7 @@ def feedback_stats() -> dict[str, Any]:
     """
     rows = list_feedback()
     open_count = sum(1 for r in rows if r["status"] == "open")
-    by_outcome: dict[str, int] = {outcome: 0 for outcome in RESOLUTION_OUTCOMES}
+    by_outcome: dict[str, int] = dict.fromkeys(RESOLUTION_OUTCOMES, 0)
     for r in rows:
         if r["resolution_outcome"]:
             by_outcome[r["resolution_outcome"]] = by_outcome.get(r["resolution_outcome"], 0) + 1

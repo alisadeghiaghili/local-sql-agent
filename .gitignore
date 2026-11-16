@@ -41,4 +41,8 @@ eval_data/
 # Coverage artefacts
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
+
+# SonarScanner working directory (local scans)
+.scannerwork/

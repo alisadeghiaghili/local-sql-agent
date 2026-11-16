@@ -381,7 +381,8 @@ class TestRendering:
         }
 
     def test_the_same_proposals_give_the_same_bytes_and_no_timestamp(self):
-        assert render_proposals_yaml(self.result().proposals) == render_proposals_yaml(self.result().proposals)
+        first_run = render_proposals_yaml(self.result().proposals)
+        assert render_proposals_yaml(self.result().proposals) == first_run
 
     def test_no_proposals_is_an_empty_list(self):
         assert yaml.safe_load(render_proposals_yaml([])) == {"relationships": []}

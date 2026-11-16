@@ -88,7 +88,6 @@ from security.sql_guard import (
 
 from session import ambiguity
 from session.composer import (
-    CompositionError,
     check_scan_truncated,
     compose_refinement_sql,
     predicate_columns,
@@ -484,7 +483,7 @@ class TurnEngine:
         # only one of them's memory actually justifies. scope_key's
         # memory_used parameter has no default specifically so this
         # cannot be gotten wrong by omission.
-        cache_prefix_version = _prefix_version_of(system_prompt)  # noqa: F841 - reserved for a future T0 cache tier
+        cache_prefix_version = _prefix_version_of(system_prompt)  # noqa: F841  # NOSONAR(S1481) reserved for a future T0 cache tier
 
         with timer.stage("plan"):
             previous_turn = record.last_turn()
@@ -691,7 +690,7 @@ class TurnEngine:
 
         cap = cfg.settings.refinement_scan_cap
         try:
-            available_columns = predicate_columns(previous_turn.sql)
+            available_columns = predicate_columns(previous_turn.sql, dialect=cfg.settings.sql_dialect)
         except Exception:  # noqa: BLE001 - best-effort prompt hint only
             available_columns = []
         columns_hint = ", ".join(available_columns) if available_columns else "(unknown)"
@@ -744,7 +743,9 @@ class TurnEngine:
         composed: str | None = None
         try:
             with timer.stage("guard"):
-                composed = compose_refinement_sql(previous_turn.sql, raw_outer, cap)
+                composed = compose_refinement_sql(
+                    previous_turn.sql, raw_outer, cap, dialect=cfg.settings.sql_dialect,
+                )
                 validate_sql(composed, denied_columns=denied_columns)
                 capped = ensure_top(composed, cfg.settings.default_top_n)
                 injected_top = cfg.settings.default_top_n if capped != composed else None
@@ -761,7 +762,7 @@ class TurnEngine:
                     target_dialect=cfg.settings.sql_dialect,
                     denied_columns=denied_columns,
                 )
-        except (CompositionError, ValueError) as exc:
+        except ValueError as exc:  # includes session.composer.CompositionError
             reason, subject = _guard_reason_subject(exc)
             outcome = _GenOutcome(
                 guard=GuardVerdict(
@@ -783,9 +784,18 @@ class TurnEngine:
 
         warnings: list[str] = []
         try:
-            truncated_scan = check_scan_truncated(self._execute, previous_turn.sql, cap)
-        except Exception:  # noqa: BLE001 - the check itself must never break the turn
+            truncated_scan = check_scan_truncated(
+                self._execute, previous_turn.sql, cap, dialect=cfg.settings.sql_dialect,
+            )
+        except Exception as exc:  # noqa: BLE001 - the check itself must never break the turn
+            # The turn goes on, but not as if the check had passed: the
+            # answer may be computed over a cut base and nobody would know.
+            logger.warning("refinement truncation check failed (%s)", type(exc).__name__)
             truncated_scan = False
+            warnings.append(
+                "بررسی کامل‌بودن اسکن پایهٔ این بازپالایش انجام نشد؛ اگر تعداد سطرهای منطبق از "
+                f"refinement_scan_cap = {cap:,} بیشتر باشد، نتیجهٔ زیر روی بخشی از آن‌ها محاسبه شده است."
+            )
         if truncated_scan:
             warnings.append(
                 f"اسکن پایهٔ این بازپالایش به دلیل محدودیت ایمنی (refinement_scan_cap = {cap:,} ردیف) "
@@ -1414,7 +1424,7 @@ class TurnEngine:
                     raise ValueError("the corrected statement drops a filter the question named")
             with timer.stage("execute"):
                 df = self._execute(new_sql)
-        except Exception as exc:  # noqa: BLE001 - whatever goes wrong, the original statement runs
+        except Exception as exc:  # noqa: BLE001  # whatever goes wrong, the original statement runs
             logger.info("Filter value correction not used (%s): %.120s", type(exc).__name__, exc)
             return _ValueRound(audit_block(check, corrected=False, fallback=True), prompt)
         return _ValueRound(
@@ -1613,7 +1623,7 @@ def _string_literal_texts(sql: str, dialect: str) -> list[str]:
     """
     try:
         tree = sqlglot.parse_one(sql, dialect=dialect)
-    except Exception:  # noqa: BLE001 - best-effort only, see docstring
+    except Exception:  # noqa: BLE001  # best-effort only, see docstring
         return []
     if tree is None:
         return []

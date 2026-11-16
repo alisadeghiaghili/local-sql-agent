@@ -80,7 +80,7 @@ def resolve_app_db_url() -> str:
     return f"sqlite:///{db_path}"
 
 
-def _canonical_endpoint(url_str: str) -> tuple:
+def _canonical_endpoint(url_str: str) -> tuple:  # NOSONAR(S8495) an identity key: its shape differs by backend on purpose
     """A comparable, parsed identity for *url_str*: (backend, ...).
 
     Two URLs naming the same physical database produce equal tuples here,

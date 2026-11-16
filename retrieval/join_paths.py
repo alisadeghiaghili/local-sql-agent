@@ -62,7 +62,7 @@ __all__ = ["JoinEdge", "JoinGraph", "build_join_graph", "connected_within", "exp
 
 #: ``CustomerID`` / ``Customer_ID`` / ``customer_id`` -> stem ``Customer``.
 #: A bare ``ID`` has no stem and does not match.
-_KEY_COLUMN_RE = re.compile(r"^(?P<stem>.*?[^_])_?id$", re.IGNORECASE)
+_KEY_COLUMN_RE = re.compile(r"^(?P<stem>.*?[^_])_?id$", re.IGNORECASE)  # NOSONAR(S5857) the stem must not end in "_"
 
 
 @dataclass(frozen=True, slots=True)

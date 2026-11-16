@@ -92,7 +92,7 @@ def _split_tokens(text: str) -> list[str]:
     """
     return [
         token.strip()
-        for token in re.split(r"[\s\u060c,;/\\|()\[\]{}:!?.\-\u2014\u2013—&]+", text)
+        for token in re.split(r"[\s\u060c,;/\\|()\[\]{}:!?.\-\u2014\u2013&]+", text)
         if token.strip()
     ]
 

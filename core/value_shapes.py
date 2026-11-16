@@ -93,8 +93,10 @@ _ADDRESS_WORD = re.compile(
     re.IGNORECASE,
 )
 
-_MASKED = re.compile(r"(?<![a-z])x{3,}(?![a-z])|\*{2,}|•{2,}|#{3,}|…|\.{4,}")
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_MASKED = re.compile(r"(?<![a-z])x{3,}(?![a-z])|\*{2,}|•{2,}|#{3,}|…|\.{4,}")  # NOSONAR(S5843) a list of mask shapes
+#: The lookahead settles "the rest is one run of allowed characters" first,
+#: so the domain's backtracking to its last dot cannot go quadratic.
+_EMAIL = re.compile(r"^[^@\s]+@(?=[^@\s]+$)[^@\s]+\.[^@\s]+$")  # NOSONAR(S8786) linear: see tests/test_regex_linear_time.py
 _URL = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|www\.)\S+", re.IGNORECASE)
 _IPV4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/\d{1,2})?$")
 _IPV6 = re.compile(r"^(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}$", re.IGNORECASE)

@@ -146,7 +146,7 @@ def make_production_pipeline(
     def traced_execute(sql: str) -> pd.DataFrame:
         try:
             return execute_fn(sql)
-        except Exception as exc:  # noqa: BLE001 - recorded, then handled by the agent's loop
+        except Exception as exc:  # noqa: BLE001  # recorded, then handled by the agent's loop
             trace.record_execution_error(type(exc).__name__, str(exc))
             raise
 
