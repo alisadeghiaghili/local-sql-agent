@@ -3276,6 +3276,11 @@ Steps 36 and 37 come last on purpose.
       runs it with a fixed number of model answers sees the extra request.
       `--no-schema-synonyms` skips it. Read the drafted `synonyms` before you
       copy `aliases.yaml` to `project_config/`.
+    - Step 5 of the wizard now asks for about 180 completion tokens per
+      example pair (1,864 for ten) instead of `LLM_NUM_PREDICT`, and keeps
+      the complete pairs of an answer cut off at that limit (the step line
+      says `stopped at the token limit`). If an earlier run left
+      `examples.yaml` empty, run the wizard again.
     - On the retrieval path the prompt is longer: the metrics, every always-on
       rule and the session context are added, so a prompt near
       `PROMPT_RETRIEVAL_TOKEN_BUDGET` may now cross it and log the over-budget
