@@ -13,7 +13,7 @@ recorded in `docs/design/DESIGN.md` (D13).
 ## Context
 
 Every earlier release assumed exactly one warehouse connection
-(`DB_CONNECTION_URL`): one server, one login, one connection pool. A
+(`DB_CONNECTION_URL`): one server, one login, one connection configuration. A
 deployment that needs to answer questions against more than one database —
 a second SQL Server instance holding an archive, a partner's warehouse on
 its own box, a reporting replica kept separate from the transactional
@@ -60,19 +60,19 @@ question that might touch either one.
 - Several databases on **one** SQL Server instance can be configured two
   ways, and both are supported:
   - **Two sources** (same `host`, different `database`). Each has its own
-    connection pool and its own login. One query still runs on exactly one
+    connection settings and its own login. One query still runs on exactly one
     source, so a question that needs tables from both databases is refused
     (`cross_datasource`).
   - **One source** with a multi-part `db_schema: "OtherDb.dbo"` on the
     second database's tables, rendered `[OtherDb].[dbo].[Table]`
     (`security.dialects.quote_tsql_qualifier`). SQL Server can join across
     databases on one instance with a three-part name, so this is the way
-    to keep cross-database joins working. It is one connection, one pool,
-    one login.
+    to keep cross-database joins working. It is one
+    connection configuration, one login.
 
   Choose by whether questions join across the databases: if they do, use
   one source and `db_schema`; if they do not, two sources give each
-  database its own pool and login.
+  database its own login.
 - Table names are globally unique **as `schema.yaml` keys**, not
   necessarily as bare names: a warehouse with the same table name in two
   schemas (`sales.Customer`, `ref.Customer`) gives each one its own

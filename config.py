@@ -575,114 +575,69 @@ class Settings:
         default_factory=lambda: os.getenv("DB_POOL_PRE_PING", "true").lower()
         in ("1", "true", "yes")
     )
-    """Whether :func:`database.connection.get_engine` (and, for a
-    non-SQLite backend, :func:`appdb.engine.build_engine`) installs the
-    idle-aware pre-ping described under :attr:`db_pool_ping_idle_seconds`
-    below (Finding 1, 2026 warehouse-load audit, revised by the
-    idle-aware-ping follow-up). Defaults to ``True``. ``False`` means
-    exactly what it always has: never ping a pooled connection on
-    checkout, full stop — :attr:`db_pool_ping_idle_seconds` has no effect
-    at all when this is off.
+    """Whether :func:`appdb.engine.build_engine` installs the idle-aware
+    pre-ping described under :attr:`db_pool_ping_idle_seconds` on the
+    **application-database** engine. Defaults to ``True``.
+
+    Scope
+    -----
+    This setting governs only the application database (``APP_DB_URL``),
+    and only for a non-SQLite backend, which is the only one that pools
+    connections. It has no effect on the warehouse: the warehouse engine
+    built by :func:`database.connection.get_engine` uses ``NullPool``, so
+    no connection ever sits idle between queries and there is nothing to
+    probe on checkout.
 
     What it trades off
     -------------------
-    **On (default).** A connection that has sat idle in the pool for at
-    least :attr:`db_pool_ping_idle_seconds` is probed with ``SELECT 1``
-    before being handed to the caller; one that has been used more
-    recently than that is handed over unprobed. A connection that has
-    gone stale (the SQL Server side closed it, a firewall/load-balancer
-    idle-timed it out) is discovered and replaced before the caller's
-    real query ever sees it, instead of surfacing as a query failure —
-    real safety, which is why the default stays on. Unlike the
-    unconditional ``pool_pre_ping=True`` this setting used to map to
-    one-for-one, the probe cost now scales with how often a connection
-    goes idle for that long, not with every single checkout — see
-    :attr:`db_pool_ping_idle_seconds` for the threshold and the
-    ``DB_POOL_PING_IDLE_SECONDS=0`` escape hatch back to today's
-    ping-every-checkout behaviour.
+    **On (default).** An application-database connection that has sat idle
+    in the pool for at least :attr:`db_pool_ping_idle_seconds` is probed
+    with ``SELECT 1`` before being handed to the caller; one that has been
+    used more recently is handed over unprobed. A connection that has gone
+    stale (the server closed it, a firewall or load balancer idle-timed it
+    out) is discovered and replaced before the caller's real query sees
+    it.
 
-    **Off.** No probe on checkout, ever, regardless of idle time. A
-    connection that went stale while idle in the pool is only discovered
-    when a real query is sent through it, which then fails once and is
-    transparently retried on a fresh connection (SQLAlchemy's own pool
-    invalidate-and-retry behaviour on a disconnect-class error) — one
-    query pays a one-time retry cost instead of any checkout paying a
-    probe cost.
+    **Off.** No probe on checkout, regardless of idle time.
+    :attr:`db_pool_ping_idle_seconds` then has no effect. A connection that
+    went stale while idle in the pool is only discovered when a real query
+    is sent through it, which fails and is then retried on a fresh
+    connection.
 
-    **Why turning it off is a reasonable choice here, not just a
-    trade-off**: with :attr:`db_pool_recycle_seconds` (below) set well
-    under whatever idle timeout the network path (SQL Server itself, a
-    firewall, a load balancer) actually enforces, a connection is
-    proactively recycled before it would ever go stale from sitting idle
-    — the failure this setting exists to catch becomes rare rather than
-    routine. Turn this off only after confirming (with the DBA) what that
-    idle timeout actually is and setting ``DB_POOL_RECYCLE_SECONDS``
-    comfortably below it; turning it off with no matching recycle margin
-    trades a quiet steady cost for occasional, noisier
-    first-query-after-idle failures.
-
-    Read once by :func:`database.connection.get_engine` /
-    :func:`appdb.engine.build_engine` when the engine is constructed
-    (like every other pool-shape setting there); changing it at runtime
-    has no effect until the next :func:`~database.connection.dispose_engine`
-    / :func:`~appdb.engine.dispose_app_engine`. Also consulted by
-    :func:`api.health._ping_db` — see that function's docstring for why it
-    changes how many round trips one health probe costs, not just whether
-    checkout is probed."""
+    Read once by :func:`appdb.engine.build_engine` when the engine is
+    constructed; changing it at runtime has no effect until the next
+    :func:`~appdb.engine.dispose_app_engine`. Not consulted by the warehouse
+    health probe: :func:`api.health._ping_db` opens a fresh connection for
+    every check."""
     db_pool_ping_idle_seconds: int = field(
         default_factory=lambda: int(os.getenv("DB_POOL_PING_IDLE_SECONDS", "60"))
     )
-    """How long (in seconds) a pooled connection must have sat unused
-    before :attr:`db_pool_pre_ping` (when on) actually probes it on
-    checkout, rather than handing it straight to the caller. Default
+    """How long (in seconds) a pooled **application-database** connection
+    must have sat unused before :attr:`db_pool_pre_ping` (when on) probes
+    it on checkout, rather than handing it straight to the caller. Default
     ``60``.
 
-    This is the fix for the specific complaint that started the
-    idle-aware-ping follow-up to Finding 1: with plain
-    ``pool_pre_ping=True``, *every* checkout of a pooled connection sends
-    ``SELECT 1`` first, even one microsecond after the previous caller
-    checked the very same connection back in — a DBA sees this as a
-    constant, checkout-rate-scaled stream of ``SELECT 1`` regardless of
-    how few real questions are actually being asked. Tracking how long a
-    connection has actually sat idle (via SQLAlchemy's documented
-    connect/checkin/checkout pool events, see
+    Applies only to the application database (``APP_DB_URL``, non-SQLite
+    backend). The warehouse engine has no pool, so this setting has no
+    effect on it.
+
+    Tracking how long a connection has sat idle (through SQLAlchemy's
+    connect, checkin and checkout pool events, see
     :func:`database.pool_ping.install_idle_aware_ping`) and skipping the
-    probe when it has not been idle that long turns the cost back into
-    "roughly one probe per burst of activity" instead of "one probe per
-    query", while keeping exactly the same safety net for a connection
-    that really has gone stale from sitting unused.
+    probe when it has not been idle that long gives roughly one probe per
+    burst of activity instead of one per checkout, while still catching a
+    connection that went stale while unused.
 
-    ``0`` means "ping literally every checkout" — the old, simpler
-    guarantee, for an operator who wants that back rather than the
-    idle-aware trade-off, and its failure handling (invalidate the whole
-    pool, not just one connection) now matches plain ``pool_pre_ping=True``
-    exactly. It is not a byte-for-byte reproduction of old
-    ``pool_pre_ping=True`` in one narrow respect: SQLAlchemy's own
-    pre-ping never pings the very first checkout of a brand-new
-    connection (a per-connection "fresh" flag, independent of idle time);
-    ``0`` here pings even that one, since it honours "every checkout"
-    literally. See :func:`database.pool_ping.install_idle_aware_ping`'s
-    docstring for the full detail — the difference is observable only
-    once per physical connection, on its first use, never again after.
-    A negative value is not a supported input and is treated as ``0``
-    would only coincidentally be handled the same way the idle comparison
-    happens to read it (every checkout looks "idle enough"); use ``0``
-    explicitly for that behaviour rather than relying on a negative
-    number.
+    ``0`` means "ping literally every checkout". Unlike SQLAlchemy's own
+    ``pool_pre_ping=True``, this also pings the first checkout of a
+    brand-new connection; see
+    :func:`database.pool_ping.install_idle_aware_ping` for the detail. A
+    negative value is not a supported input; use ``0`` explicitly for
+    ping-every-checkout.
 
-    Has no effect at all when :attr:`db_pool_pre_ping` is ``False`` — that
-    setting means "never ping", and this one only ever narrows *when*
-    that ping fires, never widens it back on. Read once when the engine is
-    built, exactly like :attr:`db_pool_pre_ping` itself."""
-    db_pool_recycle_seconds: int = field(
-        default_factory=lambda: int(os.getenv("DB_POOL_RECYCLE_SECONDS", "3600"))
-    )
-    """Seconds after which :func:`database.connection.get_engine` recycles
-    a pooled connection (SQLAlchemy's ``pool_recycle``), previously a bare
-    ``3600`` literal in that function. See :attr:`db_pool_pre_ping` above
-    for why lowering this (below whatever idle timeout the network path
-    to the warehouse actually enforces) is the documented alternative to
-    leaving ``pool_pre_ping`` on."""
+    Has no effect when :attr:`db_pool_pre_ping` is ``False``: that setting
+    means "never ping", and this one only narrows *when* the ping fires.
+    Read once when the engine is built, like :attr:`db_pool_pre_ping`."""
     sql_dialect: str = field(
         default_factory=lambda: os.getenv("SQL_DIALECT", "tsql")
     )

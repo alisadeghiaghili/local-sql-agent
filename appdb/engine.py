@@ -387,12 +387,13 @@ def build_engine(url: str) -> Engine:
     such as PostgreSQL or SQL Server -- gets an ordinary pooled engine
     with no explicit ``poolclass``. Liveness checking on checkout follows
     :attr:`config.Settings.db_pool_pre_ping` /
-    :attr:`config.Settings.db_pool_ping_idle_seconds` exactly the way the
-    warehouse engine does (see :func:`database.connection.get_engine`):
-    when pre-ping is on, :func:`database.pool_ping.install_idle_aware_ping`
-    is installed so only a connection idle for at least the configured
-    threshold is probed on checkout, instead of every checkout paying a
-    ``SELECT 1`` unconditionally.
+    :attr:`config.Settings.db_pool_ping_idle_seconds`: when pre-ping is on,
+    :func:`database.pool_ping.install_idle_aware_ping` is installed so only
+    a connection idle for at least the configured threshold is probed on
+    checkout, instead of every checkout paying a ``SELECT 1``
+    unconditionally. These two settings apply to this engine only; the
+    warehouse engine (:func:`database.connection.get_engine`) uses
+    ``NullPool`` and has no checkout probe.
     """
     made = make_url(url)
     if made.get_backend_name() == "sqlite":

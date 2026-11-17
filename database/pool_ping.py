@@ -4,10 +4,15 @@
 
 Plain ``pool_pre_ping=True`` runs a liveness probe on *every* checkout of
 a pooled connection, no matter how recently that same connection was
-checked back in. Against a busy warehouse pool, that is a steady stream
-of ``SELECT 1`` scaling with checkout rate rather than with how often a
+checked back in. Against a busy pool, that is a steady stream of
+``SELECT 1`` scaling with checkout rate rather than with how often a
 connection actually needs re-verifying -- the DBA-visible symptom this
 module exists to fix.
+
+Scope: this is used only by :func:`appdb.engine.build_engine` for a
+non-SQLite application database. The warehouse engine
+(:func:`database.connection.get_engine`) is built with ``NullPool``, holds
+no idle connection, and never installs this hook.
 
 :func:`install_idle_aware_ping` replaces that with SQLAlchemy's own
 documented "pessimistic disconnect handling" recipe (pool events, not
@@ -28,7 +33,7 @@ Usage::
     from sqlalchemy import create_engine
     from database.pool_ping import install_idle_aware_ping
 
-    engine = create_engine(url, pool_recycle=3600)
+    engine = create_engine(url)
     install_idle_aware_ping(engine, idle_seconds=60)
 
 Callers decide *whether* to call this at all (that is
@@ -47,8 +52,7 @@ first checkout (see the ``"checkout"`` event below) -- the divergence is
 specific to the ``idle_seconds=0`` setting, and only observable as one
 extra ping the very first time a new physical connection is used, never
 on any later checkout of that same connection. See
-:func:`database.connection.get_engine` and
-:func:`appdb.engine.build_engine` for the two call sites.
+:func:`appdb.engine.build_engine` for the call site.
 """
 
 from __future__ import annotations

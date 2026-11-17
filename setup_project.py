@@ -3055,9 +3055,11 @@ def step1_connection(args, log: dict) -> str:
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(db_url, pool_pre_ping=True, pool_size=1, max_overflow=0)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        engine.dispose()
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        finally:
+            engine.dispose()
         console.print("[green]OK[/green]" if _RICH else "OK")
     except Exception as exc:  # noqa: BLE001
         console.print("[red]FAILED[/red]" if _RICH else "FAILED")

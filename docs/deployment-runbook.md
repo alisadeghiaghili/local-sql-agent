@@ -1811,16 +1811,32 @@ larger change than a retention window.
 A DBA watching `sys.dm_exec_sessions`/a trace sees this application as one
 of possibly many clients. Everything below is a real, periodic or
 per-request round trip to a configured warehouse connection
-(`DB_CONNECTION_URL`, or each source in `datasources.yaml`, which has a pool
-and its own traffic) — kept here in one place, with the setting that controls
+(`DB_CONNECTION_URL`, or each source in `datasources.yaml`, each with its
+own login and traffic) — kept here in one place, with the setting that controls
 each, following the 2026 warehouse-load audit that traced a steady `SELECT 1`
 stream (plus DDL attempts and catalogue scans) back to a few specific
 sources.
 
+**Sessions on the warehouse.** The application holds no idle warehouse
+session. Warehouse engines are built without a connection pool
+(`NullPool`): each query opens a login on the warehouse and closes it when
+the query finishes, so a session exists only while a statement is running.
+ODBC driver-manager pooling is also disabled (`pyodbc.pooling = False`,
+set before the engine is built for `mssql+pyodbc` URLs); with it on, the
+driver manager would keep a closed connection open for about 60 seconds.
+A session that does appear is attributable by its application name: the
+connection string carries `APP=<name>`, taken from `DB_APPLICATION_NAME`
+(`db_application_name`, default `local-sql-agent`), visible as
+`program_name` in `sys.dm_exec_sessions`. Engines are disposed when the
+API server shuts down. The cost is one login per query on the warehouse
+(see the login-auditing note in §14). The application database
+(`APP_DB_URL`), when it is a server rather than the SQLite fallback, is
+separate and keeps an ordinary pool.
+
 | Source | What it sends | How often | Controlled by |
 |---|---|---|---|
-| Connection-pool checkout (`database/connection.py`, `database/pool_ping.py`, one pool per data source; `appdb/engine.py` too, for a non-SQLite application database) | An idle-aware liveness probe (`SELECT 1`) before handing a pooled connection to any caller | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS` — i.e. roughly once per burst of activity after a gap, not once per query. `DB_POOL_PING_IDLE_SECONDS=0` reverts to the old ping-every-checkout behaviour | `DB_POOL_PRE_PING` (default `true`) — see §13 below for the trade-off; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold; `DB_POOL_RECYCLE_SECONDS` (default `3600`) bounds how long a connection sits in the pool before being recycled regardless |
-| `GET /health` (`api/health.py`) | Always exactly one explicit `SELECT 1` on the checked-out connection (of each data source, when there are several) — checkout's own idle-aware probe no longer runs unconditionally, so `/health` cannot rely on it (see §13). In the rare case the checked-out connection had also gone idle long enough for checkout to probe it too, that is a second round trip on top of this one | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
+| Application-database pool checkout (`appdb/engine.py`, `database/pool_ping.py`; only for a non-SQLite `APP_DB_URL`) | An idle-aware liveness probe (`SELECT 1`) on the application database before handing a pooled connection to a caller. The warehouse is not involved: its engines have no pool and no checkout probe | Only when the connection has sat idle in the pool for at least `DB_POOL_PING_IDLE_SECONDS`. `DB_POOL_PING_IDLE_SECONDS=0` pings on every checkout | `DB_POOL_PRE_PING` (default `true`) — see §13 below; `DB_POOL_PING_IDLE_SECONDS` (default `60`) — the idle threshold. Both apply to the application database only |
+| `GET /health` (`api/health.py`) | One fresh connection (a new login) per data source, one explicit `SELECT 1`, then the connection is closed (of each data source, when there are several) | At most once per `HEALTH_CACHE_TTL_SECONDS` (default `15`) no matter how often external monitors call this endpoint; concurrent callers within that window share one probe | `HEALTH_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, non-deep (`GET /admin/health/checks`, `scripts/verify_deployment.build_checks()` minus the deep checks below, per data source) | `check_db_connectivity`'s `SELECT 1`, `check_row_cap`'s `SELECT TOP n name FROM sys.all_objects` | Once when the admin panel is opened, and again only when the operator presses that card's own refresh button — **not** on the 30-second auto-refresh. A repeat within `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` (default `300`) is served from cache instead of re-run; `?refresh=1` forces a fresh run | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — deployment checks, deep (`GET /admin/health/checks?deep=1`) | Everything above, **plus** `check_login_is_read_only`'s always-rolled-back `CREATE TABLE`/`DROP TABLE` attempt, `check_query_timeout`'s multi-second `WAITFOR DELAY` probe, and (with more than one data source) `check_tables_in_assigned_sources`'s full catalogue reflection and `check_schema_structure_matches_databases`'s three catalogue queries per source (and, to the model endpoint rather than the warehouse, `check_model_answers_each_prompt`'s two tiny completions, §3.1) | Only when an operator explicitly presses the panel's "deep checks" button (confirmation dialog first) — never automatically, never on a timer. `python -m scripts.verify_deployment` (the CLI) still runs every check, deep included, every time it is invoked by hand or in CI | Not time-based — opt-in per click. Cached separately from the non-deep result under the same `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
 | Admin panel — schema drift (`GET /admin/schema-drift`, `schema_data.drift.check_schema_drift`) | A full catalogue reflection: `get_table_names` + `get_columns` for every table of every schema, on each source a table lives in; plus, only with more than one source and only when some table is missing from its assigned source, one `INFORMATION_SCHEMA.TABLES` query per other source (the "found in ..." hint) | Once when the admin panel is opened, and again only on that card's own refresh button — not on the 30-second auto-refresh. Same cache/`?refresh=1` behaviour as above | `ADMIN_EXPENSIVE_CACHE_TTL_SECONDS` |
@@ -1831,69 +1847,44 @@ sources.
 | Operator scripts, run by hand: `scripts/sync_schema.py` (and the preflight check `Schema structure matches the databases`) | Three metadata queries per data source over one connection: `INFORMATION_SCHEMA.TABLES` joined to `COLUMNS` (names, data types, nullability), and the primary-key and foreign-key constraints from `TABLE_CONSTRAINTS`, `KEY_COLUMN_USAGE` and `REFERENTIAL_CONSTRAINTS`. No table is read | Once per run | Not time-based. `--check` and `--dry-run` run the same three queries |
 | Every `/query` request that reaches SQL execution (`database/executor.py`) | The generated, guard-validated `SELECT` itself, inside a transaction | Once per end-user query — this is the real workload the application exists to serve, not overhead | `MAX_CONCURRENT_REQUESTS`, `RATE_LIMIT_*` bound how many of these can be in flight/arriving at once |
 
-## 13. `pool_pre_ping`: what it costs, and when turning it off is reasonable
+## 13. `DB_POOL_PRE_PING` and `DB_POOL_PING_IDLE_SECONDS`: application database only
 
-`DB_POOL_PRE_PING` (default `true`) is what makes checking a connection out
-of the pool run a liveness probe first. As of the idle-aware-ping change,
-that probe is no longer unconditional: `database/pool_ping.py` tracks how
-long each pooled connection has actually sat unused (via SQLAlchemy's
-documented connect/checkin/checkout pool events), and only runs `SELECT 1`
-on checkout once a connection has been idle for at least
-`DB_POOL_PING_IDLE_SECONDS` (default `60`). A connection reused sooner than
-that is handed to the caller unprobed. This applies to both the warehouse
-engine (`database/connection.py`) and, when `APP_DB_URL` points at a real
-server rather than the SQLite fallback, the application-database engine
-(`appdb/engine.py`) — the same setting, the same mechanism, the same
-trade-off, on both.
+These two settings apply only to the application database engine
+(`appdb/engine.py`), and only when `APP_DB_URL` points at a real server
+rather than the SQLite fallback. They have no effect on the warehouse:
+warehouse engines (`database/connection.py`) are built with `NullPool`, so
+there is no pooled connection to go stale and nothing to probe on checkout.
+The former `DB_POOL_RECYCLE_SECONDS` setting was removed for the same
+reason.
 
-Before this change, the probe ran on *every* checkout regardless of idle
-time — a DBA-visible `SELECT 1` scaling with checkout rate (i.e. with query
-volume) rather than with how often a connection actually needed
-re-verifying. Setting `DB_POOL_PING_IDLE_SECONDS=0` restores that old,
-simpler guarantee for an operator who wants it back — pinging literally
-every checkout — with one narrow, rarely-observable exception: SQLAlchemy's
-own `pool_pre_ping=True` never pings the very first checkout of a
-brand-new physical connection (a one-time internal "fresh" flag,
-independent of idle time), while `DB_POOL_PING_IDLE_SECONDS=0` here pings
-even that one, since it honours "every checkout" literally. See
-`database.pool_ping.install_idle_aware_ping`'s docstring for the full
-detail; the difference shows up at most once per physical connection, on
-its very first use, never again after.
+`DB_POOL_PRE_PING` (default `true`) makes checking a connection out of the
+application-database pool run a liveness probe first. The probe is
+idle-aware: `database/pool_ping.py` tracks how long each pooled connection
+has sat unused (via SQLAlchemy's connect/checkin/checkout pool events) and
+runs `SELECT 1` on checkout only once a connection has been idle for at
+least `DB_POOL_PING_IDLE_SECONDS` (default `60`). A connection reused
+sooner is handed to the caller unprobed.
+
+Setting `DB_POOL_PING_IDLE_SECONDS=0` pings literally every checkout, with
+one narrow exception: SQLAlchemy's own `pool_pre_ping=True` never pings the
+very first checkout of a brand-new physical connection, while
+`DB_POOL_PING_IDLE_SECONDS=0` here pings even that one. See
+`database.pool_ping.install_idle_aware_ping`'s docstring for the detail.
 
 **Leave `DB_POOL_PRE_PING` on (the default)** unless you have a specific
 reason not to: a connection that went stale while idle in the pool (the
-SQL Server side closed it, or a firewall/load balancer idle-timed it out)
-is silently discarded and replaced instead of failing a real query. A
-failed idle-aware probe raises SQLAlchemy's own `InvalidatePoolError` --
-the same exception plain `pool_pre_ping=True`'s own dialect-level ping
-raises on failure -- which makes the pool invalidate and transparently
-replace *every* pooled connection, not just the one that was probed,
-before the caller's own statement runs. That matters for the common real
-cause of a failed ping: a server restart or a firewall/load-balancer
-dropping every idle connection at once is one failure away from full
-recovery, not one failure per pooled connection discovered one-by-one on
-its own next checkout — the caller never sees any of it either way.
+server closed it, or a firewall/load balancer idle-timed it out) is
+discarded and replaced instead of failing a real query. A failed probe
+raises SQLAlchemy's `InvalidatePoolError`, which makes the pool invalidate
+and replace every pooled connection, not just the one that was probed.
 
-**Turning `DB_POOL_PRE_PING` off** removes the probe entirely, at every
-idle threshold. A connection that went stale is then only discovered when
-a real query is sent through it, which fails once and is transparently
-retried on a fresh connection — a reasonable trade specifically when
-`DB_POOL_RECYCLE_SECONDS` is set comfortably below whatever idle timeout
-the network path to the warehouse (SQL Server itself, a firewall, a load
-balancer) actually enforces, so a connection is proactively recycled
-before it would go stale from sitting idle in the first place. Confirm
-that idle timeout with the DBA before turning this off; without a matching
-recycle margin, turning it off trades a quiet steady cost for occasional,
-noisier first-query-after-idle failures.
+**Turning `DB_POOL_PRE_PING` off** removes the probe entirely, at every idle
+threshold. A stale connection is then only discovered when a real query is
+sent through it, which fails and is retried on a fresh connection.
 
 **Tuning `DB_POOL_PING_IDLE_SECONDS` instead of turning pre-ping off** is
-usually the better first move if the goal is just to cut down the `SELECT
-1` volume: it keeps the safety net (a stale connection is still caught and
-replaced before a real query sees it) while making the probe frequency
-track how bursty traffic actually is rather than raw checkout count. Raise
-it if analysts ask questions in noticeably spaced-out bursts; lower it
-(down to `0`) if the warehouse's own idle timeout is aggressive enough that
-even a short gap can leave a connection stale. Full detail:
+usually the better first move if the goal is to cut down the `SELECT 1`
+volume on the application database. Full detail:
 `config.Settings.db_pool_pre_ping` and `config.Settings.db_pool_ping_idle_seconds`.
 
 ## 14. Disk activity on trivial queries — what to ask the DBA about
@@ -1906,19 +1897,21 @@ specific deployment:
 
 - **`AUTO_CLOSE` on the database.** When on, SQL Server closes the database
   completely (and releases its resources) once the last connection to it
-  ends, then reopens it — a cold-start cost — on the next connection. A
-  connection pool that lets its connections idle out and reconnect (or an
-  `AUTO_CLOSE` interval shorter than this application's real idle gaps)
-  can turn what looks like a trivial query into a full close/reopen cycle.
+  ends, then reopens it — a cold-start cost — on the next connection. The
+  warehouse engines hold no idle connection, so when this application is
+  the only client of that database, every query opens a connection and
+  closes it again, which can turn what looks like a trivial query into a
+  full close/reopen cycle.
   Checking and, if appropriate, disabling `AUTO_CLOSE` on the warehouse
   database is a DBA-side change, not something this application can see or
   control from a connection string.
 - **Login auditing or login triggers.** A `SERVER AUDIT`/login trigger that
   runs its own logic (a lookup, a write, a check) on every new login event
   adds real work per new connection, independent of what that connection
-  goes on to query. This compounds with a small `DB_POOL_RECYCLE_SECONDS`
-  or a low `pool_size`/high churn: more new connections means more login
-  events means more trigger executions. Whether one is configured, and
+  goes on to query. Because the warehouse engines open one login per query,
+  the number of login events equals the number of queries (plus health
+  probes): more queries means more login events means more trigger
+  executions. Whether one is configured, and
   what it does, is visible from the SQL Server side, not from this
   application.
 
