@@ -89,6 +89,11 @@ EXAMPLE_DIR_NAME = "project_config.example"
 #: in a real run); a handful of distinct phrasings is what retrieval can use.
 ALIAS_LIMIT = 8
 
+#: Member names a model nests its list of example pairs under, in order of
+#: preference. Read by the setup wizard and by the examples call of
+#: :class:`llm.wizard_llm.WizardLLM`.
+EXAMPLE_LIST_KEYS = ("examples", "pairs", "queries", "data", "items", "results")
+
 
 # ---------------------------------------------------------------------------
 # Protected directories and backups

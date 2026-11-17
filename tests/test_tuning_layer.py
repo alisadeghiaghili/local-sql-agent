@@ -496,6 +496,17 @@ _ALLOWED_MODULE_CONSTANTS = {
         "alias call takes the operator to have made room for a reasoning model "
         "and sends no cap of its own; a mirror of a setting, not a second knob"
     ),
+    "llm/wizard_llm.py::EXAMPLE_TOKENS_PER_PAIR": (
+        "implementation detail: the completion tokens the setup wizard's examples "
+        "call allows per requested pair, sized from the longest pair the prompt asks "
+        "for (a three-table JOIN with a Persian question); the budget never drops "
+        "below LLM_NUM_PREDICT, so an operator's larger setting still wins, and it "
+        "never reaches the SQL path or a running request"
+    ),
+    "llm/wizard_llm.py::_EXAMPLE_ANSWER_OVERHEAD": (
+        "implementation detail: the tokens of the examples answer's brackets and a "
+        "short preamble, added once to the per-pair budget"
+    ),
     "schema_data/sync.py::REPORT_LIST_LIMIT": (
         "implementation detail: how many names one section of the "
         "operator script's printed report lists before '... and N more'. "
