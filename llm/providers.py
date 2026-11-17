@@ -798,33 +798,49 @@ def salvage_object_list(text: str, keys: tuple[str, ...] = ()) -> list[dict]:
     decoder = json.JSONDecoder()
     if body[0] == "[":
         return _complete_objects(body, 1, decoder)
+    lists = _member_lists(body, decoder)
+    chosen = next((pos for name, pos in lists if not keys or name in keys), None)
+    if chosen is None and lists:
+        chosen = lists[0][1]
+    return _complete_objects(body, chosen, decoder) if chosen is not None else []
 
-    first_list: int | None = None
+
+def _member_lists(body: str, decoder: json.JSONDecoder) -> list[tuple[str, int]]:
+    """``(name, position after "[")`` of each member of the object *body* whose value is an array.
+
+    Reads members in order and stops at the first one that is cut off or
+    malformed; an array member that is cut off is still listed, because its
+    complete elements may be salvaged.
+    """
+    found: list[tuple[str, int]] = []
     pos = 1  # inside the object, after "{"
     while True:
-        pos = _after_space(body, pos)
+        member = _next_member(body, _after_space(body, pos), decoder)
+        if member is None:
+            return found
+        name, value_pos = member
+        if body[value_pos:value_pos + 1] == "[":
+            found.append((name, value_pos + 1))
         try:
-            name, pos = decoder.raw_decode(body, pos)
+            _value, pos = decoder.raw_decode(body, value_pos)
         except json.JSONDecodeError:
-            break
-        pos = _after_space(body, pos)
-        if not isinstance(name, str) or body[pos:pos + 1] != ":":
-            break
-        pos = _after_space(body, pos + 1)
-        if body[pos:pos + 1] == "[":
-            if name in keys or not keys:
-                return _complete_objects(body, pos + 1, decoder)
-            if first_list is None:
-                first_list = pos + 1
-        try:
-            _value, pos = decoder.raw_decode(body, pos)
-        except json.JSONDecodeError:
-            break
+            return found
         pos = _after_space(body, pos)
         if body[pos:pos + 1] != ",":
-            break
+            return found
         pos += 1
-    return _complete_objects(body, first_list, decoder) if first_list is not None else []
+
+
+def _next_member(body: str, pos: int, decoder: json.JSONDecoder) -> tuple[str, int] | None:
+    """The name of the object member at *pos* and where its value starts; ``None`` if there is none."""
+    try:
+        name, pos = decoder.raw_decode(body, pos)
+    except json.JSONDecodeError:
+        return None
+    pos = _after_space(body, pos)
+    if not isinstance(name, str) or body[pos:pos + 1] != ":":
+        return None
+    return name, _after_space(body, pos + 1)
 
 
 class OpenAIBackend(LLMBackend):

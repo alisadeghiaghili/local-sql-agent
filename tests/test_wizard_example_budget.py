@@ -79,6 +79,33 @@ class TestSalvageObjectList:
     def test_fenced_answers_and_prose_in_front_are_read(self):
         assert len(salvage_object_list(f"Here you go:\n```json\n{_CUT_ARRAY}")) == 2
 
+    def test_without_the_named_key_the_first_list_is_read(self):
+        text = f'{{"pairs_of_examples": [{_PAIR_1}, {{"q'
+        assert len(salvage_object_list(text, ("examples",))) == 1
+
+    def test_an_answer_that_ends_right_after_a_comma_keeps_its_objects(self):
+        assert salvage_object_list('[{"q": "a"},   ') == [{"q": "a"}]
+
+    def test_an_element_that_is_not_an_object_is_skipped(self):
+        assert salvage_object_list('[{"q": "a"}, "stray", {"q": "b"}, {"q"') == [{"q": "a"}, {"q": "b"}]
+
+    def test_elements_not_separated_by_a_comma_end_the_list(self):
+        assert salvage_object_list('[{"q": "a"} {"q": "b"}]') == [{"q": "a"}]
+
+    def test_a_cut_inside_an_element_after_whitespace_keeps_what_came_before(self):
+        assert salvage_object_list('[{"q": "a"},   {"q"') == [{"q": "a"}]
+
+    @pytest.mark.parametrize("text", [
+        '{"examples": [{"q": "a"}] "more": 1}',        # no comma after a member
+        '{"note": "cut in a string member',             # a member value cut off
+        '{note: [{"q": "a"}]}',                         # a member name that is not JSON
+        '{"note" [{"q": "a"}]}',                        # no colon after the name
+        '{1: [{"q": "a"}]}',                            # a name that is not a string
+    ])
+    def test_a_malformed_object_stops_at_the_last_good_member(self, text):
+        expected = [{"q": "a"}] if text.startswith('{"examples"') else []
+        assert salvage_object_list(text, ("examples",)) == expected
+
     def test_nothing_complete_gives_an_empty_list(self):
         assert salvage_object_list('[{"question": "cut in the first') == []
         assert salvage_object_list("") == []
@@ -123,6 +150,18 @@ class TestGenerateExamples:
         with pytest.raises(ValueError, match="cut off at the token limit"):
             llm.generate_examples("PROMPT", 10)
         assert len(backend.calls) == 1
+
+
+    def test_a_reasoning_model_that_used_its_tokens_is_named_in_the_error(self):
+        class Reasoning(ScriptedBackend):
+            def generate_with_meta(self, prompt, *, max_tokens=None):
+                text, meta = super().generate_with_meta(prompt, max_tokens=max_tokens)
+                return text, {**meta, "reasoning_tokens": 900}
+
+        llm = WizardLLM(provider="mock", model="m")
+        llm._backend = Reasoning(("", "length"))
+        with pytest.raises(ValueError, match="spent its tokens on reasoning"):
+            llm.generate_examples("PROMPT", 10)
 
 
 class TestStepFiveKeepsACutOffAnswer:
