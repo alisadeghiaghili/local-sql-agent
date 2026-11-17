@@ -54,9 +54,15 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.wizard_drafts import ALIAS_LIMIT, tidy_aliases
+from core.wizard_drafts import ALIAS_LIMIT, EXAMPLE_LIST_KEYS, tidy_aliases
 from llm.base import LLMBackend
-from llm.providers import MockBackend, OpenAIBackend, parse_json_response, salvage_string_list
+from llm.providers import (
+    MockBackend,
+    OpenAIBackend,
+    parse_json_response,
+    salvage_object_list,
+    salvage_string_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +83,20 @@ ALIAS_MAX_TOKENS = 320
 #: (section 2.9) tells an operator to make room for a reasoning model, whose
 #: thinking counts against ``max_tokens``; see :func:`alias_token_cap`.
 _SQL_SIZED_BUDGET = 512
+
+#: Completion tokens allowed per requested example pair, see :func:`example_token_budget`.
+#: A pair is ``{"tags": [...], "question": "...", "sql": "..."}``. Written out
+#: for a three-table JOIN with a Persian question, the longest kind the prompt
+#: asks for, it is about 330 characters: a 60-character question at 0.5-0.7
+#: tokens per Persian character (about 40 tokens), 250 characters of SQL at
+#: about 0.3 tokens per character (about 75) and the JSON around them (about
+#: 25), so about 140 tokens. 180 leaves room for a longer statement. These are
+#: estimates from character counts, as for :data:`ALIAS_MAX_TOKENS`: no
+#: tokenizer for the deployed model was available.
+EXAMPLE_TOKENS_PER_PAIR = 180
+
+#: Tokens for the brackets of the answer and a short preamble a model may write.
+_EXAMPLE_ANSWER_OVERHEAD = 64
 
 #: Stub JSON returned by the ``mock`` provider — no network needed (CI / tests).
 _MOCK_STUB = json.dumps(
@@ -201,6 +221,65 @@ def alias_token_cap(configured: int, extra_body: str = "") -> int | None:
     if configured > _SQL_SIZED_BUDGET or extra_body.strip():
         return None
     return min(configured, ALIAS_MAX_TOKENS)
+
+
+def example_token_budget(count: int, configured: int) -> int:
+    """The ``max_tokens`` for one call that asks for *count* example pairs.
+
+    ``LLM_NUM_PREDICT`` (default 512) is sized for one SQL statement. Ten
+    pairs, each a question and a statement, need about three times that, so
+    a call made under it was cut off and gave no pair at all (issue #252).
+    The budget is :data:`EXAMPLE_TOKENS_PER_PAIR` per pair plus a small
+    overhead, and never less than the configured value: an operator who
+    raised ``LLM_NUM_PREDICT`` for a reasoning model keeps that room.
+
+    Parameters
+    ----------
+    count:
+        How many pairs the prompt asks for.
+    configured:
+        ``LLM_NUM_PREDICT``.
+
+    Returns
+    -------
+    int
+        The ceiling for this call.
+
+    Raises
+    ------
+    Nothing. This function never raises.
+
+    Examples
+    --------
+    >>> example_token_budget(10, 512)
+    1864
+    >>> example_token_budget(5, 512)
+    964
+    >>> example_token_budget(10, 4096)  # raised for a reasoning model: kept
+    4096
+    """
+    return max(configured, count * EXAMPLE_TOKENS_PER_PAIR + _EXAMPLE_ANSWER_OVERHEAD)
+
+
+@dataclass
+class ExampleAnswer:
+    """What one examples call produced.
+
+    Attributes
+    ----------
+    parsed:
+        The answer as JSON (a list, or an object that nests one), or, when it
+        did not parse, the list of the complete objects salvaged from it.
+    salvaged:
+        ``True`` when the answer did not parse and its complete objects were
+        recovered.
+    cut_off:
+        ``True`` when the server stopped the answer at the token limit.
+    """
+
+    parsed: Any
+    salvaged: bool = False
+    cut_off: bool = False
 
 
 def _strict_instruction(limit: int) -> str:
@@ -513,6 +592,67 @@ class WizardLLM:
             f"first answer {first}; second answer, after a stricter prompt, {second}.{hint} "
             f"Start of the last answer: {raw2[:80]!r}",
             reason=f"no usable answer: {first}; again {second}",
+        )
+
+    def generate_examples(self, prompt: str, count: int) -> ExampleAnswer:
+        """Ask for *count* NLQ-to-SQL example pairs; keep every complete pair of a cut-off answer.
+
+        1. The call carries a ``max_tokens`` sized for *count* pairs
+           (:func:`example_token_budget`), not the SQL-sized ``LLM_NUM_PREDICT``.
+        2. A reply that does not parse is searched for its complete objects
+           (:func:`~llm.providers.salvage_object_list`). The pair being written
+           when the answer was cut is dropped, never kept in half.
+        3. The text of an unparsable answer is never sent back to be
+           "corrected": for a cut-off list that only asks the model to write
+           the same long answer again under the same limit.
+
+        Parameters
+        ----------
+        prompt:
+            The examples prompt.
+        count:
+            How many pairs the prompt asks for.
+
+        Returns
+        -------
+        ExampleAnswer
+            The parsed or salvaged answer and how it was obtained.
+
+        Raises
+        ------
+        ValueError
+            If the reply holds no complete object at all; the message says
+            whether it was empty, cut off or not JSON.
+        requests.Timeout
+            If the backend does not respond in time.
+        requests.HTTPError
+            On a non-2xx response.
+        RuntimeError
+            If the endpoint cannot be reached.
+
+        Examples
+        --------
+        >>> llm = WizardLLM(provider="mock", model="mock")
+        >>> llm.generate_examples("anything", 10).parsed["examples"]
+        []
+        """
+        import config as cfg  # noqa: PLC0415
+
+        raw, meta = self._ask(prompt, example_token_budget(count, cfg.settings.llm_num_predict))
+        cut_off = meta.get("finish_reason") == "length"
+        try:
+            return ExampleAnswer(parsed=parse_json_response(raw), cut_off=cut_off)
+        except ValueError:
+            pass
+        items = salvage_object_list(raw, EXAMPLE_LIST_KEYS)
+        if items:
+            return ExampleAnswer(parsed=items, salvaged=True, cut_off=cut_off)
+        hint = ""
+        if meta.get("reasoning_detected") or (meta.get("reasoning_tokens") or 0) > 0:
+            hint = " The model spent its tokens on reasoning; see LLM_EXTRA_BODY and LLM_NUM_PREDICT."
+        raise ValueError(
+            f"[WizardLLM] No complete example pair (provider={self.provider!r}, model={self.model!r}): "
+            f"the answer was {_why_unusable(raw, meta)}.{hint}"
         )
 
     def _ask(self, prompt: str, max_tokens: int | None) -> tuple[str, dict[str, Any]]:

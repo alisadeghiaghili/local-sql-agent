@@ -725,6 +725,108 @@ def salvage_string_list(text: str, key: str | None = None) -> list[str]:
         pos += 1
 
 
+def _complete_objects(text: str, pos: int, decoder: json.JSONDecoder) -> list[dict]:
+    """The complete objects of the JSON array whose first element starts at or after *pos*.
+
+    Stops at the closing bracket, at the first element that is cut off, and at
+    anything that is not a comma. An element that is not an object is skipped,
+    so one stray string does not cost the objects around it.
+    """
+    items: list[dict] = []
+    while True:
+        pos = _after_space(text, pos)
+        if pos >= len(text) or text[pos] == "]":
+            return items
+        try:
+            value, pos = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            return items
+        if isinstance(value, dict):
+            items.append(value)
+        pos = _after_space(text, pos)
+        if text[pos:pos + 1] != ",":
+            return items
+        pos += 1
+
+
+def salvage_object_list(text: str, keys: tuple[str, ...] = ()) -> list[dict]:
+    r"""The complete objects of a JSON list of objects that the answer was cut off in.
+
+    A list of example pairs that ``max_tokens`` stops half-way leaves JSON that
+    never closes (``[{"question": "a", "sql": "SELECT 1"}, {"question": "b", "sq``).
+    Every object before the cut is whole and valid, and is returned; the one
+    being written when the answer ended is not, so no object is ever cut in
+    half. The list is the array itself, or, in an object, the array under the
+    first of *keys* that the answer has (the first member that is an array
+    when *keys* is empty or none of them appears before the cut).
+
+    Parameters
+    ----------
+    text:
+        The raw answer: fenced or not, with or without prose in front.
+    keys:
+        Member names that may hold the list, in order of preference.
+
+    Returns
+    -------
+    list[dict]
+        The complete objects in order; ``[]`` when there are none.
+
+    Raises
+    ------
+    Nothing. This function never raises.
+
+    Examples
+    --------
+    >>> salvage_object_list('[{"q": "a", "sql": "SELECT 1"}, {"q": "b", "sq')
+    [{'q': 'a', 'sql': 'SELECT 1'}]
+    >>> salvage_object_list('```json\n{"examples": [{"q": "۱"}, {"q": "۲"}, {"q": "۳')
+    [{'q': '۱'}, {'q': '۲'}]
+    >>> salvage_object_list('{"note": [1], "examples": [{"q": "x"}, {"q": "y', ("examples",))
+    [{'q': 'x'}]
+    >>> salvage_object_list('[{"q": "a"}, "stray", {"q": "b"}]')
+    [{'q': 'a'}, {'q': 'b'}]
+    >>> salvage_object_list('[{"q": "cut in the first obj')
+    []
+    >>> salvage_object_list("no json here")
+    []
+    """
+    try:
+        body = _find_json_substring(_strip_fences(text))
+    except ValueError:
+        return []
+    decoder = json.JSONDecoder()
+    if body[0] == "[":
+        return _complete_objects(body, 1, decoder)
+
+    first_list: int | None = None
+    pos = 1  # inside the object, after "{"
+    while True:
+        pos = _after_space(body, pos)
+        try:
+            name, pos = decoder.raw_decode(body, pos)
+        except json.JSONDecodeError:
+            break
+        pos = _after_space(body, pos)
+        if not isinstance(name, str) or body[pos:pos + 1] != ":":
+            break
+        pos = _after_space(body, pos + 1)
+        if body[pos:pos + 1] == "[":
+            if name in keys or not keys:
+                return _complete_objects(body, pos + 1, decoder)
+            if first_list is None:
+                first_list = pos + 1
+        try:
+            _value, pos = decoder.raw_decode(body, pos)
+        except json.JSONDecodeError:
+            break
+        pos = _after_space(body, pos)
+        if body[pos:pos + 1] != ",":
+            break
+        pos += 1
+    return _complete_objects(body, first_list, decoder) if first_list is not None else []
+
+
 class OpenAIBackend(LLMBackend):
     """The one real transport: an OpenAI-compatible ``/chat/completions`` endpoint.
 

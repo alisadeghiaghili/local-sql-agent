@@ -253,6 +253,7 @@ from core.value_shapes import data_shape, prompt_samples
 from core.wizard_drafts import (
     ALIAS_LIMIT,
     DEFAULT_DRAFT_DIR,
+    EXAMPLE_LIST_KEYS,
     MergeStats,
     back_up,
     collapse_same_key,
@@ -4060,7 +4061,6 @@ def step4_business_rules(args, snapshot, llm, log: dict, namer=None, links=None)
 
 #: Keys under which a model may nest its list of pairs, and the names it may give
 #: the question and the SQL of a pair.
-_EXAMPLE_LIST_KEYS = ("examples", "pairs", "queries", "data", "items", "results")
 _EXAMPLE_QUESTION_KEYS = ("question", "nlq", "natural_language", "natural_language_question", "prompt", "q")
 _EXAMPLE_SQL_KEYS = ("sql", "query", "sql_query", "answer")
 
@@ -4107,7 +4107,7 @@ def _example_pairs(result: Any) -> tuple[list[dict[str, Any]], int]:
 
     items = result
     if isinstance(result, dict):
-        items = next((result[k] for k in _EXAMPLE_LIST_KEYS if isinstance(result.get(k), list)), None)
+        items = next((result[k] for k in EXAMPLE_LIST_KEYS if isinstance(result.get(k), list)), None)
         if items is None:
             lists = [v for v in result.values() if isinstance(v, list)]
             items = lists[0] if len(lists) == 1 else []
@@ -4157,7 +4157,10 @@ def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:  # NO
     tables first, up to 20), because a question and its SQL belong to one
     database: with one summary for the whole snapshot, the first 20 tables in
     listed order decided which source the examples were about. An answer with
-    no usable pair is asked once more, with a smaller request. Nothing the
+    no usable pair is asked once more, with a smaller request. Each call gets
+    a ``max_tokens`` sized for the pairs it asks for, and the complete pairs
+    of an answer cut off at that limit are kept
+    (:meth:`llm.wizard_llm.WizardLLM.generate_examples`). Nothing the
     model returns is dropped silently: the step reports how many items it got,
     how many were usable and, when none were, says so.
 
@@ -4181,18 +4184,21 @@ def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:  # NO
     discarded = 0
     problems: list[str] = []
     per_source: dict[str, int] = {}
+    cut_off: list[str] = []
     for source, label in _example_groups(snapshot):
         usable: list[dict[str, Any]] = []
         for tables, count in ((_EXAMPLE_SUMMARY_TABLES, 10), (_EXAMPLE_RETRY_TABLES, 5)):
             summary = _build_schema_summary(snapshot, source, tables)
             try:
-                result = llm.generate(_prompt_examples(summary, language, source or "", count), expect_json=True)
+                answer = llm.generate_examples(_prompt_examples(summary, language, source or "", count), count)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Example generation failed for %s: %s", label, exc)
                 problems.append(f"{label}: the model call failed ({type(exc).__name__})")
                 continue
-            usable, items = _example_pairs(result)
+            usable, items = _example_pairs(answer.parsed)
             discarded += items - len(usable)
+            if answer.cut_off:
+                cut_off.append(label)
             if usable:
                 break
             problems.append(
@@ -4203,6 +4209,11 @@ def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:  # NO
         examples.extend(usable)
 
     note = f" ({discarded} item(s) of the answers discarded: no question, or not a SELECT)" if discarded else ""
+    if cut_off:
+        note += (
+            f" ({len(cut_off)} answer(s) stopped at the token limit: {', '.join(cut_off)}; "
+            "the pairs written before the cut were kept)"
+        )
     console.print(
         f"  Generated [bold]{len(examples)}[/bold] examples{note}." if _RICH
         else f"  Generated {len(examples)} examples{note}.",
@@ -4219,6 +4230,7 @@ def step5_examples(args, snapshot, llm, log: dict, language: str) -> list:  # NO
         "discarded": discarded,
         "per_source": per_source,
         "problems": problems,
+        "cut_off": cut_off,
         "language": language,
         "provider": llm.provider,
         "result": examples,
