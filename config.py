@@ -1759,6 +1759,29 @@ class Settings:
     Set it to ``false`` and no request, statement, audit record or response
     differs from one made before the setting existed."""
 
+    denied_columns_prompt_note: bool = field(
+        default_factory=lambda: os.getenv("DENIED_COLUMNS_PROMPT_NOTE", "false").lower()
+        in ("1", "true", "yes")
+    )
+    """When ``True``, the prompt of a key with fully denied columns (a plain
+    ``denied_columns`` entry such as ``NationalID``) names them in its
+    ``COLUMN ACCESS`` section and says not to use them anywhere, nor ``*`` or
+    ``alias.*`` over a table that has one (issue #263). See
+    :func:`security.column_policy.denied_prompt_line`.
+
+    Without it the schema block still lists the column and nothing says the key
+    may not use it, so a model asked for "a list of customers" selects it and
+    the guard refuses the request on the first answer: a full deny is a
+    :class:`~security.sql_guard.PolicyRejection`, never retried. The note
+    changes the prompt only; the guard refuses exactly the statements it
+    refuses without it. The line sits in the per-question segment, so the
+    cached static prefix is the same for every key.
+
+    Defaults to ``False``: the prompt of every question asked with such a key
+    changes, not only of those that are refused today. With it ``false``, or
+    for a key without a plain entry, every prompt is byte-identical to one
+    built before the setting existed."""
+
     # ── Evaluation harness: golden-set regression gate (see eval/baseline.py) ─
     eval_max_accuracy_drop_pct: float = field(
         default_factory=lambda: float(os.getenv("EVAL_MAX_ACCURACY_DROP_PCT", "5.0"))

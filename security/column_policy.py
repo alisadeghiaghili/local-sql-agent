@@ -79,6 +79,7 @@ __all__ = [
     "SchemaView",
     "cached_column_policy",
     "hidden_value_columns",
+    "denied_prompt_line",
     "join_only_prompt_line",
     "load_schema_view",
     "look_alike_columns",
@@ -1028,4 +1029,56 @@ def join_only_prompt_line(entries: Iterable[str] | None, source: str | None) -> 
     return (
         "Columns you may use only in JOIN ... ON equality (a.col = b.col), never "
         "select, filter, group by or order by them: " + ", ".join(shown)
+    )
+
+
+def denied_prompt_line(entries: Iterable[str] | None) -> str:
+    """The one-line prompt hint naming a key's fully denied columns; ``""`` when it has none.
+
+    A plain entry (no ``.`` or ``:``) is a full deny: the column may not be
+    referenced anywhere, and the guard refuses the request on the first answer
+    that does (:class:`~security.sql_guard.PolicyRejection`). The schema block
+    of the prompt still lists such a column, so without this line the model is
+    not told (issue #263). Used only under ``DENIED_COLUMNS_PROMPT_NOTE``, by
+    :func:`llm.router.build_prompt_segments`.
+
+    Each entry is shown as the operator wrote it, cleaned at its two ends
+    (:func:`normalize_denied_entry`), once (compared case-insensitively, as the
+    guard compares), in the order written. An entry with nothing visible in it
+    denies nothing and is not shown. Built from the entries alone (no schema
+    lookup), so it costs nothing on the request path; it never raises.
+
+    Parameters
+    ----------
+    entries:
+        The key's raw ``denied_columns``.
+
+    Returns
+    -------
+    str
+        The line, or ``""``.
+
+    Examples
+    --------
+    >>> denied_prompt_line(["sales.Order.ID"])
+    ''
+    >>> denied_prompt_line(["NationalID", "nationalid", "sales.Order.ID", "Phone"])
+    'Columns you must not use at all (not in SELECT, WHERE, JOIN, GROUP BY or ORDER BY), and never write * or alias.* over a table that has one; name the other columns instead: NationalID, Phone'
+    """
+    shown: list[str] = []
+    seen: set[str] = set()
+    for raw in entries or ():
+        if not isinstance(raw, str):
+            continue
+        entry = normalize_denied_entry(raw)
+        if not entry or not _is_plain(entry) or entry.upper() in seen:
+            continue
+        seen.add(entry.upper())
+        shown.append(entry)
+    if not shown:
+        return ""
+    return (
+        "Columns you must not use at all (not in SELECT, WHERE, JOIN, GROUP BY or ORDER BY), "
+        "and never write * or alias.* over a table that has one; name the other columns instead: "
+        + ", ".join(shown)
     )

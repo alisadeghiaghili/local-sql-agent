@@ -68,7 +68,7 @@ from typing import Any
 import config as cfg
 from llm.base import LLMBackend
 from llm.prefix_activity import activity as prefix_activity
-from security.column_policy import join_only_prompt_line
+from security.column_policy import denied_prompt_line, join_only_prompt_line
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +278,12 @@ def build_prompt_segments(
     # neither should raise AttributeError over an optional signal.
     resolved_values = getattr(context, "resolved_values", None) or None
     access_notes = join_only_prompt_line(denied_columns, source)
+    if cfg.settings.denied_columns_prompt_note:
+        # Issue #263: the schema block lists a fully denied column and, without
+        # this line, nothing says the key may not use it. Off: not even called.
+        denied_line = denied_prompt_line(denied_columns)
+        if denied_line:
+            access_notes = f"{access_notes}\n{denied_line}" if access_notes else denied_line
 
     if not should_use_static_prefix(system_prompt, source):
         full = PromptBuilder.build(

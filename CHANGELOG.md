@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A key with a fully denied column can be told about it in the prompt (`security/column_policy.py`, `llm/router.py`, `config.py`) (issue #263).** With `NationalID` in a key's `denied_columns`, «لیست مشتریانی که زعفران خریده‌اند» was refused. The schema block of the prompt lists every column of `sales.Customer`, the national ID included, and only join-only entries were named in the prompt's `COLUMN ACCESS` section. A model asked for a list of customers selected the column, or wrote `c.*`, and a plain entry is a `PolicyRejection`: never retried, so the request ended on the first answer.
+  - **The fix.** A new setting, `DENIED_COLUMNS_PROMPT_NOTE`, off by default. On, the `COLUMN ACCESS` section also names the key's plain entries, as the operator wrote them, once each, and says not to use them in any clause, nor `*` or `alias.*` over a table that has one (`security.column_policy.denied_prompt_line`). The line follows the join-only line, in the per-question segment, so the cached static prefix stays the same for every key.
+  - **What does not change.** The restriction: the guard refuses the same statements, terminally, with the setting on or off. With it off, and for every key without a plain entry, every prompt is byte-identical to one built before (`tests/test_denied_column_prompt_note.py`, both prompt paths). Off by default because, on, the prompt of every question asked with such a key changes, not only of those refused today.
+  - **Not done.** A `*` refused under a plain entry is still not retried with a list of the table's permitted columns; the note asks for named columns up front instead.
+
 ## [6.18.0] — 2026-11-17
 
 **Issues fixed:** #255 (warehouse connections stayed open after a query and after the program stopped); #242 and #252 (the setup wizard wrote an empty `aliases.yaml` and an empty `examples.yaml`). The rest is hardening: the SQL guard's CTE and row-cap handling, the retrieval prompt's parity with the static prompt, and a SonarQube quality gate in CI.

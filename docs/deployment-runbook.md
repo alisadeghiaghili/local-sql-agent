@@ -408,6 +408,18 @@ Copy `.env.example` to `.env` (if not already done) and fill in, at minimum:
   table in its `SELECT` is restricted for that name, so qualify columns.
   Entry names cannot contain `.` or `:`.
 
+  **Telling the model about a plain entry (`DENIED_COLUMNS_PROMPT_NOTE`).** The
+  schema in the prompt lists every column, a fully denied one included, and a
+  join-only entry is named in the prompt's `COLUMN ACCESS` section, but a plain
+  entry is not. A model asked for "the list of customers" then selects the
+  denied column, or writes `c.*`, and the request is refused on the first answer
+  (a denied column is never retried). With `DENIED_COLUMNS_PROMPT_NOTE=true` the
+  same section also names the key's plain entries and says not to use them
+  anywhere, nor `*` or `alias.*` over a table that has one. It changes the
+  prompt only: the guard refuses exactly what it refused before. Off by
+  default, because the prompt of every question asked with such a key changes;
+  with it off, or for a key without a plain entry, every prompt is as before.
+
   The file is read once at start-up, so **restart the server after editing
   it** (the preflight below runs in its own process and always sees the
   current file). A missing file, invalid JSON (the error gives the line and
