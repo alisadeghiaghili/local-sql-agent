@@ -77,10 +77,6 @@ def _segments(denied: Iterable[str] | None, *, retrieval: bool = False):
         return build_prompt_segments(_QUESTION, _SYSTEM_PROMPT, RetrievalContext(), denied_columns=denied)
 
 
-def _text(segments) -> str:
-    return segments.static_prefix + segments.question
-
-
 class _PolicyAwareModel(LLMBackend):
     """Writes the national-ID query unless the prompt says the key may not use that column."""
 
@@ -163,6 +159,11 @@ class TestTheNote:
     def test_entries_as_the_operator_wrote_them_once_each_in_order(self):
         line = denied_prompt_line([" NationalID‏", "Phone", "nationalid", _JOIN_ONLY, "Phone"])
         assert line.endswith(": NationalID, Phone")
+
+    def test_an_entry_that_is_not_text_is_left_out_and_nothing_raises(self):
+        # parse_column_policy reports such an entry; the prompt line never raises over one.
+        assert denied_prompt_line([None, 7, "NationalID"]).endswith(": NationalID")
+        assert denied_prompt_line([None, 7]) == ""
 
     @pytest.mark.parametrize("retrieval", [False, True], ids=["static prefix", "retrieval"])
     def test_it_is_in_the_column_access_section_of_the_per_question_segment(self, note_on, retrieval):
