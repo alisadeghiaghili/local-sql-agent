@@ -70,6 +70,17 @@ never more than ``--max-tokens`` (default 8192). A model that reasons before it
 answers needs the room; a table of several hundred columns does not fit in
 one answer and is reported as failed.
 
+A reasoning model can spend that size on its reasoning and be stopped before it
+writes the answer (issue #251). Such an answer, cut off at the token limit
+while the response shows reasoning, is not sent back to be "corrected": the
+same question is asked once more with ``--max-tokens``
+(:meth:`llm.wizard_llm.WizardLLM.generate`, ``reasoning_max_tokens``). A
+model that answers in the first call is asked once, as before. Setting
+``LLM_NUM_PREDICT`` higher makes the first call large enough; turning the
+reasoning off (for vLLM or SGLang,
+``LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'``)
+saves the thinking altogether.
+
 Language
 --------
 ``--language fa`` (the default) writes Persian, the language of the
@@ -291,7 +302,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-tokens", type=int, default=TOKEN_CEILING, metavar="N",
         help=(
             f"Most tokens one answer is sized for (default {TOKEN_CEILING}); the size is about 60 per column "
-            "asked about, and never below LLM_NUM_PREDICT."
+            "asked about, and never below LLM_NUM_PREDICT. A reasoning model cut off while still reasoning is "
+            "asked once more with this many."
         ),
     )
     parser.add_argument(
@@ -367,7 +379,9 @@ def _connect(args: argparse.Namespace) -> Generate | None:
             file=sys.stderr,
         )
         return None
-    return lambda prompt: llm.generate(prompt, expect_json=True)
+    # The ceiling is also the room a reasoning model gets when its first
+    # answer was cut off while it was still reasoning (issue #251).
+    return lambda prompt: llm.generate(prompt, expect_json=True, reasoning_max_tokens=args.max_tokens)
 
 
 def _collect_samples(

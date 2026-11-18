@@ -889,7 +889,7 @@ class TestLlmEndpoint:
             code = main(["--tables", "ref.Note"])
 
         assert code == EXIT_OK
-        assert generate.call_args.kwargs == {"expect_json": True}
+        assert generate.call_args.kwargs == {"expect_json": True, "reasoning_max_tokens": 8192}
         out = capsys.readouterr().out
         assert "local-model" in out and "localhost:8000" in out and "local" in out
 

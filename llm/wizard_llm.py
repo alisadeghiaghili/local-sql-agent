@@ -375,6 +375,32 @@ class AliasAnswer:
         )
 
 
+def _spent_on_reasoning(meta: dict[str, Any]) -> bool:
+    """True when an answer was stopped at the token limit while the model was reasoning.
+
+    Both facts come from the backend's ``meta``
+    (:meth:`~llm.providers.OpenAIBackend.generate_with_meta`): the server's
+    ``finish_reason`` and its reasoning detection. A backend whose ``meta``
+    says neither (the mock) is never taken for one.
+
+    Examples
+    --------
+    >>> _spent_on_reasoning({"finish_reason": "length", "reasoning_detected": True})
+    True
+    >>> _spent_on_reasoning({"finish_reason": "length", "reasoning_tokens": 600})
+    True
+    >>> _spent_on_reasoning({"finish_reason": "length", "reasoning_tokens": 0})
+    False
+    >>> _spent_on_reasoning({"finish_reason": "stop", "reasoning_detected": True})
+    False
+    >>> _spent_on_reasoning({})
+    False
+    """
+    if meta.get("finish_reason") != "length":
+        return False
+    return bool(meta.get("reasoning_detected")) or (meta.get("reasoning_tokens") or 0) > 0
+
+
 def _why_unusable(raw: str, meta: dict[str, Any]) -> str:
     """One short phrase for an answer that gave no alias."""
     if meta.get("finish_reason") == "length":
@@ -461,6 +487,8 @@ class WizardLLM:
         self,
         prompt: str,
         expect_json: bool = True,
+        *,
+        reasoning_max_tokens: int | None = None,
     ) -> str | dict | list:
         """Send *prompt* to the LLM and return the response.
 
@@ -474,6 +502,22 @@ class WizardLLM:
             retried ONCE with a repair prompt prepended.  Raises
             ``ValueError`` if the retry also fails.
             When False, the raw response string is returned as-is.
+        reasoning_max_tokens:
+            The room a reasoning model may have when its first answer was
+            cut off while it was still reasoning (issue #251). ``None``, the
+            default and what the setup wizard passes, changes nothing.
+            Otherwise, and only when the first answer does not parse, was
+            stopped at the token limit (``finish_reason: "length"``) and
+            shows reasoning (:func:`_spent_on_reasoning`), and this is more
+            than ``LLM_NUM_PREDICT`` at the time of the call, the original
+            prompt is sent once more with this ``max_tokens``. Sending the
+            empty or cut-off first answer back to be "corrected" asks the
+            model to repair nothing; it answered ``{}``. If the second answer
+            is cut off the same way, a warning names the two remedies and the
+            repair of the first answer runs exactly as it does without this
+            argument. A second answer that is complete but not JSON gets the
+            repair prompt, with this room. Every other answer, and
+            ``expect_json=False``, sends exactly the requests sent without it.
 
         Returns
         -------
@@ -488,9 +532,23 @@ class WizardLLM:
             On non-2xx HTTP responses.
         ValueError
             If ``expect_json=True`` and valid JSON cannot be extracted
-            after the retry.
+            after the retry, or if *reasoning_max_tokens* is less than 1
+            (checked before anything is sent).
+
+        Examples
+        --------
+        >>> llm = WizardLLM(provider="mock", model="mock")
+        >>> llm.generate("anything", reasoning_max_tokens=8192)["aliases"]
+        []
         """
-        raw = self._backend.generate(prompt)
+        if reasoning_max_tokens is not None and reasoning_max_tokens < 1:
+            raise ValueError(
+                f"reasoning_max_tokens must be a positive integer, got {reasoning_max_tokens!r}"
+            )
+        if reasoning_max_tokens is None or not expect_json:
+            raw = self._backend.generate(prompt)
+        else:
+            return self._generate_json_with_room(prompt, reasoning_max_tokens)
 
         if not expect_json:
             return raw
@@ -503,14 +561,28 @@ class WizardLLM:
                 "[WizardLLM] First JSON parse failed for provider=%s; retrying.",
                 self.provider,
             )
+        return self._repair(raw)
 
-        # --- single retry with explicit repair instruction ---
+    def _repair(self, raw: str, max_tokens: int | None = None) -> dict | list:
+        """The single repair round of :meth:`generate`: send *raw* back to be corrected.
+
+        Without *max_tokens* this is the request :meth:`generate` has always
+        sent (``backend.generate``, under ``LLM_NUM_PREDICT``).
+
+        Raises
+        ------
+        ValueError
+            If the corrected answer does not parse either.
+        """
         repair_prompt = (
             "The text below must be a valid JSON object or array but failed to parse.\n"
             "Return ONLY the corrected JSON — no explanation, no markdown, no code fences.\n\n"
             + raw
         )
-        raw2 = self._backend.generate(repair_prompt)
+        if max_tokens is None:
+            raw2 = self._backend.generate(repair_prompt)
+        else:
+            raw2, _meta = self._ask(repair_prompt, max_tokens)
         try:
             return parse_json_response(raw2)
         except ValueError as exc:
@@ -519,6 +591,45 @@ class WizardLLM:
                 f"(provider={self.provider!r}, model={self.model!r}).\n"
                 f"Last raw response (first 500 chars): {raw2[:500]!r}"
             ) from exc
+
+    def _generate_json_with_room(self, prompt: str, room: int) -> dict | list:
+        """:meth:`generate` with ``expect_json`` and *reasoning_max_tokens* given; see there.
+
+        Raises
+        ------
+        ValueError
+            If valid JSON cannot be extracted, as :meth:`generate` raises it.
+        """
+        import config as cfg  # noqa: PLC0415
+
+        budget = cfg.settings.llm_num_predict
+        raw, meta = self._ask(prompt, None)
+        try:
+            return parse_json_response(raw)
+        except ValueError:
+            pass
+        if not (_spent_on_reasoning(meta) and room > budget):
+            return self._repair(raw)
+
+        logger.debug(
+            "[WizardLLM] The answer was cut off at %d tokens while the model was reasoning; "
+            "asking again with %d.", budget, room,
+        )
+        raw2, meta2 = self._ask(prompt, room)
+        try:
+            return parse_json_response(raw2)
+        except ValueError:
+            pass
+        if _spent_on_reasoning(meta2):
+            logger.warning(
+                "[WizardLLM] The model (%s) was still reasoning when it was stopped at %d tokens, "
+                "the most allowed (--max-tokens). Raise --max-tokens, or turn the reasoning off "
+                "for this run, for vLLM or SGLang with "
+                'LLM_EXTRA_BODY=\'{"chat_template_kwargs": {"enable_thinking": false}}\'.',
+                self.model, room,
+            )
+            return self._repair(raw)
+        return self._repair(raw2, room)
 
     def generate_aliases(self, prompt: str, *, limit: int = ALIAS_LIMIT) -> AliasAnswer:
         """Ask for the aliases of one table; survive an answer that loops and is cut off.

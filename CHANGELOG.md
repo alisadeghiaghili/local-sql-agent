@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`draft_descriptions.py` drafts the tables a reasoning model used to fail on (`llm/wizard_llm.py`, `scripts/draft_descriptions.py`) (issue #251).** With `Qwen/Qwen3.8-27B-FP8` behind vLLM almost every table ended in `FAILED (ValueError: the answer holds no description that can be used)`, after the warning "appears to carry reasoning-channel text rather than a final answer" twice. Each call is sized at 300 tokens plus 60 per column, never below `LLM_NUM_PREDICT`, so a small table got 512 to 600 tokens. The model spent them on its reasoning channel and was stopped (`finish_reason: "length"`) before it wrote the JSON. A 17-column table, sized at about 1,380, succeeded. The empty answer was then sent back with "Return ONLY the corrected JSON"; with nothing to correct, the model answered `{}`.
+  - **The fix.** An answer that does not parse, was stopped at the token limit and shows reasoning (a reasoning field, `<think>` in the content, or a reasoning-token count above zero) is not sent back to be corrected. The same question is asked once more with `--max-tokens` (default 8192) as its `max_tokens`. If that answer is stopped the same way, a warning names `--max-tokens` and `LLM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'`, and the run goes on exactly as before.
+  - **What does not change.** `WizardLLM.generate` takes the room as a new keyword-only `reasoning_max_tokens`, default `None`. Only `draft_descriptions.py` passes it; the setup wizard and `verify_deployment.py` do not. With it, every answer that parses, every non-reasoning answer, a reasoning answer that finished, and `expect_json=False` send byte-identical requests. A model that answers in the first call is asked once. `tests/test_draft_descriptions_reasoning.py` pins this request by request.
+  - **Cost.** A reasoning model that needs the room makes one wasted call per table before the call that answers. Raising `LLM_NUM_PREDICT` for the run, or turning the reasoning off, avoids it.
+
 ## [6.18.0] — 2026-11-17
 
 **Issues fixed:** #255 (warehouse connections stayed open after a query and after the program stopped); #242 and #252 (the setup wizard wrote an empty `aliases.yaml` and an empty `examples.yaml`). The rest is hardening: the SQL guard's CTE and row-cap handling, the retrieval prompt's parity with the static prompt, and a SonarQube quality gate in CI.
