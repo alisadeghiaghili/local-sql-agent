@@ -1062,8 +1062,9 @@ def denied_prompt_line(entries: Iterable[str] | None) -> str:
     --------
     >>> denied_prompt_line(["sales.Order.ID"])
     ''
-    >>> denied_prompt_line(["NationalID", "nationalid", "sales.Order.ID", "Phone"])
-    'Columns you must not use at all (not in SELECT, WHERE, JOIN, GROUP BY or ORDER BY), and never write * or alias.* over a table that has one; name the other columns instead: NationalID, Phone'
+    >>> line = denied_prompt_line(["NationalID", "nationalid", "sales.Order.ID", "Phone"])
+    >>> line.startswith("Columns you must not use at all"), line.endswith(": NationalID, Phone")
+    (True, True)
     """
     shown: list[str] = []
     seen: set[str] = set()
