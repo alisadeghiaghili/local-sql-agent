@@ -51,6 +51,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -94,6 +95,9 @@ _SQL_SIZED_BUDGET = 512
 #: estimates from character counts, as for :data:`ALIAS_MAX_TOKENS`: no
 #: tokenizer for the deployed model was available.
 EXAMPLE_TOKENS_PER_PAIR = 180
+
+#: Added to an error when the model spent its completion budget on reasoning.
+_REASONING_HINT = " The model spent its tokens on reasoning; see LLM_EXTRA_BODY and LLM_NUM_PREDICT."
 
 #: Tokens for the brackets of the answer and a short preamble a model may write.
 _EXAMPLE_ANSWER_OVERHEAD = 64
@@ -375,13 +379,55 @@ class AliasAnswer:
         )
 
 
-def _spent_on_reasoning(meta: dict[str, Any]) -> bool:
+def _cut_off(meta: Mapping[str, object]) -> bool:
+    """True when the server stopped the answer at the token limit (``finish_reason: "length"``).
+
+    Examples
+    --------
+    >>> _cut_off({"finish_reason": "length"}), _cut_off({"finish_reason": "stop"}), _cut_off({})
+    (True, False, False)
+    """
+    return meta.get("finish_reason") == "length"
+
+
+def _showed_reasoning(meta: Mapping[str, object]) -> bool:
+    """True when the response carried reasoning text or a reasoning-token count above zero.
+
+    Examples
+    --------
+    >>> [_showed_reasoning(m) for m in ({"reasoning_detected": True}, {"reasoning_tokens": 900})]
+    [True, True]
+    >>> [_showed_reasoning(m) for m in ({"reasoning_tokens": 0}, {"reasoning_tokens": None}, {})]
+    [False, False, False]
+    """
+    if meta.get("reasoning_detected"):
+        return True
+    tokens = meta.get("reasoning_tokens")
+    return isinstance(tokens, (int, float)) and tokens > 0
+
+
+def _parse_or_none(raw: str) -> dict[str, Any] | list[Any] | None:
+    """*raw* parsed as JSON (:func:`~llm.providers.parse_json_response`), or ``None`` when it does not parse.
+
+    Examples
+    --------
+    >>> _parse_or_none('{"x": 1}'), _parse_or_none("not json")
+    ({'x': 1}, None)
+    """
+    try:
+        return parse_json_response(raw)
+    except ValueError:
+        return None
+
+
+def _spent_on_reasoning(meta: Mapping[str, object]) -> bool:
     """True when an answer was stopped at the token limit while the model was reasoning.
 
     Both facts come from the backend's ``meta``
     (:meth:`~llm.providers.OpenAIBackend.generate_with_meta`): the server's
-    ``finish_reason`` and its reasoning detection. A backend whose ``meta``
-    says neither (the mock) is never taken for one.
+    ``finish_reason`` (:func:`_cut_off`) and its reasoning detection
+    (:func:`_showed_reasoning`). A backend whose ``meta`` says neither (the
+    mock) is never taken for one.
 
     Examples
     --------
@@ -396,14 +442,12 @@ def _spent_on_reasoning(meta: dict[str, Any]) -> bool:
     >>> _spent_on_reasoning({})
     False
     """
-    if meta.get("finish_reason") != "length":
-        return False
-    return bool(meta.get("reasoning_detected")) or (meta.get("reasoning_tokens") or 0) > 0
+    return _cut_off(meta) and _showed_reasoning(meta)
 
 
 def _why_unusable(raw: str, meta: dict[str, Any]) -> str:
     """One short phrase for an answer that gave no alias."""
-    if meta.get("finish_reason") == "length":
+    if _cut_off(meta):
         what = "cut off at the token limit"
     elif not raw.strip():
         return "empty"
@@ -489,7 +533,7 @@ class WizardLLM:
         expect_json: bool = True,
         *,
         reasoning_max_tokens: int | None = None,
-    ) -> str | dict | list:
+    ) -> str | dict[str, Any] | list[Any]:
         """Send *prompt* to the LLM and return the response.
 
         Parameters
@@ -545,25 +589,31 @@ class WizardLLM:
             raise ValueError(
                 f"reasoning_max_tokens must be a positive integer, got {reasoning_max_tokens!r}"
             )
-        if reasoning_max_tokens is None or not expect_json:
-            raw = self._backend.generate(prompt)
-        else:
+        if expect_json and reasoning_max_tokens is not None:
             return self._generate_json_with_room(prompt, reasoning_max_tokens)
-
+        raw = self._backend.generate(prompt)
         if not expect_json:
             return raw
+        return self._parse_or_repair(raw)
 
-        # --- first extraction attempt ---
-        try:
-            return parse_json_response(raw)
-        except ValueError:
-            logger.debug(
-                "[WizardLLM] First JSON parse failed for provider=%s; retrying.",
-                self.provider,
-            )
+    def _parse_or_repair(self, raw: str) -> dict[str, Any] | list[Any]:
+        """*raw* parsed, or else the single repair round of :meth:`generate`, exactly as it has always run.
+
+        Raises
+        ------
+        ValueError
+            If the corrected answer does not parse either.
+        """
+        parsed = _parse_or_none(raw)
+        if parsed is not None:
+            return parsed
+        logger.debug(
+            "[WizardLLM] First JSON parse failed for provider=%s; retrying.",
+            self.provider,
+        )
         return self._repair(raw)
 
-    def _repair(self, raw: str, max_tokens: int | None = None) -> dict | list:
+    def _repair(self, raw: str, max_tokens: int | None = None) -> dict[str, Any] | list[Any]:
         """The single repair round of :meth:`generate`: send *raw* back to be corrected.
 
         Without *max_tokens* this is the request :meth:`generate` has always
@@ -592,7 +642,7 @@ class WizardLLM:
                 f"Last raw response (first 500 chars): {raw2[:500]!r}"
             ) from exc
 
-    def _generate_json_with_room(self, prompt: str, room: int) -> dict | list:
+    def _generate_json_with_room(self, prompt: str, room: int) -> dict[str, Any] | list[Any]:
         """:meth:`generate` with ``expect_json`` and *reasoning_max_tokens* given; see there.
 
         Raises
@@ -604,22 +654,31 @@ class WizardLLM:
 
         budget = cfg.settings.llm_num_predict
         raw, meta = self._ask(prompt, None)
-        try:
-            return parse_json_response(raw)
-        except ValueError:
-            pass
+        parsed = _parse_or_none(raw)
+        if parsed is not None:
+            return parsed
         if not (_spent_on_reasoning(meta) and room > budget):
             return self._repair(raw)
+        return self._retry_with_room(prompt, raw, budget, room)
 
+    def _retry_with_room(
+        self, prompt: str, first: str, budget: int, room: int,
+    ) -> dict[str, Any] | list[Any]:
+        """Ask *prompt* again with *room* tokens after the first answer, *first*, was cut off reasoning.
+
+        Raises
+        ------
+        ValueError
+            If valid JSON cannot be extracted, as :meth:`generate` raises it.
+        """
         logger.debug(
             "[WizardLLM] The answer was cut off at %d tokens while the model was reasoning; "
             "asking again with %d.", budget, room,
         )
         raw2, meta2 = self._ask(prompt, room)
-        try:
-            return parse_json_response(raw2)
-        except ValueError:
-            pass
+        parsed = _parse_or_none(raw2)
+        if parsed is not None:
+            return parsed
         if _spent_on_reasoning(meta2):
             logger.warning(
                 "[WizardLLM] The model (%s) was still reasoning when it was stopped at %d tokens, "
@@ -628,7 +687,7 @@ class WizardLLM:
                 'LLM_EXTRA_BODY=\'{"chat_template_kwargs": {"enable_thinking": false}}\'.',
                 self.model, room,
             )
-            return self._repair(raw)
+            return self._repair(first)
         return self._repair(raw2, room)
 
     def generate_aliases(self, prompt: str, *, limit: int = ALIAS_LIMIT) -> AliasAnswer:
@@ -696,8 +755,8 @@ class WizardLLM:
 
         first, second = _why_unusable(raw, meta), _why_unusable(raw2, meta2)
         hint = ""
-        if meta.get("reasoning_detected") or (meta.get("reasoning_tokens") or 0) > 0:
-            hint = " The model spent its tokens on reasoning; see LLM_EXTRA_BODY and LLM_NUM_PREDICT."
+        if _showed_reasoning(meta):
+            hint = _REASONING_HINT
         raise UnusableAnswerError(
             f"[WizardLLM] No usable alias list (provider={self.provider!r}, model={self.model!r}): "
             f"first answer {first}; second answer, after a stricter prompt, {second}.{hint} "
@@ -750,7 +809,7 @@ class WizardLLM:
         import config as cfg  # noqa: PLC0415
 
         raw, meta = self._ask(prompt, example_token_budget(count, cfg.settings.llm_num_predict))
-        cut_off = meta.get("finish_reason") == "length"
+        cut_off = _cut_off(meta)
         try:
             return ExampleAnswer(parsed=parse_json_response(raw), cut_off=cut_off)
         except ValueError:
@@ -759,8 +818,8 @@ class WizardLLM:
         if items:
             return ExampleAnswer(parsed=items, salvaged=True, cut_off=cut_off)
         hint = ""
-        if meta.get("reasoning_detected") or (meta.get("reasoning_tokens") or 0) > 0:
-            hint = " The model spent its tokens on reasoning; see LLM_EXTRA_BODY and LLM_NUM_PREDICT."
+        if _showed_reasoning(meta):
+            hint = _REASONING_HINT
         raise ValueError(
             f"[WizardLLM] No complete example pair (provider={self.provider!r}, model={self.model!r}): "
             f"the answer was {_why_unusable(raw, meta)}.{hint}"
@@ -779,7 +838,7 @@ class WizardLLM:
         A reply that parses is taken as it is (an empty list is an answer). A
         reply that does not is searched for the complete strings of its list.
         """
-        cut_off = meta.get("finish_reason") == "length"
+        cut_off = _cut_off(meta)
         try:
             answer = AliasAnswer.from_parsed(parse_json_response(raw), limit)
             answer.cut_off = cut_off
