@@ -49,7 +49,7 @@ _REPAIR_HEAD = "The text below must be a valid JSON object or array but failed t
 #: The reasoning text the report quotes, as the server's reasoning parser returns it.
 _THINKING = (
     "We need answer user's request. Need produce JSON only, Persian descriptions. "
-    "Need analyze table ActionType schema Auction_Dim data source Auction_DM."
+    "Need analyze table Trade schema sales data source default."
 )
 _THINKING_ON_REPAIR = (
     "We need answer user's request. They say: \"The text below must be a valid JSON "
