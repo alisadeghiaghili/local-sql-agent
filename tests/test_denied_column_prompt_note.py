@@ -27,7 +27,7 @@ guard refuses the same statements, terminally, with the setting on or off.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 import pandas as pd
 import pytest
@@ -35,14 +35,19 @@ import pytest
 import config as cfg
 from core.models import RetrievalContext
 from llm.base import LLMBackend
-from llm.router import build_prompt_segments
+from llm.router import PromptSegments, build_prompt_segments
 from llm.sql_agent import SQLAgent
 from security.column_policy import denied_prompt_line, join_only_prompt_line
 from security.sql_guard import PolicyRejection, validate_sql
 
 _SYSTEM_PROMPT = "You are a T-SQL expert."
 _QUESTION = "لیست مشتریانی که زعفران خریده‌اند"
+_DENIED = "NationalID"
+_POLICY = (_DENIED,)
 _JOIN_ONLY = "sales.Order.ID"
+_NOTE_HEAD = "Columns you must not use at all"
+_SECTION = "COLUMN ACCESS"
+_PATHS = pytest.mark.parametrize("retrieval", [False, True], ids=["static prefix", "retrieval"])
 
 #: What a model writes for the question when nothing tells it about the policy.
 _WITH_NATIONAL_ID = (
@@ -59,26 +64,27 @@ _ALLOWED = (
     "SELECT DISTINCT c.ID, c.Name FROM sales.[Order] o JOIN sales.Customer c ON o.CustomerID = c.ID "
     "JOIN ref.Symbol s ON o.SymbolID = s.ID WHERE s.Commodity_PersianName = N'زعفران'"
 )
+_REFUSED = pytest.mark.parametrize("careless", [_WITH_NATIONAL_ID, _STAR], ids=["named", "alias.*"])
 
 #: Every shape of ``denied_columns`` a key can have.
 _POLICIES = {
     "none": None,
     "empty": [],
-    "full deny": ["NationalID"],
+    "full deny": [_DENIED],
     "join-only": [_JOIN_ONLY],
-    "both": ["NationalID", _JOIN_ONLY],
+    "both": [_DENIED, _JOIN_ONLY],
     "blank entry": ["  "],
 }
 
 
-def _segments(denied: Iterable[str] | None, *, retrieval: bool = False):
+def _segments(denied: Iterable[str] | None, *, retrieval: bool = False) -> PromptSegments:
     budget = {"prompt_retrieval_token_budget": 1} if retrieval else {}
     with cfg.override_settings(**budget):
         return build_prompt_segments(_QUESTION, _SYSTEM_PROMPT, RetrievalContext(), denied_columns=denied)
 
 
 class _PolicyAwareModel(LLMBackend):
-    """Writes the national-ID query unless the prompt says the key may not use that column."""
+    """Writes *careless* SQL unless the prompt says the key may not use the national ID."""
 
     def __init__(self, careless: str = _WITH_NATIONAL_ID) -> None:
         self.careless = careless
@@ -90,12 +96,20 @@ class _PolicyAwareModel(LLMBackend):
 
     def generate(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        told = "Columns you must not use at all" in prompt and "NationalID" in prompt.split("COLUMN ACCESS", 1)[-1]
+        told = _NOTE_HEAD in prompt and _DENIED in prompt.split(_SECTION, 1)[-1]
         return _ALLOWED if told else self.careless
 
 
+class _IgnoresTheNote(_PolicyAwareModel):
+    """Writes the national-ID query whatever the prompt says."""
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return _WITH_NATIONAL_ID
+
+
 def _agent(backend: LLMBackend) -> SQLAgent:
-    return SQLAgent(backend=backend, execute_fn=lambda sql: pd.DataFrame({"Name": ["x"]}), max_corrections=2)
+    return SQLAgent(backend=backend, execute_fn=lambda _sql: pd.DataFrame({"Name": ["x"]}), max_corrections=2)
 
 
 # ---------------------------------------------------------------------------
@@ -104,32 +118,31 @@ def _agent(backend: LLMBackend) -> SQLAgent:
 
 
 class TestTheSettingIsOffByDefault:
-    def test_the_default_is_off(self):
+    """Off, which is the default, every prompt and every refusal is as before the setting."""
+
+    def test_the_default_is_off(self) -> None:
         assert cfg.Settings().denied_columns_prompt_note is False
 
-    @pytest.mark.parametrize("retrieval", [False, True], ids=["static prefix", "retrieval"])
+    @_PATHS
     @pytest.mark.parametrize("denied", _POLICIES.values(), ids=_POLICIES.keys())
-    def test_off_is_byte_identical_to_the_default(self, denied, retrieval):
+    def test_off_is_byte_identical_to_the_default(self, denied: list[str] | None, retrieval: bool) -> None:
         default = _segments(denied, retrieval=retrieval)
         with cfg.override_settings(denied_columns_prompt_note=False):
             assert _segments(denied, retrieval=retrieval) == default
 
-    @pytest.mark.parametrize("retrieval", [False, True], ids=["static prefix", "retrieval"])
-    def test_off_a_full_deny_leaves_the_prompt_of_an_unrestricted_key(self, retrieval):
-        assert _segments(["NationalID"], retrieval=retrieval) == _segments(None, retrieval=retrieval)
-        assert _segments(["NationalID", _JOIN_ONLY], retrieval=retrieval) == _segments([_JOIN_ONLY], retrieval=retrieval)
+    @_PATHS
+    def test_off_a_full_deny_leaves_the_prompt_of_an_unrestricted_key(self, retrieval: bool) -> None:
+        assert _segments([_DENIED], retrieval=retrieval) == _segments(None, retrieval=retrieval)
+        both = _segments([_DENIED, _JOIN_ONLY], retrieval=retrieval)
+        assert both == _segments([_JOIN_ONLY], retrieval=retrieval)
 
-    def test_off_the_reported_question_is_refused_after_one_call(self):
-        backend = _PolicyAwareModel()
+    @_REFUSED
+    def test_off_the_reported_question_is_refused_after_one_call(self, careless: str) -> None:
+        backend = _PolicyAwareModel(careless=careless)
+        agent = _agent(backend)
         with pytest.raises(PolicyRejection) as excinfo:
-            _agent(backend).run(_QUESTION, _SYSTEM_PROMPT, denied_columns=("NationalID",))
+            agent.run(_QUESTION, _SYSTEM_PROMPT, denied_columns=_POLICY)
         assert excinfo.value.reason == "denied_column"
-        assert len(backend.prompts) == 1
-
-    def test_off_a_star_over_the_table_is_refused_after_one_call(self):
-        backend = _PolicyAwareModel(careless=_STAR)
-        with pytest.raises(PolicyRejection):
-            _agent(backend).run(_QUESTION, _SYSTEM_PROMPT, denied_columns=("NationalID",))
         assert len(backend.prompts) == 1
 
 
@@ -139,67 +152,73 @@ class TestTheSettingIsOffByDefault:
 
 
 @pytest.fixture()
-def note_on():
+def note_on() -> Iterator[None]:
+    """``DENIED_COLUMNS_PROMPT_NOTE=true`` for one test."""
     with cfg.override_settings(denied_columns_prompt_note=True):
         yield
 
 
-class TestTheNote:
-    def test_the_line(self):
-        assert denied_prompt_line(["NationalID"]) == (
-            "Columns you must not use at all (not in SELECT, WHERE, JOIN, GROUP BY or ORDER BY), "
+class TestTheLine:
+    """:func:`security.column_policy.denied_prompt_line` on its own."""
+
+    def test_the_line(self) -> None:
+        assert denied_prompt_line([_DENIED]) == (
+            f"{_NOTE_HEAD} (not in SELECT, WHERE, JOIN, GROUP BY or ORDER BY), "
             "and never write * or alias.* over a table that has one; name the other columns instead: "
-            "NationalID"
+            f"{_DENIED}"
         )
 
     @pytest.mark.parametrize("denied", [None, [], [_JOIN_ONLY], ["main:ID"], ["  ", "‌"]])
-    def test_no_full_deny_no_line(self, denied):
+    def test_no_full_deny_no_line(self, denied: list[str] | None) -> None:
         assert denied_prompt_line(denied) == ""
 
-    def test_entries_as_the_operator_wrote_them_once_each_in_order(self):
+    def test_entries_as_the_operator_wrote_them_once_each_in_order(self) -> None:
         line = denied_prompt_line([" NationalID‏", "Phone", "nationalid", _JOIN_ONLY, "Phone"])
         assert line.endswith(": NationalID, Phone")
 
-    def test_an_entry_that_is_not_text_is_left_out_and_nothing_raises(self):
+    def test_an_entry_that_is_not_text_is_left_out_and_nothing_raises(self) -> None:
         # parse_column_policy reports such an entry; the prompt line never raises over one.
-        assert denied_prompt_line([None, 7, "NationalID"]).endswith(": NationalID")
+        assert denied_prompt_line([None, 7, _DENIED]).endswith(f": {_DENIED}")
         assert denied_prompt_line([None, 7]) == ""
 
-    @pytest.mark.parametrize("retrieval", [False, True], ids=["static prefix", "retrieval"])
-    def test_it_is_in_the_column_access_section_of_the_per_question_segment(self, note_on, retrieval):
-        segments = _segments(["NationalID"], retrieval=retrieval)
-        section = segments.question.split("COLUMN ACCESS", 1)[1]
-        assert denied_prompt_line(["NationalID"]) in section
-        assert "Columns you must not use at all" not in segments.static_prefix
-        text = segments.question
-        assert text.index("SESSION CONTEXT") < text.index("COLUMN ACCESS") < text.index("USER QUESTION")
 
-    def test_the_join_only_line_comes_first_and_is_unchanged(self, note_on):
-        section = _segments(["NationalID", _JOIN_ONLY]).question
+@pytest.mark.usefixtures("note_on")
+class TestTheNote:
+    """``DENIED_COLUMNS_PROMPT_NOTE=true``: where the note goes, and what it changes."""
+
+    @_PATHS
+    def test_it_is_in_the_column_access_section_of_the_per_question_segment(self, retrieval: bool) -> None:
+        segments = _segments([_DENIED], retrieval=retrieval)
+        section = segments.question.split(_SECTION, 1)[1]
+        assert denied_prompt_line([_DENIED]) in section
+        assert _NOTE_HEAD not in segments.static_prefix
+        text = segments.question
+        assert text.index("SESSION CONTEXT") < text.index(_SECTION) < text.index("USER QUESTION")
+
+    def test_the_join_only_line_comes_first_and_is_unchanged(self) -> None:
+        section = _segments([_DENIED, _JOIN_ONLY]).question
         join_line = join_only_prompt_line([_JOIN_ONLY], None)
-        assert f"{join_line}\n{denied_prompt_line(['NationalID'])}\n" in section
+        assert f"{join_line}\n{denied_prompt_line([_DENIED])}\n" in section
 
     @pytest.mark.parametrize("denied", [None, [], [_JOIN_ONLY], ["  "]], ids=["none", "empty", "join-only", "blank"])
-    def test_a_key_without_a_full_deny_gets_the_same_prompt_as_with_the_setting_off(self, denied):
-        off = _segments(denied)
-        with cfg.override_settings(denied_columns_prompt_note=True):
-            assert _segments(denied) == off
+    def test_a_key_without_a_full_deny_gets_the_same_prompt_as_with_the_setting_off(
+        self, denied: list[str] | None,
+    ) -> None:
+        on = _segments(denied)
+        with cfg.override_settings(denied_columns_prompt_note=False):
+            assert _segments(denied) == on
 
-    def test_the_static_prefix_is_the_same_for_every_key(self, note_on):
+    def test_the_static_prefix_is_the_same_for_every_key(self) -> None:
         prefixes = {_segments(denied).static_prefix for denied in _POLICIES.values()}
         assert len(prefixes) == 1
 
-    def test_the_reported_question_is_answered_from_the_first_call(self, note_on):
-        backend = _PolicyAwareModel()
-        df, result = _agent(backend).run(_QUESTION, _SYSTEM_PROMPT, denied_columns=("NationalID",))
+    @pytest.mark.parametrize("careless", [_WITH_NATIONAL_ID, _ALLOWED], ids=["would use it", "would not"])
+    def test_the_reported_question_is_answered_from_the_first_call(self, careless: str) -> None:
+        backend = _PolicyAwareModel(careless=careless)
+        df, result = _agent(backend).run(_QUESTION, _SYSTEM_PROMPT, denied_columns=_POLICY)
         assert len(backend.prompts) == 1
-        assert "NationalID" not in result.sql
+        assert _DENIED not in result.sql
         assert list(df["Name"]) == ["x"]
-
-    def test_a_key_that_answers_without_the_column_is_asked_once_either_way(self, note_on):
-        backend = _PolicyAwareModel(careless=_ALLOWED)
-        _agent(backend).run(_QUESTION, _SYSTEM_PROMPT, denied_columns=("NationalID",))
-        assert len(backend.prompts) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -207,24 +226,24 @@ class TestTheNote:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("note_on")
 class TestTheRestrictionIsUnchanged:
-    @pytest.mark.parametrize("sql", [_WITH_NATIONAL_ID, _STAR], ids=["named", "alias.*"])
-    def test_the_guard_refuses_the_same_statements_terminally(self, note_on, sql):
+    """With the note on, the guard refuses exactly what it refused before, terminally."""
+
+    @_REFUSED
+    def test_the_guard_refuses_the_same_statements_terminally(self, careless: str) -> None:
         with pytest.raises(PolicyRejection) as excinfo:
-            validate_sql(sql, denied_columns=["NationalID"])
-        assert excinfo.value.reason == "denied_column" and excinfo.value.is_refusal
+            validate_sql(careless, denied_columns=[_DENIED])
+        assert excinfo.value.reason == "denied_column"
+        assert excinfo.value.is_refusal
 
-    def test_a_model_that_ignores_the_note_is_still_refused_after_one_call(self, note_on):
-        class Ignores(_PolicyAwareModel):
-            def generate(self, prompt: str) -> str:
-                self.prompts.append(prompt)
-                return _WITH_NATIONAL_ID
-
-        backend = Ignores()
+    def test_a_model_that_ignores_the_note_is_still_refused_after_one_call(self) -> None:
+        backend = _IgnoresTheNote()
+        agent = _agent(backend)
         with pytest.raises(PolicyRejection):
-            _agent(backend).run(_QUESTION, _SYSTEM_PROMPT, denied_columns=("NationalID",))
+            agent.run(_QUESTION, _SYSTEM_PROMPT, denied_columns=_POLICY)
         assert len(backend.prompts) == 1
-        assert "Columns you must not use at all" in backend.prompts[0]
+        assert _NOTE_HEAD in backend.prompts[0]
 
-    def test_the_allowed_statement_passes_the_guard(self):
-        validate_sql(_ALLOWED, denied_columns=["NationalID"])
+    def test_the_allowed_statement_passes_the_guard(self) -> None:
+        assert validate_sql(_ALLOWED, denied_columns=[_DENIED]) is None
