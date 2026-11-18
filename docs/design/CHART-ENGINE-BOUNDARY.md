@@ -261,7 +261,7 @@ with a reason attached that asserted something the code never checked. So:
 and contrast figures behind it. The engine's `spec` expresses emphasis in those
 terms and does not introduce a second colour policy.
 
-One honest caveat for whoever implements this: §10 cites the `dataviz` skill's
+One honest caveat for whoever implements this: §10 cites the external palette validator
 `validate_palette.js`. **That tool is not installed on this machine** (checked).
 Any new colour claim must therefore be computed in the test itself, the way
 `tests/web_ui/test_web_ui_contrast_and_failure.py` already computes WCAG ratios

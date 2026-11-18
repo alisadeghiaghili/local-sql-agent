@@ -280,7 +280,7 @@ drawer by this rule.
 ## 10. Chart emphasis is a lightness job, not a hue job
 
 The line chart splits its series into a "context" segment and a "focus"
-segment and distinguishes them by hue. Measured with the `dataviz` skill's
+segment and distinguishes them by hue. Measured with an external palette
 validator against the real tokens:
 
 | | normal vision ΔE | deuteranopia ΔE | focus↔context contrast |
