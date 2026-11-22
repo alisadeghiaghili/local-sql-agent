@@ -107,7 +107,12 @@ export function renderLlmStatus(llm) {
 
   const title = document.createElement("span");
   title.className = "llm-title";
-  title.textContent = "وضعیت مدل زبانی";
+  // The strip's own heading, in the document language — it lives inside
+  // the turn card's «جزئیات» drawer, whose other panel titles follow the
+  // same <html lang> check (see turn.js's CARD_WORD).
+  title.textContent = document.documentElement && document.documentElement.lang === "en"
+    ? "Language model status"
+    : "وضعیت مدل زبانی";
   head.appendChild(title);
 
   if (!llm) {

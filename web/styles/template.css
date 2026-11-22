@@ -1,0 +1,1288 @@
+/* web/styles/template.css — the "Aurora" workspace shell.
+ *
+ * style.css still owns component internals (SQL, tables, charts, memory,
+ * access requests); this file replaces the TEMPLATE those components sit
+ * in, and applies the rounded, glass-and-glow surface language that gives
+ * the product its new identity:
+ *
+ *   • a slim icon rail as the product's spine,
+ *   • a glass top bar with conversation search and live system state,
+ *   • a welcome band with the three primary actions,
+ *   • a dashboard grid: the ask card first, then analytics (KPIs +
+ *     glowing chart), then recent queries — one full-width card per row,
+ *   • the conversation itself below the grid, and
+ *   • an off-canvas conversation index.
+ *
+ * Everything here is presentation only: IDs, hooks and behaviour are the
+ * ones main.js and render/* already use.
+ */
+
+/* ── Ground ─────────────────────────────────────────────────────────── */
+body {
+  min-height: 100vh;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(90% 60% at 50% -10%, var(--accent-soft) 0%, transparent 60%),
+    radial-gradient(60% 50% at 100% 100%, var(--accent-soft) 0%, transparent 65%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+:root[data-theme="dark"] body,
+:root:not([data-theme="light"]) body {
+  background-image:
+    radial-gradient(70% 55% at 50% -12%, rgba(37, 99, 235, .26) 0%, transparent 62%),
+    radial-gradient(55% 45% at 96% 4%, rgba(50, 197, 255, .10) 0%, transparent 60%),
+    radial-gradient(60% 50% at 0% 100%, rgba(37, 99, 235, .10) 0%, transparent 65%);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) body {
+    background-image:
+      radial-gradient(90% 60% at 50% -10%, var(--accent-soft) 0%, transparent 60%),
+      radial-gradient(60% 50% at 100% 100%, var(--accent-soft) 0%, transparent 65%);
+  }
+}
+
+::selection { background: color-mix(in srgb, var(--accent-bright) 34%, transparent); color: var(--ink); }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Shell ──────────────────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  /* RTL grid fills right→left: 84px = product rail (rightmost),
+     48px  = conversation navigator (just left of the rail),
+     1fr   = workspace (transcript, composer, etc.). */
+  grid-template-columns: 84px 48px minmax(0, 1fr);
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+/* ── Rail ───────────────────────────────────────────────────────────── */
+.rail {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  height: 100vh;
+  padding: 20px 0 18px;
+  background: var(--bg-deep);
+  border-inline-end: 1px solid var(--border);
+}
+
+.rail-logo {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(155deg, #2563eb, #0ea5e9);
+  box-shadow: 0 10px 24px -12px rgba(37, 99, 235, .9), inset 0 1px 0 rgba(255, 255, 255, .35);
+}
+.rail-logo-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 20px;
+}
+.rail-logo-bars i {
+  display: block;
+  width: 4px;
+  border-radius: 2px;
+  background: #fff;
+  opacity: .95;
+}
+.rail-logo-bars i:nth-child(1) { height: 13px; }
+.rail-logo-bars i:nth-child(2) { height: 20px; }
+.rail-logo-bars i:nth-child(3) { height: 9px; opacity: .7; }
+
+.rail-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.rail-btn svg { width: 20px; height: 20px; }
+.rail-btn:hover,
+.rail-btn:focus-visible {
+  background: var(--card-2);
+  border-color: var(--border);
+  color: var(--ink);
+  outline: none;
+}
+.rail-btn.is-active {
+  background: linear-gradient(160deg, rgba(37, 99, 235, .22), rgba(50, 197, 255, .12));
+  border-color: color-mix(in srgb, var(--accent-bright) 34%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12), 0 10px 24px -18px var(--accent-bright);
+}
+:root[data-theme="dark"] .rail-btn.is-active,
+:root:not([data-theme="light"]) .rail-btn.is-active { color: var(--accent-bright); }
+
+.rail-foot {
+  margin-block-start: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.rail-foot .icon-moon { display: none; }
+:root[data-theme="dark"] .rail-foot .icon-sun,
+:root:not([data-theme="light"]) .rail-foot .icon-sun { display: none; }
+:root[data-theme="dark"] .rail-foot .icon-moon,
+:root:not([data-theme="light"]) .rail-foot .icon-moon { display: block; }
+
+/* The rail's destinations: one popover beside the settings icon, so the
+ * spine carries two icons instead of seven. */
+/* The popover's positioning context: the settings icon itself, so the menu
+ * opens LEVEL with that icon — beside it, top edges aligned — instead of
+ * somewhere down near the rail's foot. */
+.rail-menu-anchor { position: relative; display: flex; }
+
+.nav-menu {
+  position: absolute;
+  /* The settings icon's own top edge, opening toward the content along the
+   * inline axis — right of the rail in LTR, left of it in RTL. */
+  inset-block-start: 0;
+  inset-inline-start: calc(100% + 10px);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 208px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+}
+.nav-menu[hidden] { display: none; }
+.nav-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.nav-menu-item svg { width: 18px; height: 18px; color: var(--muted); flex: 0 0 auto; }
+.nav-menu-item:hover,
+.nav-menu-item:focus-visible { background: var(--card-2); outline: none; }
+.nav-menu-item.is-active { color: var(--accent); background: var(--accent-soft); }
+.nav-menu-item.is-active svg { color: var(--accent); }
+.nav-menu-item.is-accent { color: var(--accent); font-weight: 600; }
+.nav-menu-item.is-accent svg { color: var(--accent); }
+
+/* ── Workspace column ───────────────────────────────────────────────── */
+.workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+/* ── Top bar ────────────────────────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 76px;
+  padding: 14px 28px;
+  border-block-end: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 74%, transparent);
+  backdrop-filter: blur(20px) saturate(150%);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  max-width: 520px;
+  height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+  color: var(--muted);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.search svg { width: 17px; height: 17px; flex: 0 0 auto; }
+.search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-md);
+}
+.search input::placeholder { color: var(--faint); }
+.search input:focus { outline: none; box-shadow: none; border: 0; }
+.search:focus-within {
+  border-color: color-mix(in srgb, var(--accent-bright) 55%, transparent);
+  background: var(--card);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-bright) 14%, transparent);
+}
+.search kbd {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card-2);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-inline-start: auto;
+}
+
+/* Life-support lights as one glass capsule. */
+.health {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+}
+.health .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  font-size: var(--fs-xs);
+}
+.health .pill-name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: var(--muted);
+}
+.health .pill-state { font-size: 11px; color: var(--muted); }
+.health .dot { width: 7px; height: 7px; border-radius: 50%; }
+.health .dot-ok { background: var(--status-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-good) 18%, transparent); }
+.health .dot-down { background: var(--status-critical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-critical) 18%, transparent); }
+.health .dot-unknown { background: var(--status-warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-warn) 18%, transparent); }
+
+/* The three pills are now the heart's state: green when every dependency is
+   up, a blinking red alarm when even one is not. The pills stay in the DOM
+   (hidden) because the status panel reads them. */
+.health[hidden] { display: none; }
+#status-btn.is-ok {
+  position: relative;
+  overflow: hidden;
+  color: var(--status-good);
+  border-color: color-mix(in srgb, var(--status-good) 58%, transparent);
+  background:
+    radial-gradient(120% 120% at 28% 16%, color-mix(in srgb, var(--status-good) 26%, transparent) 0%, transparent 64%),
+    color-mix(in srgb, var(--status-good) 11%, var(--card));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 34%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--status-good) 12%, transparent),
+    0 4px 18px color-mix(in srgb, var(--status-good) 24%, transparent);
+}
+/* The healthy heart itself is solid green, shaded top-to-bottom so it reads
+   as a glossy, lit object rather than a thin outline. */
+#status-btn.is-ok svg {
+  fill: url(#heart-ok-fill);
+  stroke-width: 1.1;
+  stroke: color-mix(in srgb, var(--status-good) 74%, #032a19);
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--status-good) 50%, transparent));
+}
+#heart-ok-fill .heart-hi { stop-color: color-mix(in srgb, #fff 66%, var(--status-good)); }
+#heart-ok-fill .heart-mid { stop-color: var(--status-good); }
+#heart-ok-fill .heart-lo { stop-color: color-mix(in srgb, var(--status-good) 76%, #032a19); }
+/* The vitals line: a white ECG pulse over the solid green (healthy) heart,
+   and a red flatline over the hollow (down) heart. Neither shows in the base
+   "unknown" state, where the heart is a plain neutral outline. */
+#status-btn .heart-pulse, #status-btn .heart-flat { display: none; }
+#status-btn.is-ok .heart-pulse { display: block; stroke: #fff; }
+#status-btn.is-alert .heart-flat { display: block; stroke: currentColor; }
+/* A slow specular sweep, so the heart catches the light every few seconds. */
+#status-btn.is-ok::after {
+  content: "";
+  position: absolute;
+  inset: -30% -45%;
+  background: linear-gradient(115deg, transparent 46%, color-mix(in srgb, #fff 60%, transparent) 50%, transparent 54%);
+  mix-blend-mode: screen;
+  transform: translateX(-130%);
+  animation: heart-sheen 6.5s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes heart-sheen {
+  0%, 64% { transform: translateX(-130%); }
+  86%, 100% { transform: translateX(130%); }
+}
+#status-btn.is-alert {
+  color: var(--status-critical);
+  border-color: color-mix(in srgb, var(--status-critical) 48%, transparent);
+  animation: heart-alarm 1.4s ease-in-out infinite;
+}
+@keyframes heart-alarm {
+  0%, 100% {
+    color: var(--status-critical);
+    background: color-mix(in srgb, var(--status-critical) 8%, var(--card));
+    box-shadow: none;
+  }
+  50% {
+    color: #fff;
+    background: var(--status-critical);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--status-critical) 22%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #status-btn.is-alert { animation: none; }
+  #status-btn.is-ok::after { animation: none; transform: none; opacity: .28; }
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 39px;
+  height: 39px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.icon-btn svg { width: 18px; height: 18px; }
+/* The status heart reads at a larger size so the vitals icon is unmistakable;
+   the hollow (unknown / down) heart gets a bolder outline for the same reason. */
+#status-btn svg { width: 27px; height: 27px; }
+#status-btn:not(.is-ok) svg { stroke-width: 2; }
+#status-btn .heart-pulse, #status-btn .heart-flat { stroke-width: 1.8; }
+.icon-btn:hover { color: var(--ink); border-color: var(--border-strong); background: var(--card); }
+.icon-btn[aria-expanded="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent-bright) 55%, transparent); }
+
+/* Account menu */
+.user-menu { position: relative; }
+.user-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 10px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.user-menu-btn:hover { border-color: var(--border-strong); background: var(--card); }
+.user-avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(150deg, #2563eb, #0ea5e9);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35);
+}
+.user-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.25;
+  padding-inline-end: 4px;
+}
+.user-name { font-size: var(--fs-sm); font-weight: 700; }
+.user-role { font-size: 11px; color: var(--muted); }
+.user-chevron { width: 14px; height: 14px; color: var(--faint); }
+
+.user-menu-panel {
+  position: absolute;
+  inset-block-start: calc(100% + 10px);
+  inset-inline-end: 0;
+  z-index: 60;
+  width: min(340px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+  backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: var(--shadow-lg);
+}
+.user-menu-panel[hidden] { display: none; }
+.um-section { padding: 10px 0; }
+.um-section + .um-section { border-block-start: 1px solid var(--border); }
+.um-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 8px;
+}
+.um-segment {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+}
+.um-segment button {
+  flex: 1 1 0;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.um-segment button.active { background: var(--teal); color: var(--on-accent); box-shadow: 0 6px 14px -10px var(--teal); }
+.um-hint { margin-top: 8px; font-size: var(--fs-xs); color: var(--muted); line-height: 1.7; }
+.live-key-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.live-key-status { font-size: var(--fs-xs); font-weight: 600; color: var(--muted); }
+.live-key-status.set { color: var(--status-good-ink); }
+.live-key-status.unset { color: var(--status-warn-ink); }
+.live-key-entry { display: flex; flex: 1 1 auto; gap: 8px; }
+.live-key-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.live-key-save,
+.live-key-change,
+.live-key-clear {
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--card-2);
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.live-key-save { background: var(--teal); border-color: transparent; color: var(--on-accent); }
+.access-requests-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+.access-requests-empty { font-size: var(--fs-xs); color: var(--faint); }
+
+/* ── App body & conversation drawer ─────────────────────────────────── */
+.app-body { position: relative; display: block; min-height: 0; }
+
+.sidebar {
+  position: fixed;
+  z-index: 70;
+  inset-block: 0;
+  inset-inline-start: 84px;
+  display: flex;
+  flex-direction: column;
+  width: 330px;
+  max-width: calc(100vw - 96px);
+  padding-block: 8px 14px;
+  border-inline-end: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  backdrop-filter: blur(26px) saturate(150%);
+  box-shadow: var(--shadow-lg);
+  /* The drawer rests 84px in from the edge, so the closed transform must
+     clear its own width AND that inset — 110% alone left a 51px sliver
+     of the drawer visible at the viewport edge. */
+  transform: translateX(calc(-100% - 96px));
+  transition: transform var(--dur) var(--ease);
+  overflow-y: auto;
+}
+[dir="rtl"] .sidebar { transform: translateX(calc(100% + 96px)); }
+.app-body.sidebar-open .sidebar { transform: translateX(0); }
+
+.sidebar-head {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 16px 12px;
+  background: transparent;
+}
+.sidebar-head h2 { font-size: var(--fs-md); font-weight: 700; }
+/* The conversation search lives here (moved from the topbar) so the filter
+ * always has the row list to act on, even when the drawer is open. */
+.sidebar-head .search {
+  flex: 1 1 auto;
+  max-width: none;
+  height: 34px;
+  padding: 0 12px;
+  gap: 8px;
+}
+.sidebar-head .search svg { width: 15px; height: 15px; }
+.sidebar-head .search input { font-size: var(--fs-sm); }
+.btn-new-session {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--teal);
+  color: var(--on-accent);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-new-session:hover { background: var(--teal-d); }
+
+.session-list { display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 12px; }
+.session-row { border-radius: var(--radius-sm); border: 1px solid transparent; background: transparent; }
+.session-row:hover { background: var(--card-2); border-color: var(--border); }
+.session-row.active {
+  background: color-mix(in srgb, var(--accent-bright) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent-bright) 30%, transparent);
+}
+.session-row-main { border-radius: var(--radius-sm); padding: 11px 12px; }
+.session-row-title { font-size: var(--fs-sm); font-weight: 600; color: var(--ink); }
+.session-row.active .session-row-title { color: var(--ink); font-weight: 700; }
+.session-row-meta { font-size: var(--fs-xs); color: var(--muted); margin-top: 3px; }
+.session-list-empty { padding: 16px; color: var(--muted); font-size: var(--fs-sm); }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  border: 0;
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+  cursor: pointer;
+}
+.scrim[hidden] { display: none; }
+
+/* ── Layout & welcome ───────────────────────────────────────────────── */
+.layout {
+  width: 100%;
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 26px 28px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.welcome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.welcome-eyebrow {
+  display: inline-block;
+  font-family: "Vazirmatn", var(--font-sans);
+  font-size: clamp(26px, 2.8vw, 36px);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0;
+  color: var(--ink);
+  background: linear-gradient(100deg, var(--ink) 30%, var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 20px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+.btn-ghost {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+  color: var(--ink-2);
+}
+.btn-ghost:hover { background: var(--card); border-color: var(--border-interactive); color: var(--ink); }
+.btn-primary {
+  background: linear-gradient(160deg, #3b82f6, #1d4ed8);
+  color: #fff;
+  box-shadow: 0 14px 30px -16px rgba(37, 99, 235, .95), inset 0 1px 0 rgba(255, 255, 255, .25);
+}
+.btn-primary:hover { background: linear-gradient(160deg, #60a5fa, #2563eb); }
+
+/* ── Dashboard grid ─────────────────────────────────────────────────── */
+.dash-grid {
+  display: grid;
+  gap: 20px;
+  /* The ask card is now the page's pinned bottom bar (see .assistant), so
+   * the grid carries only the workspace numbers: analytics, then the recent
+   * queries — one card per row. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "analytics"
+    "recent";
+  align-items: start;
+}
+.analytics { grid-area: analytics; }
+.recent { grid-area: recent; }
+
+.panel {
+  position: relative;
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--card) 96%, white 4%), var(--card));
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+:root[data-theme="dark"] .panel,
+:root:not([data-theme="light"]) .panel {
+  background: linear-gradient(180deg, rgba(20, 34, 56, .92), rgba(9, 18, 32, .94));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 30px 60px -40px rgba(0, 0, 0, .9);
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.panel-head h2 {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.panel-head p { margin-top: 3px; font-size: var(--fs-xs); color: var(--muted); }
+
+/* The dashboard's disclosure panels ("Query performance", "Recent queries")
+   are <details> that open collapsed, so the page lands clean; each <summary>
+   is the disclosure control (title + chevron). Shared via .disclosure. */
+.panel.disclosure > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0;
+}
+.panel.disclosure > summary::-webkit-details-marker { display: none; }
+.panel.disclosure > summary:hover { color: var(--ink); }
+.panel.disclosure > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-sm); }
+.analytics-chevron { display: inline-flex; align-items: center; color: var(--faint); flex: 0 0 auto; }
+.analytics-chevron svg { width: 18px; height: 18px; transition: transform var(--dur-fast) var(--ease); }
+.panel.disclosure[open] .analytics-chevron svg { transform: rotate(180deg); }
+/* When open, the title bar clears from the body with a hairline divider, so
+   both disclosure panels read identically whether expanded or not. */
+.panel.disclosure[open] > summary { margin-bottom: 16px; border-block-end: 1px solid var(--border); padding-block-end: 12px; }
+/* The disclosure titles sit in <summary> (not .panel-head), so give them the
+   same size/weight/colour the panel-head h2 used to carry. */
+.panel.disclosure > summary h2 {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.analytics-body { display: flex; flex-direction: column; gap: 4px; }
+.panel-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--status-good-ink);
+  background: var(--status-good-bg);
+  border-radius: var(--radius-pill);
+  padding: 4px 10px;
+}
+.link-btn {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.link-btn:hover { color: var(--accent-hover); text-decoration: underline; text-underline-offset: 3px; }
+
+/* ── Analytics: KPIs + chart ───────────────────────────────────────── */
+.range-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.range-tabs button {
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.range-tabs button.active {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-xs);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+}
+:root[data-theme="dark"] .range-tabs button.active,
+:root:not([data-theme="light"]) .range-tabs button.active {
+  background: rgba(50, 197, 255, .14);
+  border-color: rgba(50, 197, 255, .3);
+  color: var(--accent-bright);
+  box-shadow: none;
+}
+
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding-bottom: 18px;
+  margin-bottom: 6px;
+  border-block-end: 1px solid var(--border);
+}
+.kpi { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.kpi-value {
+  font-size: clamp(18px, 1.6vw, 23px);
+  font-weight: 700;
+  letter-spacing: -.02em;
+  color: var(--ink);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.kpi-label { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.kpi-value-status { display: inline-flex; align-items: center; gap: 7px; }
+.kpi-value-status .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+.chart-wrap { position: relative; padding-top: 14px; }
+.chart-total {
+  position: absolute;
+  inset-block-start: 18px;
+  inset-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+.chart-total-value {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  color: var(--ink);
+}
+.chart-total-label { font-size: 11px; color: var(--muted); }
+
+.chart-host { position: relative; height: 240px; }
+.chart-host svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart-area-top { stop-color: var(--chart-fill-top); }
+.chart-area-bottom { stop-color: var(--chart-fill-bottom); }
+.chart-grid-line { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-axis-label {
+  fill: var(--faint);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: .02em;
+}
+.chart-line {
+  fill: none;
+  stroke: var(--chart-focus);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--chart-focus) 45%, transparent));
+}
+.chart-point {
+  fill: var(--chart-focus);
+  stroke: var(--card);
+  stroke-width: 2;
+}
+.chart-point-halo { fill: color-mix(in srgb, var(--chart-focus) 26%, transparent); }
+.chart-point-active { r: 6; }
+.chart-marker-line { stroke: color-mix(in srgb, var(--chart-focus) 40%, transparent); stroke-width: 1; stroke-dasharray: 3 4; }
+.chart-empty-line { stroke: var(--chart-grid); stroke-width: 1.5; stroke-dasharray: 5 6; }
+.chart-empty-text { fill: var(--faint); font-size: 12px; }
+
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  min-width: 132px;
+  max-width: 230px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 12px));
+  font-size: var(--fs-xs);
+  color: var(--ink);
+  line-height: 1.6;
+}
+.chart-tip[hidden] { display: none; }
+.chart-tip-value { font-size: var(--fs-lg); font-weight: 700; display: block; }
+.chart-tip-label { color: var(--muted); display: block; }
+
+.chart-foot { margin-top: 4px; font-size: 11px; color: var(--faint); }
+
+/* ── Assistant ──────────────────────────────────────────────────────── */
+.assistant {
+  /* Pinned to the bottom of the viewport like a chat input bar: the last
+   * child of .layout, sticky so it stays reachable no matter how far up the
+   * transcript the analyst has scrolled. --composer-clearance (style.css)
+   * reserves this panel's resting footprint below the turns so the latest
+   * answer never hides behind it. The box is intentionally slim at rest
+   * (minimized): the #question field starts at one line and grows on input
+   * (see wireComposer → sizeQuestion in main.js), so the panel only takes
+   * more room when the analyst is composing a long question. */
+  position: sticky;
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 16px 14px;
+  border-color: rgba(148, 197, 255, .22);
+  background:
+    radial-gradient(120% 80% at 50% 108%, rgba(34, 197, 94, .30) 0%, rgba(14, 165, 233, .16) 38%, transparent 72%),
+    linear-gradient(168deg, #0d2437 0%, #081624 52%, #050d18 100%);
+  color: #eaf4ff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .10), 0 40px 80px -50px rgba(16, 185, 129, .55);
+}
+.assistant-glow {
+  position: absolute;
+  inset-block-start: -30%;
+  inset-inline: -20%;
+  height: 70%;
+  background: radial-gradient(50% 50% at 50% 50%, rgba(50, 197, 255, .28), transparent 70%);
+  pointer-events: none;
+  filter: blur(6px);
+}
+.assistant-head { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.assistant-head h2 {
+  font-size: clamp(15px, 1.6vw, 18px);
+  line-height: 1.4;
+  letter-spacing: -.015em;
+  color: #ffffff;
+}
+.assistant-head p { font-size: var(--fs-sm); line-height: 1.8; color: #a9c2dc; }
+
+/* The composer lives inside the dark assistant card in both themes, so its
+ * surfaces are stated here instead of read from the light/dark tokens. */
+.assistant .composer {
+  position: static;
+  padding: 12px;
+  border: 1px solid rgba(148, 197, 255, .22);
+  border-radius: var(--radius);
+  background: rgba(6, 16, 28, .62);
+  backdrop-filter: blur(18px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+.assistant .composer:focus-within {
+  border-color: rgba(50, 197, 255, .55);
+  box-shadow: 0 0 0 4px rgba(50, 197, 255, .12), inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+.assistant .ask-row { gap: 10px; }
+/* One calm line at rest. sizeQuestion() in main.js grows the field to fit
+ * the text as the analyst types, capping at the max below; it is never
+ * manually resized (resize: none) so the JS sizing is the single source of
+ * truth and the panel only gets taller when the question does. */
+.assistant #question {
+  min-height: 44px;
+  max-height: 220px;
+  padding: 10px 14px;
+  border: 1px solid rgba(148, 197, 255, .18);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, .04);
+  color: #f1f7ff;
+  font-size: var(--fs-md);
+  line-height: 1.7;
+  resize: none;
+}
+.assistant #question::placeholder { color: #7f97b3; }
+/* Persian UI: the hint reads right-aligned like the rest of the page. The
+ * field keeps dir="auto", so an English question still types left-to-right. */
+[dir="rtl"] .assistant #question::placeholder { direction: rtl; text-align: right; }
+.assistant #question:focus {
+  outline: none;
+  border-color: rgba(50, 197, 255, .6);
+  box-shadow: 0 0 0 4px rgba(50, 197, 255, .12);
+}
+.assistant .btn-ask {
+  min-width: 92px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(160deg, #34d399, #0ea5e9);
+  color: #052033;
+  font-weight: 800;
+  letter-spacing: .01em;
+  box-shadow: 0 14px 30px -14px rgba(52, 211, 153, .8);
+}
+.assistant .btn-ask:hover { background: linear-gradient(160deg, #6ee7b7, #38bdf8); }
+.assistant .ask-options {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-block-start: 1px solid rgba(148, 197, 255, .14);
+}
+.assistant .ask-toggle { color: #c3d8ee; font-size: var(--fs-xs); }
+.assistant .ask-toggle input { accent-color: #34d399; }
+.assistant .notice {
+  margin-top: 10px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, .06);
+  color: #e7f2ff;
+}
+
+/* ── Recent queries ─────────────────────────────────────────────────── */
+/* The recent panel is a <details> (see .disclosure): the "View all" link and
+   the chevron sit together on the trailing side of the summary row. */
+.recent-head-actions { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.recent-body { display: flex; flex-direction: column; gap: 4px; }
+.recent-list { display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.recent-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.recent-row:hover { background: var(--card-2); border-color: var(--border); }
+.recent-q {
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.recent-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.recent-dot.ok { background: var(--status-good); }
+.recent-dot.warn { background: var(--status-warn); }
+.recent-dot.bad { background: var(--status-critical); }
+.recent-dot.running { background: var(--accent-bright); animation: pulse 1.4s var(--ease) infinite; }
+.empty-line { font-size: var(--fs-xs); color: var(--faint); line-height: 1.8; padding: 6px 2px; }
+
+/* ── Conversation & turns ───────────────────────────────────────────── */
+#transcript { padding-block-end: 0; gap: 14px; }
+
+.turn {
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card-2);
+  box-shadow: none;
+  scroll-margin-top: 96px;
+  scroll-margin-bottom: 20px;
+}
+.turn-question {
+  align-self: stretch;
+  max-width: none;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-bright) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-bright) 22%, transparent);
+  color: var(--ink);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  box-shadow: none;
+}
+[dir="rtl"] .turn-question { border-radius: var(--radius-sm); }
+.turn-question .turn-index {
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: .12em;
+  margin-bottom: 4px;
+}
+
+/* Inner surfaces of a turn share the rounded, quiet language. */
+.resolved-card,
+.clarifications,
+.turn-details,
+.llm-strip,
+.failure,
+.sql-box,
+.table-wrap,
+.assumptions .chip {
+  border-radius: var(--radius-sm);
+}
+
+/* Empty conversation: a compact invitation, not a second hero. */
+.transcript-empty {
+  padding: 22px;
+  gap: 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--card) 55%, transparent);
+  box-shadow: none;
+}
+.transcript-empty::after { display: none; }
+.transcript-empty h2 { font-size: var(--fs-xl); }
+.transcript-empty-hint { font-size: var(--fs-sm); color: var(--muted); }
+.samples { gap: 8px; border: 0; background: transparent; margin-top: 6px; }
+.samples-label { color: var(--faint); font-size: var(--fs-xs); }
+.sample,
+.start-example {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+}
+.sample:hover:not(:disabled),
+.start-example:hover {
+  border-color: color-mix(in srgb, var(--accent-bright) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-bright) 10%, transparent);
+  color: var(--ink);
+}
+
+/* ── Notices ────────────────────────────────────────────────────────── */
+.notice { border-radius: var(--radius-sm); border-inline-start-width: 3px; }
+.api-diagnosis { margin: 12px 28px 0; }
+
+/* ── System status popover ──────────────────────────────────────────── */
+.status-panel {
+  position: fixed;
+  inset-block-start: 84px;
+  inset-inline-end: 28px;
+  z-index: 80;
+  width: min(340px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+  backdrop-filter: blur(24px) saturate(150%);
+  box-shadow: var(--shadow-lg);
+}
+.status-panel[hidden] { display: none; }
+.status-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.status-panel-head h2 { font-size: var(--fs-md); font-weight: 700; }
+.status-panel-close {
+  display: grid;
+  place-items: center;
+  width: 28px; height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.status-panel-close svg { width: 14px; height: 14px; }
+.status-list { display: flex; flex-direction: column; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.status-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: var(--fs-sm); }
+.status-item-name { color: var(--muted); }
+.status-item-value { font-weight: 600; color: var(--ink); }
+
+/* ── Memory panel ───────────────────────────────────────────────────── */
+.memory-panel {
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+}
+.memory-panel-head h2 { font-size: var(--fs-lg); }
+.memory-overlay { backdrop-filter: blur(4px); }
+
+/* ── Persian typography ───────────────────────────────────────────────
+ * --font-mono names JetBrains Mono, which this build never vendors
+ * (fonts.css ships Inter and Vazirmatn only), so every mono readout fell
+ * through to whatever generic monospace the operating system offered. The
+ * chart's axis words and value numbers are where that showed: a foreign face
+ * wedged between two lines of Vazirmatn. In Persian those readouts take the UI
+ * stack instead — Vazirmatn sits right after Inter there, and it carries
+ * Persian digits. Latin mode keeps the mono rhythm, where the fallback only
+ * ever renders characters it actually has. */
+[lang="fa"] .chart-axis-label,
+[lang="fa"] .chart-value-label {
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+}
+
+/* ── Responsive ─────────────────────────────────────────────────────── */
+@media (max-width: 1240px) {
+  .layout { padding: 22px 20px 10px; }
+  .topbar { padding: 12px 20px; }
+  .kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 14px; }
+}
+
+@media (max-width: 1020px) {
+  .search kbd { display: none; }
+  .user-text { display: none; }
+  .user-menu-btn { padding: 0 6px; }
+  .user-menu-btn .user-avatar { display: grid; }
+  .health .pill-state { display: none; }
+  .health .pill { padding: 3px 8px; }
+}
+
+@media (max-width: 960px) {
+  .dash-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "analytics"
+      "recent";
+  }
+  .chart-host { height: 220px; }
+}
+
+@media (max-width: 760px) {
+  .shell { grid-template-columns: 100%; }
+  /* The shell is a single column here and the product rail becomes a fixed
+     bottom bar, so there is no side slot for the conversation navigator. */
+  .conversation-navigator { display: none; }
+  .rail {
+    position: fixed;
+    inset-block-end: 0;
+    inset-inline: 0;
+    top: auto;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-block-start: 1px solid var(--border);
+    border-inline-end: 0;
+    background: color-mix(in srgb, var(--bg-deep) 96%, transparent);
+    backdrop-filter: blur(20px);
+  }
+  .rail-logo { width: 38px; height: 38px; border-radius: 12px; }
+  .rail-nav { flex-direction: row; gap: 4px; }
+  .rail-btn { width: 42px; height: 42px; }
+  .rail-foot { margin: 0; flex-direction: row; }
+  /* The rail is a bottom bar here, so its menu opens above it, edge to edge
+   * — anchored to the bar (the popover's fixed containing block, see the
+   * rail's backdrop-filter), never to the 42px icon it hangs off on desktop. */
+  .nav-menu {
+    position: fixed;
+    inset-block-start: auto;
+    inset-block-end: 74px;
+    inset-inline: 8px;
+    min-width: 0;
+  }
+  .workspace { padding-bottom: 74px; }
+  .topbar {
+    flex-wrap: wrap;
+    gap: 10px;
+    min-height: 64px;
+    padding: 10px 14px;
+  }
+  .search { order: 2; flex: 1 1 100%; max-width: none; height: 40px; }
+  .topbar-right { order: 1; width: 100%; gap: 8px; }
+  .health { margin-inline-end: auto; }
+  .sidebar { inset-inline-start: 0; max-width: none; width: 86vw; }
+  .layout { padding: 18px 14px 8px; gap: 16px; }
+  .welcome-eyebrow { font-size: 24px; }
+  .panel { padding: 16px; border-radius: var(--radius); }
+  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chart-host { height: 200px; }
+  .chart-total-value { font-size: 21px; }
+  .assistant { padding: 14px 14px 12px; }
+  .assistant .ask-row { flex-direction: column; }
+  .assistant .btn-ask { width: 100%; min-height: 44px; }
+  .status-panel { inset-block-start: auto; inset-block-end: 84px; inset-inline: 12px; width: auto; }
+  .api-diagnosis { margin: 10px 14px 0; }
+}
+
+@media (max-width: 560px) {
+  .user-menu-panel { inset-inline-end: -6px; }
+  .kpi-row { border-block-end: 0; }
+  .transcript-empty h2 { font-size: var(--fs-lg); }
+  .recent-row { grid-template-columns: auto minmax(0, 1fr); }
+  .recent-meta { grid-column: 2; }
+}
+
+/* Motion preferences: the ambient glow is decoration, not information. */
+@media (prefers-reduced-motion: reduce) {
+  .recent-dot.running { animation: none; }
+  .sidebar { transition: none; }
+}

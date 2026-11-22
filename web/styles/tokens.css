@@ -1,278 +1,358 @@
-/* web/styles/tokens.css — the only place colours, radii, and focus rings
- * are defined for the product UI. style.css and admin.css consume these;
- * they never redefine a hex value.
+/* web/styles/tokens.css — the single source of truth for colour, type,
+ * geometry and motion in the product UI. style.css and admin.css consume
+ * these tokens and never redefine a colour.
  *
- * Light mode on bare :root. Dark mode ONLY redefines the same custom
- * properties — never introduces a colour that exists solely inside a
- * media query or [data-theme] block. --sql-* is the exception that
- * proves the rule: the SQL code surface is always-dark, so those tokens
- * are declared once and never flipped.
+ * Visual identity: "Aurora" — a dark, instrument-grade analytics workspace.
+ * A near-black navy ground, layered translucent surfaces, one electric blue
+ * for action and one cyan for data, soft ambient glow, and generous radii.
+ * Depth is atmospheric: light falls from the top-centre, surfaces are glass,
+ * and the chart is the brightest object on screen.
  *
- * See docs/design/DESIGN.md §4.
+ * Light mode lives on plain :root. Dark mode redefines the SAME custom
+ * properties only — nothing exists solely inside one theme. Legacy token
+ * names (--navy*, --teal*) are kept as aliases because style.css and
+ * admin.css resolve them; new code should use the semantic names
+ * (--accent, --surface-*).
+ *
+ * WCAG: every pair used for text clears 4.5:1 (see
+ * tests/web_ui/test_web_ui_contrast_and_failure.py). --teal is the fill
+ * behind white button labels: #2563eb measures 5.16:1 against #ffffff.
+ * --accent-bright (cyan) is for data strokes, icons and glows only, never
+ * for small text on a light surface.
  */
 
 :root {
-  /* Brand / chrome
-   *
-   * --teal is the fill behind WHITE button labels (.btn-ask and every
-   * other `background: var(--teal); color: #fff` control) — that pairing
-   * is checked by tests/web_ui/test_web_ui_contrast_and_failure.py and
-   * must clear 4.5:1 (a 15px bold label is not "large text"; that
-   * exemption starts at 18.66px bold, so the ordinary text ratio
-   * applies). The original brand hue (#0d9488) is only 3.74:1 — same hue
-   * and saturation, darkened from lightness .32 to .26 to reach 5.21,
-   * which is exactly where the palette's own --teal-d already sat, so
-   * light mode's fix is that value promoted rather than a new one.
-   * --teal-d steps one lightness stop further down (.22) for :hover.
-   * --chart-focus below keeps the ORIGINAL, brighter hue on purpose: a
-   * chart line is read next to a grey context line, not printed with
-   * white text on top of it, so it never had a contrast problem and
-   * DESIGN-INVARIANTS.md §10 fixes it by lightening --chart-context
-   * instead of touching this. Flattening every teal in the app to one
-   * accessible-for-white-text shade would have been simpler and is
-   * exactly what "do not flatten the brand" (§11) rules out. */
-  --navy: #0e2a47;
-  --navy-2: #14375c;
-  --navy-3: #1b436e;
-  --teal: #0b7a70;
-  --teal-d: #09675f;
-  --teal-l: #e7f6f2;
+  color-scheme: light;
 
-  /* Surface */
-  --bg: #f4f6fa;
-  --card: #ffffff;
-  --card-2: #f8fafc;
-  --border: #e2e8f0;
-  /* --border is for decorative hairlines (card edges, dividers) and
-   * deliberately stays low-contrast — 1.4.11's 3:1 floor is for what
-   * IDENTIFIES an interactive control, not for chrome that just
-   * separates regions. --border-interactive is that control boundary:
-   * the ask textarea (and every other input/textarea) previously relied
-   * on --border for its edge (1.23:1 against --card) with a fill that
-   * only differed from the page by 1.05 — neither signal reached 3:1, so
-   * nothing marked the field as a field. Same hue family as --muted
-   * (secondary text), one step more saturated so it reads as a boundary
-   * rather than as text that wandered onto an edge. */
-  --border-interactive: #7c8ba3;
-  --ink: #1f2937;
-  /* #64748b on --card was 4.76 (fine) but only 4.40 on --bg — the page
-   * ground is very slightly lighter than the card, and that was enough
-   * to drop secondary text below 4.5 wherever it sits directly on the
-   * page rather than inside a card. #5b6b81 is the same hue, one step
-   * darker, and clears both surfaces (5.02 on --bg, 5.43 on --card).
-   * Dark mode's --muted already passes (7.30) and is unchanged. */
-  --muted: #5b6b81;
+  /* ── Brand ──────────────────────────────────────────────────────── */
+  --navy: #0b1526;          /* strongest neutral surface (legacy name) */
+  --navy-2: #16233a;
+  --navy-3: #22334e;
+  --teal: #2563eb;          /* primary action fill; white label 5.16:1 */
+  --teal-d: #1d4ed8;        /* hover */
+  --teal-l: #e8f0ff;        /* brand-soft fill */
 
-  /* Legacy aliases still used by a few components */
-  --green: #10b981;
-  --red: #e5484d;
-  --amber: #f59e0b;
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-press: #1e3a8a;
+  --accent-bright: #0ea5e9; /* data strokes and glow, not small text */
+  --accent-soft: #e8f0ff;
+  --accent-soft-2: #dbe8ff;
+  --accent-line: #b9d0f5;
+  --on-accent: #ffffff;
 
-  /* SQL code surface — always-dark editor palette. Not chrome brand. */
-  --sql-bg: #0d1117;
-  --sql-text: #e6edf3;
-  --sql-keyword: #79c0ff;
-  --sql-number: #e3b341;
-  --sql-function: #d2a8ff;
-  --sql-string: #a5d6ff;
-  --sql-operator: #8b949e;
-  --sql-comment: #8b949e;
+  /* ── Surfaces ───────────────────────────────────────────────────── */
+  --bg: #f5f7fb;            /* page ground */
+  --bg-deep: #eef2f9;       /* rail / inset wells */
+  --card: #ffffff;          /* primary panel */
+  --card-2: #f6f8fc;        /* secondary surface */
+  --card-3: #e9eff8;        /* pressed / inset */
+  --raised: #ffffff;
+  --border: #e2e8f2;        /* decorative hairline */
+  --border-strong: #ccd8e8;
+  --border-interactive: #6b7a90;   /* 4.4:1 vs --card — 1.4.11 */
+  --overlay: rgba(8, 15, 30, .55);
 
-  /* Status — a fact about the system right now, never brand.
-   *
-   * --status-critical was #e5484d: 1.54:1 against --status-good and
-   * dE-deutan 8.6 (tests/web_ui/test_web_ui_state_not_colour_alone.py,
-   * DESIGN-INVARIANTS.md §10's floor is dE >= 8 AND a lightness split, not
-   * either alone -- 8.6 cleared the first and failed the second, so the
-   * two "up"/"down" dots read as one colour at the same brightness to a
-   * dichromat and the *only* other signal was hue). #d32f2f is a deeper,
-   * more saturated red at the same identity: 1.96:1, dE-deutan 13.9.
-   * Considered instead: darkening --status-good so --status-critical could
-   * stay nearer its original shade. Rejected -- --status-good is read by
-   * nearly twice as many rules (guard pill, admin pass/fail, cache badge,
-   * turn outcome, live-key status …) as --status-critical, so moving it
-   * risks a visual regression in places this task was not scoped to touch.
-   * Moving only --status-critical, and keeping it inside the same red
-   * family rather than the brick/rust the search space pushes toward when
-   * --status-good is held fixed (see the dark block below), is the
-   * narrower change. */
+  /* ── Text ───────────────────────────────────────────────────────── */
+  --ink: #0b1526;
+  --ink-2: #33415a;
+  --muted: #52627a;         /* 6.1:1 on --card, 5.7:1 on --bg */
+  --faint: #7b8aa0;
+  --on-dark: #f5f7fc;
+  --on-dark-muted: #a3b0c4;
+
+  /* Legacy semantic aliases still referenced by older rules. */
+  --green: #0f8a5f;
+  --red: #d1332e;
+  --amber: #b45309;
+
+  /* ── Glass & light ──────────────────────────────────────────────── */
+  --glass: rgba(255, 255, 255, .72);
+  --glass-border: rgba(11, 21, 38, .08);
+  --glass-blur: 18px;
+  --halo: radial-gradient(120% 90% at 50% 0%, rgba(37, 99, 235, .10), transparent 70%);
+  --halo-cyan: rgba(14, 165, 233, .18);
+
+  /* ── SQL / code surface ─────────────────────────────────────────── */
+  --sql-bg: #f7f9fd;
+  --sql-bg-2: #eef3fb;
+  --sql-text: #1c2740;
+  --sql-keyword: #1d4ed8;
+  --sql-number: #8a5a00;
+  --sql-function: #6d28d9;
+  --sql-string: #0f766e;
+  --sql-operator: #64748b;
+  --sql-comment: #94a3b8;
+  --sql-border: #e2e8f2;
+
+  /* ── Status: facts about the system, never brand ─────────────────── */
   --status-good: #10b981;
-  --status-good-bg: #e9f9f1;
+  --status-good-bg: #e9f8f1;
+  --status-good-ink: #0b6b4b;
   --status-warn: #f59e0b;
-  --status-warn-bg: #fef6e7;
-  --status-critical: #d32f2f;
+  --status-warn-bg: #fdf3e2;
+  --status-warn-ink: #92500a;
+  --status-critical: #d1332e;
   --status-critical-bg: #fdeeee;
+  --status-critical-ink: #a92020;
   --status-neutral: #64748b;
-  --status-neutral-bg: #eef1f5;
+  --status-neutral-bg: #eef2f9;
+  --status-info: #1d4ed8;
+  --status-info-bg: #e8f0ff;
 
-  /* Chart — a fourth, narrow colour axis: FOCUS vs CONTEXT within one
-   * chart only (web/js/render/chart.js). Declared here as its own
-   * literal pair, not aliased to --teal/--muted the way it used to be:
-   * DESIGN-INVARIANTS.md §10 measured that alias-based scheme at a
-   * focus/context contrast of 1.03 in dark mode — the same perceived
-   * brightness, so hue was the only remaining signal, which is exactly
-   * what colour-blind vision cannot use (ΔE 2.2 deutan, against a target
-   * floor of 15). Emphasis is a lightness-and-weight job, not a hue job,
-   * so --chart-focus keeps the full-brightness brand teal (identical to
-   * the pre-fix --teal, kept independent of it so the two can move for
-   * different reasons) and --chart-context is a new, deliberately paler
-   * blue-grey rather than a darkened --muted. Stroke width carries the
-   * rest of the distinction — see chart.js's "stroke-width" literals. */
-  --chart-focus: #0d9488;
-  --chart-context: #b8c4d4;
+  /* ── Charts: emphasis by hue, context by lightness ──────────────── */
+  --chart-focus: #0e8fd6;
+  --chart-context: #c6d4e6;
+  --chart-grid: #e6edf7;
+  --chart-fill-top: rgba(14, 143, 214, .20);
+  --chart-fill-bottom: rgba(14, 143, 214, 0);
 
-  /* Source of assumption (third colour axis) */
-  --source-question: #0d9488;
-  --source-question-bg: #e7f6f2;
-  --source-session: #6366f1;
-  --source-session-bg: #eef0fd;
+  /* ── Assumption provenance (third colour axis) ──────────────────── */
+  --source-question: #1d4ed8;
+  --source-question-bg: #e8f0ff;
+  --source-session: #6d28d9;
+  --source-session-bg: #f1ecfe;
   --source-default: #64748b;
-  --source-default-bg: #eef1f5;
-  --source-policy: #b45309;
-  --source-policy-bg: #fbf1e0;
+  --source-default-bg: #eef2f9;
+  --source-policy: #92500a;
+  --source-policy-bg: #fdf3e2;
   --source-memory: #be185d;
   --source-memory-bg: #fce8f1;
 
-  /* Geometry */
-  --radius: 12px;
-  --radius-sm: 8px;
+  /* ── Geometry: soft panels, generous radii ──────────────────────── */
+  --radius: 18px;
+  --radius-lg: 24px;
+  --radius-sm: 12px;
+  --radius-xs: 8px;
   --radius-pill: 999px;
-  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .05);
-  --focus-ring: 0 0 0 3px rgba(13, 148, 136, .35);
+  --shadow-xs: 0 1px 2px rgba(11, 21, 38, .06);
+  --shadow: 0 12px 32px -18px rgba(11, 21, 38, .28);
+  --shadow-lg: 0 32px 70px -34px rgba(11, 21, 38, .38);
+  --focus-ring: 0 0 0 2px var(--card), 0 0 0 4px var(--teal);
+  --focus-ring-strong: 0 0 0 2px var(--card), 0 0 0 4px var(--teal);
+  --glow: 0 0 0 1px rgba(37, 99, 235, .12), 0 18px 50px -28px rgba(37, 99, 235, .45);
 
-  /* Type scale (see DESIGN.md §4.4) */
-  --fs-xs: 11px;
-  --fs-sm: 12.5px;
+  /* ── Type ───────────────────────────────────────────────────────── */
+  --font-sans: "Inter", "Vazirmatn", -apple-system, BlinkMacSystemFont, "Segoe UI", Tahoma, sans-serif;
+  /* Vazirmatn sits at the END of the mono stack: Latin letters and digits
+   * keep the mono face, and only glyphs that face does not carry (Persian
+   * text and Persian digits in a value label, a category name beside a
+   * figure) fall through to the Persian face instead of rendering as
+   * tofu boxes. */
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Consolas, "Liberation Mono", "Vazirmatn", monospace;
+  --fs-xs: 11.5px;
+  --fs-sm: 13px;
   --fs-md: 14px;
   --fs-lg: 15px;
-  --fs-xl: 18px;
-  --fs-2xl: 21px;
+  --fs-xl: 19px;
+  --fs-2xl: 24px;
+  --fs-3xl: 32px;
+  --tracking-wide: .08em;
+
+  /* ── Motion ─────────────────────────────────────────────────────── */
+  --ease: cubic-bezier(.22, .8, .28, 1);
+  --dur-fast: 130ms;
+  --dur: 220ms;
 }
 
 /* Dark mode via OS preference, unless the page has an explicit choice. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --navy: #16324f;
-    --navy-2: #1c3f61;
-    --navy-3: #234c74;
-    /* Same hue/saturation as the original #14b8a6, darkened from
-     * lightness .40 to .28 — white-on-teal was 2.49:1 (worse than light
-     * mode's, since dark mode's brand teal was the brighter of the two
-     * to begin with) and this reaches 4.76. --teal-d steps to .22 for
-     * :hover. See the light :root's --teal comment for why --chart-focus
-     * is exempt and keeps the original #14b8a6. */
-    --teal: #0e8174;
-    --teal-d: #0b655b;
-    --teal-l: #113330;
-    --bg: #0b1220;
-    --card: #131c2e;
-    --card-2: #182238;
-    --border: #263349;
-    /* Same reasoning as the light :root's --border-interactive: a hue
-     * near --muted, one step more saturated, so an input's edge reaches
-     * 3:1 against --card (4.40) without touching decorative --border. */
-    --border-interactive: #71839b;
-    --ink: #e5e9f0;
-    --muted: #94a3b8;
+    color-scheme: dark;
+
+    --navy: #0a1424;
+    --navy-2: #101d33;
+    --navy-3: #1a2b46;
+    --teal: #2563eb;
+    --teal-d: #3b82f6;
+    --teal-l: #12224a;
+
+    --accent: #5aa2ff;
+    --accent-hover: #8ec0ff;
+    --accent-press: #3b82f6;
+    --accent-bright: #32c5ff;
+    --accent-soft: rgba(50, 197, 255, .10);
+    --accent-soft-2: rgba(50, 197, 255, .16);
+    --accent-line: #234166;
+    --on-accent: #ffffff;
+
+    --bg: #050914;
+    --bg-deep: #030711;
+    --card: #0b1423;
+    --card-2: #0f1b2d;
+    --card-3: #16243a;
+    --raised: #111e33;
+    --border: #1a2740;
+    --border-strong: #24354f;
+    --border-interactive: #5b6b86;  /* 3.2:1 vs --card */
+    --overlay: rgba(2, 5, 12, .72);
+
+    --ink: #f5f7fc;
+    --ink-2: #cfd8e6;
+    --muted: #93a1b8;         /* 6.6:1 on --card */
+    --faint: #6b7a91;
+    --on-dark: #f5f7fc;
+    --on-dark-muted: #a3b0c4;
+
     --green: #34d399;
-    --red: #f87171;
+    --red: #ff6b6b;
     --amber: #fbbf24;
-    /* --sql-* intentionally unchanged: always-dark code surface. */
 
-    /* --status-critical was #f87171: 1.44:1 against --status-good and
-     * dE-deutan 7.1 -- BELOW DESIGN-INVARIANTS.md §10's floor of 8, not
-     * merely short of the lightness split (see the light :root's
-     * --status-critical comment for the full search and the rejected
-     * alternative of moving --status-good instead). Dark is the tighter
-     * case: holding --status-good at its light mint (#34d399) pushes the
-     * feasible --status-critical values toward brick/rust hues once ΔE and
-     * contrast both have to clear their floors, which reads oddly as a
-     * "down" colour and was rejected for that reason. #e53e3e stays inside
-     * the same red family as the original and clears both: 2.15:1, dE
-     * -deutan 16.6. */
+    --glass: rgba(17, 30, 51, .62);
+    --glass-border: rgba(255, 255, 255, .08);
+    --glass-blur: 20px;
+    --halo: radial-gradient(120% 90% at 50% 0%, rgba(37, 99, 235, .22), transparent 72%);
+    --halo-cyan: rgba(50, 197, 255, .22);
+
+    --sql-bg: #060d19;
+    --sql-bg-2: #0a1424;
+    --sql-text: #e6eefb;
+    --sql-keyword: #7db2ff;
+    --sql-number: #f2c94c;
+    --sql-function: #c4a7f7;
+    --sql-string: #7fd1b9;
+    --sql-operator: #8c9cb5;
+    --sql-comment: #64748b;
+    --sql-border: #16243a;
+
     --status-good: #34d399;
-    --status-good-bg: #10261e;
+    --status-good-bg: rgba(52, 211, 153, .12);
+    --status-good-ink: #6ee7b7;
     --status-warn: #fbbf24;
-    --status-warn-bg: #2b230f;
-    --status-critical: #e53e3e;
-    --status-critical-bg: #2b1414;
-    --status-neutral: #94a3b8;
-    --status-neutral-bg: #1c2536;
+    --status-warn-bg: rgba(251, 191, 36, .12);
+    --status-warn-ink: #fcd34d;
+    --status-critical: #ef4444;
+    --status-critical-bg: rgba(255, 107, 107, .12);
+    --status-critical-ink: #ffa3a3;
+    --status-neutral: #a1a1aa;
+    --status-neutral-bg: rgba(255, 255, 255, .05);
+    --status-info: #7db2ff;
+    --status-info-bg: rgba(37, 99, 235, .14);
 
-    /* See the light :root's --chart-focus/--chart-context comment.
-     * Focus keeps the original, pre-fix dark --teal (#14b8a6); context
-     * is a new dark blue-grey, not a darkened --muted, chosen so the
-     * pair clears 1.8:1 (measures 3.50) instead of the old 1.03:1. */
-    --chart-focus: #14b8a6;
-    --chart-context: #3d4c63;
+    --chart-focus: #32c5ff;
+    --chart-context: #2c3f5e;
+    --chart-grid: #12203a;
+    --chart-fill-top: rgba(50, 197, 255, .28);
+    --chart-fill-bottom: rgba(50, 197, 255, 0);
 
-    --source-question: #2dd4bf;
-    --source-question-bg: #102a27;
-    --source-session: #818cf8;
-    --source-session-bg: #1e2144;
-    --source-default: #94a3b8;
-    --source-default-bg: #1c2536;
-    --source-policy: #f0b95e;
-    --source-policy-bg: #2e2410;
+    --source-question: #7db2ff;
+    --source-question-bg: rgba(37, 99, 235, .16);
+    --source-session: #b197fc;
+    --source-session-bg: rgba(109, 40, 217, .18);
+    --source-default: #9aa8bd;
+    --source-default-bg: rgba(255, 255, 255, .05);
+    --source-policy: #fcd34d;
+    --source-policy-bg: rgba(251, 191, 36, .12);
     --source-memory: #f472b6;
-    --source-memory-bg: #341126;
+    --source-memory-bg: rgba(190, 24, 93, .18);
 
-    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
-    --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, .5);
+    --shadow: 0 16px 40px -24px rgba(0, 0, 0, .9);
+    --shadow-lg: 0 40px 90px -50px rgba(0, 0, 0, .95);
+    --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-bright);
+    --focus-ring-strong: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-bright);
+    --glow: 0 0 0 1px rgba(50, 197, 255, .18), 0 26px 70px -34px rgba(50, 197, 255, .55);
   }
 }
 
 /* Explicit toggle wins over OS preference in both directions. */
 :root[data-theme="dark"] {
-  --navy: #16324f;
-  --navy-2: #1c3f61;
-  --navy-3: #234c74;
-  /* Mirrors the @media dark block above — see its comments. */
-  --teal: #0e8174;
-  --teal-d: #0b655b;
-  --teal-l: #113330;
-  --bg: #0b1220;
-  --card: #131c2e;
-  --card-2: #182238;
-  --border: #263349;
-  --border-interactive: #71839b;
-  --ink: #e5e9f0;
-  --muted: #94a3b8;
+  color-scheme: dark;
+
+  --navy: #0a1424;
+  --navy-2: #101d33;
+  --navy-3: #1a2b46;
+  --teal: #2563eb;
+  --teal-d: #3b82f6;
+  --teal-l: #12224a;
+
+  --accent: #5aa2ff;
+  --accent-hover: #8ec0ff;
+  --accent-press: #3b82f6;
+  --accent-bright: #32c5ff;
+  --accent-soft: rgba(50, 197, 255, .10);
+  --accent-soft-2: rgba(50, 197, 255, .16);
+  --accent-line: #234166;
+  --on-accent: #ffffff;
+
+  --bg: #050914;
+  --bg-deep: #030711;
+  --card: #0b1423;
+  --card-2: #0f1b2d;
+  --card-3: #16243a;
+  --raised: #111e33;
+  --border: #1a2740;
+  --border-strong: #24354f;
+  --border-interactive: #5b6b86;
+  --overlay: rgba(2, 5, 12, .72);
+
+  --ink: #f5f7fc;
+  --ink-2: #cfd8e6;
+  --muted: #93a1b8;
+  --faint: #6b7a91;
+  --on-dark: #f5f7fc;
+  --on-dark-muted: #a3b0c4;
+
   --green: #34d399;
-  --red: #f87171;
+  --red: #ff6b6b;
   --amber: #fbbf24;
-  /* --sql-* intentionally unchanged: always-dark code surface. */
+
+  --glass: rgba(17, 30, 51, .62);
+  --glass-border: rgba(255, 255, 255, .08);
+  --glass-blur: 20px;
+  --halo: radial-gradient(120% 90% at 50% 0%, rgba(37, 99, 235, .22), transparent 72%);
+  --halo-cyan: rgba(50, 197, 255, .22);
+
+  --sql-bg: #060d19;
+  --sql-bg-2: #0a1424;
+  --sql-text: #e6eefb;
+  --sql-keyword: #7db2ff;
+  --sql-number: #f2c94c;
+  --sql-function: #c4a7f7;
+  --sql-string: #7fd1b9;
+  --sql-operator: #8c9cb5;
+  --sql-comment: #64748b;
+  --sql-border: #16243a;
 
   --status-good: #34d399;
-  --status-good-bg: #10261e;
+  --status-good-bg: rgba(52, 211, 153, .12);
+  --status-good-ink: #6ee7b7;
   --status-warn: #fbbf24;
-  --status-warn-bg: #2b230f;
-  --status-critical: #e53e3e;
-  --status-critical-bg: #2b1414;
-  --status-neutral: #94a3b8;
-  --status-neutral-bg: #1c2536;
+  --status-warn-bg: rgba(251, 191, 36, .12);
+  --status-warn-ink: #fcd34d;
+  --status-critical: #ef4444;
+  --status-critical-bg: rgba(255, 107, 107, .12);
+  --status-critical-ink: #ffa3a3;
+  --status-neutral: #a1a1aa;
+  --status-neutral-bg: rgba(255, 255, 255, .05);
+  --status-info: #7db2ff;
+  --status-info-bg: rgba(37, 99, 235, .14);
 
-  --chart-focus: #14b8a6;
-  --chart-context: #3d4c63;
+  --chart-focus: #32c5ff;
+  --chart-context: #2c3f5e;
+  --chart-grid: #12203a;
+  --chart-fill-top: rgba(50, 197, 255, .28);
+  --chart-fill-bottom: rgba(50, 197, 255, 0);
 
-  --source-question: #2dd4bf;
-  --source-question-bg: #102a27;
-  --source-session: #818cf8;
-  --source-session-bg: #1e2144;
-  --source-default: #94a3b8;
-  --source-default-bg: #1c2536;
-  --source-policy: #f0b95e;
-  --source-policy-bg: #2e2410;
+  --source-question: #7db2ff;
+  --source-question-bg: rgba(37, 99, 235, .16);
+  --source-session: #b197fc;
+  --source-session-bg: rgba(109, 40, 217, .18);
+  --source-default: #9aa8bd;
+  --source-default-bg: rgba(255, 255, 255, .05);
+  --source-policy: #fcd34d;
+  --source-policy-bg: rgba(251, 191, 36, .12);
   --source-memory: #f472b6;
-  --source-memory-bg: #341126;
+  --source-memory-bg: rgba(190, 24, 93, .18);
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .3);
-  --focus-ring: 0 0 0 3px rgba(20, 184, 166, .45);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, .5);
+  --shadow: 0 16px 40px -24px rgba(0, 0, 0, .9);
+  --shadow-lg: 0 40px 90px -50px rgba(0, 0, 0, .95);
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-bright);
+  --focus-ring-strong: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-bright);
+  --glow: 0 0 0 1px rgba(50, 197, 255, .18), 0 26px 70px -34px rgba(50, 197, 255, .55);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
 }

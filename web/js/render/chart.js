@@ -50,6 +50,13 @@ import { renderTableOnly, renderExportRow, fmtCell } from "./table.js";
 import { fmt as faNum, isIdentifierName } from "../num.js";
 const nf = { format: faNum };
 
+/** The view switch's own two words, in the document language — read off
+ * <html lang> the way the rest of render/* does, so this module keeps its
+ * standalone module graph (no i18n.js import; see turn.js's GUARD_WORD). */
+function viewWord(fa, en) {
+  return document.documentElement && document.documentElement.lang === "en" ? en : fa;
+}
+
 const FOCUS_RULE_LABEL_FA = {
   max: "بیشترین مقدار",
   latest: "آخرین نقطه",
@@ -323,7 +330,9 @@ function renderFiguresStrip(rows, labelKey, values, isSequence) {
     );
   } else {
     const maxIdx = indexOfMax(values);
-    wrap.appendChild(figureTile("بیشترین", `${nf.format(values[maxIdx])} · ${rows[maxIdx][labelKey]}`));
+    const maxTile = figureTile("بیشترین", `${nf.format(values[maxIdx])} ${rows[maxIdx][labelKey]}`);
+    maxTile.classList.add("is-max");
+    wrap.appendChild(maxTile);
   }
   return wrap;
 }
@@ -468,7 +477,7 @@ function renderLineChart(rows, labelKey, values, focus) {
 
   const fx = xAt(focus.index), fy = yAt(values[focus.index]);
   svg.appendChild(svgEl("circle", { cx: fx, cy: fy, r: 4.5, fill: "var(--chart-focus)" }));
-  const focusText = `${rows[focus.index][labelKey]} · ${fmtCell(values[focus.index], "number")}`;
+  const focusText = `${rows[focus.index][labelKey]} ${fmtCell(values[focus.index], "number")}`;
   const focusPos = edgeSafeLabel(fx, focusText, W, 12);
   // Above the point normally; below it when the point sits so high that the
   // label's ascent would leave the top of the box. The focus point IS the
@@ -745,11 +754,11 @@ export function renderChartAndTable(result) {
   const chartBtn = document.createElement("button");
   chartBtn.type = "button";
   chartBtn.className = "view-btn active";
-  chartBtn.textContent = "نمودار";
+  chartBtn.textContent = viewWord("نمودار", "Chart");
   const tableBtn = document.createElement("button");
   tableBtn.type = "button";
   tableBtn.className = "view-btn";
-  tableBtn.textContent = "جدول";
+  tableBtn.textContent = viewWord("جدول", "Table");
   viewSwitch.appendChild(chartBtn);
   viewSwitch.appendChild(tableBtn);
   wrap.appendChild(viewSwitch);

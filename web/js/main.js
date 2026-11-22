@@ -27,12 +27,15 @@ import {
 } from "./diagnosis.js";
 import { DEFAULT_BASE_URL, DEFAULT_API_PORT } from "./config.js";
 import { createTurnCard, FAILURE_BY_CODE } from "./render/turn.js";
+import { createConversationNavigator } from "./navigator.js";
+import { turnStatus } from "./dashboard.js";
 import { canConfirm, renderConfirmationControl } from "./render/confirmation.js";
 import { runSimulatedStages } from "./render/pipeline.js";
 import { renderSessionList } from "./render/sessions.js";
 import { memoryKeyForField, renderMemoryPanel } from "./render/memory.js";
 import { ensureTsqlPrismReady } from "./sql-display.js";
 import { t, loadLang, setLang, applyLang } from "./i18n.js";
+import { initDashboard, syncDashboard, filterSessions } from "./dashboard.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -81,6 +84,116 @@ function scrollSettledResultAboveComposer(el) {
   if (el) scrollIntoViewMaybeSmooth(el, { block: "nearest" });
 }
 
+/** Park the newest turn above the pinned assistant panel — the "scroll to
+ * bottom on Enter" behaviour. Targets the last `.turn` in the transcript
+ * (turns always append at the foot), so the just-asked Q&A is brought up to
+ * the panel no matter where the analyst was scrolled. `scroll-padding-bottom`
+ * on `<html>` (style.css) reserves the panel's --composer-clearance, so
+ * block:"end" stops the turn's bottom clear of the sticky panel, not under it. */
+function scrollLatestTurnIntoView() {
+  const turns = document.querySelectorAll("#transcript .turn");
+  const el = turns.length ? turns[turns.length - 1] : null;
+  if (el) scrollIntoViewMaybeSmooth(el, { block: "end" });
+}
+
+/** Keep --composer-clearance honest. The assistant panel is the page's only
+ * sticky element and its footprint varies: it's slim at rest (one composer
+ * line) but grows as #question auto-expands on a long question, and it's
+ * taller still on mobile where the ask button stacks. style.css ships a static
+ * floor for the no-JS / first-paint case; here we re-derive it from the panel
+ * the analyst actually has on screen — `#assistant`'s measured height + its
+ * 16px `bottom` offset, floored at the pre-JS value so we never *under*-reserve
+ * a result. `#transcript`'s bottom padding, `html`'s scroll-padding-bottom and
+ * `.turn`'s scroll-margin-bottom all read the token, so updating it once
+ * re-flows all three. Called from wireComposer (load + resize), sizeQuestion
+ * (the field just grew) and ask() (the field was just cleared). */
+function syncComposerClearance() {
+  const panel = $("assistant");
+  if (!panel || !panel.offsetHeight) return;
+  const root = document.documentElement;
+  // Track the panel's real footprint. The constant 190px floor only guards
+  // against a broken/stale 0-height read (a ResizeObserver snapshot taken
+  // before layout); it is *not* a ratchet — using the live token value as a
+  // floor would make the reservation only ever grow, so clearing a long
+  // question would leave a dead gap below the transcript.
+  const foot = Math.max(190, Math.round(panel.offsetHeight + 16));
+  root.style.setProperty("--composer-clearance", foot + "px");
+  return foot;
+}
+
+/* ── Conversation navigator (vertical dot timeline) ──────────────────── */
+// One dot per turn beside the transcript, coloured by each turn's outcome
+// and the in-view one ringed. main.js is the single source of truth: it
+// hands the navigator the turns it renders (syncNavigator) and, on scroll,
+// which turn is in view (updateNavigatorActive). The navigator never reads
+// state.turns itself — it only paints what it is told.
+const navigator = createConversationNavigator({ onSelect: scrollToTurn });
+
+/** Rebuild the dots from the transcript's current turn cards (which read
+ * their collapse state straight from the DOM, the only place that is true
+ * after rerenderTurn swaps a card in place). Hidden when empty, since the
+ * dashboard's ask card leads the page and an empty transcript shows nothing. */
+function syncNavigator() {
+  if (!navigator) return;
+  const cards = Array.from(document.querySelectorAll("#transcript .turn"));
+  $("conversation-navigator")?.closest(".conversation-row")?.toggleAttribute(
+    "hidden", cards.length === 0);
+  if (!cards.length) { navigator.setActive(null); return; }
+  navigator.sync(cards.map((card) => {
+    const turn = findTurn(card.dataset.turnId);
+    if (turn) {
+      return {
+        turn_id: turn.turn_id,
+        index: turn.index,
+        question: turn.question,
+        status: turnStatus(turn),
+        collapsed: card.classList.contains("collapsed"),
+      };
+    }
+    // A rendered card whose id is not in state.turns can only be the live
+    // streaming placeholder (settled turns are always addTurn'd before their
+    // card renders). Show it as "running" with its question read from the
+    // card — .turn-question is [span.turn-index, textNode(question)].
+    const qNode = card.querySelector(".turn-question");
+    const question = qNode
+      ? Array.from(qNode.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim()
+      : "";
+    return {
+      turn_id: card.dataset.turnId,
+      index: 0,
+      question,
+      status: "running",
+      collapsed: card.classList.contains("collapsed"),
+    };
+  }));
+  updateNavigatorActive();
+}
+
+/** Ring the dot whose turn currently sits at the reading position — the
+ * last turn whose top has passed above the sticky topbar band. Runs on
+ * scroll (rAF-throttled) and whenever the transcript is rebuilt. */
+function updateNavigatorActive() {
+  if (!navigator) return;
+  const cards = Array.from(document.querySelectorAll("#transcript .turn"));
+  if (!cards.length) { navigator.setActive(null); return; }
+  const line = 112; // topbar height + a little, so a turn counts once its question is visible
+  let current = cards[0].dataset.turnId;
+  for (const card of cards) {
+    if (card.getBoundingClientRect().top <= line) current = card.dataset.turnId;
+    else break;
+  }
+  navigator.setActive(current);
+}
+
+let navScrollFrame = 0;
+function onNavScroll() {
+  if (navScrollFrame) return;
+  navScrollFrame = requestAnimationFrame(() => {
+    navScrollFrame = 0;
+    updateNavigatorActive();
+  });
+}
+
 // Declared before the boot section: setMode(state.mode) runs at module load
 // and, in simulated mode, calls setHealth() synchronously — so the label map
 // setHealth reads must already be initialized here, not in the module's lower
@@ -97,6 +210,14 @@ const diagnoser = createDiagnoser({
   getPageOrigin: () => location.origin,
 });
 let healthCheckSeq = 0;
+// The last three lights painted by an answer, kept so first-hand evidence
+// (a live turn that came back) can correct a stale probe without inventing
+// states for the lights it says nothing about. See noteLiveTurnAnswered().
+let lastHealth = { api: null, llm: null, db: null, label: "" };
+// Has any /health answer (success or failure) painted the lights yet?
+// The heart must not sit neutral while an unreachable dependency makes the
+// request hang, so boot watches this and raises the alarm if it stays false.
+let healthAnswered = false;
 
 /* ── Boot ──────────────────────────────────────────────────────────── */
 // T-SQL Prism patch must run before the first Prism.tokenize — Prism
@@ -124,6 +245,7 @@ state.mode = resolveBootMode(params, state.mode);
 state.lang = loadLang();
 applyTheme();
 applyLang(state.lang);
+updateThemeQuickToggle();
 
 const rawBootBaseUrl = resolveBootBaseUrl(params, state.baseUrl);
 if (rawBootBaseUrl !== state.baseUrl) {
@@ -161,14 +283,28 @@ const confirmedTurnIds = new Set();
 wireComposer();
 wireTopbar();
 wireSidebar();
+wireRailMenu();
 wireMemoryPanel();
+initDashboard();
+// The ring follows the reading position as the analyst scrolls.
+window.addEventListener("scroll", onNavScroll, { passive: true });
 setMode(state.mode);
-tickClock();
-setInterval(tickClock, 1000);
+setTimeout(() => {
+  if (!healthAnswered) setHealth(null, null, null, t("systemStatusAlert"));
+}, 3000);
+// The lights used to be painted ONCE, at boot: open the page before the API
+// is up (or lose it for a minute) and a red alarm stayed red for the rest of
+// the session, even after answers were coming back. One slow re-probe keeps
+// the heart honest without touching anything else; noteLiveTurnAnswered()
+// corrects it sooner, the first time a real answer lands.
+setInterval(() => {
+  if (state.mode === "live") refreshHealth();
+}, 60000);
 
 /* ── Theme / user menu ─────────────────────────────────────────────── */
 function wireTopbar() {
   wireUserMenu();
+  wireThemeQuickToggle();
 
   $("live-key-save").addEventListener("click", () => {
     const val = $("live-key-input").value;
@@ -321,6 +457,7 @@ function wireUserMenu() {
         persistTheme(val);
         applyTheme();
         updateThemeSegment();
+        updateThemeQuickToggle();
       }
     });
   });
@@ -333,7 +470,17 @@ function wireUserMenu() {
         setLang(lang);
         updateLangSegment();
         updateKeyStatus();
+        updateThemeQuickToggle();
         setMode(state.mode); // refresh foot strings in the new language
+        // A turn card's chrome (panel titles, its buttons) is built once,
+        // reading the language at render time — rebuild the cards so every
+        // one of them follows the switch instead of keeping the old wording.
+        renderTranscriptFromTurns(state.turns);
+        // The memory panel's controls ("Save" / the select placeholder) read
+        // the language the same way; refresh it if it happens to be open.
+        if ($("memory-panel") && !$("memory-panel").hidden && state.memory) {
+          renderMemoryPanelBody(state.memory);
+        }
       }
     });
   });
@@ -343,6 +490,41 @@ function updateThemeSegment() {
   document.querySelectorAll("#theme-segment button[data-theme-val]").forEach((b) => {
     b.classList.toggle("active", b.getAttribute("data-theme-val") === state.theme);
   });
+}
+
+/** One-press light/dark switch in the topbar. The three-way choice
+ * (including "system") stays in the account menu; this button is the
+ * shortcut an analyst reaches for, and it always commits an explicit
+ * theme, so what they pick survives a reload. */
+function updateThemeQuickToggle() {
+  const btn = $("theme-quick-toggle");
+  if (!btn) return;
+  const explicit = document.documentElement.getAttribute("data-theme");
+  const effective = explicit
+    || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const turningToLight = effective === "dark";
+  btn.setAttribute("aria-label", t("themeQuick"));
+  btn.title = t("themeQuick");
+  const sun = btn.querySelector(".icon-sun");
+  const moon = btn.querySelector(".icon-moon");
+  // Show the destination, not the current state: a sun means "switch to light".
+  if (sun) sun.hidden = !turningToLight;
+  if (moon) moon.hidden = turningToLight;
+}
+
+function wireThemeQuickToggle() {
+  const btn = $("theme-quick-toggle");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const explicit = document.documentElement.getAttribute("data-theme");
+    const effective = explicit
+      || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    persistTheme(effective === "dark" ? "light" : "dark");
+    applyTheme();
+    updateThemeSegment();
+    updateThemeQuickToggle();
+  });
+  updateThemeQuickToggle();
 }
 
 function updateLangSegment() {
@@ -410,19 +592,10 @@ function setMode(mode) {
   state.mode = mode;
   updateKeyStatus();
 
-  const foot = $("foot-mode");
   if (mode === "simulated") {
-    foot.textContent =
-      state.lang === "en"
-        ? "Demo mode — data is synthetic; no real query has run."
-        : "حالت نمایشی — داده‌ها از پیش تعریف‌شده و کاملاً مصنوعی‌اند؛ هیچ پرس‌وجوی واقعی اجرا نشده است.";
     setHealth(true, true, true, "simulated");
     hideDiagnosisBanner($("api-diagnosis"));
   } else {
-    foot.textContent =
-      state.lang === "en"
-        ? `Live API — backend: ${state.baseUrl}`
-        : `حالت زندهٔ API — بک‌اند: ${state.baseUrl}`;
     refreshHealth();
   }
 
@@ -442,6 +615,7 @@ function setMode(mode) {
 // /health (h.llmDetail, h.dbDetail, forwarded to setHealth as `label`) are
 // never interpolated into markup here — see DESIGN-INVARIANTS.md §1.3.
 function setHealth(api_, llm, db, label) {
+  lastHealth = { api: api_, llm, db, label };
   const dot = (ok) => (ok === null ? "unknown" : ok ? "ok" : "down");
   const host = $("health");
   host.replaceChildren(
@@ -471,6 +645,21 @@ function setHealth(api_, llm, db, label) {
     }),
   );
   host.title = label;
+  healthAnswered = true;
+
+  // The topbar no longer shows three pills: the heart carries the whole
+  // state. Green when every dependency is up; a blinking red alarm when
+  // even one is down (or still unverified). The panel behind the heart
+  // still lists all three.
+  const statusHeart = $("status-btn");
+  if (statusHeart) {
+    const allUp = api_ === true && llm === true && db === true;
+    statusHeart.classList.toggle("is-ok", allUp);
+    statusHeart.classList.toggle("is-alert", !allUp);
+    const key = allUp ? "systemStatusOk" : "systemStatusAlert";
+    statusHeart.setAttribute("aria-label", t(key));
+    statusHeart.title = t(key);
+  }
 }
 
 async function refreshHealth() {
@@ -513,6 +702,20 @@ async function refreshHealth() {
   }
 }
 
+/** A finished live turn is first-hand proof that the backend, the model and
+ * the database all answered: SQL came back from the model and rows came back
+ * from the warehouse. The lights used to be painted ONLY by /health, whose
+ * model probe asks the provider for a `/models` listing — a question a
+ * perfectly working OpenAI-compatible server may not implement — so the
+ * page could sit behind a blinking red alarm while the analyst asked
+ * questions and got answers. Evidence from a real answer wins over that
+ * probe; the next /health poll still has the final word (refreshHealth).
+ */
+function noteLiveTurnAnswered() {
+  if (lastHealth.api === true && lastHealth.llm === true && lastHealth.db === true) return;
+  setHealth(true, true, true, t("systemStatusOk"));
+}
+
 /* ── Sessions (sidebar) ────────────────────────────────────────────────
  * The sidebar's own index (`state.sessions`) and the active transcript
  * (`state.turns`) are two separate concerns: the index lists every
@@ -529,6 +732,20 @@ function renderSessionSidebar() {
     onRename: (sessionId, title) => renameSession(sessionId, title),
     onDelete: (sessionId) => deleteSessionAndFollowUp(sessionId),
   }));
+  // The list was just rebuilt, so the search's hidden states are gone. Re-apply
+  // whatever the analyst was typing so a mid-search session switch, rename, or
+  // new turn doesn't silently dump the whole (unfiltered) index back on screen.
+  const search = $("session-search");
+  if (search) filterSessions(search.value);
+  // The dashboard reads the same resolved state the rail does; it never
+  // fetches anything of its own (see dashboard.js's docstring).
+  syncDashboard({
+    sessions: state.sessions,
+    turns: state.turns,
+    mode: state.mode,
+    baseUrl: state.baseUrl,
+    sessionId: state.sessionId,
+  });
 }
 
 /** (Re)resolves and loads the active session for the CURRENT mode.
@@ -581,15 +798,20 @@ async function refreshSessionsForMode() {
     state.sessions = SCENARIO_SESSIONS.map((s) => ({ ...s }));
   }
 
-  const resolved = resolveActiveSessionId(state.sessionId, state.sessions);
-  if (resolved) {
-    await switchToSession(resolved);
-  } else {
-    state.sessionId = null;
-    resetTranscript();
-    renderTranscriptFromTurns([]);
-    renderSessionSidebar();
-  }
+  // Every page load opens on a clean, fresh conversation — like pressing
+  // "new query" — rather than restoring the analyst's last session. The
+  // full index still renders in the sidebar so any prior conversation is
+  // one click away. (resolveActiveSessionId is kept for the post-delete
+  // follow-up path, not for boot.)
+  state.sessionId = null;
+  persistSessionId(null);
+  resetTranscript();
+  renderTranscriptFromTurns([]);
+  renderSessionSidebar();
+  // The ring assumption chips read their option list from the rememberable
+  // memory set; loading it quietly at boot (no DOM, no panel) keeps those
+  // selects populated the moment a historical turn is opened.
+  loadAndRenderMemory({ quiet: true });
 }
 
 /** Loads *sessionId*'s transcript into the transcript pane. Stashes the
@@ -606,8 +828,12 @@ async function switchToSession(sessionId) {
   if (state.sessionId) turnsCache.set(state.sessionId, state.turns);
   persistSessionId(sessionId);
 
+  // An empty cached transcript carries no information — restoring it only
+  // hides turns the server does have (and a double click on the same row
+  // used to cache its own empty list, then "restore" it, skipping the
+  // fetch entirely). Cache hits must have something to show.
   const cached = turnsCache.get(sessionId);
-  if (cached) {
+  if (cached && cached.length) {
     state.turns = cached;
   } else if (state.mode === "live") {
     try {
@@ -641,7 +867,9 @@ async function loadConfirmedTurns(sessionId) {
 
 /** Replaces the whole transcript pane with *turns*, already-resolved (no
  * pipeline animation — these are turns from switching sessions, not a
- * freshly asked question). */
+ * freshly asked question). The dashboard's ask card leads the page, so an
+ * empty transcript stays empty: no placeholder is rendered (the helpers
+ * below it remain for the composer's sample-story bookkeeping). */
 function renderTranscriptFromTurns(turns) {
   const host = $("transcript");
   host.innerHTML = "";
@@ -649,8 +877,15 @@ function renderTranscriptFromTurns(turns) {
     const card = createTurnCard(turn, turnCtx());
     host.appendChild(card.el);
   }
-  if (turns.length === 0) renderTranscriptEmptyState();
   refreshSampleButtonsDisabledState();
+  syncNavigator();
+  syncDashboard({
+    sessions: state.sessions,
+    turns: state.turns,
+    mode: state.mode,
+    baseUrl: state.baseUrl,
+    sessionId: state.sessionId,
+  });
 }
 
 /** The empty-conversation placeholder — DESIGN.md §5.1's resolution for
@@ -659,13 +894,18 @@ function renderTranscriptFromTurns(turns) {
  * decision B5, have no business appearing in a live production session
  * at all. Rebuilt from scratch on every call rather than toggled with
  * `hidden`, since it must reflect whichever mode is CURRENT, not
- * whichever mode last rendered it. Only called while the active
- * session's transcript is empty — see renderTranscriptFromTurns and
- * appendTurnWithAnimation/askLive's removal of it once a turn lands. */
+ * whichever mode last rendered it. Not rendered any more: the dashboard's
+ * ask card leads the page, so an empty transcript shows nothing rather
+ * than a placeholder card (kept alongside the sample-chip bookkeeping
+ * that renderSamples/renderStartExamples still serve). */
 function renderTranscriptEmptyState() {
   const empty = document.createElement("div");
   empty.className = "transcript-empty";
   empty.id = "transcript-empty";
+
+  const title = document.createElement("h2");
+  title.textContent = t("transcriptEmptyTitle");
+  empty.appendChild(title);
 
   const hint = document.createElement("p");
   hint.className = "transcript-empty-hint";
@@ -853,6 +1093,37 @@ function wireSidebar() {
   });
 }
 
+/* ── Rail settings menu ────────────────────────────────────────────────
+ * The rail is one icon; its destinations are rows in this popover. Each
+ * row IS the original control (same id), so the handlers above and in
+ * dashboard.js keep working untouched — this only opens and closes it. */
+function wireRailMenu() {
+  const btn = $("rail-settings");
+  const menu = $("nav-menu");
+  if (!btn || !menu) return;
+
+  const setMenu = (open) => {
+    menu.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+  };
+
+  btn.addEventListener("click", () => setMenu(menu.hidden));
+  // Choosing a destination closes the menu; the row's own handler runs first.
+  menu.addEventListener("click", (event) => {
+    if (event.target.closest(".nav-menu-item")) setMenu(false);
+  });
+  document.addEventListener("click", (event) => {
+    if (menu.hidden) return;
+    if (!event.target.closest("#nav-menu, #rail-settings")) setMenu(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      setMenu(false);
+      btn.focus();
+    }
+  });
+}
+
 /* ── Memory panel ──────────────────────────────────────────────────────
  * Reachable from the topbar, beside the API-key controls. Memory is
  * created EXPLICITLY only — the panel's own "set" controls, or a "📌 به
@@ -1016,6 +1287,70 @@ function wireComposer() {
       ask();
     }
   });
+
+  /* Clicking the pinned composer used to make the page creep "little by
+   * little": the browser's focus-scroll re-asserts whenever #question gains
+   * focus, and because the analyst is usually mid-transcript, each re-focus
+   * nudges the viewport down (measured: a click at scroll 900 crept to 1264,
+   * and it re-tracked as typing continued). What the analyst actually wants
+   * is a single, deliberate scroll to the bottom of the conversation, then a
+   * calm field to type in. So we own the scroll ourselves:
+   *
+   *   1. take focus with `preventScroll: true` — this is what kills the
+   *      native focus-jump (verified: same click, scroll held at 900 rather
+   *      than jumping to 1264);
+   *   2. run one explicit smooth scroll to the page bottom.
+   *
+   * Both happen on `pointerdown`, *before* the click's own focus event, so
+   * there is no competing scroll to fight. Keyboard focus is left alone —
+   * tabbing to an off-screen composer still scrolls it into view the normal
+   * way, and only a pointer press triggers the jump-to-bottom. */
+  const question = $("question");
+  const panel = $("assistant");
+  panel.addEventListener("pointerdown", () => {
+    question.focus({ preventScroll: true });
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const bottom = document.body.scrollHeight - window.innerHeight;
+    window.scrollTo({ top: bottom, behavior: reduced ? "auto" : "smooth" });
+  });
+
+  // The composer starts minimized; a long question grows the field (and the
+  // panel) to fit. sizeQuestion is the single source of truth for the field's
+  // height — resize is off in CSS, so there's no user-drag to fight.
+  sizeQuestion();
+  question.addEventListener("input", sizeQuestion);
+  question.addEventListener("paste", sizeQuestion);
+  // IME (Persian) commits the composed text at once on compositionend; the
+  // per-stroke `input` events during composition report the intermediate
+  // reading string, so re-measure when composition settles.
+  question.addEventListener("compositionend", sizeQuestion);
+
+  // The transcript's bottom reservation tracks the panel's *measured* height,
+  // so it must refresh every time the panel changes size: a question growing
+  // the field, the field clearing back down, a validation notice appearing or
+  // a viewport resize rewrapping the text. A ResizeObserver on the panel is
+  // the one place that observes all of those, growing *and* shrinking. The
+  // window resize listener is a fallback for engines without ResizeObserver.
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => syncComposerClearance()).observe(panel);
+  } else {
+    window.addEventListener("resize", () => syncComposerClearance());
+  }
+}
+
+/** Grow #question to fit its content, one line at a time, up to a cap.
+ * Classic auto-grow: collapse to 0 height, read the text's scrollHeight,
+ * restore it (clamped). The field is `resize:none`, so this is the only thing
+ * that changes its size. Each extra line pushes the panel taller; the
+ * ResizeObserver installed in wireComposer() then updates --composer-clearance
+ * to match, so a tall result never ends up hidden behind a freshly-grown
+ * composer (and the reservation shrinks again when the field is cleared). */
+function sizeQuestion() {
+  const q = $("question");
+  if (!q) return;
+  q.style.height = "0px";
+  const next = Math.min(q.scrollHeight, 220); // cap mirrors .assistant #question max-height
+  q.style.height = next + "px";
 }
 
 function showNotice(kind, text) {
@@ -1047,6 +1382,13 @@ async function ask() {
     state.busy = false;
     $("btn-ask").disabled = false;
     $("question").value = "";
+    // Return the field to its one-line resting size (it may have auto-grown
+    // for a long question) and shrink the transcript's clearance to match.
+    sizeQuestion();
+    syncComposerClearance();
+    // A new turn was just added (or the input cleared on an error): bring the
+    // transcript's bottom — and the newest Q&A — above the pinned panel.
+    scrollLatestTurnIntoView();
   }
 }
 
@@ -1097,13 +1439,14 @@ async function appendTurnWithAnimation(turn) {
   card.revealEarly();
   card.revealLate();
   scrollSettledResultAboveComposer(card.result || card.el);
+  syncNavigator();
   bumpActiveSessionMeta();
 }
 
 function scrollToTurn(turnId) {
   const el = document.getElementById(`turn-${turnId}`);
   if (el) {
-    el.classList.remove("collapsed");
+    syncNavigator();
     scrollIntoViewMaybeSmooth(el, { block: "start" });
     el.animate(
       [{ boxShadow: "0 0 0 3px rgba(13,148,136,.5)" }, { boxShadow: "0 0 0 0 rgba(13,148,136,0)" }],
@@ -1147,6 +1490,16 @@ function turnCtx() {
     onPin: (turnId, field, value) => {
       if (state.mode === "live") pinLiveAssumption(field, value);
       else pinSimulatedAssumption(field, value);
+    },
+    // The `ring` assumption renders as a <select> whose options mirror the
+    // memory panel's closed set (rememberable key "ring"). Returns null when
+    // the memory set isn't loaded yet, in which case the chip falls back to
+    // its plain text + edit-button form.
+    getRingOptions: () => {
+      const rememberable = state.memory && state.memory.rememberable;
+      if (!Array.isArray(rememberable)) return null;
+      const ring = rememberable.find((r) => r && r.key === "ring");
+      return ring && Array.isArray(ring.options) && ring.options.length ? ring.options : null;
     },
     // "دوباره اجرا کن" — the rows_omitted re-run affordance (turn.js's
     // result block). Not a PATCH/re-fetch of this exact turn (the
@@ -1270,7 +1623,11 @@ function rerenderTurn(turn) {
     // appends it with its own turn_id). Bring the analyst to its answer,
     // as a streamed answer does once it settles (#219).
     scrollSettledResultAboveComposer(card.result || card.el);
+    scrollLatestTurnIntoView();
   }
+  // The card just changed in place (or appeared) — refresh the rail's dot
+  // for it (status, collapse, a brand-new turn).
+  syncNavigator();
 }
 
 function rerunTurn(turnId) {
@@ -1378,6 +1735,7 @@ async function askLive(q) {
   scrollIntoViewMaybeSmooth(card.el, { block: "start" });
   card.revealEarly();
   card.revealLate();
+  syncNavigator(); // the placeholder shows up in the rail as a "running" dot
 
   const stageStates = {};
   // Tracks the turn_id of whatever DOM node is CURRENTLY on screen, so the
@@ -1399,6 +1757,9 @@ async function askLive(q) {
     fresh.revealEarly();
     fresh.revealLate();
     Object.assign(card, fresh);
+    // Every streamed event re-renders this turn in place — keep the rail's
+    // dot honest (status as it settles, and the id swap placeholder→real).
+    syncNavigator();
   }
 
   try {
@@ -1440,6 +1801,9 @@ async function askLive(q) {
           // final turn -- no separate DOM lookup needed.
           scrollSettledResultAboveComposer(card.result || card.el);
           bumpActiveSessionMeta();
+          // Not an error turn: the model produced the SQL and the database
+          // produced the rows, whatever /health last claimed.
+          if (working && !working.error && (working.sql || working.result)) noteLiveTurnAnswered();
           break;
         case "error":
           working.error = data;
@@ -1567,9 +1931,4 @@ function emptyTurn(question, sessionId) {
     timings: {},
     error: null,
   };
-}
-
-/* ── Footer clock ──────────────────────────────────────────────────── */
-function tickClock() {
-  $("foot-time").textContent = new Date().toLocaleTimeString("fa-IR");
 }

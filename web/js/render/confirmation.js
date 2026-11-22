@@ -74,6 +74,14 @@ export function renderConfirmationControl(turn, handlers) {
 
   const button = el("button", "confirm-toggle");
   button.type = "button";
+  // The visible face is a thumb icon (CSS ::before) with a corner check badge
+  // (::after) in the confirmed state. The label and the check word are kept in
+  // sr-only spans so the accessible name — and the button's textContent, which
+  // the a11y contract depends on — survives the move from words to glyphs.
+  const labelSpan = el("span", "sr-only", LABEL);
+  const checkSpan = el("span", "sr-only");
+  button.appendChild(labelSpan);
+  button.appendChild(checkSpan);
   root.appendChild(button);
 
   const status = el("div", "confirmation-status");
@@ -86,7 +94,10 @@ export function renderConfirmationControl(turn, handlers) {
   function paint() {
     button.setAttribute("aria-pressed", String(confirmed));
     button.className = confirmed ? "confirm-toggle is-confirmed" : "confirm-toggle";
-    button.textContent = confirmed ? `${CHECK} ${LABEL}` : LABEL;
+    // Check word only when confirmed: it keeps textContent exactly the label
+    // in the idle state and "…✓" in the active one (the non-colour signal for
+    // screen readers, mirroring the visible badge).
+    checkSpan.textContent = confirmed ? CHECK : "";
   }
 
   function setConfirmed(value) {

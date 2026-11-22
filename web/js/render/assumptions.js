@@ -15,9 +15,13 @@
  * calls `onPin(field, value)` — this is the ONLY way memory gets created;
  * see web/js/render/memory.js and PUT /v2/memory/{key}.
  *
- * Clarifications render as one-click buttons, never a blocking modal — the
- * contract is explicit that the turn already has an answer; clarifying is
- * an offer to refine it, not a gate the user must pass first.
+ * Clarifications render as an inline label + <select>, never a blocking
+ * modal — the contract is explicit that the turn already has an answer;
+ * clarifying is an offer to refine it, not a gate the user must pass
+ * first. A select (not a button row) because the closed option set can
+ * hold twenty-plus rings (e.g. the IME halls) and a wall of pills is
+ * unreadable; the <option value> stays the backend string so onClarify
+ * sends what the policy vocabulary matches on.
  */
 
 "use strict";
@@ -73,8 +77,14 @@ export function renderBasis(basis, onJumpToTurn) {
  *   standing preference" (PUT /v2/memory/{key}). Omitted entirely (no pin
  *   button rendered at all) when the caller passes nothing, so existing
  *   call sites that don't yet support memory keep working unchanged.
+ * @param {Set<string>} [clarifiedFields] — fields the same turn also
+ *   surfaces as a clarification select. For those, the chip goes
+ *   read-only (value + source tag, no select / edit / pin): the
+ *   clarification is the single place to change the value, and two
+ *   selects asking the same question at once just looked like a bug.
+ *   Optional; undefined/empty changes nothing.
  */
-export function renderAssumptions(assumptions, onEditAssumption, onPin) {
+export function renderAssumptions(assumptions, onEditAssumption, onPin, ringOptions, clarifiedFields) {
   if (!assumptions || assumptions.length === 0) return null;
   const wrap = document.createElement("div");
   wrap.className = "assumptions";
@@ -89,24 +99,68 @@ export function renderAssumptions(assumptions, onEditAssumption, onPin) {
     field.textContent = a.field + ":";
     chip.appendChild(field);
 
-    const value = document.createElement("span");
-    value.className = "chip-value";
-    value.textContent = a.value;
-    chip.appendChild(value);
+    // A field the same turn also offers as a clarification select is
+    // shown READ-ONLY here (value + source tag): the clarification is
+    // the single place to change it. Without this, a default-sourced
+    // ring/measure produced two selects asking the same question —
+    // one in the chip, one in the clarification — which read as a bug.
+    const isClarified = clarifiedFields != null && clarifiedFields.has(a.field);
+
+    // The `ring` (تالار) field, when its closed option set is known, is a
+    // <select> — the same control as the memory panel's ring field — rather
+    // than a text value + inline editor. Applying is on-change: picking a
+    // ring is the only thing this control does, so there is no separate
+    // apply/cancel step. Other fields (and a ring with no known options)
+    // keep the existing text value + edit button below.
+    const useRingSelect = !isClarified && a.editable && a.field === "ring"
+      && Array.isArray(ringOptions) && ringOptions.length > 0;
+    if (useRingSelect) {
+      const select = document.createElement("select");
+      select.className = "chip-select";
+      select.setAttribute("aria-label", `تغییر «${a.field}»`);
+      const opts = ringOptions.includes(a.value) ? ringOptions : [a.value, ...ringOptions];
+      for (const opt of opts) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        o.selected = opt === a.value;
+        select.appendChild(o);
+      }
+      select.addEventListener("change", () => {
+        if (select.value !== a.value) onEditAssumption(a.field, select.value);
+      });
+      chip.appendChild(select);
+    } else {
+      const value = document.createElement("span");
+      value.className = "chip-value";
+      value.textContent = a.value;
+      chip.appendChild(value);
+    }
 
     const src = document.createElement("span");
     src.className = "chip-source";
     src.textContent = SOURCE_LABELS[a.source] || a.source;
     chip.appendChild(src);
 
-    if (a.editable) {
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      editBtn.className = "chip-edit-btn";
-      editBtn.setAttribute("aria-label", `ویرایش مفروضهٔ ${a.field}`);
-      editBtn.appendChild(icon("edit", { size: 14 }));
-      editBtn.addEventListener("click", () => openEditor(chip, a, onEditAssumption));
-      chip.appendChild(editBtn);
+    if (isClarified) {
+      // No controls at all: the clarification select below is the
+      // single place to change this value, an edit button would be a
+      // second path to the same action, and pinning is withheld too —
+      // a clarified value is still a DEFAULT guess the user has not
+      // confirmed, and "pin this" must never be offered on a guess.
+    } else if (a.editable) {
+      // A ring chip already edits itself through the <select> above; a
+      // separate edit button would be a redundant second path to the same
+      // action. Other editable fields still get the inline text editor.
+      if (!useRingSelect) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "chip-edit-btn";
+        editBtn.setAttribute("aria-label", `ویرایش مفروضهٔ ${a.field}`);
+        editBtn.appendChild(icon("edit", { size: 14 }));
+        editBtn.addEventListener("click", () => openEditor(chip, a, onEditAssumption));
+        chip.appendChild(editBtn);
+      }
 
       // "Pin this" — the ONLY way memory gets created (never inferred).
       // Not offered on a chip that is ALREADY memory-sourced: re-pinning
@@ -171,6 +225,31 @@ function openEditor(chipEl, assumption, onEditAssumption) {
   input.select();
 }
 
+/* Clarification copy arrives from the backend in mixed languages: the
+ * ring prompt and options are English (session_policy.yaml), the
+ * measure prompt and options are Persian (session/ambiguity.py). Map
+ * each canonical string to the active UI language — same read-`<html
+ * lang>` convention as chart.js's `viewWord`, keeping this module's
+ * standalone graph. The <option VALUE> must stay the original backend
+ * string: `onClarify` sends what the policy/ambiguity vocabulary
+ * matches on (e.g. "All rings", "ارزش ریالی معامله"), never the
+ * translated display text. */
+const CLARIFICATION_FA = {
+  "Which ring do you mean?": "انتخاب تالار",
+  "All rings": "همه تالارها",
+};
+const CLARIFICATION_EN = {
+  "«برتر» بر اساس کدام معیار؟": "By which criterion is “top” ranked?",
+  "ارزش ریالی معامله": "Rial trade value",
+  "حجم معامله": "Trade volume",
+  "تعداد قرارداد": "Contract count",
+};
+function uiClarLabel(text) {
+  const lang = document.documentElement && document.documentElement.lang;
+  const table = lang === "en" ? CLARIFICATION_EN : CLARIFICATION_FA;
+  return table[text] || text;
+}
+
 /**
  * @param {import("../api.js").Clarification[]} clarifications
  * @param {(field: string, option: string) => void} onClarify
@@ -180,21 +259,28 @@ export function renderClarifications(clarifications, onClarify) {
   const wrap = document.createElement("div");
   wrap.className = "clarifications";
 
-  for (const c of clarifications) {
+  for (const [i, c] of clarifications.entries()) {
     const row = document.createElement("div");
     row.className = "clarify-row";
-    const prompt = document.createElement("span");
-    prompt.className = "clarify-prompt";
-    prompt.textContent = c.prompt;
-    row.appendChild(prompt);
+
+    const label = document.createElement("label");
+    label.className = "clarify-prompt";
+    label.htmlFor = `clarify-select-${i}`;
+    label.textContent = uiClarLabel(c.prompt);
+    row.appendChild(label);
+
+    const select = document.createElement("select");
+    select.id = `clarify-select-${i}`;
+    select.className = "clarify-select";
     for (const opt of c.options) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "clarify-opt";
-      btn.textContent = opt;
-      btn.addEventListener("click", () => onClarify(c.field, opt));
-      row.appendChild(btn);
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = uiClarLabel(opt);
+      select.appendChild(o);
     }
+    select.addEventListener("change", () => onClarify(c.field, select.value));
+    row.appendChild(select);
+
     wrap.appendChild(row);
   }
   return wrap;
