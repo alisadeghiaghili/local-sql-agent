@@ -1,0 +1,4884 @@
+{
+  "meta": {
+    "name": "NLQ recall/precision benchmark",
+    "version": "1.0",
+    "total": 100,
+    "by_category": {
+      "simple": 20,
+      "multi": 20,
+      "analytical": 20,
+      "ambiguous": 15,
+      "date": 10,
+      "aggregation": 10,
+      "negative": 5
+    },
+    "generated": "E:\\AIProjects\\local-sql-agent-6.18.0\\eval\\recall_precision\\generate_test_cases.py",
+    "scoring": "requirement-level recall/precision; Layer B (full pipeline) is the headline, Layer A (deterministic retrieval) is a diagnostic. See evaluate_recall_precision.py."
+  },
+  "cases": [
+    {
+      "id": "RP-001",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد کل قراردادهای تالار سیمان در سال ۱۴۰۳ چندتاست؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "simplest count; model may pick Contract or CustomerContract — both are allowed"
+    },
+    {
+      "id": "RP-002",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش (ریالی) قراردادهای تالار پتروشیمی و فرآورده های نفتی در سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار پتروشیمی و فرآورده های نفتی",
+            "match": "value",
+            "label": "ring=تالار پتروشیمی و فرآورده های نفتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "sum contract TotalPrice; model may pick any contract/offering fact"
+    },
+    {
+      "id": "RP-003",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع تعداد (مقدار) عرضه‌های ثبت‌شده در تالار طلا در سال ۱۴۰۳ را بدهید.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerquantity)",
+            "label": "sum-qty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "sum of offer quantity (business rule: Offer → OfferQuantity)"
+    },
+    {
+      "id": "RP-004",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "میانگین قیمت عرضه در تالار خودرو برای سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.offer.offerprice)",
+            "label": "avg-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "average OfferPrice on the Offer fact"
+    },
+    {
+      "id": "RP-005",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد مشتریان فعال در کل بازار را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.isactive",
+            "match": "value",
+            "label": "active"
+          }
+        ]
+      },
+      "note": "customer count; IsActive filter expected"
+    },
+    {
+      "id": "RP-006",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد کل کارگزاران فعال در سیستم چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "broker",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          }
+        ]
+      },
+      "note": "broker count (no filter; 'فعال' is a generic word here, not a column)"
+    },
+    {
+      "id": "RP-007",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش کل قراردادهای تالار مناقصه در سال ۱۴۰۵ را حساب کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار مناقصه",
+            "match": "value",
+            "label": "ring=تالار مناقصه"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1405",
+            "match": "value",
+            "label": "year=1405"
+          }
+        ]
+      },
+      "note": "sum contract TotalPrice in 1405"
+    },
+    {
+      "id": "RP-008",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد قراردادهای تالار کشاورزی مشهد در سال ۱۴۰۳ چند مورد است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کشاورزی مشهد",
+            "match": "value",
+            "label": "ring=تالار کشاورزی مشهد"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "count for one ring one year"
+    },
+    {
+      "id": "RP-009",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع قیمت (ارزش) سفارش‌های ثبت‌شده در تالار سیمان در سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "order",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.order.buyorder_price)",
+            "allow": [
+              "sum(auction_fact.order.buyorder_lot)",
+              "sum(auction_fact.order.orderbook_price)"
+            ],
+            "label": "sum-order-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "Order fact; business rule: value = BuyOrder_Price"
+    },
+    {
+      "id": "RP-010",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع مقدار (volume) تطبیق سالن برای تالار طلا در سال ۱۴۰۴ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.hallmatchingquantity)",
+            "label": "sum-hallqty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "HallMatchingQuantity (business rule: physical volume for Contract)"
+    },
+    {
+      "id": "RP-011",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد کل نمادهای معاملاتی فعال چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "symbol",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          }
+        ]
+      },
+      "note": "Symbol count"
+    },
+    {
+      "id": "RP-012",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش (ریالی) عرضه‌های تالار کالای صادراتی در سال ۱۴۰۳ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "Offer fact; business rule: value = OfferPrice"
+    },
+    {
+      "id": "RP-013",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "در مجموع چند قرارداد در تالار فرعی ثبت شده است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار فرعی",
+            "match": "value",
+            "label": "ring=تالار فرعی"
+          }
+        ]
+      },
+      "note": "count across all time; only ring filter"
+    },
+    {
+      "id": "RP-014",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش قراردادهای تالار خودرو در تابستان ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "season=تابستان (summer); year=1404"
+    },
+    {
+      "id": "RP-015",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد سفارش‌های ثبت‌شده در روز شنبه‌های سال ۱۴۰۴ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "order",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persiandayofweek=1",
+            "match": "value",
+            "label": "saturday=1"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "PersianDayOfWeek=1 for شنبه"
+    },
+    {
+      "id": "RP-016",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش قراردادهای تالار پتروشیمی و فرآورده های نفتی در بهار ۱۴۰۳ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار پتروشیمی و فرآورده های نفتی",
+            "match": "value",
+            "label": "ring=تالار پتروشیمی و فرآورده های نفتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=بهار",
+            "match": "value",
+            "label": "season=بهار"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "season=بهار (spring)"
+    },
+    {
+      "id": "RP-017",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد مشتریانی که در تالار سیمان معامله کرده‌اند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "allow": [
+              "count(distinct auction_dim.customer.id)",
+              "count(distinct(c.id))",
+              "count(*)",
+              "count(distinct a.id)"
+            ],
+            "label": "distinct-customer"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          }
+        ]
+      },
+      "note": "distinct customer count is the intent; plain count accepted (optional nuance)"
+    },
+    {
+      "id": "RP-018",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش قراردادهای تالار فرعی صادراتی در سال ۱۴۰۵ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار فرعی صادراتی",
+            "match": "value",
+            "label": "ring=تالار فرعی صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1405",
+            "match": "value",
+            "label": "year=1405"
+          }
+        ]
+      },
+      "note": "sum in 1405"
+    },
+    {
+      "id": "RP-019",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "تعداد کل قراردادها در کل بازار (تمام تالارها) چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          }
+        ]
+      },
+      "note": "no ring filter, no date filter"
+    },
+    {
+      "id": "RP-020",
+      "category": "simple",
+      "category_fa": "ساده و مستقیم",
+      "question": "مجموع ارزش (ریالی) کل قراردادها در کل بازار چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          }
+        ]
+      },
+      "note": "sum, no filter"
+    },
+    {
+      "id": "RP-021",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد قراردادهای نقدی در تالار سیمان در سال ۱۴۰۴ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "contractkind",
+            "match": "entity",
+            "label": "contractkind"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.contractkind.persianname",
+            "match": "value",
+            "allow": [
+              "auction_dim.contractkind.persianname=نقدی",
+              "auction_dim.contractkind.persianname=n'نقدی'"
+            ],
+            "label": "kind=nقدی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "ContractKind=نقدی"
+    },
+    {
+      "id": "RP-022",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش قراردادهای مشتریان حقوقی در تالار صنعتی و معدنی در سال ۱۴۰۳ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.typename",
+            "match": "value",
+            "allow": [
+              "auction_dim.customer.typename=حقوقی",
+              "auction_dim.customer.typename=n'حقوقی'"
+            ],
+            "label": "type=حقوقی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "customer type = حقوقی (legal entity)"
+    },
+    {
+      "id": "RP-023",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش (ریالی) عرضه‌های صادراتی در تالار کالای صادراتی در سال ۱۴۰۳ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "offerkind",
+            "match": "entity",
+            "label": "offerkind"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.offerkind",
+            "match": "column",
+            "label": "offerkind=export"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "OfferKind=صادراتی (export)"
+    },
+    {
+      "id": "RP-024",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش قراردادهای تالار طلا در تابستان ۱۴۰۳ که با دلار تسویه شده‌اند چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "currency",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.currency",
+            "match": "column",
+            "label": "currency=دلار"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "Currency=دلار (USD)"
+    },
+    {
+      "id": "RP-025",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد قراردادهای تالار کشاورزی که در ماه فروردین ۱۴۰۴ ثبت شده‌اند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کشاورزی",
+            "match": "value",
+            "label": "ring=تالار کشاورزی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=فروردین",
+            "match": "value",
+            "label": "month=فروردین"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "month=فروردین + year=1404"
+    },
+    {
+      "id": "RP-026",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش قراردادهای مشتریان حقیقی در تالار صنعتی و معدنی در بهار ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.typename",
+            "match": "value",
+            "allow": [
+              "auction_dim.customer.typename=حقیقی",
+              "auction_dim.customer.typename=n'حقیقی'"
+            ],
+            "label": "type=حقیقی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=بهار",
+            "match": "value",
+            "label": "season=بهار"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "customer type=حقیقی (natural person), season=بهار"
+    },
+    {
+      "id": "RP-027",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش عرضه‌های تالار خودرو که با تسویه نقدی ثبت شده‌اند در سال ۱۴۰۳ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "clearingkind",
+            "match": "entity",
+            "label": "clearingkind"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.clearingkind",
+            "match": "column",
+            "label": "clearing=نقدی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "ClearingKind=نقدی (cash)"
+    },
+    {
+      "id": "RP-028",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد قراردادهای نسیه در تالار پتروشیمی و فرآورده های نفتی در سال ۱۴۰۴ چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "contractkind",
+            "match": "entity",
+            "label": "contractkind"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.contractkind.persianname",
+            "match": "value",
+            "allow": [
+              "auction_dim.contractkind.persianname=نسیه",
+              "auction_dim.contractkind.persianname=n'نسیه'"
+            ],
+            "label": "kind=نسیه"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار پتروشیمی و فرآورده های نفتی",
+            "match": "value",
+            "label": "ring=تالار پتروشیمی و فرآورده های نفتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "ContractKind=نسیه (credit)"
+    },
+    {
+      "id": "RP-029",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش قراردادهای تالار فرعی در زمستان ۱۴۰۳ که با ریال تسویه شده‌اند چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "currency",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.currency",
+            "match": "column",
+            "label": "currency=ریال"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار فرعی",
+            "match": "value",
+            "label": "ring=تالار فرعی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=زمستان",
+            "match": "value",
+            "label": "season=زمستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "Currency=ریال, season=زمستان"
+    },
+    {
+      "id": "RP-030",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع مقدار (volume) تطبیق سالن در تالار صنعتی و معدنی در تابستان ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.hallmatchingquantity)",
+            "allow": [
+              "sum(auction_fact.contract.hallmatchingweight)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "sum-hallqty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "HallMatchingQuantity (physical volume)"
+    },
+    {
+      "id": "RP-031",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد قراردادهای تالار طلا در مهر ۱۴۰۳ که در وضعیت ارسال‌شده قرار دارند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "contractstatus",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.contractstatus.name",
+            "match": "value",
+            "allow": [
+              "auction_dim.contractstatus.name=ارسال شده",
+              "auction_dim.contractstatus.name=n'ارسال شده'"
+            ],
+            "label": "status=ارسال‌شده"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=مهر",
+            "match": "value",
+            "label": "month=مهر"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "ContractStatus=ارسال شده (sent)"
+    },
+    {
+      "id": "RP-032",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش قراردادهای مشتریان غیرفعال در تالار خودرو در سال ۱۴۰۳ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.isactive",
+            "match": "column",
+            "label": "inactive"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "Customer.IsActive=0 (non-active)"
+    },
+    {
+      "id": "RP-033",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش (ریالی) عرضه‌های صادراتی تالار کالای صادراتی در بهار ۱۴۰۴ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "offerkind",
+            "match": "entity",
+            "label": "offerkind"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.offerkind",
+            "match": "column",
+            "label": "offerkind=export"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=بهار",
+            "match": "value",
+            "label": "season=بهار"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "OfferKind=صادراتی"
+    },
+    {
+      "id": "RP-034",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد سفارش‌های تالار سیمان در سال ۱۴۰۳ که به مشتری حقوقی تعلق دارند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "order",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.typename",
+            "match": "value",
+            "allow": [
+              "auction_dim.customer.typename=حقوقی",
+              "auction_dim.customer.typename=n'حقوقی'"
+            ],
+            "label": "type=حقوقی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "Order fact with customer type"
+    },
+    {
+      "id": "RP-035",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش (ریالی) قراردادهای تالار کشاورزی مشهد در ماه‌های فروردین و اردیبهشت ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کشاورزی مشهد",
+            "match": "value",
+            "label": "ring=تالار کشاورزی مشهد"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname",
+            "match": "column",
+            "label": "month-in(فروردین,اردیبهشت)"
+          }
+        ]
+      },
+      "note": "two months in one year (month IN (1,2) or OR)"
+    },
+    {
+      "id": "RP-036",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش (ریالی) قراردادها در تالار چند کالایی در مهر ۱۴۰۴ که با یورو تسویه شده‌اند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "currency",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.currency",
+            "match": "column",
+            "label": "currency=یورو"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار چند کالایی",
+            "match": "value",
+            "label": "ring=تالار چند کالایی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=مهر",
+            "match": "value",
+            "label": "month=مهر"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "Currency=یورو (EUR)"
+    },
+    {
+      "id": "RP-037",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد قراردادهای تالار فرعی صادراتی در تابستان ۱۴۰۳ که با دلار تسویه شده‌اند چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "currency",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.currency",
+            "match": "column",
+            "label": "currency=دلار"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار فرعی صادراتی",
+            "match": "value",
+            "label": "ring=تالار فرعی صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "Currency=دلار + season=تابستان"
+    },
+    {
+      "id": "RP-038",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش (ریالی) قراردادهای تالار معاملات خرد در زمستان ۱۴۰۴ که مشتریان حقیقی دارند چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.typename",
+            "match": "value",
+            "allow": [
+              "auction_dim.customer.typename=حقیقی",
+              "auction_dim.customer.typename=n'حقیقی'"
+            ],
+            "label": "type=حقیقی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار معاملات خرد",
+            "match": "value",
+            "label": "ring=تالار معاملات خرد"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=زمستان",
+            "match": "value",
+            "label": "season=زمستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "customer type=حقیقی + season=زمستان"
+    },
+    {
+      "id": "RP-039",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "مجموع ارزش (ریالی) عرضه‌های داخلی (غیرصادراتی) تالار کالای صادراتی در مهر ۱۴۰۳ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "offerkind",
+            "match": "entity",
+            "label": "offerkind"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.offerkind",
+            "match": "column",
+            "label": "offerkind=داخلی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=مهر",
+            "match": "value",
+            "label": "month=مهر"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "OfferKind=داخلی (domestic)"
+    },
+    {
+      "id": "RP-040",
+      "category": "multi",
+      "category_fa": "چندشرایطی",
+      "question": "تعداد قراردادهای تالار املاک و مستغلات در سال ۱۴۰۴ که با ریال تسویه شده‌اند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "currency",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.currency",
+            "match": "column",
+            "label": "currency=ریال"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار املاک و مستغلات",
+            "match": "value",
+            "label": "ring=تالار املاک و مستغلات"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "Currency=ریال + no season/month (full year)"
+    },
+    {
+      "id": "RP-041",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مقایسه مجموع ارزش (ریالی) قراردادها در تالار طلا و تالار سیمان در سال ۱۴۰۳ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.ring.name",
+            "match": "group",
+            "label": "group-by-ring"
+          }
+        ]
+      },
+      "note": "comparison of two rings in one year; group-by-ring is optional"
+    },
+    {
+      "id": "RP-042",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "پنج مشتری پرفروش (بر اساس ارزش معامله) در تالار صنعتی و معدنی در سال ۱۴۰۴ را فهرست کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.customer.name",
+            "match": "group",
+            "label": "group-by-customer"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "5",
+            "label": "top5"
+          }
+        ]
+      },
+      "note": "top-5 customers by total value"
+    },
+    {
+      "id": "RP-043",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مجموع ارزش (ریالی) قراردادهای تالار پتروشیمی و فرآورده های نفتی را به تفکیک ماه در سال ۱۴۰۴ نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار پتروشیمی و فرآورده های نفتی",
+            "match": "value",
+            "label": "ring=تالار پتروشیمی و فرآورده های نفتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "general_dim.date.persianmonthname",
+            "match": "group",
+            "allow": [
+              "general_dim.date.persianmonth",
+              "general_dim.date.persianmonthname"
+            ],
+            "label": "group-by-month"
+          }
+        ]
+      },
+      "note": "group by Persian month within one year"
+    },
+    {
+      "id": "RP-044",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "بیشترین کارگزار بر اساس مجموع ارزش (ریالی) قراردادها در تالار سیمان در سال ۱۴۰۴ کدام است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "broker",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.broker.persianname",
+            "match": "group",
+            "allow": [
+              "auction_dim.broker.persianname",
+              "auction_dim.broker.name",
+              "auction_dim.broker.persianname"
+            ],
+            "label": "group-by-broker"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "1",
+            "label": "top1"
+          }
+        ]
+      },
+      "note": "top-1 broker by value"
+    },
+    {
+      "id": "RP-045",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مقایسه میانگین قیمت (ریالی) عرضه‌ها در تالار طلا با میانگین قیمت در تالار خودرو در سال ۱۴۰۳ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.offer.offerprice)",
+            "label": "avg-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "average price, two rings"
+    },
+    {
+      "id": "RP-046",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مجموع ارزش (ریالی) قراردادها در تالار سیمان را سال‌به‌سال در سال‌های ۱۴۰۳ تا ۱۴۰۵ نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear",
+            "match": "column",
+            "allow": [
+              "general_dim.date.persianyear in {1403, 1404, 1405}",
+              "general_dim.date.persianyear in {1403,1404,1405}"
+            ],
+            "label": "year-in(1403,1404,1405)"
+          },
+          {
+            "type": "grouping",
+            "ref": "general_dim.date.persianyear",
+            "match": "group",
+            "label": "group-by-year"
+          }
+        ]
+      },
+      "note": "multi-year range with year grouping"
+    },
+    {
+      "id": "RP-047",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "سه نماد پرتقاضا (بر اساس مجموع ارزش قرارداد) در تالار صنعتی و معدنی در سال ۱۴۰۴ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "symbol",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.symbol",
+            "match": "group",
+            "label": "group-by-symbol"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "3",
+            "label": "top3"
+          }
+        ]
+      },
+      "note": "top-3 symbols by value"
+    },
+    {
+      "id": "RP-048",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مقایسه مجموع تعداد (مقدار) عرضه‌ها در تالار کالای صادراتی بین تابستان ۱۴۰۳ و تابستان ۱۴۰۴.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerquantity)",
+            "label": "sum-qty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname",
+            "match": "column",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear",
+            "match": "column",
+            "allow": [
+              "general_dim.date.persianyear in {1403, 1404}",
+              "general_dim.date.persianyear in {1403,1404}"
+            ],
+            "label": "year-in(1403,1404)"
+          }
+        ]
+      },
+      "note": "same season across two years"
+    },
+    {
+      "id": "RP-049",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "دو مشتری برتر تالار خودرو در سال ۱۴۰۳ را بر اساس تعداد قرارداد رتبه‌بندی کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "allow": [
+              "count(*)",
+              "count(distinct auction_dim.customer.id)",
+              "count(distinct(c.id))",
+              "count(distinct a.id)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "count-or-qty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.customer.name",
+            "match": "group",
+            "label": "group-by-customer"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "2",
+            "label": "top2"
+          }
+        ]
+      },
+      "note": "top-2 customers by count of contracts"
+    },
+    {
+      "id": "RP-050",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مجموع ارزش (ریالی) قراردادها در تالار سیمان به تفکیک سال در سال‌های ۱۴۰۲ تا ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear",
+            "match": "column",
+            "allow": [
+              "general_dim.date.persianyear in {1402, 1403, 1404}",
+              "general_dim.date.persianyear in {1402,1403,1404}"
+            ],
+            "label": "year-in(1402,1403,1404)"
+          },
+          {
+            "type": "grouping",
+            "ref": "general_dim.date.persianyear",
+            "match": "group",
+            "label": "group-by-year"
+          }
+        ]
+      },
+      "note": "year grouping over a 3-year window"
+    },
+    {
+      "id": "RP-051",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "بالاترین سه کارگزار به لحاظ مجموع ارزش (ریالی) عرضه‌ها در تالار طلا در سال ۱۴۰۳ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "broker",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "allow": [
+              "avg(auction_fact.offer.offerprice)",
+              "max(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.broker.persianname",
+            "match": "group",
+            "label": "group-by-broker"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "3",
+            "label": "top3"
+          }
+        ]
+      },
+      "note": "top-3 brokers by offer value"
+    },
+    {
+      "id": "RP-052",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مقایسه میانگین وزن (HallMatchingWeight) قراردادهای تالار صنعتی و معدنی در تابستان ۱۴۰۴ و پاییز ۱۴۰۴.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.contract.hallmatchingweight)",
+            "allow": [
+              "sum(auction_fact.contract.hallmatchingweight)"
+            ],
+            "label": "avg-weight"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname",
+            "match": "column",
+            "label": "season-in(تابستان,پاییز)"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "average weight across two seasons in same year"
+    },
+    {
+      "id": "RP-053",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مجموع ارزش (ریالی) قراردادها در تالار خودرو به تفکیک ماه در سال ۱۴۰۳ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          },
+          {
+            "type": "grouping",
+            "ref": "general_dim.date.persianmonthname",
+            "match": "group",
+            "allow": [
+              "general_dim.date.persianmonth",
+              "general_dim.date.persianmonthname"
+            ],
+            "label": "group-by-month"
+          }
+        ]
+      },
+      "note": "group-by-month for one ring one year"
+    },
+    {
+      "id": "RP-054",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "پنج نماد برتر بر اساس مجموع مقدار تطبیق سالن در تالار صنعتی و معدنی در سال ۱۴۰۴.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "symbol",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.hallmatchingquantity)",
+            "allow": [
+              "sum(auction_fact.contract.hallmatchingweight)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "sum-hallqty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.symbol",
+            "match": "group",
+            "label": "group-by-symbol"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "5",
+            "label": "top5"
+          }
+        ]
+      },
+      "note": "top-5 symbols by HallMatchingQuantity"
+    },
+    {
+      "id": "RP-055",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مقایسه مجموع ارزش (ریالی) قراردادهای مشتریان حقوقی و حقیقی در تالار صنعتی و معدنی در سال ۱۴۰۴.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.typename",
+            "match": "column",
+            "label": "type-in(حقوقی,حقیقی)"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.customer.typename",
+            "match": "group",
+            "label": "group-by-type"
+          }
+        ]
+      },
+      "note": "split by customer legal type"
+    },
+    {
+      "id": "RP-056",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مجموع ارزش (ریالی) عرضه‌های تالار پتروشیمی و فرآورده های نفتی به تفکیک نماد در تابستان ۱۴۰۴.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "symbol",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.offer.offerprice)",
+            "label": "sum-offer-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار پتروشیمی و فرآورده های نفتی",
+            "match": "value",
+            "label": "ring=تالار پتروشیمی و فرآورده های نفتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.symbol",
+            "match": "group",
+            "label": "group-by-symbol"
+          }
+        ]
+      },
+      "note": "group-by-symbol within one season"
+    },
+    {
+      "id": "RP-057",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "سه مشتری پرفروش (بر اساس مقدار) در تالار کالای صادراتی در پاییز ۱۴۰۴ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.quantity)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-qty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=پاییز",
+            "match": "value",
+            "label": "season=پاییز"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.customer.name",
+            "match": "group",
+            "label": "group-by-customer"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "3",
+            "label": "top3"
+          }
+        ]
+      },
+      "note": "top-3 by Quantity (not price)"
+    },
+    {
+      "id": "RP-058",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مقایسه مجموع ارزش (ریالی) قراردادها در تالار سیمان در تابستان ۱۴۰۳ با تابستان ۱۴۰۴.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname",
+            "match": "column",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear",
+            "match": "column",
+            "allow": [
+              "general_dim.date.persianyear in {1403, 1404}",
+              "general_dim.date.persianyear in {1403,1404}"
+            ],
+            "label": "year-in(1403,1404)"
+          }
+        ]
+      },
+      "note": "YoY comparison, same season"
+    },
+    {
+      "id": "RP-059",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "مجموع حق‌الزحمه کارگزاران خرید در تالار سیمان به تفکیک ماه در سال ۱۴۰۴ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.buybrokerwage)",
+            "label": "sum-buy-wage"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "general_dim.date.persianmonthname",
+            "match": "group",
+            "allow": [
+              "general_dim.date.persianmonth",
+              "general_dim.date.persianmonthname"
+            ],
+            "label": "group-by-month"
+          }
+        ]
+      },
+      "note": "buyer broker wage by month"
+    },
+    {
+      "id": "RP-060",
+      "category": "analytical",
+      "category_fa": "تحلیلی و مقایسه‌ای",
+      "question": "دو کارگزار برتر بر اساس مجموع ارزش (ریالی) قراردادها در تالار صنعتی و معدنی در سال ۱۴۰۴ را نام ببر.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "broker",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.broker.persianname",
+            "match": "group",
+            "label": "group-by-broker"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "2",
+            "label": "top2"
+          }
+        ]
+      },
+      "note": "top-2 brokers by contract value"
+    },
+    {
+      "id": "RP-061",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "مجموع ارزش کل معاملات بازار را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order",
+              "trade"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.offerprice)",
+              "sum(auction_fact.offer.totalprice)",
+              "sum(auction_fact.order.buyorder_price)",
+              "sum(future_fact.trade.price)"
+            ],
+            "label": "sum-totalprice"
+          }
+        ]
+      },
+      "note": "no ring, no date: system may assume defaults (All rings, current year). Metric must be a total-value sum. Defaults are optional."
+    },
+    {
+      "id": "RP-062",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "آمار قراردادها را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order",
+              "trade"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "allow": [
+              "count(*)",
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "count-or-sum"
+          }
+        ]
+      },
+      "note": "'آمار' (statistics) is vague — count or aggregate; no filter."
+    },
+    {
+      "id": "RP-063",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "برای تالار سیمان چه معامله‌ای شده است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          }
+        ]
+      },
+      "note": "open-ended listing for one ring; no metric needed. Model may list rows (SELECT ...) — count/sum are accepted too."
+    },
+    {
+      "id": "RP-064",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "مشتریان پرتقاطع را برام پیدا کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)",
+              "count(*)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "metric"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.customer.name",
+            "match": "group",
+            "label": "group-by-customer"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "*any*",
+            "optional": true,
+            "label": "topn"
+          }
+        ]
+      },
+      "note": "'پرتقاطع' (top/most-traded) is a ranking cue without N; top-N is optional, ordering desc expected."
+    },
+    {
+      "id": "RP-065",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "چند مشتری فعال داریم؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "allow": [
+              "count(*)",
+              "count(distinct auction_dim.customer.id)",
+              "count(distinct(c.id))"
+            ],
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.isactive",
+            "match": "column",
+            "label": "active"
+          }
+        ]
+      },
+      "note": "customer count; 'فعال' should filter IsActive — but column is ambiguous so matched by column."
+    },
+    {
+      "id": "RP-066",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "میانگین قیمت را حساب کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity",
+            "allow": [
+              "offer",
+              "contract",
+              "customercontract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.offer.offerprice)",
+            "allow": [
+              "avg(auction_fact.contract.price)",
+              "avg(auction_fact.customercontract.totalprice)",
+              "avg(auction_fact.contract.hallmatchingprice)"
+            ],
+            "label": "avg-price"
+          }
+        ]
+      },
+      "note": "'average price' without a ring or table — model must pick a price column; any avg over a price/value column accepted."
+    },
+    {
+      "id": "RP-067",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "گزارش تالارهای صادراتی را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی",
+            "match": "value",
+            "label": "ring=تالار کالای صادراتی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار فرعی صادراتی",
+            "match": "value",
+            "optional": true,
+            "label": "ring=تالار فرعی صادراتی"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کالای صادراتی کيش",
+            "match": "value",
+            "optional": true,
+            "label": "ring=تالار کالای صادراتی کيش"
+          }
+        ]
+      },
+      "note": "'تالارهای صادراتی' (export halls, plural) is ambiguous across three rings; at least the main one expected."
+    },
+    {
+      "id": "RP-068",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "مجموع ارزش کل بازار در سال گذشته را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear",
+            "match": "column",
+            "label": "last-year=1404"
+          }
+        ]
+      },
+      "note": "'سال گذشته' (last year) is a relative year — the deterministic layer cannot resolve it; scored by column in Layer B only."
+    },
+    {
+      "id": "RP-069",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "مشتریان که خریداری انجام نداده‌اند را پیدا کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "optional": true
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "allow": [
+              "count(*)",
+              "count(distinct auction_dim.customer.id)",
+              "count(distinct(c.id))"
+            ],
+            "label": "count"
+          },
+          {
+            "type": "exclusion",
+            "ref": "auction_fact.customercontract",
+            "match": "column",
+            "optional": true,
+            "label": "no-contracts"
+          }
+        ]
+      },
+      "note": "anti-join / NOT EXISTS customers; the exclusion is model-dependent so optional."
+    },
+    {
+      "id": "RP-070",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "چه مقدار معامله در بازار انجام شده است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer",
+              "order"
+            ],
+            "label": "contract-fact"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "sum(auction_fact.contract.hallmatchingquantity)",
+              "count(*)",
+              "sum(auction_fact.offer.offerprice)"
+            ],
+            "label": "metric"
+          }
+        ]
+      },
+      "note": "'چه مقدار' (how much) is ambiguous between value and volume; any total metric accepted."
+    },
+    {
+      "id": "RP-071",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "نمادهای پرفروش ماه گذشته را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "symbol",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "count(*)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "metric"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.symbol",
+            "match": "group",
+            "label": "group-by-symbol"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname",
+            "match": "column",
+            "optional": true,
+            "label": "last-month"
+          }
+        ]
+      },
+      "note": "top symbols by 'last month' (relative — optional date), ordered desc."
+    },
+    {
+      "id": "RP-072",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "آمار روزانه قراردادها را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "allow": [
+              "count(*)",
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "metric"
+          },
+          {
+            "type": "grouping",
+            "ref": "general_dim.date.persiandate",
+            "match": "group",
+            "optional": true,
+            "allow": [
+              "general_dim.date.persiandate",
+              "general_dim.date.realdate",
+              "general_dim.date.id"
+            ],
+            "label": "group-by-day"
+          }
+        ]
+      },
+      "note": "'daily' suggests a by-day grouping; grouping is optional since 'آمار' is vague."
+    },
+    {
+      "id": "RP-073",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "حجم بازار چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract",
+              "offer"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.hallmatchingquantity)",
+            "allow": [
+              "sum(auction_fact.customercontract.quantity)",
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.offer.offerquantity)"
+            ],
+            "label": "volume-metric"
+          }
+        ]
+      },
+      "note": "'حجم' (volume) → physical quantity; value sum is an acceptable fallback the model often picks."
+    },
+    {
+      "id": "RP-074",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "مشتریان برتر را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)",
+              "count(*)",
+              "sum(auction_fact.customercontract.quantity)"
+            ],
+            "label": "metric"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.customer.name",
+            "match": "group",
+            "label": "group-by-customer"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "label": "order-desc"
+          },
+          {
+            "type": "top",
+            "ref": "*any*",
+            "optional": true,
+            "label": "topn"
+          }
+        ]
+      },
+      "note": "'مشتریان برتر' (top customers) with no measure, ring, or period — the textbook ranking clarification case."
+    },
+    {
+      "id": "RP-075",
+      "category": "ambiguous",
+      "category_fa": "ابهام‌آمیز و غیرمستقیم",
+      "question": "چه چیزی بیشتر معامله شده است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "symbol",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "optional": true
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.quantity)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)",
+              "count(*)",
+              "sum(auction_fact.contract.totalprice)",
+              "sum(auction_fact.contract.hallmatchingquantity)"
+            ],
+            "label": "metric"
+          },
+          {
+            "type": "grouping",
+            "ref": "auction_dim.symbol",
+            "match": "group",
+            "optional": true,
+            "label": "group-by-symbol"
+          },
+          {
+            "type": "ordering",
+            "ref": "col desc",
+            "match": "direction",
+            "optional": true,
+            "label": "order-desc"
+          }
+        ]
+      },
+      "note": "fully open question; expects a ranked commodity/symbol view but no single answer is correct — many items optional."
+    },
+    {
+      "id": "RP-076",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در ۱۴۰۴/۰۳/۱۵ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persiandate=1404/03/15",
+            "match": "value",
+            "label": "exact-date"
+          }
+        ]
+      },
+      "note": "exact full Persian date"
+    },
+    {
+      "id": "RP-077",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "تعداد قراردادهای تالار سیمان در ۱۴۰۴/۰۳/۱۵ چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persiandate=1404/03/15",
+            "match": "value",
+            "label": "exact-date"
+          }
+        ]
+      },
+      "note": "count on a single exact date"
+    },
+    {
+      "id": "RP-078",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در هفته اول اسفند ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=اسفند",
+            "match": "value",
+            "label": "month=اسفند"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianweekofyear",
+            "match": "column",
+            "optional": true,
+            "label": "week=1"
+          }
+        ]
+      },
+      "note": "'هفته اول اسفند' (first week of Esfand) — month+year required, week optional."
+    },
+    {
+      "id": "RP-079",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "تعداد قراردادها در روز جمعه ۱۴۰۴/۰۳/۱۱ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persiandayofweek=7",
+            "match": "value",
+            "optional": true,
+            "label": "friday=7"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persiandate=1404/03/11",
+            "match": "value",
+            "label": "exact-date"
+          }
+        ]
+      },
+      "note": "exact date (the day-of-week is redundant with the date, so optional)"
+    },
+    {
+      "id": "RP-080",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در ماه اسفند ۱۴۰۴ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=اسفند",
+            "match": "value",
+            "label": "month=اسفند"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "single month, single year"
+    },
+    {
+      "id": "RP-081",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در سه‌شنبه‌های اسفند ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=اسفند",
+            "match": "value",
+            "label": "month=اسفند"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persiandayofweek=3",
+            "match": "value",
+            "label": "wednesday=3"
+          }
+        ]
+      },
+      "note": "day-of-week + month + year (PersianDayOfWeek=3 = سه‌شنبه)"
+    },
+    {
+      "id": "RP-082",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در بهار ۱۴۰۴ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=بهار",
+            "match": "value",
+            "label": "season=بهار"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "season=بهار (spring: فروردین–خرداد)"
+    },
+    {
+      "id": "RP-083",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در تابستان سال ۱۴۰۴ را حساب کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "season=تابستان (summer: تیر–مرداد)"
+    },
+    {
+      "id": "RP-084",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در پاییز ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=پاییز",
+            "match": "value",
+            "label": "season=پاییز"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "season=پاییز (autumn: مهر–آذر)"
+    },
+    {
+      "id": "RP-085",
+      "category": "date",
+      "category_fa": "بازه زمانی",
+      "question": "مجموع ارزش (ریالی) قراردادها در زمستان ۱۴۰۴ را بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=زمستان",
+            "match": "value",
+            "label": "season=زمستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "season=زمستان (winter: دی–اسفند)"
+    },
+    {
+      "id": "RP-086",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "بیشترین قیمت (ریالی) معامله‌شده در تالار سیمان در سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "max(auction_fact.contract.price)",
+            "allow": [
+              "max(auction_fact.customercontract.totalprice)",
+              "max(auction_fact.contract.totalprice)"
+            ],
+            "label": "max-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "MAX price in a ring/year"
+    },
+    {
+      "id": "RP-087",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "کمترین قیمت (ریالی) قرارداد در تالار طلا در سال ۱۴۰۳ چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "min(auction_fact.contract.price)",
+            "allow": [
+              "min(auction_fact.customercontract.totalprice)",
+              "min(auction_fact.contract.totalprice)"
+            ],
+            "label": "min-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "MIN price in a ring/year"
+    },
+    {
+      "id": "RP-088",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "میانگین وزن (تن) تطبیق سالن در تالار صنعتی و معدنی در سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.contract.hallmatchingweight)",
+            "allow": [
+              "avg(auction_fact.contract.hallmatchingquantity)"
+            ],
+            "label": "avg-weight"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "AVG HallMatchingWeight (tons)"
+    },
+    {
+      "id": "RP-089",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "میانگین قیمت (ریالی) عرضه‌ها در تالار خودرو در مهر ۱۴۰۴ را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.offer.offerprice)",
+            "label": "avg-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار خودرو",
+            "match": "value",
+            "label": "ring=تالار خودرو"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianmonthname=مهر",
+            "match": "value",
+            "label": "month=مهر"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "AVG OfferPrice in a ring/month"
+    },
+    {
+      "id": "RP-090",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "میانگین تعداد (مقدار) تطبیق سالن برای هر قرارداد در تالار سیمان در سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.contract.hallmatchingquantity)",
+            "allow": [
+              "avg(auction_fact.contract.hallmatchingweight)",
+              "avg(auction_fact.customercontract.quantity)"
+            ],
+            "label": "avg-hallqty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "AVG HallMatchingQuantity"
+    },
+    {
+      "id": "RP-091",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "بیشترین مقدار (volume) تطبیق سالن در تالار پتروشیمی و فرآورده های نفتی در تابستان ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "max(auction_fact.contract.hallmatchingquantity)",
+            "allow": [
+              "max(auction_fact.contract.hallmatchingweight)",
+              "max(auction_fact.customercontract.quantity)"
+            ],
+            "label": "max-hallqty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار پتروشیمی و فرآورده های نفتی",
+            "match": "value",
+            "label": "ring=تالار پتروشیمی و فرآورده های نفتی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=تابستان",
+            "match": "value",
+            "label": "season=تابستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "MAX HallMatchingQuantity in a season"
+    },
+    {
+      "id": "RP-092",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "میانگین قیمت (ریالی) سفارش‌های ثبت‌شده در تالار سیمان در سال ۱۴۰۴ را حساب کن.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "order",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.order.buyorder_price)",
+            "allow": [
+              "avg(auction_fact.order.orderbook_price)"
+            ],
+            "label": "avg-order-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "AVG BuyOrder_Price"
+    },
+    {
+      "id": "RP-093",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "کمترین مقدار (volume) عرضه در تالار کشاورزی مشهد در سال ۱۴۰۳ چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "min(auction_fact.offer.offerquantity)",
+            "label": "min-qty"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار کشاورزی مشهد",
+            "match": "value",
+            "label": "ring=تالار کشاورزی مشهد"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1403",
+            "match": "value",
+            "label": "year=1403"
+          }
+        ]
+      },
+      "note": "MIN OfferQuantity"
+    },
+    {
+      "id": "RP-094",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "بیشترین قیمت (ریالی) عرضه در تالار طلا در زمستان ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "offer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "max(auction_fact.offer.offerprice)",
+            "label": "max-price"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianseasonname=زمستان",
+            "match": "value",
+            "label": "season=زمستان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "MAX OfferPrice in a season"
+    },
+    {
+      "id": "RP-095",
+      "category": "aggregation",
+      "category_fa": "جمع‌بندی و آماری",
+      "question": "میانگین مبلغ (ریالی) قراردادها در تالار فرعی در سال ۱۴۰۴ چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "avg(auction_fact.contract.totalprice)",
+            "allow": [
+              "avg(auction_fact.customercontract.totalprice)",
+              "avg(auction_fact.contract.price)"
+            ],
+            "label": "avg-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار فرعی",
+            "match": "value",
+            "label": "ring=تالار فرعی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "AVG TotalPrice"
+    },
+    {
+      "id": "RP-096",
+      "category": "negative",
+      "category_fa": "منفی و استثنایی",
+      "question": "مجموع ارزش (ریالی) قراردادها در تالار سیمان در سال ۱۴۰۴ بدون قراردادهای ابطال‌شده چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "exclusion",
+            "ref": "auction_dim.contractstatus.name",
+            "match": "column",
+            "label": "not-cancelled"
+          },
+          {
+            "type": "entity",
+            "ref": "contractstatus",
+            "match": "entity",
+            "optional": true
+          }
+        ]
+      },
+      "note": "exclude cancelled (ابطال) — the classic AML/valid-only filter from sima reports"
+    },
+    {
+      "id": "RP-097",
+      "category": "negative",
+      "category_fa": "منفی و استثنایی",
+      "question": "تعداد قراردادها در تالار طلا در سال ۱۴۰۴ که ابطال شده‌اند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "contractstatus",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.contractstatus.name",
+            "match": "value",
+            "allow": [
+              "auction_dim.contractstatus.name=ابطال",
+              "auction_dim.contractstatus.name=n'ابطال'",
+              "auction_dim.contractstatus.name=ابطال شده",
+              "auction_dim.contractstatus.name=n'ابطال شده'"
+            ],
+            "label": "status=ابطال"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار طلا",
+            "match": "value",
+            "label": "ring=تالار طلا"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          }
+        ]
+      },
+      "note": "count ONLY cancelled (positive inclusion of the negative status)"
+    },
+    {
+      "id": "RP-098",
+      "category": "negative",
+      "category_fa": "منفی و استثنایی",
+      "question": "مجموع ارزش (ریالی) قراردادها در تالار صنعتی و معدنی در سال ۱۴۰۴ بدون مشتریان غیرفعال چقدر است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "customer",
+            "match": "entity"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.customercontract.totalprice)",
+            "allow": [
+              "sum(auction_fact.contract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار صنعتی و معدنی",
+            "match": "value",
+            "label": "ring=تالار صنعتی و معدنی"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.customer.isactive",
+            "match": "value",
+            "allow": [
+              "auction_dim.customer.isactive=1",
+              "auction_dim.customer.isactive=1",
+              "auction_dim.customer.isactive=true"
+            ],
+            "label": "active-only"
+          }
+        ]
+      },
+      "note": "exclude non-active customers (active-only filter)"
+    },
+    {
+      "id": "RP-099",
+      "category": "negative",
+      "category_fa": "منفی و استثنایی",
+      "question": "مجموع ارزش (ریالی) قراردادها در سال ۱۴۰۴ بدون تالار پریمیوم را نشان بده.",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "contract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "metric",
+            "ref": "sum(auction_fact.contract.totalprice)",
+            "allow": [
+              "sum(auction_fact.customercontract.totalprice)"
+            ],
+            "label": "sum-totalprice"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "exclusion",
+            "ref": "auction_dim.ring.name",
+            "match": "column",
+            "label": "not-premium"
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity",
+            "optional": true
+          }
+        ]
+      },
+      "note": "exclude the premium ring (a real recurring exclusion in sima reports)"
+    },
+    {
+      "id": "RP-100",
+      "category": "negative",
+      "category_fa": "منفی و استثنایی",
+      "question": "تعداد قراردادهای تالار سیمان در سال ۱۴۰۴ که هنوز تسویه نشده‌اند چند است؟",
+      "expected": {
+        "items": [
+          {
+            "type": "entity",
+            "ref": "customercontract",
+            "match": "entity",
+            "allow": [
+              "customercontract",
+              "contract"
+            ]
+          },
+          {
+            "type": "entity",
+            "ref": "ring",
+            "match": "entity"
+          },
+          {
+            "type": "metric",
+            "ref": "count(*)",
+            "label": "count"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_dim.ring.name=تالار سیمان",
+            "match": "value",
+            "label": "ring=تالار سیمان"
+          },
+          {
+            "type": "date",
+            "ref": "general_dim.date.persianyear=1404",
+            "match": "value",
+            "label": "year=1404"
+          },
+          {
+            "type": "filter",
+            "ref": "auction_fact.customercontract.clearingdocsstatus_id",
+            "match": "column",
+            "allow": [
+              "auction_fact.customercontract.clearingdocsstatus_id is null",
+              "auction_fact.customercontract.finantialstatus_id is null",
+              "auction_fact.customercontract.contractfinalpaymentdate_id is null"
+            ],
+            "label": "unsettled"
+          }
+        ]
+      },
+      "note": "unsettled (تسویه‌نشده) — a column-existence check; exact value is model-dependent"
+    }
+  ]
+}
