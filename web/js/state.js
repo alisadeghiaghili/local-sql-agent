@@ -34,7 +34,11 @@ export const state = {
   // (a stray test, say) still gets a syntactically valid URL rather than
   // an empty string.
   baseUrl: "http://localhost:8000",
-  theme: "system", // "system" | "light" | "dark"
+  // Dark-first: the product's identity is the dark analytics workspace
+  // (see DESIGN.md §4.2). "system" is still a first-class choice in the
+  // account menu; it is simply no longer the way an analyst with no saved
+  // preference lands.
+  theme: "dark", // "system" | "light" | "dark"
   lang: "fa", // "fa" | "en" — chrome only; questions may be either
   sessionId: null,
   sessions: [], // SessionSummary[] — the conversation-list sidebar's index

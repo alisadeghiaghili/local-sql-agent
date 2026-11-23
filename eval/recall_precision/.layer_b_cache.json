@@ -1,0 +1,702 @@
+{
+ "RP-001": {
+  "question": "تعداد کل قراردادهای تالار سیمان در سال ۱۴۰۳ چندتاست؟",
+  "sql": "SELECT TOP 1000 COUNT(c.ID) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-002": {
+  "question": "مجموع ارزش (ریالی) قراردادهای تالار پتروشیمی و فرآورده های نفتی در سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار پتروشیمی و فرآورده های نفتی'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-003": {
+  "question": "مجموع تعداد (مقدار) عرضه‌های ثبت‌شده در تالار طلا در سال ۱۴۰۳ را بدهید.",
+  "sql": "SELECT TOP 1000 SUM([o].[OfferQuantity])\nFROM [Auction_Fact].[Offer] AS [o]\nJOIN [Auction_Dim].[Ring] AS [r] ON [o].[Ring_ID] = [r].[ID]\nJOIN [General_Dim].[Date] AS [d] ON [o].[Date_ID] = [d].[ID]\nWHERE [r].[Name] = N'تالار طلا'\n  AND [d].[PersianYear] = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.9
+ },
+ "RP-004": {
+  "question": "میانگین قیمت عرضه در تالار خودرو برای سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 AVG(o.OfferPrice)\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار خودرو'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.5
+ },
+ "RP-005": {
+  "question": "تعداد مشتریان فعال در کل بازار را نشان بده.",
+  "sql": "SELECT TOP 1000 COUNT([c].[ID])\nFROM [Auction_Dim].[Customer] AS [c]\nWHERE [c].[IsActive] = 1",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.8
+ },
+ "RP-006": {
+  "question": "تعداد کل کارگزاران فعال در سیستم چقدر است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) FROM [Auction_Dim].[Broker] WHERE [StatusName] = N'فعال'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.4
+ },
+ "RP-007": {
+  "question": "مجموع ارزش کل قراردادهای تالار مناقصه در سال ۱۴۰۵ را حساب کن.",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار مناقصه'\n  AND d.PersianYear = 1405",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-008": {
+  "question": "تعداد قراردادهای تالار کشاورزی مشهد در سال ۱۴۰۳ چند مورد است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [General_Dim].[Date] d ON c.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار کشاورزی مشهد'\n  AND d.[PersianYear] = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-009": {
+  "question": "مجموع قیمت (ارزش) سفارش‌های ثبت‌شده در تالار سیمان در سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM([o].[BuyOrder_Price])\nFROM [Auction_Fact].[Order] AS [o]\nJOIN [Auction_Dim].[Ring] AS [r] ON [o].[Ring_ID] = [r].[ID]\nJOIN [General_Dim].[Date] AS [d] ON [o].[Date_ID] = [d].[ID]\nWHERE [r].[Name] = N'تالار سیمان'\n  AND [d].[PersianYear] = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.9
+ },
+ "RP-010": {
+  "question": "مجموع مقدار (volume) تطبیق سالن برای تالار طلا در سال ۱۴۰۴ را بده.",
+  "sql": "SELECT TOP 1000 SUM(c.HallMatchingQuantity)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار طلا'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-011": {
+  "question": "تعداد کل نمادهای معاملاتی فعال چقدر است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ActiveSymbolCount FROM [CSD_Dim].[CSDSymbol] WHERE [IsActive] = 1",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.6
+ },
+ "RP-012": {
+  "question": "مجموع ارزش (ریالی) عرضه‌های تالار کالای صادراتی در سال ۱۴۰۳ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(o.OfferPrice) AS TotalOfferValue\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار کالای صادراتی'\n  AND d.PersianYear = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-013": {
+  "question": "در مجموع چند قرارداد در تالار فرعی ثبت شده است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nWHERE r.[Name] = N'تالار فرعی'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.1
+ },
+ "RP-014": {
+  "question": "مجموع ارزش قراردادهای تالار خودرو در تابستان ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار خودرو'\n  AND d.PersianYear = 1404\n  AND d.PersianSeasonName = N'تابستان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.5
+ },
+ "RP-015": {
+  "question": "تعداد سفارش‌های ثبت‌شده در روز شنبه‌های سال ۱۴۰۴ را بده.",
+  "sql": "SELECT TOP 1000 COUNT(*) AS OrderCount\nFROM [Future_Fact].[OrderLog] o\nJOIN [General_Dim].[Date] d ON o.[Date_ID] = d.[ID]\nWHERE d.[PersianYear] = 1404\n  AND d.[PersianDayOfWeek] = 6",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 37.2
+ },
+ "RP-016": {
+  "question": "مجموع ارزش قراردادهای تالار پتروشیمی و فرآورده های نفتی در بهار ۱۴۰۳ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار پتروشیمی و فرآورده های نفتی'\n  AND d.PersianYear = 1403\n  AND d.PersianSeasonName = N'بهار'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-017": {
+  "question": "تعداد مشتریانی که در تالار سیمان معامله کرده‌اند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(DISTINCT cc.BuyerCustomer_ID)\nFROM [Auction_Fact].[CustomerContract] cc\nJOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID\nWHERE r.Name = N'تالار سیمان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.9
+ },
+ "RP-018": {
+  "question": "مجموع ارزش قراردادهای تالار فرعی صادراتی در سال ۱۴۰۵ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار فرعی صادراتی'\n  AND d.PersianYear = 1405",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-019": {
+  "question": "تعداد کل قراردادها در کل بازار (تمام تالارها) چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS TotalContractCount FROM [Auction_Fact].[Contract]",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.6
+ },
+ "RP-020": {
+  "question": "مجموع ارزش (ریالی) کل قراردادها در کل بازار چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM([c].[TotalPrice]) AS TotalValue FROM [Auction_Fact].[Contract] AS [c]",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.5
+ },
+ "RP-021": {
+  "question": "تعداد قراردادهای نقدی در تالار سیمان در سال ۱۴۰۴ را بده.",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [Auction_Dim].[ContractKind] ck ON c.[ContractKind_ID] = ck.[ID]\nJOIN [General_Dim].[Date] d ON c.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار سیمان'\n  AND d.[PersianYear] = 1404\n  AND ck.[PersianName] = N'نقدی'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-022": {
+  "question": "مجموع ارزش قراردادهای مشتریان حقوقی در تالار صنعتی و معدنی در سال ۱۴۰۳ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(cc.TotalPrice)\nFROM [Auction_Fact].[CustomerContract] cc\nJOIN [Auction_Dim].[Customer] cu ON cc.BuyerCustomer_ID = cu.ID\nJOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON cc.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1403\n  AND cu.TypeName = N'حقوقی'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-023": {
+  "question": "مجموع ارزش (ریالی) عرضه‌های صادراتی در تالار کالای صادراتی در سال ۱۴۰۳ را بده.",
+  "sql": "SELECT TOP 1000 SUM([o].[OfferPrice])\nFROM [Auction_Fact].[Offer] AS [o]\nJOIN [Auction_Dim].[Ring] AS [r] ON [o].[Ring_ID] = [r].[ID]\nJOIN [General_Dim].[Date] AS [d] ON [o].[Date_ID] = [d].[ID]\nWHERE [r].[Name] = N'تالار کالای صادراتی'\n  AND [d].[PersianYear] = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-024": {
+  "question": "مجموع ارزش قراردادهای تالار طلا در تابستان ۱۴۰۳ که با دلار تسویه شده‌اند چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[Currency] cur ON c.Currency_ID = cur.ID\nWHERE r.Name = N'تالار طلا'\n  AND d.PersianYear = 1403\n  AND d.PersianSeasonName = N'تابستان'\n  AND cur.EnglishName = N'USD'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.0
+ },
+ "RP-025": {
+  "question": "تعداد قراردادهای تالار کشاورزی که در ماه فروردین ۱۴۰۴ ثبت شده‌اند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(c.ID)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار کشاورزی'\n  AND d.PersianYear = 1404\n  AND d.PersianMonthName = N'فروردین'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.6
+ },
+ "RP-026": {
+  "question": "مجموع ارزش قراردادهای مشتریان حقیقی در تالار صنعتی و معدنی در بهار ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\n  AND d.PersianSeasonName = N'بهار'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-027": {
+  "question": "مجموع ارزش عرضه‌های تالار خودرو که با تسویه نقدی ثبت شده‌اند در سال ۱۴۰۳ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(o.OfferPrice)\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار خودرو'\n  AND d.PersianYear = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.5
+ },
+ "RP-028": {
+  "question": "تعداد قراردادهای نسیه در تالار پتروشیمی و فرآورده های نفتی در سال ۱۴۰۴ چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [Auction_Dim].[ContractKind] ck ON c.[ContractKind_ID] = ck.[ID]\nJOIN [General_Dim].[Date] d ON c.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار پتروشیمی و فرآورده های نفتی'\n  AND d.[PersianYear] = 1404\n  AND ck.[PersianName] = N'نسیه'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.3
+ },
+ "RP-029": {
+  "question": "مجموع ارزش قراردادهای تالار فرعی در زمستان ۱۴۰۳ که با ریال تسویه شده‌اند چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[Currency] cur ON c.Currency_ID = cur.ID\nWHERE r.Name = N'تالار فرعی'\n  AND d.PersianYear = 1403\n  AND d.PersianSeasonName = N'زمستان'\n  AND cur.PersianName = N'ریال'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-030": {
+  "question": "مجموع مقدار (volume) تطبیق سالن در تالار صنعتی و معدنی در تابستان ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.[HallMatchingQuantity])\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [General_Dim].[Date] d ON c.[HallMatchingDate_ID] = d.[ID]\nWHERE r.[Name] = N'تالار صنعتی و معدنی'\n  AND d.[PersianYear] = 1404\n  AND d.[PersianSeasonName] = N'تابستان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.2
+ },
+ "RP-031": {
+  "question": "تعداد قراردادهای تالار طلا در مهر ۱۴۰۳ که در وضعیت ارسال‌شده قرار دارند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(c.ID)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[ContractStatus] cs ON c.ContractStatus_ID = cs.ID\nWHERE r.Name = N'تالار طلا'\n  AND d.PersianYear = 1403\n  AND d.PersianMonthName = N'مهر'\n  AND cs.Name = N'ارسال‌شده'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-032": {
+  "question": "مجموع ارزش قراردادهای مشتریان غیرفعال در تالار خودرو در سال ۱۴۰۳ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Customer] cu ON c.Supplier_ID = cu.ID\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار خودرو'\n  AND d.PersianYear = 1403\n  AND cu.IsActive = 0",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-033": {
+  "question": "مجموع ارزش (ریالی) عرضه‌های صادراتی تالار کالای صادراتی در بهار ۱۴۰۴ را بده.",
+  "sql": "SELECT TOP 1000 SUM([o].[OfferPrice])\nFROM [Auction_Fact].[Offer] AS [o]\nJOIN [Auction_Dim].[Ring] AS [r] ON [o].[Ring_ID] = [r].[ID]\nJOIN [General_Dim].[Date] AS [d] ON [o].[Date_ID] = [d].[ID]\nWHERE [r].[Name] = N'تالار کالای صادراتی'\n  AND [d].[PersianYear] = 1404\n  AND [d].[PersianSeasonName] = N'بهار'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-034": {
+  "question": "تعداد سفارش‌های تالار سیمان در سال ۱۴۰۳ که به مشتری حقوقی تعلق دارند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(*)\nFROM [Auction_Fact].[Order] o\nJOIN [Auction_Dim].[Ring] r ON o.[Ring_ID] = r.[ID]\nJOIN [Auction_Dim].[Customer] c ON o.[BuyerCustomer_ID] = c.[ID]\nJOIN [General_Dim].[Date] d ON o.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار سیمان'\n  AND d.[PersianYear] = 1403\n  AND c.[TypeName] = N'حقوقی'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.0
+ },
+ "RP-035": {
+  "question": "مجموع ارزش (ریالی) قراردادهای تالار کشاورزی مشهد در ماه‌های فروردین و اردیبهشت ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار کشاورزی مشهد'\n  AND d.PersianYear = 1404\n  AND d.PersianMonthName IN (N'فروردین', N'اردیبهشت')",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-036": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تالار چند کالایی در مهر ۱۴۰۴ که با یورو تسویه شده‌اند چند است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[Currency] cur ON c.Currency_ID = cur.ID\nWHERE r.Name = N'تالار چند کالایی'\n  AND d.PersianYear = 1404\n  AND d.PersianMonthName = N'مهر'\n  AND cur.EnglishName = N'Euro'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-037": {
+  "question": "تعداد قراردادهای تالار فرعی صادراتی در تابستان ۱۴۰۳ که با دلار تسویه شده‌اند چقدر است؟",
+  "sql": "SELECT TOP 1000 COUNT(c.ID)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[Currency] cur ON c.Currency_ID = cur.ID\nWHERE r.Name = N'تالار فرعی صادراتی'\n  AND d.PersianYear = 1403\n  AND d.PersianSeasonName = N'تابستان'\n  AND cur.EnglishName = N'USD'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-038": {
+  "question": "مجموع ارزش (ریالی) قراردادهای تالار معاملات خرد در زمستان ۱۴۰۴ که مشتریان حقیقی دارند چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[Customer] cu ON c.Supplier_ID = cu.ID\nWHERE r.Name = N'تالار معاملات خرد'\n  AND d.PersianYear = 1404\n  AND d.PersianSeasonName = N'زمستان'\n  AND cu.TypeName = N'حقیقی'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-039": {
+  "question": "مجموع ارزش (ریالی) عرضه‌های داخلی (غیرصادراتی) تالار کالای صادراتی در مهر ۱۴۰۳ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM([o].[OfferPrice])\nFROM [Auction_Fact].[Offer] [o]\nJOIN [Auction_Dim].[Ring] [r] ON [o].[Ring_ID] = [r].[ID]\nJOIN [General_Dim].[Date] [d] ON [o].[Date_ID] = [d].[ID]\nWHERE [r].[Name] = N'تالار کالای صادراتی'\n  AND [d].[PersianYear] = 1403\n  AND [d].[PersianMonthName] = N'مهر'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-040": {
+  "question": "تعداد قراردادهای تالار املاک و مستغلات در سال ۱۴۰۴ که با ریال تسویه شده‌اند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(c.ID)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [Auction_Dim].[Currency] cur ON c.Currency_ID = cur.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار املاک و مستغلات'\n  AND d.PersianYear = 1404\n  AND cur.PersianName = N'ریال'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.0
+ },
+ "RP-041": {
+  "question": "مقایسه مجموع ارزش (ریالی) قراردادها در تالار طلا و تالار سیمان در سال ۱۴۰۳ را نشان بده.",
+  "sql": "SELECT TOP 1000 \n    r.Name AS RingName,\n    SUM(c.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name IN (N'تالار طلا', N'تالار سیمان')\n  AND d.PersianYear = 1403\nGROUP BY r.Name",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-042": {
+  "question": "پنج مشتری پرفروش (بر اساس ارزش معامله) در تالار صنعتی و معدنی در سال ۱۴۰۴ را فهرست کن.",
+  "sql": "SELECT TOP 5\n    c.Name AS CustomerName,\n    SUM(t.Price * t.Count) AS TotalTradeValue\nFROM [Future_Fact].[Trade] t\nJOIN [Future_Dim].[Customer] c ON t.BuyerCustomer_ID = c.ID\nJOIN [Future_Dim].[Contract] ct ON t.Contract_ID = ct.ID\nJOIN [General_Dim].[Date] d ON t.Date_ID = d.ID\nWHERE ct.CommodityGroup_Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\nGROUP BY c.Name\nORDER BY TotalTradeValue DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-043": {
+  "question": "مجموع ارزش (ریالی) قراردادهای تالار پتروشیمی و فرآورده های نفتی را به تفکیک ماه در سال ۱۴۰۴ نشان بده.",
+  "sql": "SELECT TOP 100\n    d.PersianMonthName,\n    SUM(c.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار پتروشیمی و فرآورده های نفتی'\n  AND d.PersianYear = 1404\nGROUP BY d.PersianMonthName",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.7
+ },
+ "RP-044": {
+  "question": "بیشترین کارگزار بر اساس مجموع ارزش (ریالی) قراردادها در تالار سیمان در سال ۱۴۰۴ کدام است؟",
+  "sql": "SELECT TOP 1 b.PersianName AS BrokerName, SUM(c.TotalPrice) AS TotalContractValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Broker] b ON c.BuyerBroker_ID = b.ID\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404\nGROUP BY b.PersianName\nORDER BY TotalContractValue DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.2
+ },
+ "RP-045": {
+  "question": "مقایسه میانگین قیمت (ریالی) عرضه‌ها در تالار طلا با میانگین قیمت در تالار خودرو در سال ۱۴۰۳ را نشان بده.",
+  "sql": "SELECT TOP 1000 \n    r.Name AS RingName,\n    AVG(o.OfferPrice) AS AverageOfferPrice\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name IN (N'تالار طلا', N'تالار خودرو')\n  AND d.PersianYear = 1403\nGROUP BY r.Name",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.0
+ },
+ "RP-046": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تالار سیمان را سال‌به‌سال در سال‌های ۱۴۰۳ تا ۱۴۰۵ نشان بده.",
+  "sql": "SELECT TOP 100\n    d.PersianYear,\n    SUM(c.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear BETWEEN 1403 AND 1405\nGROUP BY d.PersianYear\nORDER BY d.PersianYear",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.0
+ },
+ "RP-047": {
+  "question": "سه نماد پرتقاضا (بر اساس مجموع ارزش قرارداد) در تالار صنعتی و معدنی در سال ۱۴۰۴ را نشان بده.",
+  "sql": "SELECT TOP 3\n    c.Commodity_Symbol,\n    SUM(t.Count * t.Price) AS TotalValue\nFROM [Future_Fact].[Trade] t\nJOIN [Future_Dim].[Contract] c ON t.Contract_ID = c.ID\nJOIN [General_Dim].[Date] d ON t.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND c.CommodityGroup_Name = N'تالار صنعتی و معدنی'\nGROUP BY c.Commodity_Symbol\nORDER BY TotalValue DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.9
+ },
+ "RP-048": {
+  "question": "مقایسه مجموع تعداد (مقدار) عرضه‌ها در تالار کالای صادراتی بین تابستان ۱۴۰۳ و تابستان ۱۴۰۴.",
+  "sql": "SELECT TOP 1000 \n    d.PersianYear,\n    SUM(o.OfferQuantity) AS TotalOfferQuantity\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار کالای صادراتی'\n  AND d.PersianSeasonName = N'تابستان'\n  AND d.PersianYear IN (1403, 1404)\nGROUP BY d.PersianYear",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.3
+ },
+ "RP-049": {
+  "question": "دو مشتری برتر تالار خودرو در سال ۱۴۰۳ را بر اساس تعداد قرارداد رتبه‌بندی کن.",
+  "sql": "SELECT TOP 2\n    c.Name AS CustomerName,\n    COUNT(t.TradeID) AS ContractCount\nFROM [Future_Fact].[Trade] t\nJOIN [Future_Dim].[Customer] c ON t.BuyerCustomer_ID = c.ID\nJOIN [Future_Dim].[Contract] ct ON t.Contract_ID = ct.ID\nJOIN [General_Dim].[Date] d ON t.Date_ID = d.ID\nWHERE ct.Commodity_Name = N'تالار خودرو'\n  AND d.PersianYear = 1403\nGROUP BY c.Name\nORDER BY ContractCount DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.0
+ },
+ "RP-050": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تالار سیمان به تفکیک سال در سال‌های ۱۴۰۲ تا ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 \n    d.PersianYear,\n    SUM(c.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear BETWEEN 1402 AND 1404\nGROUP BY d.PersianYear\nORDER BY d.PersianYear",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-051": {
+  "question": "بالاترین سه کارگزار به لحاظ مجموع ارزش (ریالی) عرضه‌ها در تالار طلا در سال ۱۴۰۳ را نشان بده.",
+  "sql": "SELECT TOP 3\n    b.PersianName,\n    SUM(o.OfferPrice) AS TotalOfferValue\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Broker] b ON o.Broker_ID = b.ID\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار طلا'\n  AND d.PersianYear = 1403\nGROUP BY b.PersianName\nORDER BY TotalOfferValue DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.2
+ },
+ "RP-052": {
+  "question": "مقایسه میانگین وزن (HallMatchingWeight) قراردادهای تالار صنعتی و معدنی در تابستان ۱۴۰۴ و پاییز ۱۴۰۴.",
+  "sql": "SELECT TOP 1000 \n    d.PersianSeasonName,\n    AVG(c.HallMatchingWeight) AS AvgWeight\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\n  AND d.PersianSeasonName IN (N'تابستان', N'پاییز')\nGROUP BY d.PersianSeasonName",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-053": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تالار خودرو به تفکیک ماه در سال ۱۴۰۳ را نشان بده.",
+  "sql": "SELECT TOP 100\n    d.PersianMonthName,\n    SUM(c.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار خودرو'\n  AND d.PersianYear = 1403\nGROUP BY d.PersianMonthName",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-054": {
+  "question": "پنج نماد برتر بر اساس مجموع مقدار تطبیق سالن در تالار صنعتی و معدنی در سال ۱۴۰۴.",
+  "sql": "SELECT TOP 5\n    s.TradingSymbol,\n    SUM(c.HallMatchingQuantity) AS TotalHallMatchingQuantity\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Symbol] s ON c.Symbol_ID = s.ID\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\nGROUP BY s.TradingSymbol\nORDER BY TotalHallMatchingQuantity DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.6
+ },
+ "RP-055": {
+  "question": "مقایسه مجموع ارزش (ریالی) قراردادهای مشتریان حقوقی و حقیقی در تالار صنعتی و معدنی در سال ۱۴۰۴.",
+  "sql": "SELECT TOP 1000 \n    c.TypeName,\n    SUM(ct.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] ct\nJOIN [Auction_Fact].[CustomerContract] cc ON ct.ID = cc.Contract_ID\nJOIN [Auction_Dim].[Customer] c ON cc.BuyerCustomer_ID = c.ID\nJOIN [Auction_Dim].[Ring] r ON ct.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON ct.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\nGROUP BY c.TypeName",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.5
+ },
+ "RP-056": {
+  "question": "مجموع ارزش (ریالی) عرضه‌های تالار پتروشیمی و فرآورده های نفتی به تفکیک نماد در تابستان ۱۴۰۴.",
+  "sql": "SELECT TOP 100\n    [s].[SymbolName],\n    SUM([s].[Shares] * [s].[Price]) AS TotalValue\nFROM [CSD_Fact].[vTrades] AS [s]\nJOIN [General_Dim].[Date] AS [d] ON [s].[PersianDate] = [d].[PersianDate]\nWHERE [d].[PersianYear] = 1404\n  AND [d].[PersianSeasonName] = N'تابستان'\n  AND [s].[SymbolName] = N'تالار پتروشیمی و فرآورده های نفتی'\nGROUP BY [s].[SymbolName]",
+  "status": "ok",
+  "corrections": 1,
+  "seconds": 6.1
+ },
+ "RP-057": {
+  "question": "سه مشتری پرفروش (بر اساس مقدار) در تالار کالای صادراتی در پاییز ۱۴۰۴ را نشان بده.",
+  "sql": "SELECT TOP 3\n    c.Name AS CustomerName,\n    SUM(cc.Quantity) AS TotalQuantity\nFROM [Auction_Fact].[CustomerContract] cc\nJOIN [Auction_Dim].[Customer] c ON cc.BuyerCustomer_ID = c.ID\nJOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON cc.Date_ID = d.ID\nWHERE r.Name = N'تالار کالای صادراتی'\n    AND d.PersianYear = 1404\n    AND d.PersianSeasonName = N'پاییز'\nGROUP BY c.Name\nORDER BY TotalQuantity DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.3
+ },
+ "RP-058": {
+  "question": "مقایسه مجموع ارزش (ریالی) قراردادها در تالار سیمان در تابستان ۱۴۰۳ با تابستان ۱۴۰۴.",
+  "sql": "SELECT TOP 1000 \n    d.PersianYear,\n    SUM(c.TotalPrice) AS TotalValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianSeasonName = N'تابستان'\n  AND d.PersianYear IN (1403, 1404)\nGROUP BY d.PersianYear\nORDER BY d.PersianYear",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-059": {
+  "question": "مجموع حق‌الزحمه کارگزاران خرید در تالار سیمان به تفکیک ماه در سال ۱۴۰۴ را نشان بده.",
+  "sql": "SELECT TOP 1000 \n    d.PersianMonthName,\n    SUM(cc.BuyBrokerWage) AS TotalBuyBrokerWage\nFROM [Auction_Fact].[CustomerContract] cc\nJOIN [Auction_Dim].[Ring] r ON cc.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON cc.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404\nGROUP BY d.PersianMonthName",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-060": {
+  "question": "دو کارگزار برتر بر اساس مجموع ارزش (ریالی) قراردادها در تالار صنعتی و معدنی در سال ۱۴۰۴ را نام ببر.",
+  "sql": "SELECT TOP 2\n    b.PersianName,\n    SUM(c.TotalPrice) AS TotalContractValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Broker] b ON c.SellerBroker_ID = b.ID\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\nGROUP BY b.PersianName\nORDER BY TotalContractValue DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.2
+ },
+ "RP-061": {
+  "question": "مجموع ارزش کل معاملات بازار را بده.",
+  "sql": "SELECT TOP 100 SUM([t].[Price] * [t].[Count]) AS TotalTradeValue\nFROM [Future_Fact].[Trade] AS [t]",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.9
+ },
+ "RP-062": {
+  "question": "آمار قراردادها را نشان بده.",
+  "sql": "SELECT TOP 100 c.ID, c.ContractID, c.Code, c.Commodity_Name, c.Commodity_Symbol, c.Currency_Name, c.Lot, c.Status, c.Time_FirstTradingDate, c.Time_LastTradingDate, c.Time_DeliveryDate FROM [Future_Dim].[Contract] c",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.3
+ },
+ "RP-063": {
+  "question": "برای تالار سیمان چه معامله‌ای شده است؟",
+  "sql": "SELECT TOP 100\n    c.[Code],\n    c.[Price],\n    c.[TotalPrice],\n    c.[HallMatchingQuantity],\n    s.[TradingSymbol],\n    s.[Commodity_PersianName],\n    d.[PersianDate]\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [Auction_Dim].[Symbol] s ON c.[Symbol_ID] = s.[ID]\nJOIN [General_Dim].[Date] d ON c.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار سیمان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-064": {
+  "question": "مشتریان پرتقاطع را برام پیدا کن.",
+  "sql": "SELECT TOP 100 c.Name, c.NationalID, c.TypeName, COUNT(cc.ID) AS ContractCount\nFROM [Auction_Dim].[Customer] c\nJOIN [Auction_Fact].[CustomerContract] cc ON c.ID = cc.BuyerCustomer_ID\nGROUP BY c.Name, c.NationalID, c.TypeName\nORDER BY ContractCount DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.4
+ },
+ "RP-065": {
+  "question": "چند مشتری فعال داریم؟",
+  "sql": "SELECT TOP 100 COUNT([c].[ID]) AS ActiveCustomerCount\nFROM [Future_Dim].[Customer] AS [c]\nWHERE [c].[Status] = N'فعال'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.5
+ },
+ "RP-066": {
+  "question": "میانگین قیمت را حساب کن.",
+  "sql": "SELECT TOP 1000 AVG(Price) FROM [Future_Fact].[Trade]",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.6
+ },
+ "RP-067": {
+  "question": "گزارش تالارهای صادراتی را نشان بده.",
+  "sql": "SELECT TOP 100 r.ID, r.Name, r.PersianDate\nFROM [Auction_Dim].[Ring] r\nWHERE r.Name = N'تالار کالای صادراتی'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.1
+ },
+ "RP-068": {
+  "question": "مجموع ارزش کل بازار در سال گذشته را بده.",
+  "sql": "SELECT TOP 1000 SUM([c].[TotalPrice])\nFROM [Auction_Fact].[Contract] AS [c]\nJOIN [General_Dim].[Date] AS [d] ON [c].[Date_ID] = [d].[ID]\nWHERE [d].[PersianYear] = YEAR(GETDATE()) - 1",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.1
+ },
+ "RP-069": {
+  "question": "مشتریان که خریداری انجام نداده‌اند را پیدا کن.",
+  "sql": "SELECT TOP 100\n    c.ID,\n    c.Name\nFROM [Future_Dim].[Customer] c\nLEFT JOIN [Future_Fact].[Trade] t\n    ON c.ID = t.BuyerCustomer_ID\nWHERE t.ID IS NULL",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.2
+ },
+ "RP-070": {
+  "question": "چه مقدار معامله در بازار انجام شده است؟",
+  "sql": "SELECT TOP 100 COUNT([t].[ID]) AS [TradeCount]\nFROM [Future_Fact].[Trade] AS [t]",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.1
+ },
+ "RP-071": {
+  "question": "نمادهای پرفروش ماه گذشته را نشان بده.",
+  "sql": "SELECT TOP 100\n    [t].[SymbolCode],\n    [t].[SymbolName],\n    SUM([t].[Shares]) AS TotalShares\nFROM [CSD_Fact].[vTrades] [t]\nWHERE [t].[PersianDate] >= CONVERT(VARCHAR(10), DATEADD(MONTH, -1, GETDATE()), 110)\n  AND [t].[PersianDate] < CONVERT(VARCHAR(10), GETDATE(), 110)\nGROUP BY [t].[SymbolCode], [t].[SymbolName]\nORDER BY TotalShares DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.7
+ },
+ "RP-072": {
+  "question": "آمار روزانه قراردادها را بده.",
+  "sql": "SELECT TOP 100\n    d.PersianDate,\n    c.Commodity_Name,\n    c.Code AS ContractCode,\n    COUNT(t.ID) AS TradeCount,\n    SUM(t.Count) AS TotalVolume,\n    SUM(t.Count * t.Price) AS TotalValue\nFROM [Future_Fact].[Trade] t\nJOIN [General_Dim].[Date] d ON t.Date_ID = d.ID\nJOIN [Future_Dim].[Contract] c ON t.Contract_ID = c.ID\nGROUP BY d.PersianDate, c.Commodity_Name, c.Code\nORDER BY d.PersianDate DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.6
+ },
+ "RP-073": {
+  "question": "حجم بازار چقدر است؟",
+  "sql": "SELECT TOP 100 SUM([t].[Count]) AS TotalVolume\nFROM [Future_Fact].[Trade] AS [t]",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 0.8
+ },
+ "RP-074": {
+  "question": "مشتریان برتر را نشان بده.",
+  "sql": "SELECT TOP 100\n    c.[Name] AS CustomerName,\n    COUNT(cc.[ID]) AS ContractCount,\n    SUM(cc.[TotalPrice]) AS TotalContractValue\nFROM [Auction_Fact].[CustomerContract] cc\nJOIN [Auction_Dim].[Customer] c ON cc.[BuyerCustomer_ID] = c.[ID]\nGROUP BY c.[Name]\nORDER BY ContractCount DESC, TotalContractValue DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-075": {
+  "question": "چه چیزی بیشتر معامله شده است؟",
+  "sql": "SELECT TOP 100 s.TradingSymbol, SUM(c.HallMatchingQuantity) AS TotalQuantity\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Symbol] s ON c.Symbol_ID = s.ID\nGROUP BY s.TradingSymbol\nORDER BY TotalQuantity DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-076": {
+  "question": "مجموع ارزش (ریالی) قراردادها در ۱۴۰۴/۰۳/۱۵ را بده.",
+  "sql": "SELECT TOP 1000 SUM([c].[TotalPrice])\nFROM [Auction_Fact].[Contract] AS [c]\nJOIN [General_Dim].[Date] AS [d] ON [c].[Date_ID] = [d].[ID]\nWHERE [d].[PersianDate] = N'1404/03/15'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.3
+ },
+ "RP-077": {
+  "question": "تعداد قراردادهای تالار سیمان در ۱۴۰۴/۰۳/۱۵ چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [General_Dim].[Date] d ON c.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار سیمان'\n  AND d.[PersianDate] = N'1404/03/15'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-078": {
+  "question": "مجموع ارزش (ریالی) قراردادها در هفته اول اسفند ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianMonthName = N'اسفند'\n  AND d.PersianWeekOfYear = 1",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.3
+ },
+ "RP-079": {
+  "question": "تعداد قراردادها در روز جمعه ۱۴۰۴/۰۳/۱۱ را نشان بده.",
+  "sql": "SELECT TOP 1000 COUNT(DISTINCT t.Contract_ID) AS ContractCount\nFROM [Future_Fact].[Trade] t\nJOIN [General_Dim].[Date] d ON t.Date_ID = d.ID\nWHERE d.PersianDate = '1404/03/11'\n  AND d.PersianDayOfWeek = 7",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.3
+ },
+ "RP-080": {
+  "question": "مجموع ارزش (ریالی) قراردادها در ماه اسفند ۱۴۰۴ را بده.",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianMonthName = N'اسفند'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-081": {
+  "question": "مجموع ارزش (ریالی) قراردادها در سه‌شنبه‌های اسفند ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianMonthName = N'اسفند'\n  AND d.PersianDayOfWeekName = N'سه‌شنبه'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.4
+ },
+ "RP-082": {
+  "question": "مجموع ارزش (ریالی) قراردادها در بهار ۱۴۰۴ را نشان بده.",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianSeasonName = N'بهار'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-083": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تابستان سال ۱۴۰۴ را حساب کن.",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianSeasonName = N'تابستان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-084": {
+  "question": "مجموع ارزش (ریالی) قراردادها در پاییز ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianSeasonName = N'پاییز'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-085": {
+  "question": "مجموع ارزش (ریالی) قراردادها در زمستان ۱۴۰۴ را بده.",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND d.PersianSeasonName = N'زمستان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.2
+ },
+ "RP-086": {
+  "question": "بیشترین قیمت (ریالی) معامله‌شده در تالار سیمان در سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 MAX(c.Price) AS MaxPrice\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.5
+ },
+ "RP-087": {
+  "question": "کمترین قیمت (ریالی) قرارداد در تالار طلا در سال ۱۴۰۳ چند است؟",
+  "sql": "SELECT TOP 1000 MIN(t.Price)\nFROM [Future_Fact].[Trade] t\nJOIN [Future_Dim].[Contract] c ON t.Contract_ID = c.ID\nJOIN [General_Dim].[Date] d ON t.Date_ID = d.ID\nWHERE c.Commodity_Name = N'تالار طلا'\n  AND d.PersianYear = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.3
+ },
+ "RP-088": {
+  "question": "میانگین وزن (تن) تطبیق سالن در تالار صنعتی و معدنی در سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 AVG(c.HallMatchingWeight) AS AvgHallMatchingWeight\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.6
+ },
+ "RP-089": {
+  "question": "میانگین قیمت (ریالی) عرضه‌ها در تالار خودرو در مهر ۱۴۰۴ را نشان بده.",
+  "sql": "SELECT TOP 1000 AVG(o.OfferPrice)\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار خودرو'\n  AND d.PersianYear = 1404\n  AND d.PersianMonthName = N'مهر'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-090": {
+  "question": "میانگین تعداد (مقدار) تطبیق سالن برای هر قرارداد در تالار سیمان در سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 AVG(c.HallMatchingQuantity) AS AvgHallMatchingQuantity\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.7
+ },
+ "RP-091": {
+  "question": "بیشترین مقدار (volume) تطبیق سالن در تالار پتروشیمی و فرآورده های نفتی در تابستان ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 MAX(c.[HallMatchingQuantity])\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [General_Dim].[Date] d ON c.[HallMatchingDate_ID] = d.[ID]\nWHERE r.[Name] = N'تالار پتروشیمی و فرآورده های نفتی'\n  AND d.[PersianYear] = 1404\n  AND d.[PersianSeasonName] = N'تابستان'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.4
+ },
+ "RP-092": {
+  "question": "میانگین قیمت (ریالی) سفارش‌های ثبت‌شده در تالار سیمان در سال ۱۴۰۴ را حساب کن.",
+  "sql": "SELECT TOP 1000 AVG(o.BuyOrder_Price)\nFROM [Auction_Fact].[Order] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.4
+ },
+ "RP-093": {
+  "question": "کمترین مقدار (volume) عرضه در تالار کشاورزی مشهد در سال ۱۴۰۳ چند است؟",
+  "sql": "SELECT TOP 1000 MIN([o].[OfferQuantity])\nFROM [Auction_Fact].[Offer] AS [o]\nJOIN [Auction_Dim].[Ring] AS [r] ON [o].[Ring_ID] = [r].[ID]\nJOIN [General_Dim].[Date] AS [d] ON [o].[Date_ID] = [d].[ID]\nWHERE [r].[Name] = N'تالار کشاورزی مشهد'\n  AND [d].[PersianYear] = 1403",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-094": {
+  "question": "بیشترین قیمت (ریالی) عرضه در تالار طلا در زمستان ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1 o.OfferPrice\nFROM [Auction_Fact].[Offer] o\nJOIN [Auction_Dim].[Ring] r ON o.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON o.Date_ID = d.ID\nWHERE r.Name = N'تالار طلا'\n  AND d.PersianYear = 1404\n  AND d.PersianSeasonName = N'زمستان'\nORDER BY o.OfferPrice DESC",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.8
+ },
+ "RP-095": {
+  "question": "میانگین مبلغ (ریالی) قراردادها در تالار فرعی در سال ۱۴۰۴ چقدر است؟",
+  "sql": "SELECT TOP 1000 AVG(c.TotalPrice) AS AverageContractValue\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار فرعی'\n  AND d.PersianYear = 1404",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.5
+ },
+ "RP-096": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تالار سیمان در سال ۱۴۰۴ بدون قراردادهای ابطال‌شده چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[ContractStatus] cs ON c.ContractStatus_ID = cs.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404\n  AND cs.Name <> N'ابطال شده'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.9
+ },
+ "RP-097": {
+  "question": "تعداد قراردادها در تالار طلا در سال ۱۴۰۴ که ابطال شده‌اند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(*) AS ContractCount\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.[Ring_ID] = r.[ID]\nJOIN [Auction_Dim].[ContractStatus] cs ON c.[ContractStatus_ID] = cs.[ID]\nJOIN [General_Dim].[Date] d ON c.[Date_ID] = d.[ID]\nWHERE r.[Name] = N'تالار طلا'\n  AND d.[PersianYear] = 1404\n  AND cs.[Name] = N'ابطال شده'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.1
+ },
+ "RP-098": {
+  "question": "مجموع ارزش (ریالی) قراردادها در تالار صنعتی و معدنی در سال ۱۴۰۴ بدون مشتریان غیرفعال چقدر است؟",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nJOIN [Auction_Dim].[Customer] cu ON c.Supplier_ID = cu.ID\nWHERE r.Name = N'تالار صنعتی و معدنی'\n  AND d.PersianYear = 1404\n  AND cu.IsActive = 1",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.9
+ },
+ "RP-099": {
+  "question": "مجموع ارزش (ریالی) قراردادها در سال ۱۴۰۴ بدون تالار پریمیوم را نشان بده.",
+  "sql": "SELECT TOP 1000 SUM(c.TotalPrice)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE d.PersianYear = 1404\n  AND r.Name <> N'تالار پریمیوم'",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 2.2
+ },
+ "RP-100": {
+  "question": "تعداد قراردادهای تالار سیمان در سال ۱۴۰۴ که هنوز تسویه نشده‌اند چند است؟",
+  "sql": "SELECT TOP 1000 COUNT(c.ID)\nFROM [Auction_Fact].[Contract] c\nJOIN [Auction_Dim].[Ring] r ON c.Ring_ID = r.ID\nJOIN [General_Dim].[Date] d ON c.Date_ID = d.ID\nWHERE r.Name = N'تالار سیمان'\n  AND d.PersianYear = 1404\n  AND c.ContractStatus_ID IS NULL",
+  "status": "ok",
+  "corrections": 0,
+  "seconds": 1.5
+ }
+}

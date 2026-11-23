@@ -102,15 +102,9 @@ function el(tag, className, text) {
 
 function renderRememberedSection(entries, handlers) {
   const section = el("section", "memory-section");
-  section.appendChild(el("h3", "memory-section-title", "آنچه به خاطر سپرده شده"));
 
   const list = entries || [];
   if (list.length === 0) {
-    section.appendChild(el(
-      "p", "memory-empty",
-      "هنوز چیزی به خاطر سپرده نشده — از کنار هر مفروضهٔ قابل‌ویرایش، «به خاطر بسپار» را بزنید، " +
-      "یا یکی از فیلدهای زیر را مستقیماً تنظیم کنید.",
-    ));
     return section;
   }
 
@@ -161,7 +155,7 @@ function renderRememberedSection(entries, handlers) {
 
 function renderRememberableSection(rememberable, handlers) {
   const section = el("section", "memory-section");
-  section.appendChild(el("h3", "memory-section-title", "آنچه قابل‌به‌خاطرسپردن است"));
+  const isEn = document.documentElement && document.documentElement.lang === "en";
 
   const list = rememberable || [];
   if (list.length === 0) {
@@ -179,7 +173,7 @@ function renderRememberableSection(rememberable, handlers) {
       control = document.createElement("select");
       const blank = document.createElement("option");
       blank.value = "";
-      blank.textContent = "— انتخاب کنید —";
+      blank.textContent = isEn ? "Select" : "— انتخاب کنید —";
       control.appendChild(blank);
       for (const opt of r.options) {
         const o = document.createElement("option");
@@ -202,7 +196,7 @@ function renderRememberableSection(rememberable, handlers) {
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.className = "memory-save-btn";
-    saveBtn.textContent = "ذخیره";
+    saveBtn.textContent = isEn ? "Save" : "ذخیره";
     saveBtn.addEventListener("click", () => {
       const val = control.value;
       const check = validateMemoryValue(val, r);

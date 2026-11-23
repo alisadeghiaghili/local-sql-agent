@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl" style="--composer-clearance: 374px;"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="styles/fonts.css">
+<link rel="stylesheet" href="styles/tokens.css">
+<link rel="stylesheet" href="styles/style.css">
+<link rel="stylesheet" href="styles/template.css">
+<style>
+  /* mirror the real page frame: .layout is the flex column that holds #assistant */
+  body { margin: 0; }
+</style>
+<title>DONE</title></head>
+<body>
+<div class="layout">
+  <section class="panel assistant" id="assistant" aria-labelledby="assistant-title">
+    <div class="assistant-glow" aria-hidden="true"></div>
+    <header class="assistant-head">
+      <h2 id="assistant-title">از داده‌های خود چه می‌دانید؟</h2>
+    </header>
+    <div class="card composer">
+      <div class="ask-row">
+        <textarea id="question" rows="1" dir="auto" aria-label="پرسش تحلیلی" placeholder="مثلا‌ «معاملات مشتری‌های تالار سیمان را نشان بده»" style="height: 44px;"></textarea>
+      </div>
+      <div class="ask-options">
+        <label class="ask-toggle"><input type="checkbox" id="interpret-toggle"><span>تفسیر نتیجه</span></label>
+        <button class="btn-ask" id="btn-ask" type="button">پرسش</button>
+      </div>
+      <div id="notice-area"></div>
+    </div>
+  </section>
+</div>
+<div id="res" style="position: fixed; top: 0px; left: 0px; color: rgb(255, 255, 255); background: rgb(0, 0, 0); font: 12px monospace; z-index: 99; white-space: pre; display: block;">RESTING   vw=1264 panelH=215 textareaH=44 clearance=340px
+1 line    vw=1264 panelH=215 textareaH=44 clearance=340px
+2 lines   vw=1264 panelH=239 textareaH=68 clearance=340px
+3 lines   vw=1264 panelH=239 textareaH=68 clearance=340px
+6 lines   vw=1264 panelH=286 textareaH=115 clearance=340px
+12 lines  vw=1264 panelH=358 textareaH=187 clearance=374px
+afterClear vw=1264 panelH=215 textareaH=44 clearance=374px</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function sizeQuestion() {
+  const q = $("question");
+  if (!q) return;
+  q.style.height = "0px";
+  const next = Math.min(q.scrollHeight, 220);
+  q.style.height = next + "px";
+  if (next > 44) syncComposerClearance();
+}
+function syncComposerClearance() {
+  const panel = $("assistant");
+  if (!panel || !panel.offsetHeight) return;
+  const root = document.documentElement;
+  const foot = Math.round(panel.offsetHeight + 16);
+  const floor = parseFloat(getComputedStyle(root).getPropertyValue("--composer-clearance")) || 0;
+  root.style.setProperty("--composer-clearance", Math.max(foot, floor) + "px");
+}
+sizeQuestion();
+window.addEventListener("resize", () => syncComposerClearance());
+
+// measure
+function report() {
+  const panel = $("assistant");
+  const q = $("question");
+  const clearance = getComputedStyle(document.documentElement).getPropertyValue("--composer-clearance").trim();
+  return [
+    "vw=" + window.innerWidth,
+    "panelH=" + Math.round(panel.offsetHeight),
+    "textareaH=" + Math.round(q.offsetHeight),
+    "clearance=" + clearance,
+  ].join(" ");
+}
+function setText(t) { const q = $("question"); q.value = t; sizeQuestion(); return report(); }
+function run(out) {
+  $("question").value = ""; sizeQuestion(); syncComposerClearance();
+  out.push("RESTING   " + report());
+  const line = "معاملات مشتری‌های تالار سیمان را برای سال جاری به تفکیک ماه نشان بده و مقادیر را مرتب کن. ";
+  out.push("1 line    " + setText(line.trim()));
+  out.push("2 lines   " + setText(line.repeat(2).trim()));
+  out.push("3 lines   " + setText(line.repeat(3).trim()));
+  out.push("6 lines   " + setText(line.repeat(6).trim()));
+  out.push("12 lines  " + setText(line.repeat(12).trim()));
+  $("question").value = ""; sizeQuestion(); syncComposerClearance();
+  out.push("afterClear " + report());
+  return out;
+}
+const res = $("res");
+res.style.display = "block";
+document.fonts.ready.then(() => {
+  res.textContent = run([]).join("\n");
+  document.title = "DONE";
+});
+</script>
+
+
+</body></html>

@@ -57,7 +57,15 @@ export function fmtCell(value, type) {
     // labels came out Latin while the row count beside them was Persian.
     // The Latin carve-out is num.technical(), for values that travel to
     // other systems -- not for cells someone is simply reading.
-    return Number.isFinite(value) ? fmt(value) : String(value);
+    //
+    // `Number(value)` not `value`: a `DECIMAL`/`NUMERIC` column the backend
+    // serialises as a string ("9370992.00") would otherwise hit the
+    // `Number.isFinite` guard (false for strings) and fall through to
+    // `String(value)`, leaking the raw trailing ".00" into the cell.
+    // Coercing first lets the formatter drop it; non-numeric strings
+    // ("12a", "N/A") still fall through to `String(value)`.
+    const n = Number(value);
+    return Number.isFinite(n) ? fmt(n) : String(value);
   }
   return String(value);
 }
